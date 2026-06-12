@@ -33,38 +33,38 @@ Ubiquisync is under active development and not yet ready for production use.
 		touches another's files, so file-level conflicts can't exist. Data merges
 		deterministically by hybrid logical clock.
 	</Feature>
-	<Feature title="Rich text that merges" icon="article" accent="#8B5CF6">
-		Collaborative documents merge as CRDTs (via Yrs, the Rust port of Yjs).
-		Concurrent edits to the same document combine without losing anyone's
-		work — à la Google Docs.
-	</Feature>
-	<Feature title="User-defined schemas" icon="table" accent="#6366F1">
-		Let users shape their own tables and columns at runtime, à la AirTable or
-		Notion. Schema changes travel through the log and merge conflict-free
-		like any other change.
-	</Feature>
-	<Feature title="SQLite or Postgres" icon="database" accent="#3B82F6">
-		Store and query your data in the database you already use — embedded
-		SQLite on device, or Postgres.
-	</Feature>
-	<Feature title="Bring your own storage" icon="cloud-check" accent="#0EA5E9">
+	<Feature title="Bring your own storage" icon="cloud-check" accent="#8B5CF6">
 		Sync over Google Drive, iCloud Drive, Dropbox, or any shared folder — or
 		add a dedicated sync server for real-time collaboration and user
 		management.
 	</Feature>
-	<Feature title="Reactive queries" icon="lightning" accent="#06B6D4">
-		Subscribe to queries, not just rows: your UI updates the instant local or
-		remote changes land. The reactive layer is built in — no extra state-sync
-		framework to bolt on.
+	<Feature title="Local-first and offline" icon="laptop" accent="#6366F1">
+		Your data lives on-device and works offline — sync happens
+		opportunistically whenever connectivity allows.
 	</Feature>
-	<Feature title="Full history and attribution" icon="clock-counter-clockwise" accent="#14B8A6">
+	<Feature title="Reactive updates" icon="lightning" accent="#3B82F6">
+		Built-in change notifications with targeted filtering: subscribe to the
+		data your views care about, and update the moment local or remote changes
+		land.
+	</Feature>
+	<Feature title="SQLite or Postgres" icon="database" accent="#0EA5E9">
+		Store and query your data in the database you already use — embedded
+		SQLite on device, or Postgres.
+	</Feature>
+	<Feature title="User-defined schemas" icon="table" accent="#06B6D4">
+		Let users shape their own tables and columns at runtime, à la AirTable or
+		Notion. Schema changes travel through the log and merge conflict-free
+		like any other change.
+	</Feature>
+	<Feature title="Rich text that merges" icon="article" accent="#14B8A6">
+		Collaborative documents merge as CRDTs (via Yrs, the Rust port of Yjs).
+		Concurrent edits to the same document combine without losing anyone's
+		work — à la Google Docs.
+	</Feature>
+	<Feature title="Full history and attribution" icon="clock-counter-clockwise" accent="#10B981">
 		The log is the source of truth: every change is kept, timestamped, and
 		attributed to the device that made it. Full revision history comes for
 		free.
-	</Feature>
-	<Feature title="Local-first and offline" icon="laptop" accent="#10B981">
-		Your data lives on-device and works offline — sync happens
-		opportunistically whenever connectivity allows.
 	</Feature>
 </FeatureGrid>
 

@@ -1,48 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" width="240" height="240">
-  <!-- Variant: "Mesh comets" — the original peer-mesh structure with cyan
-       comet packets streaking clockwise along the ring edges. Arrows as
-       payloads riding the wires instead of glyphs cut into them. -->
-  <defs>
-    <!-- one full ring edge (top → upper-right), original peer-mesh weight -->
-    <line id="cometEdge" x1="120" y1="40" x2="189.3" y2="80"
-          stroke="#6366F1" stroke-width="7" stroke-linecap="round"/>
-    <!-- one diameter, styled like the original peer mesh -->
-    <line id="cometDiam" x1="120" y1="40" x2="120" y2="200"
-          stroke="#6366F1" stroke-width="4" stroke-linecap="round"/>
-    <!-- comet: sharp nose leading clockwise, concave trailing edge — the point
-         must face the travel direction or the eye reads the motion backward -->
-    <path id="comet" d="M16,0 L-10,-7 Q-2,0 -10,7 Z" fill="#06B6D4"
-          transform="translate(154.65 60) rotate(30)"/>
-  </defs>
-
-  <!-- inner diameters at the original peer-mesh weight -->
-  <g opacity="0.35">
-    <use href="#cometDiam"/>
-    <use href="#cometDiam" transform="rotate(60 120 120)"/>
-    <use href="#cometDiam" transform="rotate(120 120 120)"/>
-  </g>
-  <g opacity="0.9">
-    <use href="#cometEdge"/>
-    <use href="#cometEdge" transform="rotate(60 120 120)"/>
-    <use href="#cometEdge" transform="rotate(120 120 120)"/>
-    <use href="#cometEdge" transform="rotate(180 120 120)"/>
-    <use href="#cometEdge" transform="rotate(240 120 120)"/>
-    <use href="#cometEdge" transform="rotate(300 120 120)"/>
-  </g>
-
-  <!-- the packets in flight -->
-  <use href="#comet"/>
-  <use href="#comet" transform="rotate(60 120 120)"/>
-  <use href="#comet" transform="rotate(120 120 120)"/>
-  <use href="#comet" transform="rotate(180 120 120)"/>
-  <use href="#comet" transform="rotate(240 120 120)"/>
-  <use href="#comet" transform="rotate(300 120 120)"/>
-
-  <!-- the peers -->
-  <circle cx="120"   cy="40"  r="13" fill="#8B5CF6"/>
-  <circle cx="50.7"  cy="80"  r="13" fill="#6366F1"/>
-  <circle cx="50.7"  cy="160" r="13" fill="#06B6D4"/>
-  <circle cx="120"   cy="200" r="13" fill="#14B8A6"/>
-  <circle cx="189.3" cy="160" r="13" fill="#10B981"/>
-  <circle cx="189.3" cy="80"  r="13" fill="#3B82F6"/>
+  <!-- Small-size variant of the logo (www/src/assets/logo.svg): the peer
+       ring only — diameters and comets dropped, wires thickened and nodes
+       enlarged so the mesh stays legible at 16–32px. -->
+  <path d="M120 28 L199.7 74 L199.7 166 L120 212 L40.3 166 L40.3 74 Z"
+        fill="none" stroke="#6366F1" stroke-width="13" stroke-linejoin="round" opacity="0.9"/>
+  <circle cx="120"   cy="28"  r="26" fill="#8B5CF6"/>
+  <circle cx="40.3"  cy="74"  r="26" fill="#6366F1"/>
+  <circle cx="40.3"  cy="166" r="26" fill="#06B6D4"/>
+  <circle cx="120"   cy="212" r="26" fill="#14B8A6"/>
+  <circle cx="199.7" cy="166" r="26" fill="#10B981"/>
+  <circle cx="199.7" cy="74"  r="26" fill="#3B82F6"/>
 </svg>

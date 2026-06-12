@@ -12,6 +12,11 @@ export default defineConfig({
 				src: './src/assets/logo.svg',
 			},
 			customCss: ['./src/styles/theme.css'],
+			head: [
+				// raster fallbacks for browsers without SVG favicon support
+				{ tag: 'link', attrs: { rel: 'icon', href: '/favicon.ico', sizes: '48x48' } },
+				{ tag: 'link', attrs: { rel: 'apple-touch-icon', href: '/apple-touch-icon.png' } },
+			],
 			social: [
 				{ icon: 'github', label: 'GitHub', href: 'https://github.com/ubiquisync/ubiquisync' },
 			],
