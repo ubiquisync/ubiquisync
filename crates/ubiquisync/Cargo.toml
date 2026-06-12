@@ -1,7 +1,15 @@
 [package]
 name = "ubiquisync"
-version = "0.0.1"
-edition = "2024"
-license = "MIT OR Apache-2.0"
+description = "Conflict-free sync of structured data and rich text over commodity cloud storage or a dedicated server."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["sqlite"]
+sqlite = ["dep:ubiquisync-sqlite"]
 
 [dependencies]
+ubiquisync-core = { workspace = true }
+ubiquisync-sqlite = { workspace = true, optional = true }

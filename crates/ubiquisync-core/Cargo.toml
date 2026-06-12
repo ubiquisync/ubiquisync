@@ -1,0 +1,10 @@
+[package]
+name = "ubiquisync-core"
+description = "Core protocol types and sync engine for Ubiquisync — conflict-free sync of structured data over commodity cloud storage or a dedicated server."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bitfield-struct = { workspace = true }

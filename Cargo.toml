@@ -2,4 +2,17 @@
 resolver = "2"
 members = [
   "crates/ubiquisync",
+  "crates/ubiquisync-core",
+  "crates/ubiquisync-sqlite",
 ]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ubiquisync/ubiquisync"
+
+[workspace.dependencies]
+ubiquisync-core = { path = "crates/ubiquisync-core", version = "0.0.1" }
+ubiquisync-sqlite = { path = "crates/ubiquisync-sqlite", version = "0.0.1" }
+bitfield-struct = "0.13.0"

@@ -1,0 +1,10 @@
+[package]
+name = "ubiquisync-sqlite"
+description = "SQLite storage backend for Ubiquisync. Implementation in progress — see the repository for status."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ubiquisync-core = { workspace = true }
