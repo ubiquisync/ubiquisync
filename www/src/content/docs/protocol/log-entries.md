@@ -3,7 +3,7 @@ title: Log entries
 description: The log model — per-peer append-only logs, the entry envelope, and hybrid logical clock timestamps.
 ---
 
-Ubiquisync is log shipping. Every peer appends each change it makes to its own append-only log, and syncing is copying those per-peer logs between devices — over a shared cloud folder or a relay server — and replaying them. No peer ever writes to another peer's log, so there are no write conflicts at the transport level; convergence is entirely the job of the [merge semantics](/protocol/sys-tables/#merge-semantics) applied during replay.
+Every peer appends each change it makes to its own append-only log. Syncing is copying those logs between devices — over a shared cloud folder or a relay server — and replaying them. No peer ever writes to another peer's log, so there are no write conflicts at the transport level; convergence is entirely the job of the [merge semantics](/protocol/sys-tables/#merge-semantics) applied during replay.
 
 This page specifies the unit of that log: the entry envelope and its timestamp. The operations the envelope carries are specified per data domain — [system tables](/protocol/sys-tables/), [user-defined tables](/protocol/usr-tables/), and [documents](/protocol/documents/). The byte-level segment file encoding is an implementation concern, documented separately.
 
@@ -19,7 +19,7 @@ A log entry is one operation plus metadata:
 
 There are two log domains, distinguished by what `op` is: the **state log** carries system and user-defined table operations, and the **document log** carries document operations. Both use this same envelope, and both draw timestamps from a single shared clock per peer, so timestamps are causally comparable across the two logs.
 
-Each entry is individually integrity-hashed (blake3) and is the unit of **expungement**: an entry can be redacted from a segment after the fact without invalidating the entries around it. An append-only design needs this escape hatch — "remove this data everywhere" is a real obligation, and rewriting history is not an option when other peers replay logs by position.
+Each entry is individually integrity-hashed (blake3) and is the unit of **expungement**: an entry can be redacted from a segment after the fact without invalidating the entries around it. Append-only storage still has to honor permanent removal — leaked secrets, data-deletion requests — and rewriting history is not an option when other peers replay logs by position.
 
 ## Timestamps
 
@@ -35,7 +35,7 @@ The clock guarantees:
 
 - **Monotonic within a peer.** Each timestamp a peer generates is strictly greater than its last, even if the wall clock stalls or steps backward (the counter absorbs it).
 - **Causal across peers.** When a peer observes a remote entry, its clock advances to at least that timestamp, so everything it writes afterward is strictly newer. "I changed it after seeing your change" therefore always wins LWW, regardless of whose wall clock is ahead.
-- **Bounded skew.** A remote entry whose wall-clock component is more than 60 seconds ahead of the local clock is rejected. Without this, one device with a badly wrong clock could poison every peer's HLC years into the future, making all of their subsequent writes unbeatable. Past timestamps are always accepted — they lose LWW merges harmlessly, which is exactly what stale data should do.
+- **Bounded skew.** A remote entry whose wall-clock component is more than 60 seconds ahead of the local clock is rejected. Without this bound, a single device with a badly wrong clock would drag every peer's clock years ahead of wall time, and its writes would outrank honestly-timestamped data until real time caught up. Past timestamps are always accepted — they lose LWW merges harmlessly, which is the correct outcome for stale data.
 
 ## Attribution
 

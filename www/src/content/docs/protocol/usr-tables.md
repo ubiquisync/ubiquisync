@@ -40,9 +40,9 @@ A user-table cell holds one of exactly two value shapes, plus NULL:
 
 This is a deliberate design position, not a missing feature. In a user-defined schema system, a column's "type" — number, date, currency, checkbox — is **view-time formatting plus lightweight validation**, not a storage property. When a user changes a Notion-style number column to plain text, or a text column to a date, nothing about the stored data should need to change: no row rewrites, and — critically for a distributed system — no schema migration to coordinate across peers that may be offline for months. Storing every scalar as text is what makes retyping a metadata-only edit.
 
-The exceptions prove the rule: selects, multi-selects, and references are *not* scalars — they point at other objects (option rows, other entities) — so they get the one non-text shape, `Uuid`.
+Selects, multi-selects, and references are the deliberate exceptions: they are not scalars — they point at other objects (option rows, other entities) — so they get the one non-text shape, `Uuid`.
 
-Two consequences worth stating plainly:
+Two consequences follow:
 
 - **The type travels with the value, not the column.** Each value on the wire is tagged text/UUID/NULL. A column has no protocol-level type to violate, so a retyped column's old rows are simply still valid.
 - **The store doesn't sort numerically.** Since numbers are text at the storage layer, ordering and aggregation by numeric value are application concerns, applied at view time alongside the formatting that makes the column "a number" in the first place.
