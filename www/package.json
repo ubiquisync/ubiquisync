@@ -1,0 +1,21 @@
+{
+  "name": "www",
+  "type": "module",
+  "version": "0.0.1",
+  "packageManager": "pnpm@10.26.1",
+  "scripts": {
+    "dev": "astro dev",
+    "start": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "astro": "astro"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "^0.40.0",
+    "astro": "^6.4.5",
+    "sharp": "^0.34.5"
+  },
+  "devDependencies": {
+    "@phosphor-icons/core": "^2.1.1"
+  }
+}

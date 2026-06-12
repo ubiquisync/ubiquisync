@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" width="240" height="240">
+  <!-- Small-size variant of the logo (www/src/assets/logo.svg): the peer
+       ring only — diameters and comets dropped, wires thickened and nodes
+       enlarged so the mesh stays legible at 16–32px. -->
+  <path d="M120 28 L199.7 74 L199.7 166 L120 212 L40.3 166 L40.3 74 Z"
+        fill="none" stroke="#6366F1" stroke-width="13" stroke-linejoin="round" opacity="0.9"/>
+  <circle cx="120"   cy="28"  r="26" fill="#8B5CF6"/>
+  <circle cx="40.3"  cy="74"  r="26" fill="#6366F1"/>
+  <circle cx="40.3"  cy="166" r="26" fill="#06B6D4"/>
+  <circle cx="120"   cy="212" r="26" fill="#14B8A6"/>
+  <circle cx="199.7" cy="166" r="26" fill="#10B981"/>
+  <circle cx="199.7" cy="74"  r="26" fill="#3B82F6"/>
+</svg>

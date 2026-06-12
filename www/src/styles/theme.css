@@ -1,0 +1,100 @@
+/* Ubiquisync brand theme.
+   Palette drawn from the logo (src/assets/logo.svg):
+   violet #8B5CF6 · indigo #6366F1 · blue #3B82F6 · cyan #06B6D4 · teal #14B8A6 · emerald #10B981
+   Indigo is the primary accent (the mesh wires); the hero gradient runs
+   along the same violet→teal span of that spectrum. */
+
+:root {
+	--us-violet: #8b5cf6;
+	--us-indigo: #6366f1;
+	--us-blue: #3b82f6;
+	--us-cyan: #06b6d4;
+	--us-teal: #14b8a6;
+	--us-emerald: #10b981;
+	--us-mesh-gradient: linear-gradient(
+		100deg,
+		var(--us-violet),
+		var(--us-indigo) 30%,
+		var(--us-cyan) 70%,
+		var(--us-teal)
+	);
+}
+
+/* Dark mode (Starlight default) */
+:root {
+	--sl-color-accent-low: #2a2a6b;
+	--sl-color-accent: var(--us-indigo);
+	--sl-color-accent-high: #c7d2fe;
+
+	/* cool, slightly indigo-tinted grays */
+	--sl-color-white: #f4f5fc;
+	--sl-color-gray-1: #e6e8f5;
+	--sl-color-gray-2: #b9bcce;
+	--sl-color-gray-3: #8186a3;
+	--sl-color-gray-4: #4e526e;
+	--sl-color-gray-5: #2f324a;
+	--sl-color-gray-6: #1e2034;
+	--sl-color-black: #14151f;
+}
+
+/* Light mode */
+:root[data-theme='light'] {
+	--sl-color-accent-low: #e0e7ff;
+	--sl-color-accent: #4f46e5; /* darker indigo for contrast on white */
+	--sl-color-accent-high: #312e81;
+
+	/* same spectrum, darkened to keep ≥3:1 contrast on white */
+	--us-mesh-gradient: linear-gradient(
+		100deg,
+		#7c3aed,
+		#4f46e5 30%,
+		#0e7490 70%,
+		#0f766e
+	);
+
+	--sl-color-white: #14151f;
+	--sl-color-gray-1: #1e2034;
+	--sl-color-gray-2: #2f324a;
+	--sl-color-gray-3: #4e526e;
+	--sl-color-gray-4: #8186a3;
+	--sl-color-gray-5: #b9bcce;
+	--sl-color-gray-6: #e6e8f5;
+	--sl-color-gray-7: #f4f5fc;
+	--sl-color-black: #ffffff;
+}
+
+/* Landing page (any page with a hero): hide the docs chrome so it reads as
+   a marketing page, not a doc. The hero's own actions handle navigation. */
+[data-has-hero] .header {
+	display: none;
+}
+
+[data-has-hero] .main-frame {
+	padding-top: 0;
+}
+
+/* Hero title picks up the full mesh spectrum. Gated so the text never goes
+   transparent where gradient clipping is unsupported or colors are forced. */
+@supports (background-clip: text) or (-webkit-background-clip: text) {
+	.hero h1 {
+		background: var(--us-mesh-gradient);
+		-webkit-background-clip: text;
+		background-clip: text;
+		-webkit-text-fill-color: transparent;
+		color: transparent;
+	}
+
+	@media (forced-colors: active) {
+		.hero h1 {
+			background: none;
+			-webkit-text-fill-color: CanvasText;
+			color: CanvasText;
+		}
+	}
+}
+
+/* Round the logo's geometry into the site title */
+.site-title {
+	font-weight: 600;
+	letter-spacing: -0.01em;
+}
