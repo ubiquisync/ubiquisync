@@ -1,5 +1,11 @@
 //! Core protocol types and sync engine for Ubiquisync.
 //!
+//! > **⚠ PRE-ALPHA — WORK IN PROGRESS ⚠**
+//! >
+//! > This crate is in active, early development. APIs are incomplete, unproven,
+//! > and **will change without notice**. Do not use it in production. Breaking
+//! > changes may land on any commit.
+//!
 //! This crate contains the storage-agnostic parts of Ubiquisync: the wire
 //! protocol, type-encoded IDs, and (as the port progresses) the HLC clock,
 //! codec, and merge reducer. It has no database driver dependencies —

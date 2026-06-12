@@ -8,13 +8,13 @@ members = [
 ]
 
 [workspace.package]
-version = "0.0.1"
+version = "0.0.2"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/ubiquisync/ubiquisync"
 
 [workspace.dependencies]
-ubiquisync-core = { path = "crates/ubiquisync-core", version = "0.0.1" }
-ubiquisync-postgres = { path = "crates/ubiquisync-postgres", version = "0.0.1" }
-ubiquisync-sqlite = { path = "crates/ubiquisync-sqlite", version = "0.0.1" }
+ubiquisync-core = { path = "crates/ubiquisync-core", version = "0.0.2" }
+ubiquisync-postgres = { path = "crates/ubiquisync-postgres", version = "0.0.2" }
+ubiquisync-sqlite = { path = "crates/ubiquisync-sqlite", version = "0.0.2" }
 bitfield-struct = "0.13.0"
