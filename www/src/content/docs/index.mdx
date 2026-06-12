@@ -1,0 +1,77 @@
+---
+title: Ubiquisync
+description: Conflict-free sync over commodity cloud storage or server.
+# avoid the default "Ubiquisync | Ubiquisync" tab title
+head:
+  - tag: title
+    content: Ubiquisync
+template: splash
+hero:
+  tagline: Conflict-free sync over commodity cloud storage or server — no sync infrastructure required.
+  image:
+    file: ../../assets/logo.svg
+    alt: Ubiquisync logo
+  actions:
+    - text: Get started
+      link: /guides/getting-started/
+      icon: right-arrow
+    - text: View on GitHub
+      link: https://github.com/ubiquisync/ubiquisync
+      icon: github
+      variant: minimal
+---
+
+import Feature from '../../components/Feature.astro';
+import FeatureGrid from '../../components/FeatureGrid.astro';
+import HowItWorks from '../../components/HowItWorks.astro';
+
+:::caution[Work in progress]
+Ubiquisync is under active development and not yet ready for production use.
+:::
+
+## Why Ubiquisync
+
+<FeatureGrid>
+	<Feature title="Conflict-free by design" icon="git-merge" accent="#A855F7">
+		Each device writes only to its own append-only log — no device ever
+		touches another's files, so file-level conflicts can't exist. Data merges
+		deterministically by hybrid logical clock.
+	</Feature>
+	<Feature title="Bring your own storage" icon="cloud-check" accent="#8B5CF6">
+		Sync over Google Drive, iCloud Drive, Dropbox, or any shared folder — or
+		add a dedicated sync server for real-time collaboration and user
+		management.
+	</Feature>
+	<Feature title="Local-first and offline" icon="laptop" accent="#6366F1">
+		Your data lives on-device and works offline — sync happens
+		opportunistically whenever connectivity allows.
+	</Feature>
+	<Feature title="Reactive updates" icon="lightning" accent="#3B82F6">
+		Built-in change notifications with targeted filtering: subscribe to the
+		data your views care about, and update the moment local or remote changes
+		land.
+	</Feature>
+	<Feature title="SQLite or Postgres" icon="database" accent="#0EA5E9">
+		Store and query your data in the database you already use — embedded
+		SQLite on device, or Postgres.
+	</Feature>
+	<Feature title="User-defined schemas" icon="table" accent="#06B6D4">
+		Let users shape their own tables and columns at runtime, à la Airtable or
+		Notion. Schema changes travel through the log and merge conflict-free
+		like any other change.
+	</Feature>
+	<Feature title="Rich text that merges" icon="article" accent="#14B8A6">
+		Collaborative documents merge as CRDTs (via Yrs, the Rust port of Yjs).
+		Concurrent edits to the same document combine without losing anyone's
+		work — à la Google Docs.
+	</Feature>
+	<Feature title="Full history and attribution" icon="clock-counter-clockwise" accent="#10B981">
+		The log is the source of truth: every change is kept, timestamped, and
+		attributed to the device that made it. Full revision history comes for
+		free.
+	</Feature>
+</FeatureGrid>
+
+## How it works
+
+<HowItWorks />

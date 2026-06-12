@@ -1,0 +1,44 @@
+---
+/** Flat, equal-height grid of Feature cards with a time-staggered entrance. */
+---
+
+<div class="feature-grid"><slot /></div>
+
+<style>
+	.feature-grid {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		grid-auto-rows: 1fr;
+		gap: 1rem;
+		margin-top: 1.5rem;
+	}
+
+	@media (max-width: 50rem) {
+		.feature-grid {
+			grid-template-columns: 1fr;
+		}
+	}
+
+	/* stagger in time, not in space */
+	.feature-grid > :global(:nth-child(2)) {
+		--rise-delay: 70ms;
+	}
+	.feature-grid > :global(:nth-child(3)) {
+		--rise-delay: 140ms;
+	}
+	.feature-grid > :global(:nth-child(4)) {
+		--rise-delay: 210ms;
+	}
+	.feature-grid > :global(:nth-child(5)) {
+		--rise-delay: 280ms;
+	}
+	.feature-grid > :global(:nth-child(6)) {
+		--rise-delay: 350ms;
+	}
+	.feature-grid > :global(:nth-child(7)) {
+		--rise-delay: 420ms;
+	}
+	.feature-grid > :global(:nth-child(8)) {
+		--rise-delay: 490ms;
+	}
+</style>
