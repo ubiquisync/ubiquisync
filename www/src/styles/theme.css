@@ -54,6 +54,16 @@
 	--sl-color-black: #ffffff;
 }
 
+/* Landing page (any page with a hero): hide the docs chrome so it reads as
+   a marketing page, not a doc. The hero's own actions handle navigation. */
+[data-has-hero] .header {
+	display: none;
+}
+
+[data-has-hero] .main-frame {
+	padding-top: 0;
+}
+
 /* Hero title picks up the full mesh spectrum */
 .hero h1 {
 	background: var(--us-mesh-gradient);
