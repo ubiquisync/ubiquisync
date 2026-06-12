@@ -1,6 +1,8 @@
 # Ubiquisync
 
-Conflict free sync over commodity cloud storage or server.
+**WORK IN PROGRESS: NOT READY FOR PRODUCTION**
+
+Conflict-free sync over commodity cloud storage or server.
 
 Ubiquisync solves the problem of syncing user workspace data between devices without
 merge conflicts and without the need to stand up any sync server infrastructure.
@@ -48,3 +50,5 @@ in real time and serve web clients that have no local storage of their own.
 Ubiquisync might not be a good fit if any of these things apply:
 - needs fine grained read or write permissions
 - produces a very high volume of tiny, frequent changes, where the per-change log overhead can outweigh the data itself
+- need unique constraints on tables
+- need to use SQL DDL or DML directly - ubiquisync supports SQL queries, but requires using its own data definition and manipulation primitives
