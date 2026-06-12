@@ -50,5 +50,5 @@ in real time and serve web clients that have no local storage of their own.
 Ubiquisync might not be a good fit if any of these things apply:
 - needs fine grained read or write permissions
 - produces a very high volume of tiny, frequent changes, where the per-change log overhead can outweigh the data itself
-- need unique constraints on tables
-- need to use SQL DDL or DML directly - ubiquisync supports SQL queries, but requires using its own data definition and manipulation primitives
+- needs unique constraints on tables
+- needs to use SQL DDL or DML directly — Ubiquisync supports SQL queries, but requires using its own data definition and manipulation primitives
