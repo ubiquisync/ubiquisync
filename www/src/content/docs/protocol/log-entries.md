@@ -1,11 +1,13 @@
 ---
 title: Log entries
 description: The log model — per-peer append-only logs, the entry envelope, and hybrid logical clock timestamps.
+sidebar:
+  order: 1
 ---
 
 Every peer appends each change it makes to its own append-only log. Syncing is copying those logs between devices — over a shared cloud folder or a relay server — and replaying them. No peer ever writes to another peer's log, so there are no write conflicts at the transport level; convergence is entirely the job of the [merge semantics](/protocol/sys-tables/#merge-semantics) applied during replay.
 
-This page specifies the unit of that log: the entry envelope and its timestamp. The operations the envelope carries are specified per data domain — [system tables](/protocol/sys-tables/), [user-defined tables](/protocol/usr-tables/), and [documents](/protocol/documents/). The byte-level segment file encoding is an implementation concern, documented separately.
+This page specifies the unit of that log: the entry envelope and its timestamp. The operations the envelope carries are specified per data domain — [system tables](/protocol/sys-tables/), [user-defined tables](/protocol/usr-tables/), and [documents](/protocol/documents/). The byte-level segment file encoding is a codec concern, documented separately.
 
 ## The envelope
 
@@ -35,7 +37,7 @@ The clock guarantees:
 
 - **Monotonic within a peer.** Each timestamp a peer generates is strictly greater than its last, even if the wall clock stalls or steps backward (the counter absorbs it).
 - **Causal across peers.** When a peer observes a remote entry, its clock advances to at least that timestamp, so everything it writes afterward is strictly newer. "I changed it after seeing your change" therefore always wins LWW, regardless of whose wall clock is ahead.
-- **Bounded skew.** A remote entry whose wall-clock component is more than 60 seconds ahead of the local clock is rejected. Without this bound, a single device with a badly wrong clock would drag every peer's clock years ahead of wall time, and its writes would outrank honestly-timestamped data until real time caught up. Past timestamps are always accepted — they lose LWW merges harmlessly, which is the correct outcome for stale data.
+- **Bounded skew.** A remote entry whose wall-clock component is more than 60 seconds ahead of the local clock is rejected. Without this bound, a single device with a badly wrong clock would drag every peer's clock years ahead of wall time, and its writes would outrank honestly-timestamped data until real time caught up. Past timestamps are always accepted — they lose LWW merges harmlessly, which is the correct outcome for stale data. If future timestamps are observed, it usually indicates the local clock is behind and needs to be corrected to resume syncing (or a malicious peer which is out of scope of this protocol).
 
 ## Attribution
 

@@ -1,6 +1,8 @@
 ---
 title: User-defined tables
 description: The user-defined table protocol — the entity model, operations, and why cell values are only text and UUID.
+sidebar:
+  order: 3
 ---
 
 User-defined tables hold schemas that *users of the application* create at runtime — the Airtable/Notion model, where a user adds a "Projects" table with whatever columns they like, on whatever device they happen to be using, possibly offline. Where [system tables](/protocol/sys-tables/) are declared by the application developer at compile time, user tables are themselves user data, and the protocol has to sync the schema with the same guarantees as the rows.

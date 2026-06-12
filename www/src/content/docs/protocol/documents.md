@@ -1,6 +1,8 @@
 ---
 title: Documents
 description: The document protocol — CRDT updates, namespaces, and delete semantics for collaborative rich text.
+sidebar:
+  order: 4
 ---
 
 Documents are the protocol's third data domain: collaborative content — primarily rich text — where last-writer-wins is the wrong merge. For a table cell, "the newer edit replaces the older one" is what users expect. For a paragraph two people edited offline, it means one of them loses their work. Documents therefore merge as **CRDTs**: concurrent edits to the same document combine, down to individual characters, with no edit discarded.
