@@ -15,7 +15,7 @@ use crate::uuid::Uuid;
 
 /// A single state mutation. Variants cover system tables (compile-time
 /// schema) and user-defined tables (runtime schema, UUID-addressed).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Op {
     /// Insert or merge a system table row.
     SysUpsert(SysUpsert),
@@ -36,7 +36,7 @@ pub enum Op {
 /// Inserts or merges a row in a system table. Merge strategy (LWW or
 /// max-wins) is determined by each column's type bits in its [`SysColumnId`].
 /// Timestamp comes from the enclosing [`LogEntry`](crate::log_entry::LogEntry).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SysUpsert {
     pub table_id: SysTableId,
     /// PK values identifying the row. Count and per-column wire encoding are
@@ -70,7 +70,7 @@ pub enum SysPkValue {
 /// Soft-deletes a system table row by advancing `__deleted_ts`. LWW — a later
 /// timestamp always wins; an earlier timestamp is silently ignored.
 /// Timestamp comes from the enclosing [`LogEntry`](crate::log_entry::LogEntry).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SysDelete {
     pub table_id: SysTableId,
     /// PK values identifying the row (see [`SysUpsert::primary_key`]).
@@ -92,7 +92,7 @@ pub enum SysColValue {
 }
 
 /// A system column ID paired with the value to write.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SysColumnUpdate {
     pub column_id: SysColumnId,
     pub value: SysColValue,
@@ -106,7 +106,7 @@ pub struct SysColumnUpdate {
 ///
 /// `id` is the row's entity UUID; the row only becomes visible once the
 /// entity's table affinity is set via [`UsrSetTable`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsrUpsert {
     pub table_id: Uuid,
     pub id: Uuid,
@@ -115,7 +115,7 @@ pub struct UsrUpsert {
 
 /// A user-table column UUID paired with the value to write.
 /// `None` sets the column to NULL (all user columns are nullable).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsrColValue {
     pub col_id: Uuid,
     pub value: Option<UsrValue>,
@@ -133,8 +133,10 @@ pub struct UsrColValue {
 ///   meaningfully retypeable.
 ///
 /// The type travels with each value (a tag on the wire), not with the
-/// column, which is what makes retyping free at the protocol level.
-#[derive(Debug, Clone, PartialEq)]
+/// column — storage addresses a cell by `(column id, value type)`, so text
+/// and UUID writes to the same column coexist rather than conflict, and
+/// retyping is free at the protocol level.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UsrValue {
     Text(String),
     Uuid(Uuid),
@@ -156,7 +158,7 @@ impl PartialEq<&str> for UsrValue {
 /// many-to-many primitive (row relations, multi-select membership). The edge
 /// is keyed by `(left_row_id, right_row_id)` within the join table; set and
 /// delete merge LWW by the enclosing entry's timestamp.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsrUpdateJoin {
     pub join_table_id: Uuid,
     pub left_row_id: Uuid,
@@ -168,16 +170,16 @@ pub struct UsrUpdateJoin {
 /// Sets an entity's table affinity, LWW by the enclosing entry's timestamp.
 /// Entities are global UUIDs; pointing one at a table is what creates a row
 /// there, and re-pointing it is how a row moves between tables.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsrSetTable {
     pub entity_id: Uuid,
     pub table_id: Uuid,
 }
 
 /// Soft-deletes an entity by advancing its delete tombstone. An entity is
-/// deleted while its tombstone is newer than its table affinity — a later
-/// [`UsrSetTable`] un-deletes it.
-#[derive(Debug, Clone)]
+/// deleted while its tombstone is newer than or equal to its table affinity —
+/// a strictly newer [`UsrSetTable`] un-deletes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsrDelete {
     pub entity_id: Uuid,
 }

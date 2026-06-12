@@ -5,9 +5,9 @@ sidebar:
   order: 4
 ---
 
-Documents are the protocol's third data domain: collaborative content — primarily rich text — where last-writer-wins is the wrong merge. For a table cell, "the newer edit replaces the older one" is what users expect. For a paragraph two people edited offline, it means one of them loses their work. Documents therefore merge as **CRDTs**: concurrent edits to the same document combine, down to individual characters, with no edit discarded.
+Documents are the protocol's third data domain: collaborative content — primarily rich text — where last-writer-wins is the wrong merge. For a table cell, "the newer edit replaces the older one" is what users expect. For a paragraph two people edited offline, it means one of them loses their work. Documents therefore merge as **sequence CRDTs**: concurrent edits to the same document combine, down to individual characters, with no edit discarded.
 
-Ubiquisync uses [yrs](https://github.com/y-crdt/y-crdt) (the Rust implementation of Yjs) as its CRDT engine; document update payloads are Yjs-compatible v1 updates.
+Ubiquisync builds on [Yjs](https://github.com/yjs/yjs), Kevin Jahns' CRDT framework for collaborative software — the most widely deployed sequence CRDT, with bindings for every major rich-text editor (ProseMirror, Tiptap, CodeMirror, Slate, and more). Concretely, the engine is [yrs](https://github.com/y-crdt/y-crdt), the Rust implementation of Yjs from the y-crdt project. Document update payloads are standard Yjs v1 updates, wire-compatible with the JavaScript ecosystem — a Ubiquisync document can be edited by stock Yjs clients.
 
 ## Operations
 
@@ -32,10 +32,10 @@ The entry's HLC timestamp is still present on every update — not for merging c
 
 ## Delete semantics
 
-`DeleteDoc` is an LWW tombstone on the entry timestamp, exactly like a table row delete: the document is deleted while the tombstone is newer than every update, and a newer-timestamped `UpdateDoc` revives it.
+`DeleteDoc` is an LWW tombstone on the entry timestamp, exactly like a table row delete: the document is deleted while the tombstone is newer than or equal to every update, and a strictly newer `UpdateDoc` revives it. Revival restores identity, not history — content dropped at delete time is gone, so a revived document holds only the post-revival updates.
 
 After a delete, a peer may drop the document's content from local storage, but the tombstone itself stays in the log. Peers that have not yet seen the delete will still replay it, and peers that see a stale update for a deleted document resolve it by timestamp like any other LWW race.
 
-## Why CRDTs here and not everywhere
+## Why sequence CRDTs here and not everywhere
 
-CRDT merging is strictly more capable than LWW, so why isn't the whole protocol built on it? Cost: CRDTs pay for their merge quality with per-operation identity metadata and tombstone growth inside every document. For collaborative text, that price buys the only acceptable semantics. For scalar cells and rows, LWW already *is* the semantics users expect — the newer value wins — and it costs one timestamp comparison against a single stored value. The protocol spends CRDT complexity exactly where replacement semantics would lose user work, and nowhere else.
+Every merge rule in the protocol is a CRDT of some class — [registers for tables](/protocol/log-entries/#merge-semantics), sequences for documents. Sequence merging is strictly more capable than a register, so why aren't tables built on it too? Cost: sequence CRDTs pay for their merge quality with per-operation identity metadata and tombstone growth inside every document, and the merged state is opaque — read through the document engine, not SQL. For scalar cells and rows, an LWW register already *is* the semantics users expect — the newer value wins — it costs one timestamp comparison against a single stored value, and the merged result is an ordinary SQL row, queryable directly. The protocol spends sequence-CRDT complexity exactly where replacement semantics would lose user work, and nowhere else.

@@ -5,7 +5,7 @@ sidebar:
   order: 3
 ---
 
-User-defined tables hold schemas that *users of the application* create at runtime — the AirTable/Notion model, where a user adds a "Projects" table with whatever columns they like, on whatever device they happen to be using, possibly offline. Where [system tables](/protocol/sys-tables/) are declared by the application developer at compile time, user tables are themselves user data, and the protocol has to sync the schema with the same guarantees as the rows.
+User-defined tables hold schemas that *users of the application* create at runtime — the Airtable/Notion model, where a user adds a "Projects" table with whatever columns they like, on whatever device they happen to be using, possibly offline. Where [system tables](/protocol/sys-tables/) are declared by the application developer at compile time, user tables are themselves user data, and the protocol has to sync the schema with the same guarantees as the rows.
 
 ## Everything is a UUID
 
@@ -16,7 +16,7 @@ Tables, columns, rows, and join tables are all addressed by 16-byte UUIDs. There
 Rows are **entities**. An entity is a global UUID whose existence is independent of any table; what table it belongs to is a property — its *affinity* — set by an operation, not implied by where its values were written:
 
 - `UsrSetTable(entity_id, table_id)` points an entity at a table, LWW by timestamp. Setting affinity is what creates a row; re-pointing it is how a row **moves between tables** as one O(1) operation, keeping its identity (and so its inbound references and join edges).
-- `UsrDelete(entity_id)` soft-deletes an entity by advancing a delete tombstone. An entity is deleted while its tombstone is newer than its affinity — a later `UsrSetTable` revives it. Restore-from-trash is the same operation as creation.
+- `UsrDelete(entity_id)` soft-deletes an entity by advancing a delete tombstone. An entity is deleted while its tombstone is newer than or equal to its affinity — a strictly newer `UsrSetTable` revives it. Restore-from-trash is the same operation as creation.
 
 ## Operations
 
@@ -46,7 +46,7 @@ Selects, multi-selects, and references are the deliberate exceptions: they are n
 
 Two consequences follow:
 
-- **The type travels with the value, not the column.** Each value on the wire is tagged text/UUID/NULL. A column has no protocol-level type to violate, so a retyped column's old rows are simply still valid.
+- **The type travels with the value, not the column.** Each value on the wire is tagged text/UUID/NULL, and a cell is effectively addressed by *(column UUID, value type)* — storage materializes a physical column per type, lazily, from whatever data peers actually submit. A column has no protocol-level type to violate: if one peer writes text into a column while another concurrently writes a UUID, both values coexist transparently, with no conflict and no prior coordination. Which representation a view reads is the application's choice at read time (typically whichever its schema metadata currently calls for), so a retyped column's old rows are not just valid — they're still there.
 - **The store doesn't sort numerically.** Since numbers are text at the storage layer, ordering and aggregation by numeric value are application concerns, applied at view time alongside the formatting that makes the column "a number" in the first place.
 
 ## What the protocol doesn't define

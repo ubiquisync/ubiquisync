@@ -16,7 +16,7 @@ A log entry is one operation plus metadata:
 | Field | Contents |
 |---|---|
 | `op` | The state mutation — one operation from the domain's op vocabulary. |
-| `timestamp` | HLC timestamp, monotonically increasing within a peer's stream. |
+| `timestamp` | HLC timestamp, monotonically non-decreasing within a peer's stream. |
 | `user_id` | Optional user attribution (see below). |
 
 There are two log domains, distinguished by what `op` is: the **state log** carries system and user-defined table operations, and the **document log** carries document operations. Both use this same envelope, and both draw timestamps from a single shared clock per peer, so timestamps are causally comparable across the two logs.
@@ -37,17 +37,17 @@ The clock guarantees:
 
 - **Monotonic within a peer.** Each timestamp a peer generates is strictly greater than its last, even if the wall clock stalls or steps backward (the counter absorbs it).
 - **Causal across peers.** When a peer observes a remote entry, its clock advances to at least that timestamp, so everything it writes afterward is strictly newer. "I changed it after seeing your change" therefore always wins LWW, regardless of whose wall clock is ahead.
-- **Bounded skew.** A remote entry whose wall-clock component is more than 60 seconds ahead of the local clock is rejected. Without this bound, a single device with a badly wrong clock would drag every peer's clock years ahead of wall time, and its writes would outrank honestly-timestamped data until real time caught up. Past timestamps are always accepted — they lose LWW merges harmlessly, which is the correct outcome for stale data. If future timestamps are observed, it usually indicates the local clock is behind and needs to be corrected to resume syncing (or a malicious peer which is out of scope of this protocol).
+- **Bounded skew.** A remote entry whose wall-clock component is more than 60 seconds ahead of the local clock is rejected. Without this bound, a single device with a badly wrong clock would drag every peer's clock years ahead of wall time, and its writes would outrank honestly-timestamped data until real time caught up. Past timestamps are always accepted — they lose LWW merges harmlessly, which is the correct outcome for stale data. A rejection means one of the two clocks is wrong — the remote clock is ahead or the local clock is behind; the signal alone cannot say which — and sync from that peer pauses until the wrong clock is corrected. (A peer deliberately writing future timestamps is malicious, which is out of scope for this protocol.)
 
 ## Merge semantics
 
-Replay never asks "did this conflict?" — every operation merges deterministically, under one requirement shared by every merge rule in the protocol: **peers that have seen the same set of entries hold identical state, regardless of the order the entries arrived in.**
+Replay never asks "did this conflict?" — every operation merges deterministically, under one requirement shared by every merge rule in the protocol: **peers that have seen the same set of entries hold identical state, regardless of the order the entries arrived in.** That property has a name: every merge rule in the protocol is a CRDT — a conflict-free replicated data type. The rules differ only in *class*, chosen to fit the data:
 
-Three merge families cover the whole protocol:
+- **LWW registers** are the default for table data. System table cells, user table cells, and the soft-delete tombstones for rows, entities, and documents are all last-writer-wins registers: compare the entries' HLC timestamps, and the later write wins. The [timestamp guarantees](#timestamps) above are what make "later" well-defined across peers — in particular, an edit made after observing another peer's edit always beats it. Identical timestamps are still possible (the clock has no peer component, so two offline peers can mint the same tick), and ties break deterministically: a deletion beats a write, and between two writes the greater value bytes win, with NULL ordering below every value. The tie-break uses nothing but the two writes themselves — no lookup of who last wrote a cell — so an exceedingly rare case costs nothing to resolve.
+- **Max-wins registers** merge the one system column type built for monotonic values: [`MaxI64`](/protocol/sys-tables/#merge-semantics) takes the larger value and ignores timestamps entirely. `max` is commutative, associative, and idempotent — the textbook state-based CRDT.
+- **Sequence CRDTs** merge [document](/protocol/documents/) update payloads using the [Yjs CRDT algorithm](https://github.com/yjs/yjs): updates combine commutatively and idempotently, with no timestamp comparison, and concurrent edits interleave instead of replacing each other.
 
-- **Last-writer-wins (LWW)** is the default for table data. System table cells, user table cells, and the soft-delete tombstones for rows, entities, and documents all resolve the same way: compare the entries' HLC timestamps, and the later write wins. The [timestamp guarantees](#timestamps) above are what make "later" well-defined across peers — in particular, an edit made after observing another peer's edit always beats it.
-- **CRDT integration** merges [document](/protocol/documents/) update payloads, which combine commutatively and idempotently without any timestamp comparison using the [Yjs CRDT algorithm](https://github.com/yjs/yjs).
-- **Max-wins** merges the one system column type built for monotonic values: [`MaxI64`](/protocol/sys-tables/#merge-semantics) takes the larger value and ignores timestamps entirely.
+The class split is also a query-model split. Register CRDTs merge to plain values, so everything in the table domains materializes as ordinary rows and columns — applications query synced state directly with SQL. Sequence CRDTs merge to internal document state, which is read through the document engine rather than SQL.
 
 Which rule applies is determined entirely by the operation and, for system columns, the type bits in the column ID — merge behavior is never negotiated, configured, or inferred from data.
 

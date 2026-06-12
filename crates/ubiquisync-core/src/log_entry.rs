@@ -13,12 +13,14 @@ use crate::uuid::Uuid;
 /// document log carries [`docs::op::Op`](crate::docs::op::Op). Both log
 /// domains use this same envelope and share one HLC clock domain, so
 /// timestamps are causally comparable across them.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogEntry<E> {
     /// User who authored this entry. `None` in device mode where
     /// attribution is implicit from the peer directory.
     pub user_id: Option<Uuid>,
-    /// HLC timestamp — monotonically increasing within a peer's stream.
+    /// HLC timestamp — monotonically non-decreasing within a peer's stream.
+    /// Entries written in one atomic transaction share a tick, so they are
+    /// treated as one logical write by LWW comparisons.
     pub timestamp: Timestamp,
     /// The state mutation.
     pub op: E,
