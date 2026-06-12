@@ -5,7 +5,7 @@ sidebar:
   order: 1
 ---
 
-Every peer appends each change it makes to its own append-only log. Syncing is copying those logs between devices — over a shared cloud folder or a relay server — and replaying them. No peer ever writes to another peer's log, so there are no write conflicts at the transport level; convergence is entirely the job of the [merge semantics](/protocol/sys-tables/#merge-semantics) applied during replay.
+Every peer appends each change it makes to its own append-only log. Syncing is copying those logs between devices — over a shared cloud folder or a relay server — and replaying them. No peer ever writes to another peer's log, so there are no write conflicts at the transport level; convergence is entirely the job of the [merge semantics](#merge-semantics) applied during replay.
 
 This page specifies the unit of that log: the entry envelope and its timestamp. The operations the envelope carries are specified per data domain — [system tables](/protocol/sys-tables/), [user-defined tables](/protocol/usr-tables/), and [documents](/protocol/documents/). The byte-level segment file encoding is a codec concern, documented separately.
 
@@ -39,6 +39,18 @@ The clock guarantees:
 - **Causal across peers.** When a peer observes a remote entry, its clock advances to at least that timestamp, so everything it writes afterward is strictly newer. "I changed it after seeing your change" therefore always wins LWW, regardless of whose wall clock is ahead.
 - **Bounded skew.** A remote entry whose wall-clock component is more than 60 seconds ahead of the local clock is rejected. Without this bound, a single device with a badly wrong clock would drag every peer's clock years ahead of wall time, and its writes would outrank honestly-timestamped data until real time caught up. Past timestamps are always accepted — they lose LWW merges harmlessly, which is the correct outcome for stale data. If future timestamps are observed, it usually indicates the local clock is behind and needs to be corrected to resume syncing (or a malicious peer which is out of scope of this protocol).
 
+## Merge semantics
+
+Replay never asks "did this conflict?" — every operation merges deterministically, under one requirement shared by every merge rule in the protocol: **peers that have seen the same set of entries hold identical state, regardless of the order the entries arrived in.**
+
+Three merge families cover the whole protocol:
+
+- **Last-writer-wins (LWW)** is the default for table data. System table cells, user table cells, and the soft-delete tombstones for rows, entities, and documents all resolve the same way: compare the entries' HLC timestamps, and the later write wins. The [timestamp guarantees](#timestamps) above are what make "later" well-defined across peers — in particular, an edit made after observing another peer's edit always beats it.
+- **CRDT integration** merges [document](/protocol/documents/) update payloads, which combine commutatively and idempotently without any timestamp comparison using the [Yjs CRDT algorithm](https://github.com/yjs/yjs).
+- **Max-wins** merges the one system column type built for monotonic values: [`MaxI64`](/protocol/sys-tables/#merge-semantics) takes the larger value and ignores timestamps entirely.
+
+Which rule applies is determined entirely by the operation and, for system columns, the type bits in the column ID — merge behavior is never negotiated, configured, or inferred from data.
+
 ## Attribution
 
 The `user_id` field exists because logs are written in two modes:
@@ -47,3 +59,12 @@ The `user_id` field exists because logs are written in two modes:
 - **Server mode** — a server writes a log on behalf of clients that have no durable storage of their own (e.g. web clients). Entries from different users interleave in one log, so each entry carries its author's `user_id` explicitly.
 
 Attribution is metadata, not merge input: two entries merge identically whether or not they are attributed.
+
+## Trust model
+
+The two transports differ in who can damage the logs, and choosing between them is a question of how much the members of a workspace trust each other:
+
+- **File-based sync is for high-trust workspaces** — a single person syncing their own devices, or a closed circle of friends. A shared folder gives every member raw access to every peer's log files, so nothing prevents a member (or their misconfigured sync client) from deleting or corrupting logs outright. Entry hashes make corruption detectable at replay, but detection is not durability: the data is still gone. That trade is acceptable exactly when everyone in the folder is already trusted with the workspace as a whole.
+- **Server-mediated sync is for medium- and low-trust teams** — a company, typically. Peers append entries through the server's API and never touch each other's logs directly, so casual log deletion or corruption is not possible: the server enforces append-only storage, and removing data goes through policy (expungement) rather than around it.
+
+The merge protocol is identical in both modes — trust determines who can destroy data at the storage layer, never how entries merge. Peers that write well-formed but dishonest entries (e.g. backdated timestamps) are out of scope in both modes: every member of a workspace is trusted at the data level.

@@ -5,7 +5,7 @@ sidebar:
   order: 3
 ---
 
-User-defined tables hold schemas that *users of the application* create at runtime — the Airtable/Notion model, where a user adds a "Projects" table with whatever columns they like, on whatever device they happen to be using, possibly offline. Where [system tables](/protocol/sys-tables/) are declared by the application developer at compile time, user tables are themselves user data, and the protocol has to sync the schema with the same guarantees as the rows.
+User-defined tables hold schemas that *users of the application* create at runtime — the AirTable/Notion model, where a user adds a "Projects" table with whatever columns they like, on whatever device they happen to be using, possibly offline. Where [system tables](/protocol/sys-tables/) are declared by the application developer at compile time, user tables are themselves user data, and the protocol has to sync the schema with the same guarantees as the rows.
 
 ## Everything is a UUID
 
@@ -27,7 +27,7 @@ Rows are **entities**. An entity is a global UUID whose existence is independent
 | `UsrDelete` | Soft-delete an entity | Tombstone vs. affinity timestamp |
 | `UsrUpdateJoin` | Set or remove a join-table edge | LWW per edge |
 
-`UsrUpsert` carries the table UUID, the row's entity UUID, and a list of `(column_uuid, value)` pairs, where a value of NULL clears the cell (all user columns are nullable, for the same reason [system table columns are](/protocol/sys-tables/#column-ids)). Each column merges independently: concurrent edits to *different* columns of the same row both survive; concurrent edits to the *same* column resolve LWW.
+`UsrUpsert` carries the table UUID, the row's entity UUID, and a list of `(column_uuid, value)` pairs, where a value of NULL clears the cell (all user columns are nullable, for the same reason [system table columns are](/protocol/sys-tables/#column-ids)). Each column merges independently: concurrent edits to *different* columns of the same row both survive; concurrent edits to the *same* column resolve [LWW](/protocol/log-entries/#merge-semantics).
 
 `UsrUpdateJoin` is the many-to-many primitive — row relations, multi-select membership. An edge is keyed `(left_row_id, right_row_id)` within a join table UUID, and set/remove resolve LWW per edge, so concurrent membership changes to different pairs never conflict.
 
@@ -40,7 +40,7 @@ A user-table cell holds one of exactly two value shapes, plus NULL:
 | `Text` | Every user-facing scalar: strings, numbers, dates, checkboxes, URLs | Scalar column types must be trivially changeable |
 | `Uuid` | References: row links, select and multi-select option IDs | Points at synced objects; not meaningfully retypeable |
 
-This is a deliberate design position, not a missing feature. In a user-defined schema system, a column's "type" — number, date, currency, checkbox — is **view-time formatting plus lightweight validation**, not a storage property. When a user changes a Notion-style number column to plain text, or a text column to a date, nothing about the stored data should need to change: no row rewrites, and — critically for a distributed system — no schema migration to coordinate across peers that may be offline for months. Storing every scalar as text is what makes retyping a metadata-only edit.
+This is a deliberate design position, not a missing feature. In a user-defined schema system, a column's "type" — number, date, currency, checkbox — is **view-time formatting plus lightweight validation**, not a storage property. When a user changes a number column to plain text, or a text column to a date, nothing about the stored data should need to change: no row rewrites, and — critically for a distributed system — no schema migration to coordinate across peers that may be offline for months. Storing every scalar as text is what makes retyping a metadata-only edit.
 
 Selects, multi-selects, and references are the deliberate exceptions: they are not scalars — they point at other objects (option rows, other entities) — so they get the one non-text shape, `Uuid`.
 
