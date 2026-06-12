@@ -17,7 +17,9 @@ hero:
       variant: minimal
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
+import Feature from '../../components/Feature.astro';
+import FeatureGrid from '../../components/FeatureGrid.astro';
+import HowItWorks from '../../components/HowItWorks.astro';
 
 :::caution[Work in progress]
 Ubiquisync is under active development and not yet ready for production use.
@@ -25,22 +27,26 @@ Ubiquisync is under active development and not yet ready for production use.
 
 ## Why Ubiquisync
 
-<CardGrid stagger>
-	<Card title="Bring your own storage" icon="cloud-download">
+<FeatureGrid>
+	<Feature title="Bring your own storage" icon="cloud-check" accent="#06B6D4">
 		Sync over Google Drive, iCloud Drive, Dropbox, or any commodity cloud
 		storage — or a dedicated sync server if you prefer. No infrastructure to
 		stand up.
-	</Card>
-	<Card title="Conflict-free merging" icon="random">
+	</Feature>
+	<Feature title="Conflict-free merging" icon="git-merge" accent="#8B5CF6">
 		Per-device append-only logs stamped with hybrid logical clocks merge
 		deterministically — structured data and collaborative rich text alike.
-	</Card>
-	<Card title="SQLite or Postgres" icon="seti:db">
+	</Feature>
+	<Feature title="SQLite or Postgres" icon="database" accent="#3B82F6">
 		Store and query your data in the database you already use, with support
 		for user-defined schemas à la AirTable or Notion.
-	</Card>
-	<Card title="Local-first and offline" icon="laptop">
+	</Feature>
+	<Feature title="Local-first and offline" icon="laptop" accent="#10B981">
 		Your data lives on-device with full revision history and reactive
 		updates. Sync happens whenever connectivity allows.
-	</Card>
-</CardGrid>
+	</Feature>
+</FeatureGrid>
+
+## How it works
+
+<HowItWorks />
