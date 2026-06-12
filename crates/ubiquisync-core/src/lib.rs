@@ -15,4 +15,9 @@
 //! facade crate rather than this crate directly.
 
 pub mod dialect;
+pub mod docs;
+pub mod hlc;
+pub mod log_entry;
+pub mod op;
 pub mod sys_id;
+pub mod uuid;

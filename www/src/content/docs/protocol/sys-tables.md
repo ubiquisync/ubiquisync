@@ -1,9 +1,11 @@
 ---
 title: System tables
 description: The system table protocol — what system tables are, how their type-encoded IDs work, and why the model was chosen.
+sidebar:
+  order: 2
 ---
 
-The Ubiquisync protocol syncs three kinds of data, reflected directly in its operation types: **system tables** (fixed, compile-time schema), **user-defined tables** (runtime schema, for applications that let users define their own tables), and **collaborative rich-text documents**. This page specifies system tables.
+The Ubiquisync protocol syncs three kinds of data, reflected directly in its operation types: **system tables** (fixed, compile-time schema), **[user-defined tables](/protocol/usr-tables/)** (runtime schema, for applications that let users define their own tables), and **[collaborative rich-text documents](/protocol/documents/)**. This page specifies system tables.
 
 ## What system tables are
 
@@ -63,9 +65,9 @@ All non-PK columns are implicitly nullable at the protocol level. There is no NO
 
 ## Merge semantics
 
-Every column type was admitted or rejected against one test: **do all peers converge to the same state regardless of the order they receive operations in?**
+Every column type was admitted or rejected against the protocol's [convergence requirement](/protocol/log-entries/#merge-semantics): **do all peers converge to the same state regardless of the order they receive operations in?**
 
-**LWW (last-writer-wins)** columns carry a hybrid logical clock timestamp; the write with the later timestamp wins. This is the default for all four value types.
+**LWW (last-writer-wins)** is the [protocol-wide default merge](/protocol/log-entries/#merge-semantics): the write with the later HLC timestamp wins. All four plain value types merge LWW.
 
 **Max-wins** (`MaxI64`) merges by taking the larger value, needs no timestamp, and can only increase. It is the one non-LWW merge in the protocol, and it is the *most* deterministic operation available: `max` is commutative, associative, and idempotent, so the result is independent of delivery order, duplication, and timing. It exists because monotonic values cannot be built safely on LWW — consider a `revoked_at` column: with LWW, a peer holding stale data but a later clock can *un-revoke*; with max-wins it cannot, by construction. Use `MaxI64` for anything that must only move forward: revocation times, high-water marks, migration versions. For min semantics, negate the value at the application layer.
 
