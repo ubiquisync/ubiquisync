@@ -1,8 +1,8 @@
 /* Ubiquisync brand theme.
    Palette drawn from the logo (src/assets/logo.svg):
    violet #8B5CF6 · indigo #6366F1 · blue #3B82F6 · cyan #06B6D4 · teal #14B8A6 · emerald #10B981
-   Indigo is the primary accent (the mesh wires); the full spectrum appears in
-   the hero gradient, mirroring the ring of peers. */
+   Indigo is the primary accent (the mesh wires); the hero gradient runs
+   along the same violet→teal span of that spectrum. */
 
 :root {
 	--us-violet: #8b5cf6;
@@ -42,6 +42,15 @@
 	--sl-color-accent-low: #e0e7ff;
 	--sl-color-accent: #4f46e5; /* darker indigo for contrast on white */
 	--sl-color-accent-high: #312e81;
+
+	/* same spectrum, darkened to keep ≥3:1 contrast on white */
+	--us-mesh-gradient: linear-gradient(
+		100deg,
+		#7c3aed,
+		#4f46e5 30%,
+		#0e7490 70%,
+		#0f766e
+	);
 
 	--sl-color-white: #14151f;
 	--sl-color-gray-1: #1e2034;

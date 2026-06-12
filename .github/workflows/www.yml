@@ -3,10 +3,10 @@ name: www
 on:
   push:
     branches: [ "main" ]
-    paths: [ "www/**" ]
+    paths: [ "www/**", ".github/workflows/www.yml" ]
   pull_request:
     branches: [ "main" ]
-    paths: [ "www/**" ]
+    paths: [ "www/**", ".github/workflows/www.yml" ]
 
 jobs:
   build:

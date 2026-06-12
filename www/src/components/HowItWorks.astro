@@ -5,7 +5,7 @@
  */
 ---
 
-<ol class="hiw">
+<ol class="hiw" role="list">
 	<li class="step" style="--sa: #8b5cf6">
 		<div class="marker"><span>01</span></div>
 		<div class="copy">
@@ -299,6 +299,22 @@
 		}
 		.stamp {
 			opacity: 1;
+		}
+
+		/* park the comets mid-wire so the scene still shows packets in flight */
+		.to-cloud {
+			transform: translate(74px, 75px);
+			opacity: 0.9;
+		}
+		.from-cloud {
+			transform: translate(202px, 75px);
+			opacity: 0.9;
+		}
+		@supports (offset-path: path('M0 0 L1 1')) {
+			.rider {
+				offset-distance: 45%;
+				opacity: 0.9;
+			}
 		}
 	}
 
