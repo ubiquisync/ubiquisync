@@ -3,23 +3,20 @@
  * One feature "node": a glass card keyed to a single hue from the logo's
  * peer ring, with a free-floating Phosphor duotone glyph.
  */
+import { phosphor, type PhosphorIconName } from './phosphor';
+
 interface Props {
 	title: string;
-	/** Phosphor icon name, e.g. "git-merge" (duotone weight is loaded). */
-	icon: string;
+	/** Name of a Phosphor icon registered in ./phosphor.ts */
+	icon: PhosphorIconName;
 	/** Accent color for this card — one of the logo's node hues. */
 	accent: string;
 }
 
 const { title, icon, accent } = Astro.props;
 
-const icons = import.meta.glob<string>(
-	'/node_modules/@phosphor-icons/core/assets/duotone/*.svg',
-	{ query: '?raw', import: 'default' }
-);
-const loader = icons[`/node_modules/@phosphor-icons/core/assets/duotone/${icon}-duotone.svg`];
-if (!loader) throw new Error(`Unknown Phosphor icon: ${icon}`);
-const svg = await loader();
+const svg = phosphor[icon];
+if (!svg) throw new Error(`Icon "${icon}" is not registered in src/components/phosphor.ts`);
 ---
 
 <article class="feature" style={`--fa: ${accent}`}>

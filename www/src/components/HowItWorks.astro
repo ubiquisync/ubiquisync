@@ -3,13 +3,6 @@
  * Three-step "How it works" flow. Each vignette is drawn in the logo's
  * visual language: the same node circles, wire weights, and comet shape.
  */
-const icons = import.meta.glob<string>(
-	'/node_modules/@phosphor-icons/core/assets/duotone/*.svg',
-	{ query: '?raw', import: 'default' }
-);
-const cloudRaw = await icons['/node_modules/@phosphor-icons/core/assets/duotone/cloud-duotone.svg']();
-// embed as a nested <svg> positioned inside the vignette's coordinate space
-const cloud = cloudRaw.replace('<svg ', '<svg x="112" y="46" width="56" height="56" ');
 ---
 
 <ol class="hiw">
@@ -56,8 +49,12 @@ const cloud = cloudRaw.replace('<svg ', '<svg x="112" y="46" width="56" height="
 				<circle cx="32" cy="75" r="13" fill="#8b5cf6" />
 				<circle cx="248" cy="75" r="13" fill="#10b981" />
 				<line x1="46" y1="75" x2="106" y2="75" stroke="#6366f1" stroke-width="5" stroke-linecap="round" opacity="0.55" />
-				<line x1="174" y1="75" x2="234" y2="75" stroke="#6366f1" stroke-width="5" stroke-linecap="round" opacity="0.55" />
-				<g class="cloud" set:html={cloud} />
+				<line x1="184" y1="75" x2="234" y2="75" stroke="#6366f1" stroke-width="5" stroke-linecap="round" opacity="0.55" />
+				<path
+					d="M120 92 L168 92 A16 16 0 0 0 173 61 A26 26 0 0 0 122 53 A20 20 0 0 0 120 92 Z"
+					fill="#6366f1" fill-opacity="0.18" stroke="#6366f1" stroke-width="5"
+					stroke-linejoin="round" opacity="0.9"
+				/>
 				<path class="comet to-cloud" d="M16,0 L-10,-7 Q-2,0 -10,7 Z" fill="#06b6d4" />
 				<path class="comet from-cloud" d="M16,0 L-10,-7 Q-2,0 -10,7 Z" fill="#06b6d4" />
 			</svg>
@@ -191,10 +188,6 @@ const cloud = cloudRaw.replace('<svg ', '<svg x="112" y="46" width="56" height="
 		height: auto;
 	}
 
-	.cloud {
-		color: #6366f1;
-	}
-
 	/* ── motion ──────────────────────────────────────────────────── */
 	.stamp {
 		animation: stamp-pulse 3.6s ease-in-out infinite;
@@ -225,8 +218,7 @@ const cloud = cloudRaw.replace('<svg ', '<svg x="112" y="46" width="56" height="
 	}
 
 	.from-cloud {
-		transform-origin: center;
-		animation: comet-left 3.2s ease-in-out infinite;
+		animation: comet-out 3.2s ease-in-out infinite;
 		animation-delay: 1.6s;
 	}
 
@@ -243,14 +235,15 @@ const cloud = cloudRaw.replace('<svg ', '<svg x="112" y="46" width="56" height="
 		}
 		55%,
 		100% {
-			transform: translate(102px, 75px);
+			transform: translate(100px, 75px);
 			opacity: 0;
 		}
 	}
 
-	@keyframes comet-left {
+	/* relay: the packet re-emerges on the far side of the cloud */
+	@keyframes comet-out {
 		0% {
-			transform: translate(232px, 75px) rotate(180deg);
+			transform: translate(180px, 75px);
 			opacity: 0;
 		}
 		12% {
@@ -261,7 +254,7 @@ const cloud = cloudRaw.replace('<svg ', '<svg x="112" y="46" width="56" height="
 		}
 		55%,
 		100% {
-			transform: translate(178px, 75px) rotate(180deg);
+			transform: translate(224px, 75px);
 			opacity: 0;
 		}
 	}

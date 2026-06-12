@@ -23,18 +23,11 @@ export default defineConfig({
 			sidebar: [
 				{
 					label: 'Guides',
-					items: [
-						// Each item here is one entry in the navigation menu.
-						{ label: 'Example Guide', slug: 'guides/example' },
-					],
+					items: [{ label: 'Getting started', slug: 'guides/getting-started' }],
 				},
 				{
 					label: 'Protocol',
 					items: [{ autogenerate: { directory: 'protocol' } }],
-				},
-				{
-					label: 'Reference',
-					items: [{ autogenerate: { directory: 'reference' } }],
 				},
 			],
 		}),
