@@ -9,7 +9,9 @@ repository.workspace = true
 [features]
 default = ["sqlite"]
 sqlite = ["dep:ubiquisync-sqlite"]
+postgres = ["dep:ubiquisync-postgres"]
 
 [dependencies]
 ubiquisync-core = { workspace = true }
+ubiquisync-postgres = { workspace = true, optional = true }
 ubiquisync-sqlite = { workspace = true, optional = true }

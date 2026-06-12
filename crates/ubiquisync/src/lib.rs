@@ -11,3 +11,7 @@ pub use ubiquisync_core::*;
 /// SQLite storage backend (the `sqlite` feature, enabled by default).
 #[cfg(feature = "sqlite")]
 pub use ubiquisync_sqlite as sqlite;
+
+/// Postgres storage backend (the `postgres` feature).
+#[cfg(feature = "postgres")]
+pub use ubiquisync_postgres as postgres;

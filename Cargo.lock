@@ -47,6 +47,7 @@ name = "ubiquisync"
 version = "0.0.1"
 dependencies = [
  "ubiquisync-core",
+ "ubiquisync-postgres",
  "ubiquisync-sqlite",
 ]
 
@@ -55,6 +56,13 @@ name = "ubiquisync-core"
 version = "0.0.1"
 dependencies = [
  "bitfield-struct",
+]
+
+[[package]]
+name = "ubiquisync-postgres"
+version = "0.0.1"
+dependencies = [
+ "ubiquisync-core",
 ]
 
 [[package]]
