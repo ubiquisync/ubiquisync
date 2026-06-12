@@ -16,10 +16,11 @@ const cloud = cloudRaw.replace('<svg ', '<svg x="112" y="46" width="56" height="
 	<li class="step" style="--sa: #8b5cf6">
 		<div class="marker"><span>01</span></div>
 		<div class="copy">
-			<h3>Append locally</h3>
+			<h3>Append to your own log</h3>
 			<p>
-				Every change a device makes goes into its own append-only log, stamped
-				with a hybrid logical clock. Writes never wait on the network.
+				Every change a device makes goes into that device's own append-only
+				log, stamped with a hybrid logical clock. Writes never wait on the
+				network.
 			</p>
 		</div>
 		<figure class="vignette">
@@ -43,9 +44,11 @@ const cloud = cloudRaw.replace('<svg ', '<svg x="112" y="46" width="56" height="
 		<div class="copy">
 			<h3>Sync the files</h3>
 			<p>
-				Per-device logs are plain files, copied between peers over a shared
-				cloud folder — iCloud&nbsp;Drive, Google&nbsp;Drive, Dropbox — or an
-				optional relay server for real-time updates and web clients.
+				Per-device logs are plain files, copied over a shared cloud folder —
+				iCloud&nbsp;Drive, Google&nbsp;Drive, Dropbox — or a sync server for
+				real-time collaboration and user management. Each device writes only
+				its own log and only reads everyone else's, so file-level conflicts
+				can't happen: no "conflicted copy" duplicates, ever.
 			</p>
 		</div>
 		<figure class="vignette">

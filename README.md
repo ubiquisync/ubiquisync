@@ -20,17 +20,20 @@ Ubiquisync might be a good fit if your app could benefit from these features:
 - user-defined schemas (a la AirTable, Notion)
 - conflict-free merging of rich document content (a la Google Docs)
 - local-first, offline data
-- sync over Google Drive, iCloud Drive, Dropbox, etc. OR a dedicated sync server
+- sync over Google Drive, iCloud Drive, Dropbox, etc. OR a dedicated sync server for
+  real-time collaboration and user management
 - reactive updates
-- full revision history
+- full revision history and attribution
 
 ## How it works
 
 Each device keeps an append-only log of the changes it makes, stamped with a hybrid
 logical clock (HLC). Syncing is just a matter of copying those per-device logs between
-peers — over a shared cloud folder or a relay server — and replaying them. Because
-every change lives in the log, peers always converge on the same state no matter what
-order updates arrive in.
+peers — over a shared cloud folder or a relay server — and replaying them. Each device
+writes only to its own log and never touches another device's files, so there is
+nothing for the storage provider to conflict on: no "conflicted copy" duplicates, no
+file-level merges. And because every change lives in the log, peers always converge on
+the same state no matter what order updates arrive in.
 
 Merges are conflict-free by construction, with the strategy depending on the data:
 - **Structured rows** merge last-writer-wins by HLC timestamp, plus a max-wins
