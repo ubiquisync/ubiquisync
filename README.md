@@ -5,21 +5,46 @@ Conflict free sync over commodity cloud storage or server.
 Ubiquisync solves the problem of syncing user workspace data between devices without
 merge conflicts and without the need to stand up any sync server infrastructure.
 
-It will allow you to sync data stored in SQLite over commodity cloud storage such as Google Drive, iCloud Drive, DropBox or a dedicated sync server.
+It will allow you to sync both structured data (stored in SQLite) and collaborative rich-text documents over commodity cloud storage such as Google Drive, iCloud Drive, Dropbox or a dedicated sync server.
 
 ## Features
 
 Ubiquisync might be a good fit if your app could benefit from these features:
-- local-first, offline data
 - SQLite data storage and querying
-- full revision history
-- reactive updates
-- sync over Google Drive, iCloud Drive, DropBox, etc. OR a dedicated sync server
-- conflict-free merging of rich document content (a la Google Docs)
 - user-defined schemas (a la AirTable, Notion)
+- conflict-free merging of rich document content (a la Google Docs)
+- local-first, offline data
+- sync over Google Drive, iCloud Drive, Dropbox, etc. OR a dedicated sync server
+- reactive updates
+- full revision history
+
+## How it works
+
+Each device keeps an append-only log of the changes it makes, stamped with a hybrid
+logical clock (HLC). Syncing is just a matter of copying those per-device logs between
+peers — over a shared cloud folder or a relay server — and replaying them. Because
+every change lives in the log, peers always converge on the same state no matter what
+order updates arrive in.
+
+Merges are conflict-free by construction, with the strategy depending on the data:
+- **Structured rows** merge last-writer-wins by HLC timestamp, plus counter and
+  max-wins column types for values that need to accumulate rather than overwrite.
+- **Rich-text documents** merge as CRDTs (via [yrs](https://github.com/y-crdt/y-crdt),
+  the Rust port of Yjs), so concurrent edits to the same document combine without
+  losing anyone's work.
+
+Schema changes propagate conflict-free in exactly the same way. Tables and columns are
+addressed by stable IDs and travel in the log alongside the data, so adding a table or
+column is just another change that flows to every peer — there's no lock-step migration
+step to coordinate. A device running older code can still receive and store data for
+tables it doesn't recognize yet, and adopt the proper schema once its code catches up.
+
+No server is required: as long as the log directory syncs (iCloud / Drive / Dropbox),
+devices stay in sync, offline-first. An optional server can additionally relay updates
+in real time and serve web clients that have no local storage of their own.
 
 ## Caveats
 
 Ubiquisync might not be a good fit if any of these things apply:
 - needs fine grained read or write permissions
-- manages a huge volume of data and maintaining history would bloat it
+- produces a very high volume of tiny, frequent changes, where the per-change log overhead can outweigh the data itself
