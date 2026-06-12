@@ -1,0 +1,10 @@
+[package]
+name = "ubiquisync-postgres"
+description = "Postgres storage backend for Ubiquisync — conflict-free sync of structured data over commodity cloud storage or a dedicated server."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ubiquisync-core = { workspace = true }
