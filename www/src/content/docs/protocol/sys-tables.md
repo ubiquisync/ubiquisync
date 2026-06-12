@@ -3,7 +3,7 @@ title: System tables
 description: The system table protocol — what system tables are, how their type-encoded IDs work, and why the model was chosen.
 ---
 
-The Ubiquisync protocol syncs three kinds of data, reflected directly in its operation types: **system tables** (fixed, compile-time schema), **user-defined tables** (runtime schema, for applications that let users define their own tables), and **collaborative rich-text documents**. This page specifies system tables.
+The Ubiquisync protocol syncs three kinds of data, reflected directly in its operation types: **system tables** (fixed, compile-time schema), **[user-defined tables](/protocol/usr-tables/)** (runtime schema, for applications that let users define their own tables), and **[collaborative rich-text documents](/protocol/documents/)**. This page specifies system tables.
 
 ## What system tables are
 
