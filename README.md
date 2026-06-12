@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="design/logo.svg" width="160" alt="Ubiquisync logo">
+</p>
+
 # Ubiquisync
 
 **WORK IN PROGRESS: NOT READY FOR PRODUCTION**
