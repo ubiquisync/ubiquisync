@@ -20,7 +20,7 @@ if (!svg) throw new Error(`Icon "${icon}" is not registered in src/components/ph
 ---
 
 <article class="feature" style={`--fa: ${accent}`}>
-	<div class="glyph" set:html={svg} />
+	<div class="glyph" aria-hidden="true" set:html={svg} />
 	<h3 class="title">{title}</h3>
 	<div class="body"><slot /></div>
 </article>

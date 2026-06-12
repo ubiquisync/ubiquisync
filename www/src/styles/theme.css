@@ -64,13 +64,24 @@
 	padding-top: 0;
 }
 
-/* Hero title picks up the full mesh spectrum */
-.hero h1 {
-	background: var(--us-mesh-gradient);
-	-webkit-background-clip: text;
-	background-clip: text;
-	-webkit-text-fill-color: transparent;
-	color: transparent;
+/* Hero title picks up the full mesh spectrum. Gated so the text never goes
+   transparent where gradient clipping is unsupported or colors are forced. */
+@supports (background-clip: text) or (-webkit-background-clip: text) {
+	.hero h1 {
+		background: var(--us-mesh-gradient);
+		-webkit-background-clip: text;
+		background-clip: text;
+		-webkit-text-fill-color: transparent;
+		color: transparent;
+	}
+
+	@media (forced-colors: active) {
+		.hero h1 {
+			background: none;
+			-webkit-text-fill-color: CanvasText;
+			color: CanvasText;
+		}
+	}
 }
 
 /* Round the logo's geometry into the site title */

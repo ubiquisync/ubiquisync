@@ -17,7 +17,7 @@ It will allow you to sync both structured data (stored in SQLite or Postgres) an
 
 Ubiquisync might be a good fit if your app could benefit from these features:
 - SQLite or Postgres data storage and querying
-- user-defined schemas (a la AirTable, Notion)
+- user-defined schemas (a la Airtable, Notion)
 - conflict-free merging of rich document content (a la Google Docs)
 - local-first, offline data
 - sync over Google Drive, iCloud Drive, Dropbox, etc. OR a dedicated sync server for
