@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="design/logo.svg" width="160" alt="Ubiquisync logo">
+  <img src="www/src/assets/logo.svg" width="160" alt="Ubiquisync logo">
 </p>
 
 # Ubiquisync

@@ -1,0 +1,70 @@
+/* Ubiquisync brand theme.
+   Palette drawn from the logo (src/assets/logo.svg):
+   violet #8B5CF6 · indigo #6366F1 · blue #3B82F6 · cyan #06B6D4 · teal #14B8A6 · emerald #10B981
+   Indigo is the primary accent (the mesh wires); the full spectrum appears in
+   the hero gradient, mirroring the ring of peers. */
+
+:root {
+	--us-violet: #8b5cf6;
+	--us-indigo: #6366f1;
+	--us-blue: #3b82f6;
+	--us-cyan: #06b6d4;
+	--us-teal: #14b8a6;
+	--us-emerald: #10b981;
+	--us-mesh-gradient: linear-gradient(
+		100deg,
+		var(--us-violet),
+		var(--us-indigo) 30%,
+		var(--us-cyan) 70%,
+		var(--us-teal)
+	);
+}
+
+/* Dark mode (Starlight default) */
+:root {
+	--sl-color-accent-low: #2a2a6b;
+	--sl-color-accent: var(--us-indigo);
+	--sl-color-accent-high: #c7d2fe;
+
+	/* cool, slightly indigo-tinted grays */
+	--sl-color-white: #f4f5fc;
+	--sl-color-gray-1: #e6e8f5;
+	--sl-color-gray-2: #b9bcce;
+	--sl-color-gray-3: #8186a3;
+	--sl-color-gray-4: #4e526e;
+	--sl-color-gray-5: #2f324a;
+	--sl-color-gray-6: #1e2034;
+	--sl-color-black: #14151f;
+}
+
+/* Light mode */
+:root[data-theme='light'] {
+	--sl-color-accent-low: #e0e7ff;
+	--sl-color-accent: #4f46e5; /* darker indigo for contrast on white */
+	--sl-color-accent-high: #312e81;
+
+	--sl-color-white: #14151f;
+	--sl-color-gray-1: #1e2034;
+	--sl-color-gray-2: #2f324a;
+	--sl-color-gray-3: #4e526e;
+	--sl-color-gray-4: #8186a3;
+	--sl-color-gray-5: #b9bcce;
+	--sl-color-gray-6: #e6e8f5;
+	--sl-color-gray-7: #f4f5fc;
+	--sl-color-black: #ffffff;
+}
+
+/* Hero title picks up the full mesh spectrum */
+.hero h1 {
+	background: var(--us-mesh-gradient);
+	-webkit-background-clip: text;
+	background-clip: text;
+	-webkit-text-fill-color: transparent;
+	color: transparent;
+}
+
+/* Round the logo's geometry into the site title */
+.site-title {
+	font-weight: 600;
+	letter-spacing: -0.01em;
+}
