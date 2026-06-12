@@ -8,4 +8,5 @@
 //! Most applications should depend on the [`ubiquisync`](https://crates.io/crates/ubiquisync)
 //! facade crate rather than this crate directly.
 
+pub mod dialect;
 pub mod sys_id;
