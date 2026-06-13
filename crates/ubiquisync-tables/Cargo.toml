@@ -1,0 +1,11 @@
+[package]
+name = "ubiquisync-tables"
+description = "Table protocol for Ubiquisync — structured rows synced over commodity cloud storage or a dedicated server."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ubiquisync-core = { workspace = true }
+bitfield-struct = { workspace = true }
