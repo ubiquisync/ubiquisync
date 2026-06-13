@@ -158,8 +158,8 @@ impl Hlc {
     }
 
     /// Absorb a timestamp received from a peer. Does not generate a new
-    /// timestamp — ensures that the next `now()` call will return something
-    /// strictly greater than `received`.
+    /// timestamp — ensures that the next [`tick`](Self::tick) will return
+    /// something strictly greater than `received`.
     ///
     /// The skew bound is enforced here, at the clock itself, so no caller
     /// can poison the clock by forgetting to check: a timestamp beyond

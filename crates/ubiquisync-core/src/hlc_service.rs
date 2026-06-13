@@ -80,14 +80,15 @@ impl<S: HlcStorage> HlcService<S> {
     }
 
     /// Lock the clock, recovering the guard if a previous holder panicked.
-    /// A poisoned lock here can only mean a `storage` call panicked
-    /// mid-operation — `tick`/`observe` themselves are panic-free — so the
-    /// protected [`Hlc`] state is never logically corrupt, only mid-persist.
-    /// And that state is monotonic: a recovered clock can only tick forward,
-    /// so recovering can't hand back an out-of-order or duplicate timestamp.
-    /// The underlying storage failure resurfaces on the next save/load. This
-    /// beats `unwrap()`, which would let one subsystem's storage panic crash
-    /// every subsystem sharing the clock.
+    /// Recovery is safe because the protected [`Hlc`] state can never be left
+    /// logically corrupt by a panic: it is only ever *replaced* with a fully
+    /// validated, strictly larger [`Timestamp`], so whether the panic came
+    /// from a `storage` call or from `tick`'s wall-ceiling assert, the
+    /// recovered state is an intact, monotonic prior value. A recovered clock
+    /// can only tick forward, so it can't hand back an out-of-order or
+    /// duplicate timestamp, and the underlying failure resurfaces on the next
+    /// operation. This beats `unwrap()`, which would let one subsystem's
+    /// panic crash every subsystem sharing the clock.
     fn lock(&self) -> std::sync::MutexGuard<'_, Hlc> {
         self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
@@ -148,10 +149,12 @@ mod tests {
     /// In-memory register standing in for a backend metadata row.
     #[derive(Default)]
     struct MemStorage {
-        // u64::MAX sentinel = never saved; clock state can't reach it
-        // because from_parts truncates millis to 48 bits.
+        /// Last saved clock state; meaningful only when `present` is set.
         value: AtomicU64,
+        /// Count of `save` calls, so tests can assert persistence cadence.
         saves: AtomicUsize,
+        /// Whether anything has been saved yet — drives `load` returning
+        /// `None` for a fresh store rather than relying on a value sentinel.
         present: std::sync::atomic::AtomicBool,
     }
 
