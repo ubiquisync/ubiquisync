@@ -237,4 +237,81 @@ mod tests {
         assert_eq!(svc.state(), Timestamp::from_raw(0));
         assert_eq!(mem.saves.load(Ordering::SeqCst), 0);
     }
+
+    /// Storage whose `save` always fails — exercises the fallible path that
+    /// the `Infallible` `MemStorage` can't reach.
+    struct FailingStorage;
+
+    impl HlcStorage for FailingStorage {
+        type Error = &'static str;
+
+        fn load(&self) -> Result<Option<u64>, Self::Error> {
+            Ok(None)
+        }
+
+        fn save(&self, _raw: u64) -> Result<(), Self::Error> {
+            Err("save failed")
+        }
+    }
+
+    #[test]
+    fn now_propagates_save_failure() {
+        // A timestamp must never be handed back when its covering state could
+        // not be persisted — the storage error propagates in its place.
+        let svc = HlcService::open(FailingStorage).unwrap();
+        assert!(svc.now().is_err());
+    }
+
+    #[test]
+    fn advancing_observe_surfaces_save_failure_as_storage_error() {
+        // An advancing observe that can't persist must report Storage, not
+        // Skew — the timestamp was within the window; only the save failed.
+        let svc = HlcService::open(FailingStorage).unwrap();
+        let local = wall_ms();
+        let ahead = Timestamp::from_parts(local + MAX_SKEW_MS, 1);
+        assert!(matches!(
+            svc.observe(ahead, local),
+            Err(HlcError::Storage(_))
+        ));
+    }
+
+    #[test]
+    fn lock_recovers_from_a_poisoned_clock() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+        // Goal: a panic that poisons the clock mutex (as a panicking
+        // `storage.save` would) does not brick the clock for everyone else.
+        let mem = MemStorage::default();
+        let svc = HlcService::open(&mem).unwrap();
+        let t1 = svc.now().unwrap();
+        // Poison the mutex by panicking while holding the guard.
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = svc.lock();
+            panic!("poison the clock");
+        }));
+        // A bare `.lock().unwrap()` would panic here; `lock()` recovers the
+        // guard, so the clock stays usable and still strictly monotone.
+        let t2 = svc.now().unwrap();
+        assert!(t2 > t1);
+    }
+
+    #[test]
+    fn concurrent_ticks_are_all_distinct() {
+        // Goal: the mutex actually serializes ticks — under contention every
+        // issued timestamp is unique (hence strictly ordered), none reused.
+        let mem = MemStorage::default();
+        let svc = HlcService::open(&mem).unwrap();
+        let mut all: Vec<Timestamp> = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..8)
+                .map(|_| s.spawn(|| (0..100).map(|_| svc.now().unwrap()).collect::<Vec<_>>()))
+                .collect();
+            handles
+                .into_iter()
+                .flat_map(|h| h.join().unwrap())
+                .collect()
+        });
+        let total = all.len();
+        all.sort();
+        all.dedup();
+        assert_eq!(all.len(), total, "every concurrent tick must be unique");
+    }
 }

@@ -21,9 +21,17 @@ pub struct Timestamp {
 }
 
 impl Timestamp {
-    /// Compose from `(millis, counter)` parts. Any `millis` bits past 48
-    /// are lost to the left shift — fine until roughly year 10895.
+    /// Compose from `(millis, counter)` parts. `millis` must fit in the top
+    /// 48 bits — Unix-epoch ms stays under 2^48 until roughly year 10895.
+    /// A larger value would shift its high bits off the top of the `u64`
+    /// (`<<` discards them rather than panicking) and silently wrap the wall
+    /// component back toward zero, shattering monotonicity — so we panic
+    /// instead. Unreachable for any real timestamp.
     pub fn from_parts(millis: u64, counter: u16) -> Self {
+        assert!(
+            millis >> (u64::BITS - COUNTER_BITS) == 0,
+            "millis {millis} exceeds the 48-bit wall field"
+        );
         Self {
             data: (millis << COUNTER_BITS) | counter as u64,
         }
@@ -298,6 +306,17 @@ mod tests {
         assert!(t > saturated, "must advance past saturated counter");
         assert_eq!(t.millis(), far_future + 1);
         assert_eq!(t.counter(), 0);
+    }
+
+    #[test]
+    #[should_panic = "exceeds the 48-bit wall field"]
+    fn from_parts_rejects_wall_past_ceiling() {
+        // The wall field is 48 bits. A millis value at the ceiling would
+        // shift its top bit out and wrap the timestamp back toward zero,
+        // breaking monotonicity — we panic instead. (Year ~10895; never a
+        // real timestamp.) `counter_saturation_advances_wall` deliberately
+        // tops out one ms below this so it exercises saturation safely.
+        let _ = Timestamp::from_parts(1 << (u64::BITS - COUNTER_BITS), 0);
     }
 
     #[test]
