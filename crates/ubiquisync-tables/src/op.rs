@@ -74,7 +74,9 @@ pub struct Delete {
 pub enum ColValue {
     /// Raw byte data (length-prefixed on wire).
     Bytes(Vec<u8>),
-    /// UTF-8 text (length-prefixed on wire, same encoding as Bytes).
+    /// UTF-8 text (length-prefixed on wire, same encoding as Bytes). Strict
+    /// UTF-8, no embedded NUL, compared as raw bytes — see the table
+    /// protocol's text rules.
     Text(String),
     /// 16-byte UUID (fixed-width on wire).
     Uuid(Uuid),

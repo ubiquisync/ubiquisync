@@ -7,7 +7,7 @@
 //! > changes may land on any commit.
 //!
 //! This crate contains the storage-agnostic, domain-agnostic core of
-//! Ubiquisync: the log entry envelope, type-encoded UUIDs, the HLC clock, and
+//! Ubiquisync: the log entry envelope, opaque UUIDs, the HLC clock, and
 //! (as the port progresses) the codec and merge reducer. It has no database
 //! driver dependencies and is generic over the op vocabulary it carries — data
 //! domains such as tables live in companion crates like `ubiquisync-tables`,
