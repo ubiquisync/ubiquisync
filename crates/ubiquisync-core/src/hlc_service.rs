@@ -5,8 +5,8 @@
 //! and persists the clock state through [`HlcStorage`] so monotonicity survives restarts — a peer
 //! must never reissue a timestamp it already wrote, even after a crash.
 //!
-//! Construct once per database and hand a clone/`Arc` of it to each
-//! subsystem.
+//! It is not `Clone`; construct it once per database, wrap it in an `Arc`,
+//! and hand a clone of that `Arc` to each subsystem.
 
 use std::sync::Mutex;
 
@@ -79,11 +79,24 @@ impl<S: HlcStorage> HlcService<S> {
         })
     }
 
+    /// Lock the clock, recovering the guard if a previous holder panicked.
+    /// A poisoned lock here can only mean a `storage` call panicked
+    /// mid-operation — `tick`/`observe` themselves are panic-free — so the
+    /// protected [`Hlc`] state is never logically corrupt, only mid-persist.
+    /// And that state is monotonic: a recovered clock can only tick forward,
+    /// so recovering can't hand back an out-of-order or duplicate timestamp.
+    /// The underlying storage failure resurfaces on the next save/load. This
+    /// beats `unwrap()`, which would let one subsystem's storage panic crash
+    /// every subsystem sharing the clock.
+    fn lock(&self) -> std::sync::MutexGuard<'_, Hlc> {
+        self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// Generate a fresh timestamp for a local write and persist the new
     /// state. Always advances; always writes — the state must be durable
     /// before the timestamp is used, or a crash could reissue it.
     pub fn now(&self) -> Result<Timestamp, S::Error> {
-        let mut hlc = self.state.lock().unwrap();
+        let mut hlc = self.lock();
         let ts = hlc.tick(wall_ms());
         self.storage.save(hlc.state().raw())?;
         Ok(ts)
@@ -108,7 +121,7 @@ impl<S: HlcStorage> HlcService<S> {
         received: Timestamp,
         local_wall_ms: u64,
     ) -> Result<(), HlcError<S::Error>> {
-        let mut hlc = self.state.lock().unwrap();
+        let mut hlc = self.lock();
         let before = hlc.state();
         hlc.observe(received, local_wall_ms)
             .map_err(HlcError::Skew)?;
@@ -122,7 +135,7 @@ impl<S: HlcStorage> HlcService<S> {
     /// Current clock state without advancing it. Cheap snapshot for callers
     /// that only need to peek (e.g. tests, diagnostics).
     pub fn state(&self) -> Timestamp {
-        self.state.lock().unwrap().state()
+        self.lock().state()
     }
 }
 
