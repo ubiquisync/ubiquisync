@@ -7,8 +7,8 @@
 //! > changes may land on any commit.
 //!
 //! This crate contains the storage-agnostic parts of Ubiquisync: the wire
-//! protocol, type-encoded IDs, and (as the port progresses) the HLC clock,
-//! codec, and merge reducer. It has no database driver dependencies —
+//! protocol, type-encoded IDs, the HLC clock, and (as the port progresses)
+//! the codec and merge reducer. It has no database driver dependencies —
 //! storage backends live in companion crates such as `ubiquisync-sqlite`.
 //!
 //! Most applications should depend on the [`ubiquisync`](https://crates.io/crates/ubiquisync)
@@ -17,6 +17,7 @@
 pub mod dialect;
 pub mod docs;
 pub mod hlc;
+pub mod hlc_service;
 pub mod log_entry;
 pub mod op;
 pub mod sys_id;

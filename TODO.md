@@ -27,10 +27,13 @@ describe — the spec text is the target, these are the deltas:
   update still deletes on peers that receive it late. Spec: deleted while
   tombstone >= newest update. Implement visibility as
   `deleted_ts IS NULL OR updated_at > deleted_ts`.
-- [ ] **Skew bound only enforced on the state log.** The source doc store
+- [x] **Skew bound only enforced on the state log.** The source doc store
   observes remote timestamps into the shared HLC without the 60s skew check,
-  so a far-future document entry can still poison the clock. Enforce at the
-  shared clock layer.
+  so a far-future document entry can still poison the clock. Fixed in the
+  HLC port: `Hlc::observe` / `HlcService::observe` take the local wall clock
+  and reject beyond-skew timestamps themselves, so no store can skip the
+  check. The ported doc store must handle the `Skew` error by rejecting the
+  entry.
 - [ ] **NULL writes to not-yet-materialized usr columns are dropped.** The
   NULL's timestamp is never recorded, so an older non-NULL write arriving
   later resurrects the cell on that peer only. Record cleared-cell timestamps
