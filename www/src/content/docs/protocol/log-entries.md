@@ -7,7 +7,7 @@ sidebar:
 
 Every peer appends each change it makes to its own append-only log. Syncing is copying those logs between devices — over a shared cloud folder or a relay server — and replaying them. No peer ever writes to another peer's log, so there are no write conflicts at the transport level; convergence is entirely the job of the [merge semantics](#merge-semantics) applied during replay.
 
-This page specifies the unit of that log: the entry envelope and its timestamp. The operations the envelope carries are specified per data domain — [system tables](/protocol/sys-tables/), [user-defined tables](/protocol/usr-tables/), and [documents](/protocol/documents/). The byte-level segment file encoding is a codec concern, documented separately.
+This page specifies the unit of that log: the entry envelope and its timestamp. The operations the envelope carries are specified by the [table protocol](/protocol/tables/). The byte-level segment file encoding is a codec concern, documented separately.
 
 ## The envelope
 
@@ -19,7 +19,7 @@ A log entry is one operation plus metadata:
 | `timestamp` | HLC timestamp, monotonically non-decreasing within a peer's stream. |
 | `user_id` | Optional user attribution (see below). |
 
-There are two log domains, distinguished by what `op` is: the **state log** carries system and user-defined table operations, and the **document log** carries document operations. Both use this same envelope, and both draw timestamps from a single shared clock per peer, so timestamps are causally comparable across the two logs.
+The envelope is generic over its operation vocabulary: each data domain — such as [tables](/protocol/tables/) — defines its own op type and carries it in this same envelope. Any domains in use draw timestamps from a single shared clock per peer, so timestamps are causally comparable across them.
 
 Each entry is individually integrity-hashed (blake3) and is the unit of **expungement**: an entry can be redacted from a segment after the fact without invalidating the entries around it. Append-only storage still has to honor permanent removal — leaked secrets, data-deletion requests — and rewriting history is not an option when other peers replay logs by position.
 
@@ -43,13 +43,12 @@ The clock guarantees:
 
 Replay never asks "did this conflict?" — every operation merges deterministically, under one requirement shared by every merge rule in the protocol: **peers that have seen the same set of entries hold identical state, regardless of the order the entries arrived in.** That property has a name: every merge rule in the protocol is a CRDT — a conflict-free replicated data type. The rules differ only in *class*, chosen to fit the data:
 
-- **LWW registers** are the default for table data. System table cells, user table cells, and the soft-delete tombstones for rows, entities, and documents are all last-writer-wins registers: compare the entries' HLC timestamps, and the later write wins. The [timestamp guarantees](#timestamps) above are what make "later" well-defined across peers — in particular, an edit made after observing another peer's edit always beats it. Identical timestamps are still possible (the clock has no peer component, so two offline peers can mint the same tick), and ties break deterministically: a deletion beats a write, and between two writes the greater value bytes win, with NULL ordering below every value. The tie-break uses nothing but the two writes themselves — no lookup of who last wrote a cell — so an exceedingly rare case costs nothing to resolve.
-- **Max-wins registers** merge the one system column type built for monotonic values: [`MaxI64`](/protocol/sys-tables/#merge-semantics) takes the larger value and ignores timestamps entirely. `max` is commutative, associative, and idempotent — the textbook state-based CRDT.
-- **Sequence CRDTs** merge [document](/protocol/documents/) update payloads using the [Yjs CRDT algorithm](https://github.com/yjs/yjs): updates combine commutatively and idempotently, with no timestamp comparison, and concurrent edits interleave instead of replacing each other.
+- **LWW registers** are the default for table data. Table cells and the soft-delete tombstones for rows are all last-writer-wins registers: compare the entries' HLC timestamps, and the later write wins. The [timestamp guarantees](#timestamps) above are what make "later" well-defined across peers — in particular, an edit made after observing another peer's edit always beats it. Identical timestamps are still possible (the clock has no peer component, so two offline peers can mint the same tick), and ties break deterministically: a deletion beats a write, and between two writes the greater value bytes win, with NULL ordering below every value. The tie-break uses nothing but the two writes themselves — no lookup of who last wrote a cell — so an exceedingly rare case costs nothing to resolve.
+- **Max-wins registers** merge the one column type built for monotonic values: [`MaxI64`](/protocol/tables/#merge-semantics) takes the larger value and ignores timestamps entirely. `max` is commutative, associative, and idempotent — the textbook state-based CRDT.
 
-The class split is also a query-model split. Register CRDTs merge to plain values, so everything in the table domains materializes as ordinary rows and columns — applications query synced state directly with SQL. Sequence CRDTs merge to internal document state, which is read through the document engine rather than SQL.
+Both rules are register CRDTs that merge to plain values, so everything materializes as ordinary rows and columns — applications query synced state directly with SQL.
 
-Which rule applies is determined entirely by the operation and, for system columns, the type bits in the column ID — merge behavior is never negotiated, configured, or inferred from data.
+Which rule applies is determined entirely by the operation and, for columns, the type bits in the column ID — merge behavior is never negotiated, configured, or inferred from data.
 
 ## Attribution
 

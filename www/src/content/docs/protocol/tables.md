@@ -1,15 +1,15 @@
 ---
-title: System tables
-description: The system table protocol — what system tables are, how their type-encoded IDs work, and why the model was chosen.
+title: Tables
+description: The table protocol — what tables are, how their type-encoded IDs work, and why the model was chosen.
 sidebar:
   order: 2
 ---
 
-The Ubiquisync protocol syncs three kinds of data, reflected directly in its operation types: **system tables** (fixed, compile-time schema), **[user-defined tables](/protocol/usr-tables/)** (runtime schema, for applications that let users define their own tables), and **[collaborative rich-text documents](/protocol/documents/)**. This page specifies system tables.
+Ubiquisync syncs **tables** with a fixed, compile-time schema, mutated by a small operation vocabulary. This page specifies the table protocol.
 
-## What system tables are
+## What tables are
 
-System tables hold application and framework state with a schema known at compile time: settings, device registrations, sync metadata, key material. The application declares them in code, and every row merges deterministically — any two peers that have seen the same set of operations hold identical rows, regardless of the order the operations arrived in.
+Tables hold application and framework state with a schema known at compile time: settings, device registrations, sync metadata, key material. The application declares them in code, and every row merges deterministically — any two peers that have seen the same set of operations hold identical rows, regardless of the order the operations arrived in.
 
 The defining constraint is **version skew**. Peers run different versions of the same application — sometimes years apart — and a peer must be able to store and forward data written by a newer peer without understanding it. The schema is advisory; the wire protocol is self-describing.
 
@@ -19,7 +19,7 @@ Ubiquisync achieves this by embedding type information directly in every table a
 
 ### Table IDs
 
-A system table ID is a `u16`. The top 2 bits encode the number of primary key columns (1–4), each PK column type takes 2 bits below that, and the remaining low bits are an arbitrary table index. The layout width varies with the PK count, but parsing is always self-describing: the count is in a fixed position and determines the rest.
+A table ID is a `u16`. The top 2 bits encode the number of primary key columns (1–4), each PK column type takes 2 bits below that, and the remaining low bits are an arbitrary table index. The layout width varies with the PK count, but parsing is always self-describing: the count is in a fixed position and determines the rest.
 
 ```text
 1 PK:  ┌ count:2 ┬ t1:2 ┬─────── index:12 ───────┐   4096 indices
@@ -41,7 +41,7 @@ Primary keys are row identity — they are compared, never merged — so every P
 
 ### Column IDs
 
-A system column ID is a `u8`: the high 3 bits encode the column's wire type, and the low 5 bits are an arbitrary column index within the table.
+A column ID is a `u8`: the high 3 bits encode the column's wire type, and the low 5 bits are an arbitrary column index within the table.
 
 ```text
 ┌─────────────┬───────────────┐

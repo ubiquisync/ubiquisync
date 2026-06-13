@@ -22,24 +22,13 @@ than accumulate.
 Behaviors in the source implementation that the docs intentionally do NOT
 describe — the spec text is the target, these are the deltas:
 
-- [ ] **Doc store: stale `DeleteDoc` beats newer updates.** The source read
-  filter is `deleted_ts IS NULL` only, so a tombstone older than the newest
-  update still deletes on peers that receive it late. Spec: deleted while
-  tombstone >= newest update. Implement visibility as
-  `deleted_ts IS NULL OR updated_at > deleted_ts`.
-- [x] **Skew bound only enforced on the state log.** The source doc store
-  observes remote timestamps into the shared HLC without the 60s skew check,
-  so a far-future document entry can still poison the clock. Fixed in the
-  HLC port: `Hlc::observe` / `HlcService::observe` take the local wall clock
-  and reject beyond-skew timestamps themselves, so no store can skip the
-  check. The ported doc store must handle the `Skew` error by rejecting the
-  entry.
-- [ ] **NULL writes to not-yet-materialized usr columns are dropped.** The
-  NULL's timestamp is never recorded, so an older non-NULL write arriving
-  later resurrects the cell on that peer only. Record cleared-cell timestamps
-  even when no physical column exists yet.
-- [ ] **Unknown sys column is a hard error.** The source reducer fails with
-  `SysColumnNotFound` for an unknown column on a known table, which breaks
+- [x] **Skew bound was only enforced on some write paths.** In the source, a
+  store could observe remote timestamps into the shared HLC without the 60s
+  skew check, so a far-future entry could poison the clock. Fixed in the HLC
+  port: `Hlc::observe` / `HlcService::observe` take the local wall clock and
+  reject beyond-skew timestamps themselves, so no store can skip the check.
+- [ ] **Unknown column is a hard error.** The source reducer fails with
+  `ColumnNotFound` for an unknown column on a known table, which breaks
   version-skewed peers (the IDs are self-describing precisely so this can
   work). Likely fix: materialize the column on demand (ALTER TABLE ADD COLUMN
   surrogate).
@@ -52,7 +41,7 @@ describe — the spec text is the target, these are the deltas:
   enforced anywhere yet**: the docs forbid `\0` in Text because SQLite
   tolerates it while Postgres rejects it, so an unchecked NUL is a stored
   value one backend physically cannot hold — divergence. Validate on decode
-  (and reject on encode) for Text PKs, sys Text columns, and usr text values.
+  (and reject on encode) for Text PKs and table Text columns.
 
 ## Reducer port: SQL dialect
 

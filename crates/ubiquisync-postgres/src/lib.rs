@@ -6,7 +6,7 @@
 //! > and **will change without notice**. Do not use it in production. Breaking
 //! > changes may land on any commit.
 //!
-//! Implements the `ubiquisync-core` storage abstractions over Postgres,
+//! Implements the `ubiquisync-tables` storage abstractions over Postgres,
 //! starting with the SQL dialect ([`PostgresDialect`]). The connection layer
 //! and reducer integration land as the engine port progresses.
 

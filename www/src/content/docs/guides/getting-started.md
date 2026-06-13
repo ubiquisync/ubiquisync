@@ -8,13 +8,13 @@ Ubiquisync is under active development and **not ready for production use**. The
 crates are not yet published, and APIs and the on-disk format are still changing.
 :::
 
-Ubiquisync is a Rust library for conflict-free sync of app data — structured rows
-and collaborative rich text — over commodity cloud storage (iCloud Drive, Google
-Drive, Dropbox, …) or a dedicated sync server.
+Ubiquisync is a Rust library for conflict-free sync of structured app data over
+commodity cloud storage (iCloud Drive, Google Drive, Dropbox, …) or a dedicated
+sync server.
 
 While the getting-started story is being built out, the best ways in are:
 
-- Read the [protocol documentation](/protocol/sys-tables/), starting with system
-  tables.
+- Read the [protocol documentation](/protocol/tables/), starting with the table
+  protocol.
 - Browse the source and follow progress on
   [GitHub](https://github.com/ubiquisync/ubiquisync).

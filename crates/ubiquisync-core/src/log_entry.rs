@@ -8,11 +8,10 @@ use crate::uuid::Uuid;
 /// written to and read from segment files — each entry has its own
 /// blake3 hash and can be independently expunged.
 ///
-/// The entry is generic over its op vocabulary: the state log carries
-/// [`Op`](crate::op::Op) (system and user-defined table mutations), the
-/// document log carries [`docs::op::Op`](crate::docs::op::Op). Both log
-/// domains use this same envelope and share one HLC clock domain, so
-/// timestamps are causally comparable across them.
+/// The entry is generic over its op vocabulary `E`: each data domain defines
+/// its own op type and carries it in this envelope — for example the table
+/// op vocabulary in `ubiquisync-tables`. Any domains in use share one HLC
+/// clock domain, so timestamps are causally comparable across them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogEntry<E> {
     /// User who authored this entry. `None` in device mode where

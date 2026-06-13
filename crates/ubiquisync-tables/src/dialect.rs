@@ -6,7 +6,7 @@
 //! placeholder syntax and scalar-max functions) are abstracted behind
 //! [`SqlDialect`], implemented by each backend crate.
 
-use crate::sys_id::{PkColType, SysColType};
+use crate::id::{ColType, PkColType};
 
 /// Maps protocol types to a backend's SQL type names.
 ///
@@ -15,9 +15,9 @@ use crate::sys_id::{PkColType, SysColType};
 /// goes through the active dialect, so a table created on one backend has
 /// the documented column types for that backend.
 pub trait SqlDialect {
-    /// SQL column type for a non-PK system column.
-    fn sys_col_type(&self, col_type: SysColType) -> &'static str;
+    /// SQL column type for a non-PK column.
+    fn col_type(&self, col_type: ColType) -> &'static str;
 
-    /// SQL column type for a system table primary key column.
-    fn sys_pk_col_type(&self, col_type: PkColType) -> &'static str;
+    /// SQL column type for a table primary key column.
+    fn pk_col_type(&self, col_type: PkColType) -> &'static str;
 }

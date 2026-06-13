@@ -1,6 +1,6 @@
-//! Type-encoded IDs for system tables and columns.
+//! Type-encoded IDs for tables and columns.
 //!
-//! System table and column IDs embed type information directly in their bits,
+//! Table and column IDs embed type information directly in their bits,
 //! making every valid ID fully self-describing. Any peer can parse entries for
 //! unknown tables/columns without a schema lookup — the wire encoding is
 //! determined entirely by the ID.
@@ -9,7 +9,7 @@
 //! Non-null guarantees on non-PK columns cannot be enforced
 //! in a distributed system without full schema coordination.
 //!
-//! ## Table IDs (`SysTableId`, u16)
+//! ## Table IDs (`TableId`, u16)
 //!
 //! The layout is variable: the top 2 bits encode the PK column count, each PK
 //! column type takes 2 bits below that, and the remaining low bits are the
@@ -26,7 +26,7 @@
 //! Every `u16` bit pattern is a valid table ID — both the count field and the
 //! 2-bit type fields are total, so there is no protocol-error path for table IDs.
 //!
-//! ## Column IDs (`SysColumnId`, u8)
+//! ## Column IDs (`ColumnId`, u8)
 //!
 //! ```text
 //! ┌─────────────┬───────────────┐
@@ -48,7 +48,7 @@
 
 use bitfield_struct::bitfield;
 
-/// Primary key column type, encoded as 2 bits in the [`SysTableId`] PK shape.
+/// Primary key column type, encoded as 2 bits in the [`TableId`] PK shape.
 ///
 /// All four 2-bit values are valid — the field is total, so PK shapes can
 /// never fail to parse. PK values are row identity: they are compared, never
@@ -88,7 +88,7 @@ impl PkColType {
     }
 }
 
-/// Column type for system table columns, encoded in [`SysColumnId`] type bits.
+/// Column type for table columns, encoded in [`ColumnId`] type bits.
 ///
 /// The type set is **closed**. Values 5–7 are invalid (not reserved).
 /// A peer encountering an invalid type treats it as a protocol error —
@@ -96,7 +96,7 @@ impl PkColType {
 /// loudly instead of silently misparsing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-pub enum SysColType {
+pub enum ColType {
     /// `BLOB`. Length-prefixed on wire. LWW merge.
     Bytes = 0,
     /// `TEXT`. Length-prefixed on wire. LWW merge. Must be valid UTF-8
@@ -117,7 +117,7 @@ pub enum SysColType {
 }
 
 /// Wire encoding family for a column type. Determined by the type bits
-/// in a [`SysColumnId`] or the PK shape bits in a [`SysTableId`].
+/// in a [`ColumnId`] or the PK shape bits in a [`TableId`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WireEncoding {
     /// Length-prefixed variable-length bytes (Bytes, Text).
@@ -128,7 +128,7 @@ pub enum WireEncoding {
     ZigzagVarint,
 }
 
-impl SysColType {
+impl ColType {
     /// Returns the wire encoding used for this column type.
     pub const fn wire_encoding(&self) -> WireEncoding {
         match self {
@@ -163,12 +163,12 @@ impl SysColType {
             4 => Self::MaxI64,
             // bitfield-struct requires a total function; callers should
             // validate with try_from_bits before constructing.
-            _ => panic!("invalid SysColType"),
+            _ => panic!("invalid ColType"),
         }
     }
 }
 
-/// Type-encoded system table ID.
+/// Type-encoded table ID.
 ///
 /// The top 2 bits encode the PK column count (count − 1, so 1–4 columns),
 /// followed by 2 type bits per PK column, with the remaining low bits as an
@@ -176,9 +176,9 @@ impl SysColType {
 /// a manual pack/unpack rather than a fixed bitfield — see the module docs
 /// for the per-count layouts.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SysTableId(u16);
+pub struct TableId(u16);
 
-impl SysTableId {
+impl TableId {
     /// Build a table ID from its PK column types and table index.
     ///
     /// `const`-evaluable so table IDs can be compile-time constants; invalid
@@ -242,23 +242,23 @@ impl SysTableId {
     }
 }
 
-impl From<u16> for SysTableId {
+impl From<u16> for TableId {
     fn from(raw: u16) -> Self {
         Self(raw)
     }
 }
 
-impl From<SysTableId> for u16 {
-    fn from(id: SysTableId) -> u16 {
+impl From<TableId> for u16 {
+    fn from(id: TableId) -> u16 {
         id.0
     }
 }
 
-impl core::fmt::Debug for SysTableId {
+impl core::fmt::Debug for TableId {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         // Render the decoded shape, not just the raw bits — table IDs show up
         // in sync diagnostics where the PK shape is what matters.
-        write!(f, "SysTableId(0x{:04X}, pk=[", self.0)?;
+        write!(f, "TableId(0x{:04X}, pk=[", self.0)?;
         let mut i = 0;
         while i < self.pk_count() {
             if i > 0 {
@@ -274,14 +274,14 @@ impl core::fmt::Debug for SysTableId {
 // bitfield-struct packs fields from LSB upward, so fields listed first
 // occupy the lowest bits. We want index in low bits and type in high bits.
 
-/// Type-encoded system column ID.
+/// Type-encoded column ID.
 ///
 /// High 3 bits encode the column's wire type, making the ID self-describing
 /// for wire parsing. The lower 5 bits are an arbitrary column index within
 /// the table. All non-PK columns are implicitly nullable.
 #[bitfield(u8)]
 #[derive(PartialEq, Eq, Hash)]
-pub struct SysColumnId {
+pub struct ColumnId {
     // -- Column index (low 5 bits) --
     /// Arbitrary column index within the table.
     #[bits(5)]
@@ -290,15 +290,15 @@ pub struct SysColumnId {
     // -- Type bits (high 3 bits) --
     /// Column wire type (bits 5–7).
     #[bits(3)]
-    pub col_type: SysColType,
+    pub col_type: ColType,
 }
 
-impl SysColumnId {
+impl ColumnId {
     /// Validate that the column type bits are valid (not 5, 6, or 7).
     /// Returns `None` if the raw byte encodes an invalid column type.
     pub fn try_from_raw(raw: u8) -> Option<Self> {
         let type_bits = (raw >> 5) & 0x07;
-        SysColType::try_from_bits(type_bits)?;
+        ColType::try_from_bits(type_bits)?;
         Some(Self::from(raw))
     }
 }
@@ -324,8 +324,8 @@ mod tests {
         ];
         for (n, pk_types) in shapes.iter().enumerate() {
             // When: constructing the ID and round-tripping through u16.
-            let id = SysTableId::new(pk_types, 5);
-            let recovered = SysTableId::from_raw(id.raw());
+            let id = TableId::new(pk_types, 5);
+            let recovered = TableId::from_raw(id.raw());
 
             // Then: count, every PK type, and index are all recovered.
             assert_eq!(recovered, id);
@@ -341,7 +341,7 @@ mod tests {
     fn table_id_index_in_low_bits() {
         // Goal: the table index occupies the low bits unshifted.
         // Given: a 1-PK Bytes table (count=0, type=0 → all shape bits zero).
-        let id = SysTableId::new(&[PkColType::Bytes], 1);
+        let id = TableId::new(&[PkColType::Bytes], 1);
         // Then: the raw value is exactly the index.
         assert_eq!(id.raw(), 1);
     }
@@ -350,12 +350,12 @@ mod tests {
     fn table_id_pk_shape_in_high_bits() {
         // Goal: PK shape packs into the high bits in declaration order.
         // Given: 1-col UUID PK: count=0, t1=Uuid(01).
-        let id = SysTableId::new(&[PkColType::Uuid], 0);
+        let id = TableId::new(&[PkColType::Uuid], 0);
         // Then: count in bits 15-14, t1 in bits 13-12.
         assert_eq!(id.raw() >> 12, 0b00_01);
 
         // Given: 2-col (Text, I64) PK: count=1, t1=Text(10), t2=I64(11).
-        let id = SysTableId::new(&[PkColType::Text, PkColType::I64], 0);
+        let id = TableId::new(&[PkColType::Text, PkColType::I64], 0);
         // Then: high 6 bits are count(01) | t1(10) | t2(11).
         assert_eq!(id.raw() >> 10, 0b01_10_11);
     }
@@ -365,13 +365,13 @@ mod tests {
         // Goal: the index width shrinks by 2 bits per extra PK column.
         // Given/When: the max index for each PK count.
         // Then: 12, 10, 8, 6 bits respectively, all constructible.
-        let one = SysTableId::new(&[PkColType::Uuid], 4095);
+        let one = TableId::new(&[PkColType::Uuid], 4095);
         assert_eq!((one.index_bits(), one.index()), (12, 4095));
-        let two = SysTableId::new(&[PkColType::Uuid; 2], 1023);
+        let two = TableId::new(&[PkColType::Uuid; 2], 1023);
         assert_eq!((two.index_bits(), two.index()), (10, 1023));
-        let three = SysTableId::new(&[PkColType::Uuid; 3], 255);
+        let three = TableId::new(&[PkColType::Uuid; 3], 255);
         assert_eq!((three.index_bits(), three.index()), (8, 255));
-        let four = SysTableId::new(&[PkColType::Uuid; 4], 63);
+        let four = TableId::new(&[PkColType::Uuid; 4], 63);
         assert_eq!((four.index_bits(), four.index()), (6, 63));
     }
 
@@ -382,7 +382,7 @@ mod tests {
         // not a silent truncation that would collide with another table.
         // Given: a 1-PK table whose index needs 13 bits.
         // When: constructing it. Then: panic.
-        let _ = SysTableId::new(&[PkColType::Uuid], 4096);
+        let _ = TableId::new(&[PkColType::Uuid], 4096);
     }
 
     #[test]
@@ -391,7 +391,7 @@ mod tests {
         // panicking and re-encodes to itself.
         for raw in 0..=u16::MAX {
             // When: decoding an arbitrary bit pattern.
-            let id = SysTableId::from_raw(raw);
+            let id = TableId::from_raw(raw);
             // Then: all accessors are callable and the identity holds.
             let count = id.pk_count();
             assert!((1..=4).contains(&count));
@@ -422,25 +422,25 @@ mod tests {
     fn column_id_round_trip() {
         // Goal: a column ID survives a raw u8 round trip.
         // Given: a Text column at index 3.
-        let id = SysColumnId::new()
+        let id = ColumnId::new()
             .with_index(3)
-            .with_col_type(SysColType::Text);
+            .with_col_type(ColType::Text);
 
         assert_eq!(id.index(), 3);
-        assert_eq!(id.col_type(), SysColType::Text);
+        assert_eq!(id.col_type(), ColType::Text);
 
         // When/Then: round trip through the raw byte.
         let raw: u8 = id.into();
-        let recovered = SysColumnId::from(raw);
+        let recovered = ColumnId::from(raw);
         assert_eq!(recovered, id);
     }
 
     #[test]
     fn column_id_index_in_low_bits() {
         // Goal: the column index occupies the low bits unshifted.
-        let id = SysColumnId::new()
+        let id = ColumnId::new()
             .with_index(1)
-            .with_col_type(SysColType::Bytes);
+            .with_col_type(ColType::Bytes);
         let raw: u8 = id.into();
         assert_eq!(raw, 1);
     }
@@ -449,17 +449,17 @@ mod tests {
     fn column_id_type_in_high_bits() {
         // I64: bits 5-7=col_type(2)=010, index=0
         // high 3 bits = 010
-        let id = SysColumnId::new()
+        let id = ColumnId::new()
             .with_index(0)
-            .with_col_type(SysColType::I64);
+            .with_col_type(ColType::I64);
         let raw: u8 = id.into();
         assert_eq!(raw >> 5, 0b010);
 
         // Text: bits 5-7=col_type(1)=001, index=0
         // high 3 bits = 001
-        let id = SysColumnId::new()
+        let id = ColumnId::new()
             .with_index(0)
-            .with_col_type(SysColType::Text);
+            .with_col_type(ColType::Text);
         let raw: u8 = id.into();
         assert_eq!(raw >> 5, 0b001);
     }
@@ -467,20 +467,20 @@ mod tests {
     #[test]
     fn invalid_col_type_detected() {
         // Goal: type values 5-7 are protocol errors, 0-4 are valid.
-        assert!(SysColType::try_from_bits(4).is_some()); // MaxI64
-        assert!(SysColType::try_from_bits(5).is_none());
-        assert!(SysColType::try_from_bits(6).is_none());
-        assert!(SysColType::try_from_bits(7).is_none());
+        assert!(ColType::try_from_bits(4).is_some()); // MaxI64
+        assert!(ColType::try_from_bits(5).is_none());
+        assert!(ColType::try_from_bits(6).is_none());
+        assert!(ColType::try_from_bits(7).is_none());
 
         // Then: try_from_raw rejects a byte whose type bits are invalid.
-        assert!(SysColumnId::try_from_raw(0b101_00000).is_none());
-        assert!(SysColumnId::try_from_raw(0b100_00011).is_some());
+        assert!(ColumnId::try_from_raw(0b101_00000).is_none());
+        assert!(ColumnId::try_from_raw(0b100_00011).is_some());
     }
 
     #[test]
     fn table_id_const_constructible() {
         // Goal: table IDs work as compile-time constants for def macros.
-        const SETTINGS: SysTableId = SysTableId::new(&[PkColType::Text], 7);
+        const SETTINGS: TableId = TableId::new(&[PkColType::Text], 7);
         assert_eq!(SETTINGS.pk_count(), 1);
         assert_eq!(SETTINGS.pk_col_type(0), PkColType::Text);
         assert_eq!(SETTINGS.index(), 7);
