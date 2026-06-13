@@ -13,7 +13,11 @@
 //! storage backends behind feature flags (`sqlite`, enabled by default).
 
 pub use ubiquisync_core::*;
-pub use ubiquisync_tables::*;
+// The generic codec framing is re-exported above as `codec` (from core),
+// including the `Op` trait. The table op codec — the `impl codec::Op for Op`
+// plus its tag constants — is exposed as `table_codec` to avoid clashing with
+// core's `codec` module. The trait impl applies regardless of this path.
+pub use ubiquisync_tables::{codec as table_codec, dialect, id, op};
 
 /// SQLite storage backend (the `sqlite` feature, enabled by default).
 #[cfg(feature = "sqlite")]

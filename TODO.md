@@ -42,6 +42,10 @@ describe — the spec text is the target, these are the deltas:
   tolerates it while Postgres rejects it, so an unchecked NUL is a stored
   value one backend physically cannot hold — divergence. Validate on decode
   (and reject on encode) for Text PKs and table Text columns.
+- [ ] **Rebrand the segment magic bytes.** `MAGIC` is `[0x53, 0x4C]` ("SL",
+  from StateLogs), carried over verbatim during the port. The on-disk format
+  is unpublished and pre-alpha, so this is free to change now — pick a
+  ubiquisync-specific magic before the format stabilizes.
 
 ## Reducer port: SQL dialect
 
@@ -60,6 +64,23 @@ divergences to add when the SQL builders port (~5 total):
   are bytewise like SQLite's BINARY collation.
 - [ ] Boolean handling in `RETURNING` clauses (SQLite returns 0/1 integers,
   Postgres returns real booleans).
+
+## JS / WASM wrapper
+
+A browser/JS wrapper is a future deliverable (the npm namespace is already
+reserved). Decided not to pursue `no_std` for it — the targets we ship
+(Tauri desktop, UniFFI → Swift/Kotlin) all have std, and WASM runs std fine.
+What WASM actually needs, to scope when we build the wrapper:
+
+- [ ] **Injectable clock.** `hlc::wall_ms()` calls `SystemTime::now()`, which
+  panics on `wasm32-unknown-unknown`. The codec and protocol types are
+  otherwise wasm-safe (they only touch `std::io` over in-memory buffers). Make
+  the clock source injectable so WASM can supply `Date.now()`.
+- [ ] **Storage backend, not `fs_log`.** The filesystem sync layer (`std::fs`)
+  won't run in the browser and isn't shipped there; the browser needs a
+  different backend (OPFS / IndexedDB) driven from JS.
+- [ ] Optional: a `wasm32-unknown-unknown` build check in CI to keep the
+  protocol/codec layer browser-portable.
 
 ## Docs
 
