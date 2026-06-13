@@ -1,7 +1,7 @@
 //! SQLite dialect: protocol type → SQLite column type mapping.
 
-use ubiquisync_core::dialect::SqlDialect;
-use ubiquisync_core::sys_id::{PkColType, SysColType};
+use ubiquisync_tables::dialect::SqlDialect;
+use ubiquisync_tables::id::{ColType, PkColType};
 
 /// The SQLite SQL dialect.
 ///
@@ -13,15 +13,15 @@ use ubiquisync_core::sys_id::{PkColType, SysColType};
 pub struct SqliteDialect;
 
 impl SqlDialect for SqliteDialect {
-    fn sys_col_type(&self, col_type: SysColType) -> &'static str {
+    fn col_type(&self, col_type: ColType) -> &'static str {
         match col_type {
-            SysColType::Bytes | SysColType::Uuid => "BLOB",
-            SysColType::Text => "TEXT",
-            SysColType::I64 | SysColType::MaxI64 => "INTEGER",
+            ColType::Bytes | ColType::Uuid => "BLOB",
+            ColType::Text => "TEXT",
+            ColType::I64 | ColType::MaxI64 => "INTEGER",
         }
     }
 
-    fn sys_pk_col_type(&self, col_type: PkColType) -> &'static str {
+    fn pk_col_type(&self, col_type: PkColType) -> &'static str {
         match col_type {
             PkColType::Bytes | PkColType::Uuid => "BLOB",
             PkColType::Text => "TEXT",
@@ -35,25 +35,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sys_col_types_map_to_documented_sqlite_types() {
+    fn col_types_map_to_documented_sqlite_types() {
         // Goal: non-PK column types map exactly as documented in the
-        // sys-tables protocol reference (column types table).
+        // tables protocol reference (column types table).
         let d = SqliteDialect;
-        assert_eq!(d.sys_col_type(SysColType::Bytes), "BLOB");
-        assert_eq!(d.sys_col_type(SysColType::Text), "TEXT");
-        assert_eq!(d.sys_col_type(SysColType::I64), "INTEGER");
-        assert_eq!(d.sys_col_type(SysColType::Uuid), "BLOB");
-        assert_eq!(d.sys_col_type(SysColType::MaxI64), "INTEGER");
+        assert_eq!(d.col_type(ColType::Bytes), "BLOB");
+        assert_eq!(d.col_type(ColType::Text), "TEXT");
+        assert_eq!(d.col_type(ColType::I64), "INTEGER");
+        assert_eq!(d.col_type(ColType::Uuid), "BLOB");
+        assert_eq!(d.col_type(ColType::MaxI64), "INTEGER");
     }
 
     #[test]
     fn pk_col_types_map_to_documented_sqlite_types() {
         // Goal: PK column types map exactly as documented in the
-        // sys-tables protocol reference (PK types table).
+        // tables protocol reference (PK types table).
         let d = SqliteDialect;
-        assert_eq!(d.sys_pk_col_type(PkColType::Bytes), "BLOB");
-        assert_eq!(d.sys_pk_col_type(PkColType::Uuid), "BLOB");
-        assert_eq!(d.sys_pk_col_type(PkColType::Text), "TEXT");
-        assert_eq!(d.sys_pk_col_type(PkColType::I64), "INTEGER");
+        assert_eq!(d.pk_col_type(PkColType::Bytes), "BLOB");
+        assert_eq!(d.pk_col_type(PkColType::Uuid), "BLOB");
+        assert_eq!(d.pk_col_type(PkColType::Text), "TEXT");
+        assert_eq!(d.pk_col_type(PkColType::I64), "INTEGER");
     }
 }

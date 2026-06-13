@@ -1,6 +1,6 @@
-//! Ubiquisync — conflict-free sync of structured data and rich text over
-//! commodity cloud storage (Google Drive, iCloud Drive, Dropbox, ...) or a
-//! dedicated sync server.
+//! Ubiquisync — conflict-free sync of structured data over commodity cloud
+//! storage (Google Drive, iCloud Drive, Dropbox, ...) or a dedicated sync
+//! server.
 //!
 //! > **⚠ PRE-ALPHA — WORK IN PROGRESS ⚠**
 //! >
@@ -8,11 +8,12 @@
 //! > and **will change without notice**. Do not use it in production. Breaking
 //! > changes may land on any commit.
 //!
-//! This crate is the user-facing entry point. It re-exports the protocol and
-//! engine from `ubiquisync-core` and exposes storage backends behind feature
-//! flags (`sqlite`, enabled by default).
+//! This crate is the user-facing entry point. It re-exports the engine from
+//! `ubiquisync-core`, the table protocol from `ubiquisync-tables`, and exposes
+//! storage backends behind feature flags (`sqlite`, enabled by default).
 
 pub use ubiquisync_core::*;
+pub use ubiquisync_tables::*;
 
 /// SQLite storage backend (the `sqlite` feature, enabled by default).
 #[cfg(feature = "sqlite")]
