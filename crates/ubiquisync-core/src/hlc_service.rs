@@ -11,7 +11,7 @@
 
 use std::sync::Mutex;
 
-use crate::hlc::{Hlc, SkewError, Timestamp};
+use crate::hlc::{wall_ms, Hlc, SkewError, Timestamp};
 
 /// Durable storage for the clock state: a single packed-`u64` register.
 ///
@@ -85,7 +85,7 @@ impl<S: HlcStorage> HlcService<S> {
     /// before the timestamp is used, or a crash could reissue it.
     pub fn now(&self) -> Result<Timestamp, S::Error> {
         let mut hlc = self.state.lock().unwrap();
-        let ts = hlc.now();
+        let ts = hlc.tick(wall_ms());
         self.storage.save(hlc.state().raw())?;
         Ok(ts)
     }
@@ -95,9 +95,15 @@ impl<S: HlcStorage> HlcService<S> {
     /// advances — observe is a no-op for stale receipts and we don't want
     /// to spam the register.
     ///
-    /// `local_wall_ms` comes from the caller (typically
-    /// [`wall_ms`](crate::hlc::wall_ms)) so batch replay reads the wall
-    /// clock once rather than per entry.
+    /// `local_wall_ms` is supplied by the caller — typically a single
+    /// [`wall_ms`](crate::hlc::wall_ms) reading taken once when a received
+    /// batch starts replaying — rather than read here per call. This judges a
+    /// whole batch against one reference instant, so entries don't drift in
+    /// and out of the skew window depending on where they fall in the loop,
+    /// and it keeps the skew tests deterministic. The wall clock only moves
+    /// forward across a batch, so a shared start-of-batch reading is at worst
+    /// conservative (it may reject a borderline entry that a fresher reading
+    /// would admit) — never unsound, since it can't widen the window.
     pub fn observe(&self, received: Timestamp, local_wall_ms: u64) -> Result<(), HlcError<S::Error>> {
         let mut hlc = self.state.lock().unwrap();
         let before = hlc.state();

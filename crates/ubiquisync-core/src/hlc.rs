@@ -99,24 +99,52 @@ impl Hlc {
     /// Generate a new timestamp for a local write. Guarantees:
     /// - Result > all previously generated timestamps.
     /// - Result > all timestamps absorbed by `observe` so far.
-    /// - Result >= current wall clock.
-    pub fn now(&mut self) -> Timestamp {
-        let wall = wall_ms();
+    /// - Result >= `local_wall_ms`.
+    ///
+    /// `local_wall_ms` (typically from [`wall_ms`]) is passed in rather than
+    /// read here for the same reason as [`observe`](Self::observe): [`Hlc`] is
+    /// a pure state machine that does no I/O, which keeps the tick logic fully
+    /// testable against a controlled clock. The service layer reads the wall
+    /// clock once and supplies it. (Named `tick` rather than `now` precisely
+    /// because it does not read the clock — it advances state from a reading
+    /// the caller provides.)
+    pub fn tick(&mut self, local_wall_ms: u64) -> Timestamp {
         let old_wall = self.state.millis();
         let old_counter = self.state.counter();
-        let mut new_wall = wall.max(old_wall);
+
+        // The wall component can never regress: take the larger of the
+        // caller's wall reading and the wall we last emitted. When the wall
+        // clock has ticked into a new millisecond it wins and we get a fresh
+        // wall; when it's stalled within a millisecond — or running behind a
+        // remote wall we already absorbed via `observe` — the stored wall
+        // holds the line so we never hand back time.
+        let mut new_wall = local_wall_ms.max(old_wall);
+
         let new_counter = if new_wall == old_wall {
+            // The wall reading did not pass the wall we last used, so the
+            // wall alone can't order this tick ahead of the previous one. The
+            // counter does that work. `saturating_add` caps at u16::MAX rather
+            // than wrapping to 0, which would silently move time backwards.
             let c = old_counter.saturating_add(1);
             if c == old_counter {
-                // Counter saturated — advance wall by 1 to guarantee monotonicity
+                // The add was a no-op, so we were already at u16::MAX: the
+                // counter is exhausted for this millisecond. Borrow a
+                // millisecond from the future and restart the counter, keeping
+                // the result strictly greater than the old state. 65_536 ticks
+                // inside one millisecond is far beyond any real workload — this
+                // is a correctness backstop, not an expected path.
                 new_wall += 1;
                 0
             } else {
                 c
             }
         } else {
+            // The wall reading advanced into a new millisecond, which by
+            // itself already orders this tick ahead of the last. Start the
+            // counter fresh for the new millisecond.
             0
         };
+
         self.state = Timestamp::from_parts(new_wall, new_counter);
         self.state
     }
@@ -132,9 +160,12 @@ impl Hlc {
     /// [`is_within_skew`](Self::is_within_skew) so a bad entry is rejected
     /// before any work is done on it; this check is the backstop.
     ///
-    /// `local_wall_ms` is supplied by the caller (typically from
-    /// [`wall_ms`]) so batch replay takes the wall clock once rather than
-    /// per entry.
+    /// `local_wall_ms` (typically from [`wall_ms`]) is passed in rather than
+    /// read here because [`Hlc`] is a pure state machine that does no I/O —
+    /// the reference instant is an input like any other (see [`tick`](Self::tick)).
+    /// Threading it through also lets a batch of received entries be checked
+    /// against one consistent wall-clock reading and lets tests pin the skew
+    /// window exactly.
     pub fn observe(&mut self, received: Timestamp, local_wall_ms: u64) -> Result<(), SkewError> {
         if !Self::is_within_skew(received, local_wall_ms) {
             return Err(SkewError {
@@ -227,20 +258,20 @@ mod tests {
     }
 
     #[test]
-    fn now_is_monotone() {
+    fn tick_is_monotone() {
         // Goal: consecutive local ticks strictly increase.
         // Given: a fresh clock. When: ticking repeatedly. Then: each tick
         // beats the last.
         let mut hlc = Hlc::new(0);
-        let t1 = hlc.now();
-        let t2 = hlc.now();
-        let t3 = hlc.now();
+        let t1 = hlc.tick(wall_ms());
+        let t2 = hlc.tick(wall_ms());
+        let t3 = hlc.tick(wall_ms());
         assert!(t2 > t1);
         assert!(t3 > t2);
     }
 
     #[test]
-    fn now_after_observe_beats_observed() {
+    fn tick_after_observe_beats_observed() {
         // Goal: causality across peers — a write made after seeing a remote
         // entry always wins LWW against it.
         // Given: a clock that observed a remote timestamp ahead of local
@@ -250,7 +281,7 @@ mod tests {
         let local = wall_ms();
         let remote = Timestamp::from_parts(local + MAX_SKEW_MS, 999);
         hlc.observe(remote, local).unwrap();
-        let t = hlc.now();
+        let t = hlc.tick(wall_ms());
         assert!(t > remote);
     }
 
@@ -263,7 +294,7 @@ mod tests {
         let saturated = Timestamp::from_parts(far_future, u16::MAX);
         let mut hlc = Hlc::new(saturated.raw());
         // When: ticking. Then: the wall advances by 1 and the counter resets.
-        let t = hlc.now();
+        let t = hlc.tick(wall_ms());
         assert!(t > saturated, "must advance past saturated counter");
         assert_eq!(t.millis(), far_future + 1);
         assert_eq!(t.counter(), 0);
