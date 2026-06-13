@@ -1,9 +1,8 @@
 //! Shared, persistent hybrid logical clock service.
 //!
 //! [`HlcService`] is the clock handle subsystems actually hold: it wraps the
-//! pure [`Hlc`](crate::hlc::Hlc) in a lock so every log domain (state log,
-//! document log) draws from one causal clock domain, and persists the clock
-//! state through [`HlcStorage`] so monotonicity survives restarts — a peer
+//! pure [`Hlc`](crate::hlc::Hlc) in a lock so every log domain draws from one causal clock domain,
+//! and persists the clock state through [`HlcStorage`] so monotonicity survives restarts — a peer
 //! must never reissue a timestamp it already wrote, even after a crash.
 //!
 //! Construct once per database and hand a clone/`Arc` of it to each
@@ -11,7 +10,7 @@
 
 use std::sync::Mutex;
 
-use crate::hlc::{wall_ms, Hlc, SkewError, Timestamp};
+use crate::hlc::{Hlc, SkewError, Timestamp, wall_ms};
 
 /// Durable storage for the clock state: a single packed-`u64` register.
 ///
@@ -104,10 +103,15 @@ impl<S: HlcStorage> HlcService<S> {
     /// forward across a batch, so a shared start-of-batch reading is at worst
     /// conservative (it may reject a borderline entry that a fresher reading
     /// would admit) — never unsound, since it can't widen the window.
-    pub fn observe(&self, received: Timestamp, local_wall_ms: u64) -> Result<(), HlcError<S::Error>> {
+    pub fn observe(
+        &self,
+        received: Timestamp,
+        local_wall_ms: u64,
+    ) -> Result<(), HlcError<S::Error>> {
         let mut hlc = self.state.lock().unwrap();
         let before = hlc.state();
-        hlc.observe(received, local_wall_ms).map_err(HlcError::Skew)?;
+        hlc.observe(received, local_wall_ms)
+            .map_err(HlcError::Skew)?;
         let after = hlc.state();
         if after != before {
             self.storage.save(after.raw()).map_err(HlcError::Storage)?;
@@ -125,7 +129,7 @@ impl<S: HlcStorage> HlcService<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hlc::{wall_ms, MAX_SKEW_MS};
+    use crate::hlc::{MAX_SKEW_MS, wall_ms};
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
     /// In-memory register standing in for a backend metadata row.
