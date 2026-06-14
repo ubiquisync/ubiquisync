@@ -321,4 +321,22 @@ mod tests {
         // Reader-side dict should have all 3 UUIDs.
         assert_eq!(read_uuid_dict.len(), 3);
     }
+
+    /// Goal: a varint with a long run of continuation bytes (more than a u64
+    /// can hold) errors with `VarIntOverflow` rather than spinning past the
+    /// 10-byte maximum or overflowing the shift.
+    ///
+    /// Given: ten `0x80` bytes — every byte keeps the continuation bit set, so
+    ///        the value never terminates within u64's range.
+    /// When:  reading a varint.
+    /// Then:  the 10th byte (shift 63) is rejected as `VarIntOverflow`.
+    #[test]
+    fn read_varint_rejects_overflow() {
+        let data = [0x80u8; 10];
+        let mut reader = Reader::new(data.as_slice());
+        assert!(matches!(
+            reader.read_varint(),
+            Err(CodecError::VarIntOverflow)
+        ));
+    }
 }
