@@ -1,0 +1,20 @@
+[package]
+name = "ubiquisync-fs"
+description = "Filesystem segment-store backend for Ubiquisync — conflict-free sync of structured data over commodity cloud storage or a dedicated server."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ubiquisync-core = { workspace = true }
+# DEFLATE/gzip for reading compressed batch packs produced by compaction.
+flate2 = "1.1.9"
+# base64url (no-pad) encoding of peer ids into directory names.
+base64 = "0.22.1"
+# Formats HLC timestamps into the human-sortable date suffix in segment names.
+jiff = "0.2.28"
+
+[dev-dependencies]
+# Per-test scratch directories for the on-disk roundtrip tests.
+tempfile = "3.27.0"
