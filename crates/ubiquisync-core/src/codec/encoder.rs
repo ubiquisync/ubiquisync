@@ -62,7 +62,30 @@ impl<E: Op, W: Write> Encoder<E, W> {
     /// Encode one log entry. Takes parts by ref/value rather than a full
     /// `LogEntry<E>` so callers iterating `&[E]` can avoid cloning each op
     /// just to satisfy a `&LogEntry<E>` argument.
+    ///
+    /// The UUID dictionary and last timestamp are persistent, cross-entry
+    /// state; they are committed only once the entry's bytes are written. A
+    /// failure partway through leaves the encoder exactly as it was, so a
+    /// partly-built entry can never leave behind a UUID definition (or an
+    /// advanced clock) that the flushed bytes don't account for.
     pub fn encode_entry(
+        &mut self,
+        op: &E,
+        timestamp: Timestamp,
+        user_id: Option<Uuid>,
+    ) -> Result<usize, CodecError> {
+        let dict_len_before = self.uuids.len();
+        let result = self.try_encode_entry(op, timestamp, user_id);
+        if result.is_err() {
+            // Roll back UUID definitions registered before the failure. IDs are
+            // handed out sequentially from 1, so any id past the pre-call count
+            // belongs to this aborted entry.
+            self.uuids.retain(|_, id| (*id as usize) <= dict_len_before);
+        }
+        result
+    }
+
+    fn try_encode_entry(
         &mut self,
         op: &E,
         timestamp: Timestamp,
@@ -73,16 +96,16 @@ impl<E: Op, W: Write> Encoder<E, W> {
         op.encode(&mut writer)?;
         let raw_timestamp = timestamp.raw();
         writer.write_delta(raw_timestamp, self.last_timestamp)?;
-        self.last_timestamp = raw_timestamp;
         if self.server_mode {
-            if let Some(user_id) = user_id {
-                writer.write_uuid(&user_id);
-            } else {
-                return Err(CodecError::MissingUserId);
+            match user_id {
+                Some(user_id) => writer.write_uuid(&user_id),
+                None => return Err(CodecError::MissingUserId),
             }
         }
         let (bytes, _) = writer.finalize();
         self.sink.write_all(&bytes)?;
+        // Commit cross-entry state only now that the bytes are written.
+        self.last_timestamp = raw_timestamp;
         self.entry_index += 1;
         self.size += bytes.len();
         Ok(self.entry_index)

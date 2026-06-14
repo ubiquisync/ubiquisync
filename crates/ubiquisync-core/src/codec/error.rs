@@ -12,6 +12,8 @@ pub enum CodecError {
     PkCountMismatch { expected: usize, got: usize },
     #[error("column value variant does not match the column ID's declared type")]
     ColumnValueMismatch,
+    #[error("primary key value variant does not match the table ID's declared PK type")]
+    PkValueMismatch,
     #[error("hash mismatch: expected {expected:#010x}, got {got:#010x}")]
     HashMismatch { expected: u32, got: u32 },
     #[error("varint overflows u64")]

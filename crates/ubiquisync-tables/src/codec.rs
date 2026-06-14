@@ -95,15 +95,20 @@ fn write_pk(
         });
     }
 
-    for v in pk {
-        match v {
-            PkValue::Bytes(b) => w.write_blob(b),
-            PkValue::Uuid(u) => w.write_uuid(u),
-            PkValue::Text(s) => {
+    // Encode each PK value per the type the table ID declares — not the variant
+    // the caller happened to pass — so the bytes always match what the decoder
+    // reads back. A variant that disagrees with the declared type is a caller
+    // error (it would otherwise serialize with the wrong wire shape).
+    for (i, v) in pk.iter().enumerate() {
+        match (table_id.pk_col_type(i), v) {
+            (PkColType::Bytes, PkValue::Bytes(b)) => w.write_blob(b),
+            (PkColType::Uuid, PkValue::Uuid(u)) => w.write_uuid(u),
+            (PkColType::Text, PkValue::Text(s)) => {
                 check_text(s)?;
                 w.write_blob(s.as_bytes());
             }
-            PkValue::I64(n) => w.write_zigzag(*n),
+            (PkColType::I64, PkValue::I64(n)) => w.write_zigzag(*n),
+            _ => return Err(CodecError::PkValueMismatch),
         }
     }
     Ok(())
@@ -612,5 +617,81 @@ mod tests {
             matches!(err, Some(CodecError::UnknownSegmentFlags(0x07))),
             "got {err:?}"
         );
+    }
+
+    /// Goal: a PK value whose variant disagrees with the table ID's declared PK
+    /// type is rejected at encode time, rather than being written with the
+    /// wrong wire shape and mis-decoded.
+    ///
+    /// Given: a Uuid-PK table but a Text PK value.
+    /// When:  encoding it.
+    /// Then:  encoding fails with `PkValueMismatch`.
+    #[test]
+    fn encode_rejects_pk_value_type_mismatch() {
+        let op = Op::Delete(Delete {
+            table_id: table_uuid_pk(),
+            primary_key: vec![PkValue::Text("not a uuid".into())],
+        });
+        let buf = std::io::Cursor::new(Vec::new());
+        let mut encoder = Encoder::new(buf, TEST_MAGIC, false).unwrap();
+        let err = encoder
+            .encode_entry(&op, Timestamp::from_raw(TS1), None)
+            .unwrap_err();
+        assert!(matches!(err, CodecError::PkValueMismatch), "got {err:?}");
+    }
+
+    /// Goal: a failed `encode_entry` leaves the encoder's cross-entry state
+    /// (UUID dictionary and last timestamp) exactly as it was, so a later entry
+    /// is still correctly encodable and decodable.
+    ///
+    /// Given: a server-mode encoder; a first entry that registers a UUID in its
+    ///        PK at a high timestamp but then fails (no user id in server mode).
+    /// When:  a second, valid entry reuses that UUID at an earlier timestamp.
+    /// Then:  the segment decodes cleanly to just the second entry. This fails
+    ///        under either bug: if the dict isn't rolled back the UUID becomes a
+    ///        dangling dict reference (`UnresolvedUuid`); if `last_timestamp`
+    ///        advanced, the earlier second timestamp is a `NonMonotonicDelta`.
+    #[test]
+    fn failed_entry_does_not_corrupt_encoder_state() {
+        let table = table_uuid_pk();
+
+        let failed = Op::Upsert(Upsert {
+            table_id: table,
+            primary_key: vec![PkValue::Uuid(PK_UUID)],
+            updates: vec![],
+            nulls: vec![],
+        });
+        let good = Op::Delete(Delete {
+            table_id: table,
+            primary_key: vec![PkValue::Uuid(PK_UUID)],
+        });
+
+        let buf = std::io::Cursor::new(Vec::new());
+        let mut encoder = Encoder::new(buf, TEST_MAGIC, true).unwrap();
+
+        // First entry registers PK_UUID, then fails: server mode with no user.
+        let err = encoder
+            .encode_entry(&failed, Timestamp::from_raw(TS2), None)
+            .unwrap_err();
+        assert!(matches!(err, CodecError::MissingUserId), "got {err:?}");
+
+        // Second entry reuses the UUID at an earlier timestamp, with a user.
+        encoder
+            .encode_entry(&good, Timestamp::from_raw(TS1), Some(USER_1))
+            .unwrap();
+        let bytes = encoder.sink_mut().get_ref().clone();
+
+        let (decoded, derr) = Decoder::<Op, &[u8]>::decode_all(bytes.as_slice(), TEST_MAGIC);
+        assert!(derr.is_none(), "decode error: {derr:?}");
+        let decoded = decoded.unwrap();
+        assert_eq!(decoded.entries.len(), 1);
+        match &decoded.entries[0] {
+            DecodedEntry::LogEntry(e) => {
+                assert_eq!(e.user_id, Some(USER_1));
+                assert_eq!(e.timestamp, Timestamp::from_raw(TS1));
+                assert_eq!(format!("{:?}", e.op), format!("{:?}", good));
+            }
+            DecodedEntry::Expunged(_) => panic!("unexpected Expunged"),
+        }
     }
 }
