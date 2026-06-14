@@ -5,14 +5,14 @@
 //! - [`processor`] — the apply seam ([`LogProcessor`]): what absorbs remote
 //!   entries and tracks per-peer cursors.
 //! - [`pull`] — the engine ([`PullSync`]) that drives a source into a processor.
-//! - [`error`] — [`LogStoreError`], shared across the seams.
+//! - [`error`] — [`SyncError`], shared across the seams.
 
 mod error;
 mod processor;
 mod pull;
 mod store;
 
-pub use error::LogStoreError;
+pub use error::SyncError;
 pub use processor::LogProcessor;
 pub use pull::{PullSync, SyncResult};
 pub use store::{LogEntrySink, LogSource};

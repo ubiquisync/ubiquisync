@@ -96,7 +96,7 @@ mod tests {
     use crate::log_entry::LogEntry;
     use crate::uuid::Uuid;
 
-    use super::super::error::LogStoreError;
+    use super::super::error::SyncError;
 
     // ── A trivial op vocabulary for exercising the engine ────────────────
     // PullSync only shuttles already-decoded entries, but `E: Op` is part of
@@ -146,7 +146,7 @@ mod tests {
             mut consumer: F,
         ) -> Result<(), Err>
         where
-            Err: From<LogStoreError>,
+            Err: From<SyncError>,
             F: FnMut(u64, DecodedEntry<TestOp>) -> ControlFlow<Result<(), Err>>,
         {
             let stream = self.streams.get(peer).cloned().unwrap_or_default();
@@ -168,7 +168,7 @@ mod tests {
     }
 
     impl LogProcessor<TestOp> for MockProcessor {
-        type Error = LogStoreError;
+        type Error = SyncError;
 
         fn get_peer_cursor(&self, peer_id: &Uuid) -> Result<u64, Self::Error> {
             Ok(self.cursors.get(peer_id).copied().unwrap_or(0))
@@ -189,7 +189,7 @@ mod tests {
             entry: &LogEntry<TestOp>,
         ) -> Result<(), Self::Error> {
             if self.fail_at == Some(index) {
-                return Err(LogStoreError::EncodingError("boom".into()));
+                return Err(SyncError::EncodingError("boom".into()));
             }
             self.applied.push((index, entry.clone()));
             Ok(())
@@ -320,7 +320,7 @@ mod tests {
 
         let err = PullSync::new(&source, None).sync(&mut store).unwrap_err();
 
-        assert!(matches!(err, LogStoreError::EncodingError(_)));
+        assert!(matches!(err, SyncError::EncodingError(_)));
         assert!(store.applied.is_empty());
         assert!(!store.cursors.contains_key(&p));
     }

@@ -5,12 +5,12 @@
 use crate::log_entry::LogEntry;
 use crate::uuid::Uuid;
 
-use super::error::LogStoreError;
+use super::error::SyncError;
 
 /// A store that can absorb remote entries and remember how far it has read each
 /// peer's stream.
 pub trait LogProcessor<E> {
-    type Error: From<LogStoreError>;
+    type Error: From<SyncError>;
 
     /// Returns the next-entry index for the given peer; `0` if the peer has
     /// never been seen.

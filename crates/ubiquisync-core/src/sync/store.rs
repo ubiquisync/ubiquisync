@@ -10,7 +10,7 @@ use crate::codec::DecodedEntry;
 use crate::hlc::Timestamp;
 use crate::uuid::Uuid;
 
-use super::error::LogStoreError;
+use super::error::SyncError;
 
 /// Encoding strategy for log entries. Implementations encode and append
 /// entries to underlying storage, choosing the wire format (device vs server).
@@ -23,7 +23,7 @@ pub trait LogEntrySink<E>: Send {
         ts: Timestamp,
         user_id: Option<Uuid>,
         entries: &[E],
-    ) -> Result<u64, LogStoreError>;
+    ) -> Result<u64, SyncError>;
 }
 
 /// Read-side of log storage: discover peers and read their entries.
@@ -46,6 +46,6 @@ pub trait LogSource<E>: Send {
         consumer: F,
     ) -> Result<(), Err>
     where
-        Err: From<LogStoreError>,
+        Err: From<SyncError>,
         F: FnMut(u64, DecodedEntry<E>) -> ControlFlow<Result<(), Err>>;
 }
