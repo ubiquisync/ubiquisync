@@ -7,9 +7,10 @@ use crate::codec::{error::CodecError, reader::EntryBufferReader, writer::EntryBu
 /// Each data domain implements this for its own op type (e.g. the table op
 /// enum in `ubiquisync-tables`, which is also named `Op`). The generic
 /// [`Encoder`](crate::codec::Encoder) and [`Decoder`](crate::codec::Decoder)
-/// drive it: the decoder reads the entry tag and hands it to [`decode`], the
-/// encoder calls [`encode`] to write the op body. The codec framing supplies
-/// everything else (timestamp, attribution, integrity hash).
+/// drive it: the framing reads the entry tag and hands it to [`decode`], which
+/// decodes the body; [`encode`] is responsible for the **whole** op — it writes
+/// the tag *and* the body. The framing supplies everything else (timestamp,
+/// attribution, integrity hash).
 ///
 /// [`decode`]: Op::decode
 /// [`encode`]: Op::encode

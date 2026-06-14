@@ -4,16 +4,22 @@ pub enum CodecError {
     UnexpectedEof,
     #[error("unknown tag: {0}")]
     UnknownTag(u8),
-    #[error("invalid UUID length: expected 16, got {0}")]
+    #[error("unresolved UUID dictionary reference {0}")]
     UnresolvedUuid(u64),
     #[error("invalid column type bits in column ID {0:#04x}")]
     InvalidColumnType(u8),
+    #[error("primary key has {got} value(s) but the table ID declares {expected}")]
+    PkCountMismatch { expected: usize, got: usize },
+    #[error("column value variant does not match the column ID's declared type")]
+    ColumnValueMismatch,
     #[error("hash mismatch: expected {expected:#010x}, got {got:#010x}")]
     HashMismatch { expected: u32, got: u32 },
     #[error("varint overflows u64")]
     VarIntOverflow,
     #[error("non-monotonic delta")]
     NonMonotonicDelta,
+    #[error("timestamp delta overflows u64")]
+    TimestampOverflow,
     #[error("invalid utf-8")]
     InvalidUtf8(#[from] std::string::FromUtf8Error),
     #[error("text value contains an embedded NUL byte")]

@@ -48,7 +48,11 @@ impl<'a, R: BufRead> EntryBufferReader<'a, R> {
     /// as fixed 8-byte little-endian (matching the writer).
     pub fn read_delta(&mut self, last: u64) -> Result<u64, CodecError> {
         let delta = self.reader.read_varint(false)?;
-        let current = last + delta;
+        // A corrupted/hostile delta must not wrap u64: a wrapped value would
+        // still hash consistently for the wrong timestamp and pass the check.
+        let current = last
+            .checked_add(delta)
+            .ok_or(CodecError::TimestampOverflow)?;
         self.reader._update_hash(&current.to_le_bytes());
         Ok(current)
     }
@@ -177,8 +181,21 @@ impl<R: BufRead> Reader<R> {
     }
 
     pub(super) fn read_vec(&mut self, len: usize) -> Result<Vec<u8>, CodecError> {
-        let mut buf = vec![0; len];
-        self.reader.read_exact(&mut buf)?;
+        // Grow the buffer with the bytes actually delivered rather than
+        // pre-allocating an on-wire length we haven't validated — a corrupt or
+        // hostile blob length must not OOM the process before we hit EOF.
+        let mut buf = Vec::new();
+        let mut remaining = len;
+        let mut chunk = [0u8; 8192];
+        while remaining > 0 {
+            let want = remaining.min(chunk.len());
+            let n = self.reader.read(&mut chunk[..want])?;
+            if n == 0 {
+                return Err(CodecError::UnexpectedEof);
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            remaining -= n;
+        }
         Ok(buf)
     }
 }

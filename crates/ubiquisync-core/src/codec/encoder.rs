@@ -1,7 +1,4 @@
-use std::{
-    collections::HashMap,
-    io::{Read, Write},
-};
+use std::{collections::HashMap, io::Write};
 
 use crate::{
     codec::{
@@ -24,7 +21,7 @@ pub struct Encoder<E, W> {
     _phantom: std::marker::PhantomData<E>,
 }
 
-impl<E: Op, W: Write + Read> Encoder<E, W> {
+impl<E: Op, W: Write> Encoder<E, W> {
     /// Create a new encoder.
     ///
     /// `magic` is the segment's leading identity bytes — it is **not** defined

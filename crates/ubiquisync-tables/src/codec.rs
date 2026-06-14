@@ -88,9 +88,17 @@ fn write_pk(
     pk: &[PkValue],
 ) -> Result<(), CodecError> {
     let pk_count = table_id.pk_count();
+    // A wrong number of PK values is a caller bug; surface it as an error
+    // rather than panicking on an out-of-range index.
+    if pk.len() != pk_count {
+        return Err(CodecError::PkCountMismatch {
+            expected: pk_count,
+            got: pk.len(),
+        });
+    }
 
-    for i in 0..pk_count {
-        match &pk[i] {
+    for v in pk {
+        match v {
             PkValue::Bytes(b) => w.write_blob(b),
             PkValue::Uuid(u) => w.write_uuid(u),
             PkValue::Text(s) => {
@@ -108,29 +116,31 @@ fn write_col_value(
     col_id: ColumnId,
     value: &ColValue,
 ) -> Result<(), CodecError> {
+    // The value variant must match the column ID's declared type. A mismatch
+    // is a caller bug; return an error rather than panicking via unreachable!.
     match col_id.col_type() {
         ColType::Bytes => match value {
             ColValue::Bytes(b) => w.write_blob(b),
-            _ => unreachable!(),
+            _ => return Err(CodecError::ColumnValueMismatch),
         },
         ColType::Text => match value {
             ColValue::Text(s) => {
                 check_text(s)?;
                 w.write_blob(s.as_bytes());
             }
-            _ => unreachable!(),
+            _ => return Err(CodecError::ColumnValueMismatch),
         },
         ColType::I64 => match value {
             ColValue::I64(n) => w.write_zigzag(*n),
-            _ => unreachable!(),
+            _ => return Err(CodecError::ColumnValueMismatch),
         },
         ColType::Uuid => match value {
             ColValue::Uuid(u) => w.write_uuid(u),
-            _ => unreachable!(),
+            _ => return Err(CodecError::ColumnValueMismatch),
         },
         ColType::MaxI64 => match value {
             ColValue::I64(n) => w.write_zigzag(*n),
-            _ => unreachable!(),
+            _ => return Err(CodecError::ColumnValueMismatch),
         },
     }
     Ok(())
@@ -143,15 +153,19 @@ fn decode_one_op<R: BufRead>(tag: u8, r: &mut EntryBufferReader<R>) -> Result<Op
         TAG_UPSERT => {
             let table_id = TableId::from(r.read_u16_le()?);
             let primary_key = read_pk(r, table_id)?;
+            // Counts come from untrusted bytes — don't pre-allocate to them, or
+            // a bogus count could OOM before the missing data is read. The Vec
+            // grows as entries are actually decoded; a too-large count just
+            // fails fast on the first absent column.
             let update_count = r.read_varint()? as usize;
-            let mut updates = Vec::with_capacity(update_count);
+            let mut updates = Vec::new();
             for _ in 0..update_count {
                 let column_id = read_column_id(r)?;
                 let value = read_col_value(r, column_id)?;
                 updates.push(ColumnUpdate { column_id, value });
             }
             let null_count = r.read_varint()? as usize;
-            let mut nulls = Vec::with_capacity(null_count);
+            let mut nulls = Vec::new();
             for _ in 0..null_count {
                 nulls.push(read_column_id(r)?);
             }
@@ -495,5 +509,84 @@ mod tests {
             matches!(err, Some(CodecError::TextContainsNul)),
             "got {err:?}"
         );
+    }
+
+    /// Goal: an op whose PK value count disagrees with the table ID's declared
+    /// PK shape is rejected at encode time instead of panicking on an index.
+    ///
+    /// Given: a 2-column (Text, I64) PK table but only one PK value supplied.
+    /// When:  encoding it.
+    /// Then:  encoding fails with `PkCountMismatch`.
+    #[test]
+    fn encode_rejects_pk_count_mismatch() {
+        let op = Op::Delete(Delete {
+            table_id: table_text_i64_pk(),
+            primary_key: vec![PkValue::Text("only-one".into())],
+        });
+        let buf = std::io::Cursor::new(Vec::new());
+        let mut encoder = Encoder::new(buf, TEST_MAGIC, false).unwrap();
+        let err = encoder
+            .encode_entry(&op, Timestamp::from_raw(TS1), None)
+            .unwrap_err();
+        assert!(
+            matches!(err, CodecError::PkCountMismatch { expected: 2, got: 1 }),
+            "got {err:?}"
+        );
+    }
+
+    /// Goal: a column value whose variant doesn't match the column ID's declared
+    /// type is rejected at encode time instead of panicking.
+    ///
+    /// Given: an I64 column carrying a Text value.
+    /// When:  encoding it.
+    /// Then:  encoding fails with `ColumnValueMismatch`.
+    #[test]
+    fn encode_rejects_column_value_type_mismatch() {
+        let op = Op::Upsert(Upsert {
+            table_id: table_bytes_pk(),
+            primary_key: vec![PkValue::Bytes(b"pk1".to_vec())],
+            updates: vec![ColumnUpdate {
+                column_id: col_i64(),
+                value: ColValue::Text("not an int".into()),
+            }],
+            nulls: vec![],
+        });
+        let buf = std::io::Cursor::new(Vec::new());
+        let mut encoder = Encoder::new(buf, TEST_MAGIC, false).unwrap();
+        let err = encoder
+            .encode_entry(&op, Timestamp::from_raw(TS1), None)
+            .unwrap_err();
+        assert!(matches!(err, CodecError::ColumnValueMismatch), "got {err:?}");
+    }
+
+    /// Goal: a segment claiming an absurd on-wire blob length fails cleanly
+    /// instead of pre-allocating (and OOM-ing) that length. The test completing
+    /// at all is the real assertion — the old code aborted trying to allocate
+    /// `usize::MAX` bytes.
+    ///
+    /// Given: a hand-built entry whose PK blob declares a length of `u64::MAX`
+    ///        with no data behind it.
+    /// When:  decoding it.
+    /// Then:  `decode_all` surfaces `UnexpectedEof` and the process survives.
+    #[test]
+    fn decode_rejects_bogus_blob_length_without_oom() {
+        use std::collections::HashMap;
+        use ubiquisync_core::codec::{EntryBufferWriter, FLAG_DEVICE};
+
+        let table = table_bytes_pk(); // single Bytes PK → first field is a blob
+        let mut dict: HashMap<Uuid, u32> = HashMap::new();
+        let mut w = EntryBufferWriter::new(&mut dict);
+        w.write_byte(TAG_UPSERT);
+        w.write_u16_le(table.into());
+        w.write_varint(u64::MAX); // bogus PK blob length with no data behind it
+        let (entry_bytes, _) = w.finalize();
+
+        let mut segment = Vec::new();
+        segment.extend_from_slice(TEST_MAGIC);
+        segment.push(FLAG_DEVICE);
+        segment.extend_from_slice(&entry_bytes);
+
+        let (_decoded, err) = Decoder::<Op, &[u8]>::decode_all(segment.as_slice(), TEST_MAGIC);
+        assert!(matches!(err, Some(CodecError::UnexpectedEof)), "got {err:?}");
     }
 }
