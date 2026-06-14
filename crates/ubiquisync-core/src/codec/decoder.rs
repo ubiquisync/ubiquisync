@@ -38,6 +38,7 @@ impl<E: Op, R: BufRead> Decoder<E, R> {
     /// [`Encoder::new`](crate::codec::Encoder::new)). A segment whose leading
     /// bytes don't match is rejected as foreign with [`CodecError::BadSegmentMagic`].
     pub fn new(read: R, magic: &[u8]) -> Result<Option<Self>, CodecError> {
+        debug_assert!(!magic.is_empty(), "magic must not be empty");
         let mut reader = Reader::new(read);
         if reader.is_eof()? {
             return Ok(None);

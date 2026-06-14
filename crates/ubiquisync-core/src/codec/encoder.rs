@@ -31,6 +31,7 @@ impl<E: Op, W: Write> Encoder<E, W> {
     /// distinct value per app, and prefer same-length magics across apps so one
     /// cannot be a prefix of another.
     pub fn new(mut sink: W, magic: &[u8], server_mode: bool) -> Result<Self, CodecError> {
+        debug_assert!(!magic.is_empty(), "magic must not be empty");
         // Write segment header
         sink.write_all(magic)?;
         if server_mode {

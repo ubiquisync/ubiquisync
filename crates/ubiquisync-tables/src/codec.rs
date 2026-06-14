@@ -694,4 +694,132 @@ mod tests {
             DecodedEntry::Expunged(_) => panic!("unexpected Expunged"),
         }
     }
+
+    /// Goal: the decoder reads an expunged marker (tag + 32-byte hash, no body,
+    /// no integrity suffix) as a `DecodedEntry::Expunged`.
+    ///
+    /// Given: a segment containing a single hand-built expunged marker.
+    /// When:  decoding it.
+    /// Then:  one `Expunged` entry is produced with no error.
+    #[test]
+    fn decode_reads_expunged_marker() {
+        use ubiquisync_core::codec::{FLAG_DEVICE, TAG_EXPUNGED};
+
+        let mut segment = Vec::new();
+        segment.extend_from_slice(TEST_MAGIC);
+        segment.push(FLAG_DEVICE);
+        segment.push(TAG_EXPUNGED);
+        segment.extend_from_slice(&[0xAB; 32]); // 32-byte hash; no body or trailer
+
+        let (decoded, err) = Decoder::<Op, &[u8]>::decode_all(segment.as_slice(), TEST_MAGIC);
+        assert!(err.is_none(), "decode error: {err:?}");
+        let decoded = decoded.unwrap();
+        assert_eq!(decoded.entries.len(), 1);
+        assert!(matches!(decoded.entries[0], DecodedEntry::Expunged(_)));
+    }
+
+    /// Goal: a segment whose magic doesn't match the expected app magic is
+    /// rejected as foreign.
+    #[test]
+    fn decode_rejects_bad_magic() {
+        // Same length as TEST_MAGIC, different bytes.
+        let segment = b"WRONGMAGI";
+        assert_eq!(segment.len(), TEST_MAGIC.len());
+
+        let (_decoded, err) = Decoder::<Op, &[u8]>::decode_all(segment.as_slice(), TEST_MAGIC);
+        assert!(matches!(err, Some(CodecError::BadSegmentMagic)), "got {err:?}");
+    }
+
+    /// Goal: an unknown op tag is rejected rather than mis-parsed.
+    #[test]
+    fn decode_rejects_unknown_op_tag() {
+        use ubiquisync_core::codec::FLAG_DEVICE;
+
+        let mut segment = Vec::new();
+        segment.extend_from_slice(TEST_MAGIC);
+        segment.push(FLAG_DEVICE);
+        segment.push(0x7E); // neither TAG_UPSERT/TAG_DELETE nor TAG_EXPUNGED
+
+        let (_decoded, err) = Decoder::<Op, &[u8]>::decode_all(segment.as_slice(), TEST_MAGIC);
+        assert!(matches!(err, Some(CodecError::UnknownTag(0x7E))), "got {err:?}");
+    }
+
+    /// Goal: a flipped byte in a valid entry is caught by the integrity check.
+    ///
+    /// Given: one validly encoded entry with its trailing integrity bytes
+    ///        corrupted (content intact, so framing still parses).
+    /// When:  decoding it.
+    /// Then:  decode fails with `HashMismatch`.
+    #[test]
+    fn decode_detects_hash_mismatch() {
+        let op = Op::Delete(Delete {
+            table_id: table_uuid_pk(),
+            primary_key: vec![PkValue::Uuid(PK_UUID)],
+        });
+        let buf = std::io::Cursor::new(Vec::new());
+        let mut encoder = Encoder::new(buf, TEST_MAGIC, false).unwrap();
+        encoder
+            .encode_entry(&op, Timestamp::from_raw(TS1), None)
+            .unwrap();
+        let mut bytes = encoder.sink_mut().get_ref().clone();
+
+        // Corrupt the entry's trailing integrity bytes (last byte of the buffer).
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0xFF;
+
+        let (_decoded, err) = Decoder::<Op, &[u8]>::decode_all(bytes.as_slice(), TEST_MAGIC);
+        assert!(matches!(err, Some(CodecError::HashMismatch { .. })), "got {err:?}");
+    }
+
+    /// Goal: an entry truncated mid-body fails cleanly with `UnexpectedEof`
+    /// rather than panicking or mis-decoding.
+    #[test]
+    fn decode_rejects_truncated_entry() {
+        let op = Op::Delete(Delete {
+            table_id: table_uuid_pk(),
+            primary_key: vec![PkValue::Uuid(PK_UUID)],
+        });
+        let buf = std::io::Cursor::new(Vec::new());
+        let mut encoder = Encoder::new(buf, TEST_MAGIC, false).unwrap();
+        encoder
+            .encode_entry(&op, Timestamp::from_raw(TS1), None)
+            .unwrap();
+        let bytes = encoder.sink_mut().get_ref().clone();
+
+        // Keep the header + tag + one byte, cutting the table id read short.
+        let truncated = &bytes[..TEST_MAGIC.len() + 3];
+        let (_decoded, err) = Decoder::<Op, &[u8]>::decode_all(truncated, TEST_MAGIC);
+        assert!(matches!(err, Some(CodecError::UnexpectedEof)), "got {err:?}");
+    }
+
+    /// Goal: two apps with distinct (same-length) magics reject each other's
+    /// segments — the isolation the caller-supplied magic exists to provide.
+    #[test]
+    fn distinct_magics_reject_each_others_segments() {
+        let magic_a: &[u8] = b"APP_A";
+        let magic_b: &[u8] = b"APP_B";
+
+        let op = Op::Delete(Delete {
+            table_id: table_uuid_pk(),
+            primary_key: vec![PkValue::Uuid(PK_UUID)],
+        });
+        let buf = std::io::Cursor::new(Vec::new());
+        let mut encoder = Encoder::new(buf, magic_a, false).unwrap();
+        encoder
+            .encode_entry(&op, Timestamp::from_raw(TS1), None)
+            .unwrap();
+        let bytes = encoder.sink_mut().get_ref().clone();
+
+        let (_decoded, err) = Decoder::<Op, &[u8]>::decode_all(bytes.as_slice(), magic_b);
+        assert!(matches!(err, Some(CodecError::BadSegmentMagic)), "got {err:?}");
+    }
+
+    /// Goal: an empty magic is a caller error — `Encoder::new` debug-asserts.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "magic must not be empty")]
+    fn encoder_rejects_empty_magic() {
+        let buf = std::io::Cursor::new(Vec::new());
+        let _ = Encoder::<Op, _>::new(buf, b"", false);
+    }
 }
