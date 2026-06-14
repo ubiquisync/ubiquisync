@@ -3,7 +3,7 @@ use crate::batches::{
     seal_batch,
 };
 use crate::peers::peer_dir;
-use crate::segments::{ActiveSegment, create_segment, list_segments, seal_segment};
+use crate::segments::{ActiveSegment, SealedSegmentInfo, create_segment, list_segments, seal_segment};
 use std::fs;
 use std::fs::File;
 use std::io::BufReader;
@@ -51,9 +51,17 @@ impl<E: Op> FsLogSink<E> {
             } else {
                 let segments = list_segments(&last_batch.path);
                 if let Some(last_segment) = segments.last() {
-                    let sealed_segment_info =
+                    // Recover the tail segment's seal info. An already-sealed
+                    // tail carries its end index in the name; an unsealed tail
+                    // is decoded to count its entries. A tail that decodes to
+                    // *zero* entries is an empty/torn segment from a crash
+                    // between segment creation and the first durable entry — it
+                    // has nothing to recover, so it's deleted (yielding `None`)
+                    // rather than sealed, which would otherwise bake a bogus
+                    // end index into the name and skip an entry index.
+                    let sealed_segment_info: Option<SealedSegmentInfo> =
                         if let Some(sealed_segment_info) = &last_segment.sealed_info {
-                            sealed_segment_info.clone()
+                            Some(sealed_segment_info.clone())
                         } else {
                             // Figure out the end index and timestamp of the last entry in the segment by decoding.
                             let file = File::open(&last_segment.path)?;
@@ -76,41 +84,71 @@ impl<E: Op> FsLogSink<E> {
                             } else {
                                 (0, None)
                             };
-                            // Sealed segments store the inclusive last
-                            // entry index. The reopen path at line 89/97
-                            // adds 1 to recover next_entry_index, so we
-                            // must subtract 1 here.
-                            let end_idx = last_segment.start_index + count.saturating_sub(1);
-                            // default to current wall time if no timestamp in last entry
-                            let end_ts = end_ts.unwrap_or(Timestamp::from_parts(wall_ms(), 0));
-                            let mut last_segment = last_segment.clone();
-                            seal_segment(&mut last_segment, end_idx, end_ts)?
+                            if count == 0 {
+                                // Empty/torn tail with no recoverable entries.
+                                // Delete it so a fresh segment created at the
+                                // same start index on the next write can't be
+                                // shadowed by it, and resume at its start index.
+                                fs::remove_file(&last_segment.path)?;
+                                None
+                            } else {
+                                // Sealed segments store the inclusive last
+                                // entry index. The reopen paths below add 1
+                                // to recover next_entry_index, so subtract 1.
+                                let end_idx = last_segment.start_index + count - 1;
+                                // default to current wall time if no timestamp in last entry
+                                let end_ts = end_ts.unwrap_or(Timestamp::from_parts(wall_ms(), 0));
+                                let mut last_segment = last_segment.clone();
+                                Some(seal_segment(&mut last_segment, end_idx, end_ts)?)
+                            }
                         };
 
-                    let batch_size = segments.iter().map(|s| s.size).sum();
-                    let segment_count = segments.len() as u64;
-                    // Check if batch needs to be sealed
-                    if batch_size > BATCH_ROLLOVER_SIZE || segment_count > BATCH_ROLLOVER_FILE_COUNT {
-                        // Seal batch
-                        let mut last_batch = last_batch.clone();
-                        seal_batch(&mut last_batch, &sealed_segment_info)?;
-                        Ok(Self {
-                            dir,
-                            magic: magic.to_vec(),
-                            next_entry_index: sealed_segment_info.end_index + 1,
-                            // will create a new batch when the first write occurs
-                            active_batch: None,
-                            last_write: Instant::now(),
-                        })
+                    if let Some(sealed_segment_info) = sealed_segment_info {
+                        let batch_size = segments.iter().map(|s| s.size).sum();
+                        let segment_count = segments.len() as u64;
+                        // Check if batch needs to be sealed
+                        if batch_size > BATCH_ROLLOVER_SIZE
+                            || segment_count > BATCH_ROLLOVER_FILE_COUNT
+                        {
+                            // Seal batch
+                            let mut last_batch = last_batch.clone();
+                            seal_batch(&mut last_batch, &sealed_segment_info)?;
+                            Ok(Self {
+                                dir,
+                                magic: magic.to_vec(),
+                                next_entry_index: sealed_segment_info.end_index + 1,
+                                // will create a new batch when the first write occurs
+                                active_batch: None,
+                                last_write: Instant::now(),
+                            })
+                        } else {
+                            Ok(Self {
+                                dir,
+                                magic: magic.to_vec(),
+                                next_entry_index: sealed_segment_info.end_index + 1,
+                                active_batch: Some(ActiveBatch {
+                                    info: last_batch.clone(),
+                                    segment_count,
+                                    batch_size,
+                                    active_segment: None,
+                                }),
+                                last_write: Instant::now(),
+                            })
+                        }
                     } else {
+                        // The tail segment was empty and removed. Resume at its
+                        // start index with the batch still active; the next
+                        // write creates a fresh segment there. The removed
+                        // segment is excluded from the batch's size/count.
+                        let kept = &segments[..segments.len() - 1];
                         Ok(Self {
                             dir,
                             magic: magic.to_vec(),
-                            next_entry_index: sealed_segment_info.end_index + 1,
+                            next_entry_index: last_segment.start_index,
                             active_batch: Some(ActiveBatch {
                                 info: last_batch.clone(),
-                                segment_count,
-                                batch_size,
+                                segment_count: kept.len() as u64,
+                                batch_size: kept.iter().map(|s| s.size).sum(),
                                 active_segment: None,
                             }),
                             last_write: Instant::now(),

@@ -6,6 +6,7 @@
 //! no mocks — because the bugs that matter here are filesystem-shape bugs.
 
 use std::collections::HashMap;
+use std::fs;
 use std::io::BufRead;
 use std::ops::ControlFlow;
 
@@ -348,6 +349,105 @@ fn multi_entry_size_seal_records_correct_end_index() {
     let got = collect(&src, &NODE_A, 0);
     assert_eq!(got.iter().map(|(i, _)| *i).collect::<Vec<_>>(), vec![0, 1, 2]);
     assert_eq!(op_payload(&got[2].1), b"z");
+}
+
+// ── C1. Torn trailing entry stays readable, not bricked ─────────────
+
+/// Goal (regression, C1): a crash can leave the final entry of a segment
+/// partially written (writes fsync per batch, not per entry). After reopen,
+/// boot recovery seals that segment around the good prefix but leaves the
+/// torn bytes on disk, and a fresh write appends a new segment *after* it —
+/// making the torn segment interior. The reader must tolerate the torn tail
+/// (present the good prefix and continue to the next segment) rather than
+/// propagating a decode error, which would stall the peer's sync forever.
+#[test]
+fn torn_trailing_entry_is_tolerated_by_reader() {
+    use std::fs::OpenOptions;
+
+    let root = temp_root();
+
+    // Write three entries into a single unsealed segment, then drop.
+    let seg_path = {
+        let mut sink: FsLogSink<TestOp> = FsLogSink::new(root.path(), &NODE_A, MAGIC).unwrap();
+        sink.write(ts(100), None, &[upsert(b"aaaa"), upsert(b"bbbb"), upsert(b"cccccccc")])
+            .unwrap();
+        let peer = peer_dir(root.path(), &NODE_A);
+        let batch = list_batches(&peer).pop().expect("a batch");
+        list_segments(&batch.path).pop().expect("a segment").path
+    };
+
+    // Corrupt the trailing entry by lopping a few bytes off the end of the
+    // segment file — enough to truncate the last entry's integrity trailer
+    // so it fails to decode, while leaving the first two entries intact.
+    let len = fs::metadata(&seg_path).unwrap().len();
+    OpenOptions::new()
+        .write(true)
+        .open(&seg_path)
+        .unwrap()
+        .set_len(len - 3)
+        .unwrap();
+
+    // Reopen: recovery decodes the good prefix (2 entries), seals the
+    // segment at end_index 1, and resumes at index 2. The torn bytes remain
+    // in the now-sealed segment.
+    let mut sink: FsLogSink<TestOp> = FsLogSink::new(root.path(), &NODE_A, MAGIC).unwrap();
+    let cursor = sink.write(ts(101), None, &[upsert(b"z")]).unwrap();
+    assert_eq!(cursor, 3, "recovery should resume past the good prefix");
+
+    // The source reads the good prefix from the (now interior) torn segment
+    // and continues into the fresh segment — three contiguous entries, no
+    // error.
+    let src: FsLogSource<TestOp> = FsLogSource::new(root.path(), MAGIC);
+    let got = collect(&src, &NODE_A, 0);
+    assert_eq!(got.iter().map(|(i, _)| *i).collect::<Vec<_>>(), vec![0, 1, 2]);
+    assert_eq!(op_payload(&got[0].1), b"aaaa");
+    assert_eq!(op_payload(&got[1].1), b"bbbb");
+    assert_eq!(op_payload(&got[2].1), b"z");
+}
+
+// ── M1. Empty/torn tail segment doesn't skip an index ───────────────
+
+/// Goal (regression, M1): a crash between segment creation and the first
+/// durable entry leaves a header-only (zero-entry) segment. Recovery must
+/// not seal it as if it held one entry — doing so would advance the cursor
+/// past the segment's start index, leaving a permanent gap (or a duplicate
+/// index once a fresh segment is created at the bumped index). It must
+/// resume *at* the start index instead.
+#[test]
+fn empty_tail_segment_resumes_without_skipping_index() {
+    use std::fs::OpenOptions;
+
+    let root = temp_root();
+
+    // Write one entry so a segment file exists, then drop.
+    let seg_path = {
+        let mut sink: FsLogSink<TestOp> = FsLogSink::new(root.path(), &NODE_A, MAGIC).unwrap();
+        sink.write(ts(100), None, &[upsert(b"a")]).unwrap();
+        let peer = peer_dir(root.path(), &NODE_A);
+        let batch = list_batches(&peer).pop().expect("a batch");
+        list_segments(&batch.path).pop().expect("a segment").path
+    };
+
+    // Truncate to the segment header (magic + 1 flag byte) — a zero-entry
+    // segment, as if the process died right after creating the file.
+    OpenOptions::new()
+        .write(true)
+        .open(&seg_path)
+        .unwrap()
+        .set_len(MAGIC.len() as u64 + 1)
+        .unwrap();
+
+    // Reopen: recovery deletes the empty segment and resumes at index 0.
+    let mut sink: FsLogSink<TestOp> = FsLogSink::new(root.path(), &NODE_A, MAGIC).unwrap();
+    let cursor = sink.write(ts(101), None, &[upsert(b"z")]).unwrap();
+    assert_eq!(cursor, 1, "must resume at the empty segment's start index, not skip it");
+
+    // Exactly one entry, at index 0 — no gap, no duplicate.
+    let src: FsLogSource<TestOp> = FsLogSource::new(root.path(), MAGIC);
+    let got = collect(&src, &NODE_A, 0);
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].0, 0);
+    assert_eq!(op_payload(&got[0].1), b"z");
 }
 
 // ── 8. End-to-end through the sync engine ───────────────────────────

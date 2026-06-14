@@ -124,7 +124,27 @@ where
     F: FnMut(u64, DecodedEntry<E>) -> ControlFlow<Result<(), Err>>,
 {
     let mut idx = segment_start_index;
-    while let Some(e) = decoder.decode_entry().map_err(SyncError::from)? {
+    loop {
+        let entry = match decoder.decode_entry() {
+            Ok(Some(e)) => e,
+            // Clean end of the segment's entries.
+            Ok(None) => break,
+            Err(_) => {
+                // A decode error means the rest of this segment is unreadable.
+                // The realistic cause is a partially-written trailing entry
+                // from a crash: `write` fsyncs once per batch, not per entry,
+                // so a crash can leave the final entry torn. Boot recovery
+                // (`decode_all` in the sink) tolerates exactly this — it counts
+                // the good prefix and seals the segment at that index, so the
+                // *next* segment is created at `good_prefix_end + 1`. The reader
+                // must match that tolerance: present the good prefix and let the
+                // caller move on to the next segment, which resumes
+                // contiguously. Propagating the error instead would stall the
+                // peer's sync permanently once the torn segment becomes
+                // interior (a fresh segment is appended after it on reopen).
+                break;
+            }
+        };
         // Skip entries preceding the consumer's requested start. The consumer
         // sees `idx` as the absolute log-entry index, so we advance `idx` for
         // every decoded entry — both skipped and consumed.
@@ -132,7 +152,7 @@ where
             idx += 1;
             continue;
         }
-        match consume(idx, e) {
+        match consume(idx, entry) {
             ControlFlow::Continue(()) => {}
             ControlFlow::Break(Ok(())) => return Ok(ControlFlow::Break(())),
             ControlFlow::Break(Err(e)) => return Err(e),
