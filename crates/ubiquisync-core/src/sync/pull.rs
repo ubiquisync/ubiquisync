@@ -23,11 +23,11 @@ pub struct SyncResult {
 /// Pulls new entries from known peers into a [`LogProcessor`].
 ///
 /// The source returns `DecodedEntry<E>` which may include expunged markers.
-/// PullSync filters those out, computes correct cursor positions that
+/// PullSynchronizer filters those out, computes correct cursor positions that
 /// account for expunged gaps, and passes only real `LogEntry<E>` entries
 /// to the processor. This is also where hash/signature verification
 /// would happen if needed.
-pub struct PullSync<'a, E, S> {
+pub struct PullSynchronizer<'a, E, S> {
     source: &'a S,
     /// When set, skip this peer during sync. Pass `None` at startup
     /// to include self (crash replay); pass `Some(node_id)` during
@@ -36,7 +36,7 @@ pub struct PullSync<'a, E, S> {
     phantom: std::marker::PhantomData<E>,
 }
 
-impl<'a, E: Op, S: LogSource<E>> PullSync<'a, E, S> {
+impl<'a, E: Op, S: LogSource<E>> PullSynchronizer<'a, E, S> {
     pub fn new(source: &'a S, skip_id: Option<&'a [u8]>) -> Self {
         Self {
             source,
@@ -73,6 +73,10 @@ impl<'a, E: Op, S: LogSource<E>> PullSync<'a, E, S> {
                 next_entry_index = idx + 1;
                 ControlFlow::Continue(())
             })?;
+            // Only persist when the stream actually yielded something past the
+            // cursor — skip the write for a peer with no new entries. Note this
+            // advances past expunged markers too: they bump next_entry_index
+            // without being applied, so the gap isn't re-read next sync.
             if next_entry_index > start_idx {
                 store.save_peer_cursor(peer_id, next_entry_index)?;
             }
@@ -99,7 +103,7 @@ mod tests {
     use super::super::error::SyncError;
 
     // ── A trivial op vocabulary for exercising the engine ────────────────
-    // PullSync only shuttles already-decoded entries, but `E: Op` is part of
+    // PullSynchronizer only shuttles already-decoded entries, but `E: Op` is part of
     // the contract, so the test op implements the trait with a one-byte body.
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct TestOp(u8);
@@ -165,6 +169,8 @@ mod tests {
         applied: Vec<(u64, LogEntry<TestOp>)>,
         cursors: HashMap<Uuid, u64>,
         fail_at: Option<u64>,
+        fail_save: bool,
+        save_calls: usize,
     }
 
     impl LogProcessor<TestOp> for MockProcessor {
@@ -179,6 +185,10 @@ mod tests {
             peer_id: &Uuid,
             next_entry_idx: u64,
         ) -> Result<(), Self::Error> {
+            self.save_calls += 1;
+            if self.fail_save {
+                return Err(SyncError::EncodingError("save failed".into()));
+            }
             self.cursors.insert(*peer_id, next_entry_idx);
             Ok(())
         }
@@ -217,7 +227,7 @@ mod tests {
         };
         let mut store = MockProcessor::default();
 
-        let result = PullSync::new(&source, None).sync(&mut store).unwrap();
+        let result = PullSynchronizer::new(&source, None).sync(&mut store).unwrap();
 
         assert_eq!(result.entries_applied, 2);
         assert_eq!(store.applied.len(), 2);
@@ -242,7 +252,7 @@ mod tests {
         let mut store = MockProcessor::default();
         store.cursors.insert(p, 1);
 
-        let result = PullSync::new(&source, None).sync(&mut store).unwrap();
+        let result = PullSynchronizer::new(&source, None).sync(&mut store).unwrap();
 
         assert_eq!(result.entries_applied, 2);
         assert_eq!(store.applied[0].0, 1);
@@ -267,7 +277,7 @@ mod tests {
         };
         let mut store = MockProcessor::default();
 
-        let result = PullSync::new(&source, None).sync(&mut store).unwrap();
+        let result = PullSynchronizer::new(&source, None).sync(&mut store).unwrap();
 
         assert_eq!(result.entries_applied, 2);
         assert_eq!(store.applied.len(), 2);
@@ -290,7 +300,7 @@ mod tests {
         let mut store = MockProcessor::default();
 
         let skip = me.to_vec();
-        let result = PullSync::new(&source, Some(&skip)).sync(&mut store).unwrap();
+        let result = PullSynchronizer::new(&source, Some(&skip)).sync(&mut store).unwrap();
 
         assert_eq!(result.entries_applied, 1);
         assert_eq!(store.applied[0].1.op, TestOp(20));
@@ -318,10 +328,109 @@ mod tests {
             ..Default::default()
         };
 
-        let err = PullSync::new(&source, None).sync(&mut store).unwrap_err();
+        let err = PullSynchronizer::new(&source, None).sync(&mut store).unwrap_err();
 
         assert!(matches!(err, SyncError::EncodingError(_)));
         assert!(store.applied.is_empty());
         assert!(!store.cursors.contains_key(&p));
+    }
+
+    #[test]
+    fn sync_advances_cursor_past_all_expunged_stream() {
+        // A stream of nothing but expunged markers applies zero entries but
+        // must still move the cursor past the gap so it isn't re-read.
+        let p = peer(1);
+        let source = MockSource {
+            peers: vec![p],
+            streams: HashMap::from([(
+                p,
+                vec![
+                    DecodedEntry::Expunged(blake3::hash(b"a")),
+                    DecodedEntry::Expunged(blake3::hash(b"b")),
+                ],
+            )]),
+        };
+        let mut store = MockProcessor::default();
+
+        let result = PullSynchronizer::new(&source, None).sync(&mut store).unwrap();
+
+        assert_eq!(result.entries_applied, 0);
+        assert!(store.applied.is_empty());
+        assert_eq!(store.cursors[&p], 2);
+    }
+
+    #[test]
+    fn sync_does_not_save_cursor_when_no_new_entries() {
+        // A peer already fully drained (cursor at end, nothing new) must not
+        // trigger a redundant cursor write.
+        let p = peer(1);
+        let source = MockSource {
+            peers: vec![p],
+            streams: HashMap::from([(p, vec![DecodedEntry::LogEntry(entry(10))])]),
+        };
+        let mut store = MockProcessor::default();
+        store.cursors.insert(p, 1); // already past the only entry
+
+        let result = PullSynchronizer::new(&source, None).sync(&mut store).unwrap();
+
+        assert_eq!(result.entries_applied, 0);
+        assert_eq!(store.save_calls, 0, "no save for a peer with nothing new");
+    }
+
+    #[test]
+    fn sync_drains_multiple_active_peers_independently() {
+        // Two active (non-skipped) peers both drain, and each gets its own
+        // cursor saved at its own stream length.
+        let p1 = peer(1);
+        let p2 = peer(2);
+        let source = MockSource {
+            peers: vec![p1, p2],
+            streams: HashMap::from([
+                (p1, vec![DecodedEntry::LogEntry(entry(10))]),
+                (
+                    p2,
+                    vec![
+                        DecodedEntry::LogEntry(entry(20)),
+                        DecodedEntry::LogEntry(entry(30)),
+                    ],
+                ),
+            ]),
+        };
+        let mut store = MockProcessor::default();
+
+        let result = PullSynchronizer::new(&source, None).sync(&mut store).unwrap();
+
+        assert_eq!(result.entries_applied, 3);
+        assert_eq!(store.cursors[&p1], 1);
+        assert_eq!(store.cursors[&p2], 2);
+    }
+
+    #[test]
+    fn cursor_save_failure_surfaces_after_entries_applied() {
+        // Documents the crash/retry contract: entries apply, then the cursor
+        // save fails — the error propagates and the cursor was NOT recorded, so
+        // a re-sync would re-deliver the already-applied entries. Correctness
+        // then rests on apply_remote_entry being idempotent (see LogProcessor).
+        let p = peer(1);
+        let source = MockSource {
+            peers: vec![p],
+            streams: HashMap::from([(
+                p,
+                vec![
+                    DecodedEntry::LogEntry(entry(10)),
+                    DecodedEntry::LogEntry(entry(20)),
+                ],
+            )]),
+        };
+        let mut store = MockProcessor {
+            fail_save: true,
+            ..Default::default()
+        };
+
+        let err = PullSynchronizer::new(&source, None).sync(&mut store).unwrap_err();
+
+        assert!(matches!(err, SyncError::EncodingError(_)));
+        assert_eq!(store.applied.len(), 2, "entries were applied before the save");
+        assert!(!store.cursors.contains_key(&p), "cursor not durably advanced");
     }
 }

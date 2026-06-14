@@ -7,9 +7,11 @@
 //! non-decreasing and all LWW merge decisions reduce to comparing these
 //! timestamps.
 //!
-//! - [`timestamp`] — the packed `Timestamp` representation and its ordering.
-//! - [`clock`] — the pure in-memory `Hlc`, the wall-clock source, and the skew bound.
-//! - [`service`] — `HlcService`, the lock-protected, persistent handle subsystems hold.
+//! - [`Timestamp`] — the packed instant representation and its ordering.
+//! - [`Hlc`] — the pure in-memory clock, with [`wall_ms`] and the skew bound
+//!   ([`SkewError`] / [`MAX_SKEW_MS`]).
+//! - [`HlcService`] — the lock-protected, persistent handle subsystems hold,
+//!   backed by [`HlcStorage`].
 
 mod clock;
 mod service;

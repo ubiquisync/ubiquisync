@@ -1,11 +1,11 @@
 //! Synchronization engine and its seams.
 //!
-//! - [`store`] — the storage seam a backend implements: read ([`LogSource`])
-//!   and write ([`LogEntrySink`]) sides of a peer's log stream.
-//! - [`processor`] — the apply seam ([`LogProcessor`]): what absorbs remote
-//!   entries and tracks per-peer cursors.
-//! - [`pull`] — the engine ([`PullSync`]) that drives a source into a processor.
-//! - [`error`] — [`SyncError`], shared across the seams.
+//! - [`LogSource`] / [`LogEntrySink`] — the storage traits a backend implements:
+//!   the read and write sides of a peer's log stream.
+//! - [`LogProcessor`] — the apply trait: what absorbs remote entries and tracks
+//!   per-peer cursors.
+//! - [`PullSync`] — the engine that drives a source into a processor.
+//! - [`SyncError`] — the umbrella error shared across the seams.
 
 mod error;
 mod processor;

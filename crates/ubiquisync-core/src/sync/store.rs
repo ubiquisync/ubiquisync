@@ -17,7 +17,7 @@ use super::error::SyncError;
 ///
 /// Returns the peer's cursor position after the write — i.e. the number of
 /// entries now in the stream, which is the index of the next entry to write.
-pub trait LogEntrySink<E>: Send {
+pub trait LogEntrySink<E> {
     fn write(
         &mut self,
         ts: Timestamp,
@@ -31,7 +31,7 @@ pub trait LogEntrySink<E>: Send {
 /// Generic over the entry type `E` — the source handles decoding from whatever
 /// underlying format into [`DecodedEntry`] values (which may include expunged
 /// markers).
-pub trait LogSource<E>: Send {
+pub trait LogSource<E> {
     /// Returns the IDs of all peers whose log files are locally available.
     fn list_peers(&self) -> Vec<Uuid>;
 

@@ -3,7 +3,7 @@ use crate::codec::CodecError;
 /// The sync subsystem's umbrella error: anything that can go wrong reading or
 /// writing a peer's log ([`LogSource`](super::LogSource) /
 /// [`LogEntrySink`](super::LogEntrySink)) or driving entries into a processor
-/// ([`PullSync`](super::PullSync)). Storage backends and processors surface
+/// ([`PullSynchronizer`](super::PullSynchronizer)). Storage backends and processors surface
 /// their own failures through this type via its `From` conversions.
 #[derive(Debug, thiserror::Error)]
 pub enum SyncError {
