@@ -34,7 +34,7 @@ impl<E: Op, W: Write> Encoder<E, W> {
         // An empty magic gives zero app isolation — the decoder would compare
         // zero bytes and accept any header.
         if magic.is_empty() {
-            return Err(CodecError::EmptyMagic);
+            return Err(CodecError::BadMagic);
         }
         // Write segment header
         sink.write_all(magic)?;

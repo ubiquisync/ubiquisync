@@ -727,7 +727,7 @@ mod tests {
         assert_eq!(segment.len(), TEST_MAGIC.len());
 
         let (_decoded, err) = Decoder::<Op, &[u8]>::decode_all(segment.as_slice(), TEST_MAGIC);
-        assert!(matches!(err, Some(CodecError::BadSegmentMagic)), "got {err:?}");
+        assert!(matches!(err, Some(CodecError::BadMagic)), "got {err:?}");
     }
 
     /// Goal: an unknown op tag is rejected rather than mis-parsed.
@@ -833,7 +833,7 @@ mod tests {
         let bytes = encoder.sink_mut().get_ref().clone();
 
         let (_decoded, err) = Decoder::<Op, &[u8]>::decode_all(bytes.as_slice(), magic_b);
-        assert!(matches!(err, Some(CodecError::BadSegmentMagic)), "got {err:?}");
+        assert!(matches!(err, Some(CodecError::BadMagic)), "got {err:?}");
     }
 
     /// Goal: an empty magic is rejected at runtime by both the encoder and the
@@ -844,14 +844,14 @@ mod tests {
         assert!(
             matches!(
                 Encoder::<Op, _>::new(buf, b"", false),
-                Err(CodecError::EmptyMagic)
+                Err(CodecError::BadMagic)
             ),
             "encoder should reject empty magic"
         );
 
         let (decoded, dec_err) = Decoder::<Op, &[u8]>::decode_all(b"anything".as_slice(), b"");
         assert!(decoded.is_none());
-        assert!(matches!(dec_err, Some(CodecError::EmptyMagic)), "got {dec_err:?}");
+        assert!(matches!(dec_err, Some(CodecError::BadMagic)), "got {dec_err:?}");
     }
 
     /// Goal: when an entry fails to decode, the decoder's cross-entry state —

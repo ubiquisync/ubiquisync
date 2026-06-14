@@ -36,10 +36,10 @@ pub enum DecodedEntry<E> {
 impl<E: Op, R: BufRead> Decoder<E, R> {
     /// `magic` is the app-supplied segment identity the encoder wrote (see
     /// [`Encoder::new`](crate::codec::Encoder::new)). A segment whose leading
-    /// bytes don't match is rejected as foreign with [`CodecError::BadSegmentMagic`].
+    /// bytes don't match is rejected as foreign with [`CodecError::BadMagic`].
     pub fn new(read: R, magic: &[u8]) -> Result<Option<Self>, CodecError> {
         if magic.is_empty() {
-            return Err(CodecError::EmptyMagic);
+            return Err(CodecError::BadMagic);
         }
         let mut reader = Reader::new(read);
         if reader.is_eof()? {
@@ -48,7 +48,7 @@ impl<E: Op, R: BufRead> Decoder<E, R> {
         let mut got = vec![0u8; magic.len()];
         reader.read_exact(&mut got)?;
         if got.as_slice() != magic {
-            return Err(CodecError::BadSegmentMagic);
+            return Err(CodecError::BadMagic);
         }
         let flags = reader.read_byte()?.ok_or(CodecError::UnexpectedEof)?;
         // Strict: a flag byte that isn't exactly a known mode signals a format
