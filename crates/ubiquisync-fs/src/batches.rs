@@ -1,4 +1,4 @@
-use crate::segments::{ActiveSegment, SealedSegmentInfo};
+use crate::segments::{ActiveSegment, MAX_SEGMENT_SIZE, SealedSegmentInfo, seal_segment};
 use crate::timestamp::format_timestamp;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -202,16 +202,30 @@ impl<E> ActiveBatch<E> {
     }
 
     fn seal_segment(&mut self, force: bool) -> Result<Option<SealedBatchInfo>, SyncError> {
-        if let Some(seg) = &mut self.active_segment
-            && let Some(sealed_info) = seg.seal_if_needed(force)?
-        {
-            self.batch_size += seg.info.size;
-            self.active_segment = None;
-            if self.segment_count > BATCH_ROLLOVER_FILE_COUNT
-                || self.batch_size > BATCH_ROLLOVER_SIZE
-            {
-                return Ok(Some(seal_batch(&mut self.info, &sealed_info)?));
-            }
+        // Decide whether the active segment should seal before disturbing it.
+        let should_seal = self
+            .active_segment
+            .as_ref()
+            .is_some_and(|seg| force || seg.info.size > MAX_SEGMENT_SIZE);
+        if !should_seal {
+            return Ok(None);
+        }
+        // Take the segment out and drop its Encoder — closing the open file
+        // handle — *before* the rename in `seal_segment`. Renaming a file
+        // that still has a live handle fails on Windows (the handle isn't
+        // opened with FILE_SHARE_DELETE). Per-write fsync already flushed the
+        // bytes durably, so closing here loses nothing.
+        let ActiveSegment {
+            mut info,
+            encoder,
+            end_index,
+            end_ts,
+        } = self.active_segment.take().unwrap();
+        drop(encoder);
+        let sealed_info = seal_segment(&mut info, end_index, end_ts)?;
+        self.batch_size += info.size;
+        if self.segment_count > BATCH_ROLLOVER_FILE_COUNT || self.batch_size > BATCH_ROLLOVER_SIZE {
+            return Ok(Some(seal_batch(&mut self.info, &sealed_info)?));
         }
         Ok(None)
     }

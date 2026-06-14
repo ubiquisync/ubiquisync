@@ -301,7 +301,56 @@ fn reopening_sink_resumes_at_correct_entry_index() {
     assert_eq!(op_payload(&got[2].1), b"z");
 }
 
-// ── 7. End-to-end through the sync engine ───────────────────────────
+// ── 7. Multi-entry size-seal records the correct end index ──────────
+
+/// Goal (regression): when a segment holding *multiple* entries seals
+/// because it crossed the size threshold, its sealed filename must record
+/// the inclusive index of its last entry — not the segment's start index. A
+/// reopened sink resumes at `end_index + 1`, so a wrong end index silently
+/// corrupts per-peer numbering (duplicate indices across the sealed/new
+/// boundary).
+#[test]
+fn multi_entry_size_seal_records_correct_end_index() {
+    let root = temp_root();
+    let mut sink: FsLogSink<TestOp> = FsLogSink::new(root.path(), &NODE_A, MAGIC).unwrap();
+
+    // Two ~600 KB ops in one write → 2 entries (idx 0, 1), ~1.2 MB total,
+    // which trips the 1 MB seal-on-size once the write completes.
+    let half = vec![7u8; 600_000];
+    let cursor = sink
+        .write(ts(100), None, &[upsert(&half), upsert(&half)])
+        .unwrap();
+    assert_eq!(cursor, 2);
+
+    // The batch's first segment is sealed and must name its end index as 1
+    // (start 0 + 2 entries − 1), not 0.
+    let peer = peer_dir(root.path(), &NODE_A);
+    let batch = list_batches(&peer).pop().expect("a batch");
+    let segments = list_segments(&batch.path);
+    let sealed = segments[0]
+        .sealed_info
+        .as_ref()
+        .expect("first segment sealed");
+    assert_eq!(
+        sealed.end_index, 1,
+        "sealed segment must record its last entry index, not its start"
+    );
+
+    // Reopen must resume at index 2 (end_index + 1), so the next op gets a
+    // fresh index rather than colliding with the sealed segment's entries.
+    drop(sink);
+    let mut sink: FsLogSink<TestOp> = FsLogSink::new(root.path(), &NODE_A, MAGIC).unwrap();
+    let cursor = sink.write(ts(101), None, &[upsert(b"z")]).unwrap();
+    assert_eq!(cursor, 3, "reopen must continue past the size-sealed segment");
+
+    // The full stream reads back as three contiguously-indexed entries.
+    let src: FsLogSource<TestOp> = FsLogSource::new(root.path(), MAGIC);
+    let got = collect(&src, &NODE_A, 0);
+    assert_eq!(got.iter().map(|(i, _)| *i).collect::<Vec<_>>(), vec![0, 1, 2]);
+    assert_eq!(op_payload(&got[2].1), b"z");
+}
+
+// ── 8. End-to-end through the sync engine ───────────────────────────
 
 /// A minimal [`LogProcessor`] that records what it applied and tracks a
 /// per-peer cursor in memory — the apply side of the sync seam, standing

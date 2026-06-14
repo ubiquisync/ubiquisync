@@ -81,9 +81,8 @@ impl<E: Op> FsLogSink<E> {
                             // adds 1 to recover next_entry_index, so we
                             // must subtract 1 here.
                             let end_idx = last_segment.start_index + count.saturating_sub(1);
-                            let end_ts = end_ts.
-                                // default to current wall time if no timestamp in last entry
-                                unwrap_or(Timestamp::from_parts(wall_ms(), 0));
+                            // default to current wall time if no timestamp in last entry
+                            let end_ts = end_ts.unwrap_or(Timestamp::from_parts(wall_ms(), 0));
                             let mut last_segment = last_segment.clone();
                             seal_segment(&mut last_segment, end_idx, end_ts)?
                         };
@@ -204,6 +203,14 @@ impl<E: Op> LogEntrySink<E> for FsLogSink<E> {
             seg.encoder.encode_entry(op, timestamp, user_id)?;
         }
         seg.info.size = seg.encoder.size();
+        // Advance the segment's end markers. `seal_segment` bakes these into
+        // the sealed filename (its inclusive last-entry index and timestamp);
+        // `create_segment` only seeds them to the segment start, so without
+        // this a multi-entry segment that seals — by size here, or later —
+        // would record its *start* index as its end, corrupting the
+        // next-entry index recovered on reopen.
+        seg.end_ts = timestamp;
+        seg.end_index = seg.info.start_index + seg.encoder.entry_index() as u64 - 1;
         // Fsync the segment
         seg.encoder.sink_mut().sync_all()?;
         // Update segment size and next entry index

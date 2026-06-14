@@ -29,7 +29,9 @@ pub fn list_segments(dir: &Path) -> Vec<SegmentInfo> {
     // Convert fs entries to (name, is_dir, size) triples so parse_segments
     // stays fs-independent and unit-testable. Non-utf8 names or entries with
     // unreadable metadata are silently dropped — same failure mode as a
-    // parser rejection. Size is 0 for directories (parser rejects those anyway).
+    // parser rejection. Directories carry whatever length the fs reports for
+    // them (often non-zero), but parse_segments drops directories anyway, so
+    // their size is never read.
     let named = entries.filter_map(|e| e.ok()).filter_map(|e| {
         let name = e.file_name().to_str()?.to_string();
         let md = e.metadata().ok()?;
@@ -43,7 +45,8 @@ pub fn list_segments(dir: &Path) -> Vec<SegmentInfo> {
     parse_segments(dir, named)
 }
 
-/// Parse an iterator of (name, is_dir) pairs into sorted, deduped segments.
+/// Parse an iterator of `(name, is_dir, size)` triples into sorted, deduped
+/// segments.
 ///
 /// Split out from `list_segments` so tests can exercise the parse/sort/dedup
 /// logic without touching the filesystem. `dir` is only used to build the
@@ -165,8 +168,10 @@ pub fn create_segment<'a, E: Op>(
         .create(true)
         .append(true)
         .open(&path)?;
-    let encoder =
-        Encoder::new(file, magic, false).map_err(|e| SyncError::EncodingError(e.to_string()))?;
+    // Propagate codec failures as the structured `SyncError::CodecError`
+    // (via `From`), matching how `encode_entry` errors surface — don't
+    // flatten them into a stringly-typed `EncodingError`.
+    let encoder = Encoder::new(file, magic, false)?;
     let info = SegmentInfo {
         start_index: start_idx,
         start_ts: ts_str,
@@ -186,19 +191,10 @@ pub fn create_segment<'a, E: Op>(
 }
 
 /// Segments are sealed when they exceed this size. 1MB keeps sealed
-/// segments small for faster cloud sync and more frequent gzip.
+/// segments small for faster cloud sync and more frequent gzip. The seal
+/// decision and the rename live in the batch sealing logic so the segment's
+/// file handle can be closed before the rename (required on Windows).
 pub const MAX_SEGMENT_SIZE: usize = 1024 * 1024; // 1 MB
-
-impl<E> ActiveSegment<E> {
-    pub fn seal_if_needed(&mut self, force: bool) -> Result<Option<SealedSegmentInfo>, SyncError> {
-        if force || self.info.size > MAX_SEGMENT_SIZE {
-            let sealed_info = seal_segment(&mut self.info, self.end_index, self.end_ts)?;
-            Ok(Some(sealed_info))
-        } else {
-            Ok(None)
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {
