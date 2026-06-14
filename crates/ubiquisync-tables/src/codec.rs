@@ -28,8 +28,7 @@ pub const TAG_UPSERT: u8 = 0;
 /// Soft-delete a table row.
 pub const TAG_DELETE: u8 = 1;
 
-// The core codec trait is also named `Op`; fully-qualify it here so it reads
-// distinctly from this crate's concrete `Op` enum (no `use` to avoid a clash).
+// Fully-qualified: the core trait and this crate's enum are both named `Op`.
 impl ubiquisync_core::codec::Op for Op {
     fn decode<R: BufRead>(tag: u8, r: &mut EntryBufferReader<R>) -> Result<Self, CodecError> {
         decode_one_op(tag, r)
@@ -88,8 +87,7 @@ fn write_pk(
     pk: &[PkValue],
 ) -> Result<(), CodecError> {
     let pk_count = table_id.pk_count();
-    // A wrong number of PK values is a caller bug; surface it as an error
-    // rather than panicking on an out-of-range index.
+    // A wrong number of PK values is a caller error.
     if pk.len() != pk_count {
         return Err(CodecError::PkCountMismatch {
             expected: pk_count,
@@ -116,8 +114,8 @@ fn write_col_value(
     col_id: ColumnId,
     value: &ColValue,
 ) -> Result<(), CodecError> {
-    // The value variant must match the column ID's declared type. A mismatch
-    // is a caller bug; return an error rather than panicking via unreachable!.
+    // The value variant must match the column ID's declared type; a mismatch
+    // is a caller error.
     match col_id.col_type() {
         ColType::Bytes => match value {
             ColValue::Bytes(b) => w.write_blob(b),

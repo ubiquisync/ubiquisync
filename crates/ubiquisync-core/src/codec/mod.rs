@@ -3,8 +3,8 @@
 //! A segment is an app-supplied magic header plus a sequence of entries. Each
 //! entry is one op (encoded through the [`Op`] trait), a delta-encoded
 //! timestamp, an optional user id (server mode), and a truncated blake3
-//! integrity check. The magic identifies the application and is passed to
-//! [`Encoder::new`] / [`Decoder::new`] by the caller, never defined here.
+//! integrity check. The magic identifies the application and is supplied by
+//! the caller to [`Encoder::new`] / [`Decoder::new`].
 //!
 //! This module is generic over the op vocabulary `E: Op`: the framing here
 //! (header, timestamp deltas, UUID dictionary compression, blake3 trailer,
