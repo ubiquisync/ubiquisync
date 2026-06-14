@@ -5,7 +5,7 @@ use std::{
 
 use crate::{
     codec::{
-        consts::{FLAG_DEVICE, FLAG_SERVER, MAGIC},
+        consts::{FLAG_DEVICE, FLAG_SERVER},
         error::CodecError,
         op::Op,
         writer::EntryBufferWriter,
@@ -26,9 +26,16 @@ pub struct Encoder<E, W> {
 
 impl<E: Op, W: Write + Read> Encoder<E, W> {
     /// Create a new encoder.
-    pub fn new(mut sink: W, server_mode: bool) -> Result<Self, CodecError> {
+    ///
+    /// `magic` is the segment's leading identity bytes — it is **not** defined
+    /// by this library. Each application must supply its own stable, app-unique
+    /// value (the same bytes its decoder expects) so that one app's segments are
+    /// never mistaken for another's when they share a sync location. Use a
+    /// distinct value per app, and prefer same-length magics across apps so one
+    /// cannot be a prefix of another.
+    pub fn new(mut sink: W, magic: &[u8], server_mode: bool) -> Result<Self, CodecError> {
         // Write segment header
-        sink.write_all(&MAGIC)?;
+        sink.write_all(magic)?;
         if server_mode {
             sink.write_all(&[FLAG_SERVER])?;
         } else {

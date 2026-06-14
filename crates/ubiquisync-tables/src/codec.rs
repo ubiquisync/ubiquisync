@@ -36,23 +36,37 @@ impl ubiquisync_core::codec::Op for Op {
     }
 
     fn encode(&self, w: &mut EntryBufferWriter) -> Result<(), CodecError> {
-        encode_one_op(w, self);
-        Ok(())
+        encode_one_op(w, self)
     }
+}
+
+// ── Text validation ──────────────────────────────────────────────────────────
+
+/// Reject text carrying an embedded NUL. The protocol forbids `\0` in Text
+/// because SQLite stores it while Postgres rejects it, so an unchecked NUL is a
+/// value one backend physically cannot hold — a silent divergence. Enforced on
+/// both encode and decode, for Text PKs and Text columns. (Strict UTF-8 is
+/// already guaranteed: encode starts from a `String`, decode goes through
+/// `String::from_utf8`.)
+fn check_text(s: &str) -> Result<(), CodecError> {
+    if s.as_bytes().contains(&0u8) {
+        return Err(CodecError::TextContainsNul);
+    }
+    Ok(())
 }
 
 // ── Encode ─────────────────────────────────────────────────────────────────
 
-fn encode_one_op(w: &mut EntryBufferWriter, op: &Op) {
+fn encode_one_op(w: &mut EntryBufferWriter, op: &Op) -> Result<(), CodecError> {
     match op {
         Op::Upsert(e) => {
             w.write_byte(TAG_UPSERT);
             w.write_u16_le(e.table_id.into());
-            write_pk(w, e.table_id, &e.primary_key);
+            write_pk(w, e.table_id, &e.primary_key)?;
             w.write_varint(e.updates.len() as u64);
             for cu in &e.updates {
                 w.write_byte(cu.column_id.into());
-                write_col_value(w, cu.column_id, &cu.value);
+                write_col_value(w, cu.column_id, &cu.value)?;
             }
             w.write_varint(e.nulls.len() as u64);
             for col_id in &e.nulls {
@@ -62,32 +76,48 @@ fn encode_one_op(w: &mut EntryBufferWriter, op: &Op) {
         Op::Delete(e) => {
             w.write_byte(TAG_DELETE);
             w.write_u16_le(e.table_id.into());
-            write_pk(w, e.table_id, &e.primary_key);
+            write_pk(w, e.table_id, &e.primary_key)?;
         }
     }
+    Ok(())
 }
 
-fn write_pk(w: &mut EntryBufferWriter, table_id: TableId, pk: &[PkValue]) {
+fn write_pk(
+    w: &mut EntryBufferWriter,
+    table_id: TableId,
+    pk: &[PkValue],
+) -> Result<(), CodecError> {
     let pk_count = table_id.pk_count();
 
     for i in 0..pk_count {
         match &pk[i] {
             PkValue::Bytes(b) => w.write_blob(b),
             PkValue::Uuid(u) => w.write_uuid(u),
-            PkValue::Text(s) => w.write_blob(s.as_bytes()),
+            PkValue::Text(s) => {
+                check_text(s)?;
+                w.write_blob(s.as_bytes());
+            }
             PkValue::I64(n) => w.write_zigzag(*n),
         }
     }
+    Ok(())
 }
 
-fn write_col_value(w: &mut EntryBufferWriter, col_id: ColumnId, value: &ColValue) {
+fn write_col_value(
+    w: &mut EntryBufferWriter,
+    col_id: ColumnId,
+    value: &ColValue,
+) -> Result<(), CodecError> {
     match col_id.col_type() {
         ColType::Bytes => match value {
             ColValue::Bytes(b) => w.write_blob(b),
             _ => unreachable!(),
         },
         ColType::Text => match value {
-            ColValue::Text(s) => w.write_blob(s.as_bytes()),
+            ColValue::Text(s) => {
+                check_text(s)?;
+                w.write_blob(s.as_bytes());
+            }
             _ => unreachable!(),
         },
         ColType::I64 => match value {
@@ -103,6 +133,7 @@ fn write_col_value(w: &mut EntryBufferWriter, col_id: ColumnId, value: &ColValue
             _ => unreachable!(),
         },
     }
+    Ok(())
 }
 
 // ── Decode ─────────────────────────────────────────────────────────────────
@@ -153,7 +184,11 @@ fn read_pk<R: BufRead>(
         pk.push(match table_id.pk_col_type(i) {
             PkColType::Bytes => PkValue::Bytes(r.read_blob()?),
             PkColType::Uuid => PkValue::Uuid(r.read_uuid()?),
-            PkColType::Text => PkValue::Text(String::from_utf8(r.read_blob()?)?),
+            PkColType::Text => {
+                let s = String::from_utf8(r.read_blob()?)?;
+                check_text(&s)?;
+                PkValue::Text(s)
+            }
             PkColType::I64 => PkValue::I64(r.read_zigzag()?),
         });
     }
@@ -165,7 +200,11 @@ fn read_col_value<R: BufRead>(
     col_id: ColumnId,
 ) -> Result<ColValue, CodecError> {
     match col_id.col_type() {
-        ColType::Text => Ok(ColValue::Text(String::from_utf8(r.read_blob()?)?)),
+        ColType::Text => {
+            let s = String::from_utf8(r.read_blob()?)?;
+            check_text(&s)?;
+            Ok(ColValue::Text(s))
+        }
         ColType::Bytes => Ok(ColValue::Bytes(r.read_blob()?)),
         ColType::Uuid => Ok(ColValue::Uuid(r.read_uuid()?)),
         ColType::I64 | ColType::MaxI64 => Ok(ColValue::I64(r.read_zigzag()?)),
@@ -224,6 +263,10 @@ mod tests {
     const TS1: u64 = 1_700_000_000_000 << 16;
     const TS2: u64 = TS1 + (1_000 << 16); // 1s later
     const TS3: u64 = TS2 + (5_000 << 16); // 5s later
+
+    // App-supplied segment magic. Real apps each pick their own distinct value;
+    // this stands in for one in the codec tests.
+    const TEST_MAGIC: &[u8] = b"TESTMAGIC";
 
     /// Build test entries exercising both op types, all 5 col types, nulls,
     /// and PK shapes covering every PK column type (Bytes, Uuid, Text, I64),
@@ -320,7 +363,7 @@ mod tests {
         let entries = make_test_entries(false);
         let buf = std::io::Cursor::new(Vec::new());
 
-        let mut encoder = Encoder::new(buf, false).unwrap();
+        let mut encoder = Encoder::new(buf, TEST_MAGIC, false).unwrap();
         for entry in &entries {
             encoder
                 .encode_entry(&entry.op, entry.timestamp, entry.user_id)
@@ -328,7 +371,7 @@ mod tests {
         }
         let buf = encoder.sink_mut().get_ref().clone();
 
-        let (decoded, err) = Decoder::<Op, &[u8]>::decode_all(buf.as_slice());
+        let (decoded, err) = Decoder::<Op, &[u8]>::decode_all(buf.as_slice(), TEST_MAGIC);
         assert!(err.is_none(), "decode error: {:?}", err);
         let decoded = decoded.unwrap();
         assert!(!decoded.server_mode);
@@ -347,7 +390,7 @@ mod tests {
         let entries = make_test_entries(true);
         let buf = std::io::Cursor::new(Vec::new());
 
-        let mut encoder = Encoder::new(buf, true).unwrap();
+        let mut encoder = Encoder::new(buf, TEST_MAGIC, true).unwrap();
         for entry in &entries {
             encoder
                 .encode_entry(&entry.op, entry.timestamp, entry.user_id)
@@ -355,7 +398,7 @@ mod tests {
         }
         let buf = encoder.sink_mut().get_ref().clone();
 
-        let (decoded, err) = Decoder::<Op, &[u8]>::decode_all(buf.as_slice());
+        let (decoded, err) = Decoder::<Op, &[u8]>::decode_all(buf.as_slice(), TEST_MAGIC);
         assert!(err.is_none(), "decode error: {:?}", err);
         let decoded = decoded.unwrap();
         assert!(decoded.server_mode);
@@ -370,5 +413,87 @@ mod tests {
         assert_eq!(get_user(&decoded.entries[0]), Some(USER_1));
         assert_eq!(get_user(&decoded.entries[1]), Some(USER_2));
         assert_eq!(get_user(&decoded.entries[2]), Some(USER_1));
+    }
+
+    /// Goal: a Text *column* value carrying an embedded NUL is rejected at
+    /// encode time.
+    ///
+    /// Given: an Upsert whose Text column value contains a `\0`.
+    /// When:  encoding it.
+    /// Then:  encoding fails with `TextContainsNul` — the protocol forbids
+    ///        embedded NUL in Text (SQLite stores it, Postgres rejects it).
+    #[test]
+    fn encode_rejects_embedded_nul_in_text_column() {
+        let op = Op::Upsert(Upsert {
+            table_id: table_bytes_pk(),
+            primary_key: vec![PkValue::Bytes(b"pk1".to_vec())],
+            updates: vec![ColumnUpdate {
+                column_id: col_text(),
+                value: ColValue::Text("bad\0value".into()),
+            }],
+            nulls: vec![],
+        });
+        let buf = std::io::Cursor::new(Vec::new());
+        let mut encoder = Encoder::new(buf, TEST_MAGIC, false).unwrap();
+        let err = encoder
+            .encode_entry(&op, Timestamp::from_raw(TS1), None)
+            .unwrap_err();
+        assert!(matches!(err, CodecError::TextContainsNul), "got {err:?}");
+    }
+
+    /// Goal: a Text *primary key* carrying an embedded NUL is also rejected at
+    /// encode time.
+    #[test]
+    fn encode_rejects_embedded_nul_in_text_pk() {
+        let op = Op::Delete(Delete {
+            table_id: TableId::new(&[PkColType::Text], 4),
+            primary_key: vec![PkValue::Text("bad\0key".into())],
+        });
+        let buf = std::io::Cursor::new(Vec::new());
+        let mut encoder = Encoder::new(buf, TEST_MAGIC, false).unwrap();
+        let err = encoder
+            .encode_entry(&op, Timestamp::from_raw(TS1), None)
+            .unwrap_err();
+        assert!(matches!(err, CodecError::TextContainsNul), "got {err:?}");
+    }
+
+    /// Goal: the decoder rejects a Text value with an embedded NUL even in an
+    /// otherwise-valid segment — the real defense, since a peer or a corrupt
+    /// file can carry bytes our own encoder would never emit.
+    ///
+    /// Given: a hand-built segment whose single Upsert has a Text column value
+    ///        containing `\0`, written through the low-level buffer writer
+    ///        (which does not validate) in the exact order the decoder reads.
+    /// When:  decoding it.
+    /// Then:  `decode_all` surfaces `TextContainsNul`.
+    #[test]
+    fn decode_rejects_embedded_nul_in_text_column() {
+        use std::collections::HashMap;
+        use ubiquisync_core::codec::{EntryBufferWriter, FLAG_DEVICE};
+
+        let table = table_bytes_pk();
+        let col = col_text();
+        let mut dict: HashMap<Uuid, u32> = HashMap::new();
+        let mut w = EntryBufferWriter::new(&mut dict);
+        w.write_byte(TAG_UPSERT);
+        w.write_u16_le(table.into());
+        w.write_blob(b"pk1"); // single Bytes PK
+        w.write_varint(1); // one column update
+        w.write_byte(col.into());
+        w.write_blob(b"bad\0value"); // Text column value with an embedded NUL
+        w.write_varint(0); // no nulls
+        w.write_delta(TS1, 0).unwrap(); // device mode: timestamp, no user id
+        let (entry_bytes, _) = w.finalize();
+
+        let mut segment = Vec::new();
+        segment.extend_from_slice(TEST_MAGIC);
+        segment.push(FLAG_DEVICE);
+        segment.extend_from_slice(&entry_bytes);
+
+        let (_decoded, err) = Decoder::<Op, &[u8]>::decode_all(segment.as_slice(), TEST_MAGIC);
+        assert!(
+            matches!(err, Some(CodecError::TextContainsNul)),
+            "got {err:?}"
+        );
     }
 }

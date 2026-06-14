@@ -16,6 +16,8 @@ pub enum CodecError {
     NonMonotonicDelta,
     #[error("invalid utf-8")]
     InvalidUtf8(#[from] std::string::FromUtf8Error),
+    #[error("text value contains an embedded NUL byte")]
+    TextContainsNul,
     #[error("bad segment magic bytes — not a ubiquisync segment")]
     BadSegmentMagic,
     #[error("missing user id in server mode")]

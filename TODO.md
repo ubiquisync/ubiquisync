@@ -33,20 +33,6 @@ describe — the spec text is the target, these are the deltas:
   work). Likely fix: materialize the column on demand (ALTER TABLE ADD COLUMN
   surrogate).
 
-## Codec port
-
-- [ ] **Enforce the Text rules at decode time.** Strict UTF-8 already holds in
-  the source (`String::from_utf8(...)?` makes invalid UTF-8 a protocol error
-  before it reaches storage) — keep it. The **embedded-NUL check is not
-  enforced anywhere yet**: the docs forbid `\0` in Text because SQLite
-  tolerates it while Postgres rejects it, so an unchecked NUL is a stored
-  value one backend physically cannot hold — divergence. Validate on decode
-  (and reject on encode) for Text PKs and table Text columns.
-- [ ] **Rebrand the segment magic bytes.** `MAGIC` is `[0x53, 0x4C]` ("SL",
-  from StateLogs), carried over verbatim during the port. The on-disk format
-  is unpublished and pre-alpha, so this is free to change now — pick a
-  ubiquisync-specific magic before the format stabilizes.
-
 ## Reducer port: SQL dialect
 
 The `SqlDialect` trait currently covers type names only. The remaining

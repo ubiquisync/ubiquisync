@@ -1,9 +1,10 @@
 //! Envelope-level wire constants, shared across all op vocabularies. The
 //! op-specific tags live alongside each domain's `Op` implementation.
-
-/// Segment magic bytes. Carried over verbatim from the source format
-/// ("SL"); see the codec docs TODO about rebranding the magic.
-pub const MAGIC: [u8; 2] = [0x53, 0x4C];
+//!
+//! Note the segment **magic** is deliberately not here: it identifies the
+//! *application*, not the format, so it is supplied by the caller per segment
+//! (see [`Encoder::new`](crate::codec::Encoder::new)). Baking a shared magic
+//! into this crate would make different apps' segments look mutually valid.
 
 /// Segment mode flag: device mode — attribution is implicit from the peer
 /// directory, so entries carry no user id.

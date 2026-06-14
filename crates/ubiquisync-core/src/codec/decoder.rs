@@ -3,7 +3,7 @@ use std::io::BufRead;
 use std::marker::PhantomData;
 
 use crate::codec::{
-    consts::{FLAG_SERVER, MAGIC, TAG_EXPUNGED},
+    consts::{FLAG_SERVER, TAG_EXPUNGED},
     error::CodecError,
     op::Op,
     reader::{EntryBufferReader, Reader},
@@ -34,14 +34,17 @@ pub enum DecodedEntry<E> {
 }
 
 impl<E: Op, R: BufRead> Decoder<E, R> {
-    pub fn new(read: R) -> Result<Option<Self>, CodecError> {
+    /// `magic` is the app-supplied segment identity the encoder wrote (see
+    /// [`Encoder::new`](crate::codec::Encoder::new)). A segment whose leading
+    /// bytes don't match is rejected as foreign with [`CodecError::BadSegmentMagic`].
+    pub fn new(read: R, magic: &[u8]) -> Result<Option<Self>, CodecError> {
         let mut reader = Reader::new(read);
         if reader.is_eof()? {
             return Ok(None);
         }
-        let mut magic = [0; 2];
-        reader.read_exact(&mut magic)?;
-        if magic != MAGIC {
+        let mut got = vec![0u8; magic.len()];
+        reader.read_exact(&mut got)?;
+        if got.as_slice() != magic {
             return Err(CodecError::BadSegmentMagic);
         }
         let flags = reader.read_byte()?.ok_or(CodecError::UnexpectedEof)?;
@@ -90,8 +93,8 @@ impl<E: Op, R: BufRead> Decoder<E, R> {
 
     // Decodes all entries and returns any error.
     // Entries that were decoded are still returned even if there was an error.
-    pub fn decode_all(buf: R) -> (Option<DecodedLogs<E>>, Option<CodecError>) {
-        match Self::new(buf) {
+    pub fn decode_all(buf: R, magic: &[u8]) -> (Option<DecodedLogs<E>>, Option<CodecError>) {
+        match Self::new(buf, magic) {
             Ok(Some(mut decoder)) => {
                 let mut entries = Vec::new();
                 let mut err = None;
