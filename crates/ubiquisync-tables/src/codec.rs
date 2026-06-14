@@ -792,6 +792,28 @@ mod tests {
         assert!(matches!(err, Some(CodecError::UnexpectedEof)), "got {err:?}");
     }
 
+    /// Goal: truncating only the trailing integrity bytes (body intact) also
+    /// surfaces as the dedicated `UnexpectedEof`, not a generic `Io` error.
+    #[test]
+    fn decode_truncated_trailer_is_unexpected_eof() {
+        let op = Op::Delete(Delete {
+            table_id: table_uuid_pk(),
+            primary_key: vec![PkValue::Uuid(PK_UUID)],
+        });
+        let buf = std::io::Cursor::new(Vec::new());
+        let mut encoder = Encoder::new(buf, TEST_MAGIC, false).unwrap();
+        encoder
+            .encode_entry(&op, Timestamp::from_raw(TS1), None)
+            .unwrap();
+        let bytes = encoder.sink_mut().get_ref().clone();
+
+        // Drop 2 of the 4 trailing integrity bytes: the body reads fine, then
+        // the trailer read comes up short.
+        let truncated = &bytes[..bytes.len() - 2];
+        let (_decoded, err) = Decoder::<Op, &[u8]>::decode_all(truncated, TEST_MAGIC);
+        assert!(matches!(err, Some(CodecError::UnexpectedEof)), "got {err:?}");
+    }
+
     /// Goal: two apps with distinct (same-length) magics reject each other's
     /// segments — the isolation the caller-supplied magic exists to provide.
     #[test]

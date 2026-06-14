@@ -182,8 +182,12 @@ impl<R: BufRead> Reader<R> {
     }
 
     pub(super) fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), CodecError> {
-        self.reader.read_exact(buf)?;
-        Ok(())
+        self.reader.read_exact(buf).map_err(|e| match e.kind() {
+            // A short read is truncation — surface the dedicated EOF error for
+            // consistency with the rest of the decoder, not a generic Io.
+            std::io::ErrorKind::UnexpectedEof => CodecError::UnexpectedEof,
+            _ => CodecError::Io(e),
+        })
     }
 
     pub(super) fn read_vec(&mut self, len: usize) -> Result<Vec<u8>, CodecError> {
