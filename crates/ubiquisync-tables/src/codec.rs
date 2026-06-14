@@ -836,12 +836,68 @@ mod tests {
         assert!(matches!(err, Some(CodecError::BadSegmentMagic)), "got {err:?}");
     }
 
-    /// Goal: an empty magic is a caller error — `Encoder::new` debug-asserts.
-    #[cfg(debug_assertions)]
+    /// Goal: an empty magic is rejected at runtime by both the encoder and the
+    /// decoder (in all builds) — it would otherwise give zero app isolation.
     #[test]
-    #[should_panic(expected = "magic must not be empty")]
-    fn encoder_rejects_empty_magic() {
+    fn empty_magic_is_rejected() {
         let buf = std::io::Cursor::new(Vec::new());
-        let _ = Encoder::<Op, _>::new(buf, b"", false);
+        assert!(
+            matches!(
+                Encoder::<Op, _>::new(buf, b"", false),
+                Err(CodecError::EmptyMagic)
+            ),
+            "encoder should reject empty magic"
+        );
+
+        let (decoded, dec_err) = Decoder::<Op, &[u8]>::decode_all(b"anything".as_slice(), b"");
+        assert!(decoded.is_none());
+        assert!(matches!(dec_err, Some(CodecError::EmptyMagic)), "got {dec_err:?}");
+    }
+
+    /// Goal: when an entry fails to decode, the decoder's cross-entry state —
+    /// the UUID dictionary and last timestamp that `decode_all` returns for
+    /// encoder reuse — reflects only the entries that decoded successfully.
+    ///
+    /// Given: two valid entries (each registering a distinct PK UUID) with the
+    ///        second entry's integrity trailer corrupted.
+    /// When:  decoding the segment.
+    /// Then:  the good first entry is returned alongside a `HashMismatch`, and
+    ///        the returned `last_timestamp` and `uuid_dict` carry only the first
+    ///        entry's state — the failed entry's UUID and timestamp are rolled
+    ///        back.
+    #[test]
+    fn decode_failure_rolls_back_cross_entry_state() {
+        let table = table_uuid_pk();
+        let first = Op::Delete(Delete {
+            table_id: table,
+            primary_key: vec![PkValue::Uuid(PK_UUID)],
+        });
+        let second = Op::Delete(Delete {
+            table_id: table,
+            primary_key: vec![PkValue::Uuid(ROW_UUID_1)],
+        });
+
+        let buf = std::io::Cursor::new(Vec::new());
+        let mut encoder = Encoder::new(buf, TEST_MAGIC, false).unwrap();
+        encoder
+            .encode_entry(&first, Timestamp::from_raw(TS1), None)
+            .unwrap();
+        encoder
+            .encode_entry(&second, Timestamp::from_raw(TS2), None)
+            .unwrap();
+        let mut bytes = encoder.sink_mut().get_ref().clone();
+
+        // Corrupt the second entry's trailing integrity byte.
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0xFF;
+
+        let (decoded, err) = Decoder::<Op, &[u8]>::decode_all(bytes.as_slice(), TEST_MAGIC);
+        assert!(matches!(err, Some(CodecError::HashMismatch { .. })), "got {err:?}");
+        let decoded = decoded.unwrap();
+        assert_eq!(decoded.entries.len(), 1);
+        // Only the first entry's state survived the failure.
+        assert_eq!(decoded.last_timestamp, TS1);
+        assert_eq!(decoded.uuid_dict.len(), 1);
+        assert!(decoded.uuid_dict.contains_key(&PK_UUID));
     }
 }

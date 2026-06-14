@@ -38,7 +38,9 @@ impl<E: Op, R: BufRead> Decoder<E, R> {
     /// [`Encoder::new`](crate::codec::Encoder::new)). A segment whose leading
     /// bytes don't match is rejected as foreign with [`CodecError::BadSegmentMagic`].
     pub fn new(read: R, magic: &[u8]) -> Result<Option<Self>, CodecError> {
-        debug_assert!(!magic.is_empty(), "magic must not be empty");
+        if magic.is_empty() {
+            return Err(CodecError::EmptyMagic);
+        }
         let mut reader = Reader::new(read);
         if reader.is_eof()? {
             return Ok(None);
@@ -67,6 +69,20 @@ impl<E: Op, R: BufRead> Decoder<E, R> {
     }
 
     pub fn decode_entry(&mut self) -> Result<Option<DecodedEntry<E>>, CodecError> {
+        let dict_len_before = self.uuids.len();
+        let result = self.try_decode_entry();
+        if result.is_err() {
+            // Roll back UUID definitions registered by the failed entry. IDs are
+            // assigned sequentially from 1, so any id past the pre-call count
+            // came from this entry; dropping them keeps the dictionary (handed
+            // back by decode_all for encoder reuse) consistent with only the
+            // entries that decoded successfully.
+            self.uuids.retain(|id, _| (*id as usize) <= dict_len_before);
+        }
+        result
+    }
+
+    fn try_decode_entry(&mut self) -> Result<Option<DecodedEntry<E>>, CodecError> {
         if self.buf.is_eof()? {
             return Ok(None);
         }
@@ -85,13 +101,14 @@ impl<E: Op, R: BufRead> Decoder<E, R> {
         }
         let e = E::decode(tag, &mut reader)?;
         let timestamp = reader.read_delta(self.last_timestamp)?;
-        self.last_timestamp = timestamp;
         let user_id = if self.server_mode {
             Some(reader.read_uuid()?)
         } else {
             None
         };
         reader.finalize()?;
+        // Commit cross-entry state only after the integrity check passes.
+        self.last_timestamp = timestamp;
         Ok(Some(DecodedEntry::LogEntry(LogEntry {
             user_id,
             timestamp: Timestamp::from_raw(timestamp),

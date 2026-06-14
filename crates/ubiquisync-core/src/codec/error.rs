@@ -28,8 +28,8 @@ pub enum CodecError {
     InvalidUtf8(#[from] std::string::FromUtf8Error),
     #[error("text value contains an embedded NUL byte")]
     TextContainsNul,
-    #[error("bad segment magic bytes — not a ubiquisync segment")]
-    BadSegmentMagic,
+    #[error("bad magic bytes")]
+    BadMagic,
     #[error("unknown segment flags byte {0:#04x}")]
     UnknownSegmentFlags(u8),
     #[error("missing user id in server mode")]
