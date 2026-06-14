@@ -33,16 +33,6 @@ describe — the spec text is the target, these are the deltas:
   work). Likely fix: materialize the column on demand (ALTER TABLE ADD COLUMN
   surrogate).
 
-## Codec port
-
-- [ ] **Enforce the Text rules at decode time.** Strict UTF-8 already holds in
-  the source (`String::from_utf8(...)?` makes invalid UTF-8 a protocol error
-  before it reaches storage) — keep it. The **embedded-NUL check is not
-  enforced anywhere yet**: the docs forbid `\0` in Text because SQLite
-  tolerates it while Postgres rejects it, so an unchecked NUL is a stored
-  value one backend physically cannot hold — divergence. Validate on decode
-  (and reject on encode) for Text PKs and table Text columns.
-
 ## Reducer port: SQL dialect
 
 The `SqlDialect` trait currently covers type names only. The remaining
@@ -60,6 +50,23 @@ divergences to add when the SQL builders port (~5 total):
   are bytewise like SQLite's BINARY collation.
 - [ ] Boolean handling in `RETURNING` clauses (SQLite returns 0/1 integers,
   Postgres returns real booleans).
+
+## JS / WASM wrapper
+
+A browser/JS wrapper is a future deliverable (the npm namespace is already
+reserved). Decided not to pursue `no_std` for it — the targets we ship
+(Tauri desktop, UniFFI → Swift/Kotlin) all have std, and WASM runs std fine.
+What WASM actually needs, to scope when we build the wrapper:
+
+- [ ] **Injectable clock.** `hlc::wall_ms()` calls `SystemTime::now()`, which
+  panics on `wasm32-unknown-unknown`. The codec and protocol types are
+  otherwise wasm-safe (they only touch `std::io` over in-memory buffers). Make
+  the clock source injectable so WASM can supply `Date.now()`.
+- [ ] **Storage backend, not `fs_log`.** The filesystem sync layer (`std::fs`)
+  won't run in the browser and isn't shipped there; the browser needs a
+  different backend (OPFS / IndexedDB) driven from JS.
+- [ ] Optional: a `wasm32-unknown-unknown` build check in CI to keep the
+  protocol/codec layer browser-portable.
 
 ## Docs
 

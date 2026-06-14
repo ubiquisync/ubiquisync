@@ -2,8 +2,8 @@
 //!
 //! The sync engine is storage-agnostic: it builds SQL as strings and runs
 //! them through a backend connection. The few places where SQL dialects
-//! genuinely diverge (type names, and as the engine port progresses,
-//! placeholder syntax and scalar-max functions) are abstracted behind
+//! genuinely diverge (currently type names; placeholder syntax and
+//! scalar-max functions still to come) are abstracted behind
 //! [`SqlDialect`], implemented by each backend crate.
 
 use crate::id::{ColType, PkColType};

@@ -8,7 +8,7 @@
 //!
 //! Implements the `ubiquisync-tables` storage abstractions over SQLite,
 //! starting with the SQL dialect ([`SqliteDialect`]). The connection layer
-//! and reducer integration land as the engine port progresses.
+//! and reducer integration are not yet implemented.
 
 mod dialect;
 
