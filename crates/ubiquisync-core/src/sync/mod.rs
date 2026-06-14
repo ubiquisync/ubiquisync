@@ -4,7 +4,7 @@
 //!   the read and write sides of a peer's log stream.
 //! - [`LogProcessor`] — the apply trait: what absorbs remote entries and tracks
 //!   per-peer cursors.
-//! - [`PullSync`] — the engine that drives a source into a processor.
+//! - [`PullSynchronizer`] — the engine that drives a source into a processor.
 //! - [`SyncError`] — the umbrella error shared across the seams.
 
 mod error;
@@ -14,5 +14,5 @@ mod store;
 
 pub use error::SyncError;
 pub use processor::LogProcessor;
-pub use pull::{PullSync, SyncResult};
+pub use pull::{PullSynchronizer, SyncResult};
 pub use store::{LogEntrySink, LogSource};
