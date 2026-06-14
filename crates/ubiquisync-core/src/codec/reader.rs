@@ -29,7 +29,10 @@ impl<'a, R: BufRead> EntryBufferReader<'a, R> {
 
     pub fn read_blob(&mut self) -> Result<Vec<u8>, CodecError> {
         let len = self.read_varint()?;
-        self.reader.read_exact(len as usize, true)
+        // try_into, not `as`: on 32-bit targets (e.g. wasm32) `as usize` would
+        // truncate a bogus 64-bit length and mis-decode instead of rejecting.
+        let len: usize = len.try_into().map_err(|_| CodecError::LengthTooLarge(len))?;
+        self.reader.read_exact(len, true)
     }
 
     pub fn read_u16_le(&mut self) -> Result<u16, CodecError> {
@@ -68,10 +71,13 @@ impl<'a, R: BufRead> EntryBufferReader<'a, R> {
             self.uuid_dict.insert(idx as u32, uuid);
             uuid
         } else {
-            // Known UUID — look up by dict index.
+            // Known UUID — look up by dict index. Reject a reference that
+            // doesn't fit u32 before converting, so an out-of-range value
+            // can't wrap and resolve to an unrelated dictionary entry.
+            let idx: u32 = x.try_into().map_err(|_| CodecError::UnresolvedUuid(x))?;
             *self
                 .uuid_dict
-                .get(&(x as u32))
+                .get(&idx)
                 .ok_or(CodecError::UnresolvedUuid(x))?
         };
         self.reader._update_hash(&uuid);

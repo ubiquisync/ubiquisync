@@ -153,18 +153,25 @@ fn decode_one_op<R: BufRead>(tag: u8, r: &mut EntryBufferReader<R>) -> Result<Op
         TAG_UPSERT => {
             let table_id = TableId::from(r.read_u16_le()?);
             let primary_key = read_pk(r, table_id)?;
-            // Counts come from untrusted bytes — don't pre-allocate to them, or
-            // a bogus count could OOM before the missing data is read. The Vec
-            // grows as entries are actually decoded; a too-large count just
-            // fails fast on the first absent column.
-            let update_count = r.read_varint()? as usize;
+            // Counts come from untrusted bytes. Convert with try_into (not `as`,
+            // which truncates on 32-bit targets and would mis-decode), and don't
+            // pre-allocate to them — the Vec grows as entries are actually
+            // decoded, so a too-large count just fails fast on the first absent
+            // column rather than OOM-ing up front.
+            let update_raw = r.read_varint()?;
+            let update_count: usize = update_raw
+                .try_into()
+                .map_err(|_| CodecError::LengthTooLarge(update_raw))?;
             let mut updates = Vec::new();
             for _ in 0..update_count {
                 let column_id = read_column_id(r)?;
                 let value = read_col_value(r, column_id)?;
                 updates.push(ColumnUpdate { column_id, value });
             }
-            let null_count = r.read_varint()? as usize;
+            let null_raw = r.read_varint()?;
+            let null_count: usize = null_raw
+                .try_into()
+                .map_err(|_| CodecError::LengthTooLarge(null_raw))?;
             let mut nulls = Vec::new();
             for _ in 0..null_count {
                 nulls.push(read_column_id(r)?);
@@ -588,5 +595,24 @@ mod tests {
 
         let (_decoded, err) = Decoder::<Op, &[u8]>::decode_all(segment.as_slice(), TEST_MAGIC);
         assert!(matches!(err, Some(CodecError::UnexpectedEof)), "got {err:?}");
+    }
+
+    /// Goal: a segment whose flags byte is neither device nor server mode is
+    /// rejected, rather than silently masked to device mode.
+    ///
+    /// Given: a well-magicked segment with a flags byte of `0x07`.
+    /// When:  decoding it.
+    /// Then:  `decode_all` surfaces `UnknownSegmentFlags`.
+    #[test]
+    fn decode_rejects_unknown_segment_flags() {
+        let mut segment = Vec::new();
+        segment.extend_from_slice(TEST_MAGIC);
+        segment.push(0x07); // not FLAG_DEVICE (0) or FLAG_SERVER (1)
+
+        let (_decoded, err) = Decoder::<Op, &[u8]>::decode_all(segment.as_slice(), TEST_MAGIC);
+        assert!(
+            matches!(err, Some(CodecError::UnknownSegmentFlags(0x07))),
+            "got {err:?}"
+        );
     }
 }

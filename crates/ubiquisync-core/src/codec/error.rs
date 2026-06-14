@@ -20,12 +20,16 @@ pub enum CodecError {
     NonMonotonicDelta,
     #[error("timestamp delta overflows u64")]
     TimestampOverflow,
+    #[error("on-wire length/count {0} does not fit in usize on this target")]
+    LengthTooLarge(u64),
     #[error("invalid utf-8")]
     InvalidUtf8(#[from] std::string::FromUtf8Error),
     #[error("text value contains an embedded NUL byte")]
     TextContainsNul,
     #[error("bad segment magic bytes — not a ubiquisync segment")]
     BadSegmentMagic,
+    #[error("unknown segment flags byte {0:#04x}")]
+    UnknownSegmentFlags(u8),
     #[error("missing user id in server mode")]
     MissingUserId,
     #[error("io error: {0}")]

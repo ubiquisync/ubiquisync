@@ -131,7 +131,7 @@ impl HashWriter {
 
     fn finalize(self) -> (Vec<u8>, blake3::Hash) {
         let hash = self.hasher.finalize();
-        // append first 4 bytes of hash as CRC check
+        // append first 4 bytes of the blake3 hash as a truncated-hash integrity check
         let mut buf = self.buf;
         buf.extend_from_slice(&hash.as_bytes()[..4]);
         (buf, hash)

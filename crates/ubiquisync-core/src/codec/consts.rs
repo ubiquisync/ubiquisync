@@ -14,5 +14,5 @@ pub const FLAG_SERVER: u8 = 1;
 
 /// Reserved entry tag marking an expunged entry: the tag followed by the
 /// 32-byte blake3 hash of the original entry, with no body, no timestamp
-/// delta, and no CRC suffix. Domain op vocabularies must not reuse this tag.
+/// delta, and no integrity-check suffix. Domain op vocabularies must not reuse this tag.
 pub const TAG_EXPUNGED: u8 = 0xFF;

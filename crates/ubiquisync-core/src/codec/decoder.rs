@@ -3,7 +3,7 @@ use std::io::BufRead;
 use std::marker::PhantomData;
 
 use crate::codec::{
-    consts::{FLAG_SERVER, TAG_EXPUNGED},
+    consts::{FLAG_DEVICE, FLAG_SERVER, TAG_EXPUNGED},
     error::CodecError,
     op::Op,
     reader::{EntryBufferReader, Reader},
@@ -48,7 +48,14 @@ impl<E: Op, R: BufRead> Decoder<E, R> {
             return Err(CodecError::BadSegmentMagic);
         }
         let flags = reader.read_byte()?.ok_or(CodecError::UnexpectedEof)?;
-        let server_mode = flags & 0x01 == FLAG_SERVER;
+        // Strict: a flag byte that isn't exactly a known mode signals a format
+        // we don't understand — reject it rather than masking and silently
+        // treating unknown values as device mode.
+        let server_mode = match flags {
+            FLAG_DEVICE => false,
+            FLAG_SERVER => true,
+            other => return Err(CodecError::UnknownSegmentFlags(other)),
+        };
         Ok(Some(Self {
             buf: reader,
             last_timestamp: 0,
@@ -66,7 +73,7 @@ impl<E: Op, R: BufRead> Decoder<E, R> {
         let tag = reader.read_byte()?;
         if tag == TAG_EXPUNGED {
             // Expunged entries are just TAG + 32-byte blake3 hash of the
-            // original entry. No CRC suffix, no timestamp delta, no
+            // original entry. No integrity-check suffix, no timestamp delta, no
             // finalize() — the hash itself is the integrity mechanism.
             // last_timestamp is intentionally not updated; segment
             // rewriting recalculates deltas around expunged gaps.
