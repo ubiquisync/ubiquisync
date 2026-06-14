@@ -63,7 +63,7 @@ impl<'a> EntryBufferWriter<'a> {
             self.buf._append_without_hash(&[0]);
             self.buf._append_without_hash(data);
             let id = self.uuid_dict.len() as u32 + 1; // IDs start at 1; 0 is the inline sentinel.
-            self.uuid_dict.insert(data.clone(), id);
+            self.uuid_dict.insert(*data, id);
         }
     }
 

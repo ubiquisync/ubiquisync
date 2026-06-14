@@ -1,7 +1,7 @@
 //! Shared, persistent hybrid logical clock service.
 //!
 //! [`HlcService`] is the clock handle subsystems actually hold: it wraps the
-//! pure [`Hlc`](crate::hlc::Hlc) in a lock so every log domain draws from one causal clock domain,
+//! pure [`Hlc`](super::Hlc) in a lock so every log domain draws from one causal clock domain,
 //! and persists the clock state through [`HlcStorage`] so monotonicity survives restarts — a peer
 //! must never reissue a timestamp it already wrote, even after a crash.
 //!
@@ -10,7 +10,7 @@
 
 use std::sync::Mutex;
 
-use crate::hlc::{Hlc, SkewError, Timestamp, wall_ms};
+use super::{Hlc, SkewError, Timestamp, wall_ms};
 
 /// Durable storage for the clock state: a single packed-`u64` register.
 ///
@@ -35,7 +35,7 @@ pub trait HlcStorage {
 #[derive(Debug)]
 pub enum HlcError<E> {
     /// The remote timestamp is too far ahead of the local wall clock — the
-    /// entry carrying it must be rejected. See [`crate::hlc::SkewError`].
+    /// entry carrying it must be rejected. See [`SkewError`](super::SkewError).
     Skew(SkewError),
     /// The storage backend failed to load or save clock state.
     Storage(E),
@@ -109,7 +109,7 @@ impl<S: HlcStorage> HlcService<S> {
     /// to spam the register.
     ///
     /// `local_wall_ms` is supplied by the caller — typically a single
-    /// [`wall_ms`](crate::hlc::wall_ms) reading taken once when a received
+    /// [`wall_ms`](super::wall_ms) reading taken once when a received
     /// batch starts replaying — rather than read here per call. This judges a
     /// whole batch against one reference instant, so entries don't drift in
     /// and out of the skew window depending on where they fall in the loop,
@@ -143,7 +143,7 @@ impl<S: HlcStorage> HlcService<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hlc::{MAX_SKEW_MS, wall_ms};
+    use super::super::{MAX_SKEW_MS, wall_ms};
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
     /// In-memory register standing in for a backend metadata row.

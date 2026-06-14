@@ -18,6 +18,6 @@
 
 pub mod codec;
 pub mod hlc;
-pub mod hlc_service;
 pub mod log_entry;
+pub mod sync;
 pub mod uuid;
