@@ -8,10 +8,10 @@
 //!
 //! This crate contains the storage-agnostic, domain-agnostic core of
 //! Ubiquisync: the log entry envelope, opaque UUIDs, the HLC clock, and the
-//! wire codec. It has no database
-//! driver dependencies and is generic over the op vocabulary it carries — data
-//! domains such as tables live in companion crates like `ubiquisync-tables`,
-//! and storage backends in crates such as `ubiquisync-sqlite`.
+//! wire codec. It has no database driver dependencies and is generic over the
+//! op vocabulary it carries — data domains such as tables live in companion
+//! crates like `ubiquisync-tables`, and storage backends in crates such as
+//! `ubiquisync-sqlite`.
 //!
 //! Most applications should depend on the [`ubiquisync`](https://crates.io/crates/ubiquisync)
 //! facade crate rather than this crate directly.

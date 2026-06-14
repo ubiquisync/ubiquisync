@@ -105,9 +105,9 @@ impl<'a, R: BufRead> HashReader<'a, R> {
     }
 
     fn read_varint(&mut self, hash: bool) -> Result<u64, CodecError> {
-        let (result, bytes) = self.reader.read_varint()?;
+        let (result, bytes, len) = self.reader.read_varint()?;
         if hash {
-            self.hasher.update(&bytes);
+            self.hasher.update(&bytes[..len]);
         }
         Ok(result)
     }
@@ -152,21 +152,27 @@ impl<R: BufRead> Reader<R> {
         Ok(self.reader.fill_buf()?.is_empty())
     }
 
-    pub(super) fn read_varint(&mut self) -> Result<(u64, Vec<u8>), CodecError> {
-        let mut bz = vec![];
+    /// Returns the decoded value plus the raw on-wire bytes (the caller hashes
+    /// them). A u64 varint is at most 10 bytes, so they go in a fixed stack
+    /// buffer — `len` is how many are valid. No allocation.
+    pub(super) fn read_varint(&mut self) -> Result<(u64, [u8; 10], usize), CodecError> {
+        let mut bytes = [0u8; 10];
+        let mut len = 0;
         let mut result = 0u64;
         let mut shift = 0;
         loop {
             let byte = self.read_byte()?.ok_or(CodecError::UnexpectedEof)?;
-            bz.push(byte);
+            bytes[len] = byte;
+            len += 1;
             // On the 10th byte (shift=63), only bit 0 is valid — higher
-            // bits or a continuation flag would overflow u64.
+            // bits or a continuation flag would overflow u64. This also caps
+            // the loop at 10 bytes, so `bytes[len]` never indexes past the end.
             if shift == 63 && byte > 1 {
                 return Err(CodecError::VarIntOverflow);
             }
             result |= ((byte & 0x7F) as u64) << shift;
             if byte & 0x80 == 0 {
-                return Ok((result, bz));
+                return Ok((result, bytes, len));
             }
             shift += 7;
         }
