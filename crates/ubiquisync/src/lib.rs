@@ -13,8 +13,9 @@
 //! storage backends behind feature flags (`sqlite`, enabled by default).
 
 pub use ubiquisync_core::*;
-// Re-exported as `table_codec` so it doesn't collide with core's `codec`.
-pub use ubiquisync_tables::{codec as table_codec, dialect, id, op};
+// `ubiquisync_tables::codec` isn't re-exported: its `Op` impl plugs into core's
+// codec automatically, so the bundle only needs the table data-domain types.
+pub use ubiquisync_tables::{dialect, id, op};
 
 /// SQLite storage backend (the `sqlite` feature, enabled by default).
 #[cfg(feature = "sqlite")]
