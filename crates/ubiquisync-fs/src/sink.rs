@@ -233,6 +233,15 @@ impl<E: Op> LogEntrySink<E> for FsLogSink<E> {
         user_id: Option<Uuid>,
         entries: &[E],
     ) -> Result<u64, SyncError> {
+        // The sink writes device-mode segments, whose framing has no slot for
+        // per-entry attribution — the encoder would silently discard a
+        // `user_id`. Reject one rather than lose it. (Server-mode segments,
+        // which do carry `user_id`, aren't supported here yet.)
+        if user_id.is_some() {
+            return Err(SyncError::EncodingError(
+                "fs log sink writes device-mode segments, which cannot store a user_id".into(),
+            ));
+        }
         if entries.is_empty() {
             return Ok(self.next_entry_index);
         }

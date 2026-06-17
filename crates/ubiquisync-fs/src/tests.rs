@@ -351,6 +351,24 @@ fn multi_entry_size_seal_records_correct_end_index() {
     assert_eq!(op_payload(&got[2].1), b"z");
 }
 
+// ── user_id rejection ───────────────────────────────────────────────
+
+/// Goal: the device-mode sink can't store per-entry attribution, so a
+/// `Some(user_id)` must be rejected with an error rather than silently
+/// dropped by the encoder.
+#[test]
+fn write_with_user_id_is_rejected() {
+    let root = temp_root();
+    let mut sink: FsLogSink<TestOp> = FsLogSink::new(root.path(), &NODE_A, MAGIC).unwrap();
+    let err = sink
+        .write(ts(100), Some(NODE_B), &[upsert(b"a")])
+        .unwrap_err();
+    assert!(matches!(err, SyncError::EncodingError(_)));
+    // The rejected write left nothing behind.
+    let src: FsLogSource<TestOp> = FsLogSource::new(root.path(), MAGIC);
+    assert!(collect(&src, &NODE_A, 0).is_empty());
+}
+
 // ── C1. Torn trailing entry stays readable, not bricked ─────────────
 
 /// Goal (regression, C1): a crash can leave the final entry of a segment
