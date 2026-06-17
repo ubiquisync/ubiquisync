@@ -17,7 +17,7 @@ use std::io::BufRead;
 use ubiquisync_core::codec::{CodecError, EntryBufferReader, EntryBufferWriter};
 
 use crate::id::{ColType, ColumnId, PkColType, TableId};
-use crate::op::{Value, ColumnUpdate, Delete, Op, Upsert};
+use crate::op::{ColumnSet, Delete, Op, Upsert, Value};
 
 // ── Op tags ──────────────────────────────────────────────────────────────────
 // Tag 0xFF is reserved by the core codec for expunged entries; op tags must
@@ -62,20 +62,14 @@ fn encode_one_op(w: &mut EntryBufferWriter, op: &Op) -> Result<(), CodecError> {
             w.write_byte(TAG_UPSERT);
             w.write_u16_le(e.table_id.into());
             write_pk(w, e.table_id, &e.primary_key)?;
-            let non_null_count = e.updates.iter().filter(|e| e.value.is_some()).count();
-            let null_count = e.updates.iter().count() - non_null_count;
-            w.write_varint(non_null_count as u64);
-            for cu in &e.updates {
+            w.write_varint(e.sets.len() as u64);
+            for cu in &e.sets {
                 w.write_byte(cu.column_id.into());
-                if let Some(value) = &cu.value {
-                    write_col_value(w, cu.column_id, value)?;
-                }
+                write_col_value(w, cu.column_id, &cu.value)?;
             }
-            w.write_varint(null_count as u64);
-            for cu in &e.updates {
-                if cu.value.is_none() {
-                    w.write_byte(cu.column_id.into());
-                }
+            w.write_varint(e.nulls.len() as u64);
+            for col_id in &e.nulls {
+                w.write_byte((*col_id).into());
             }
         }
         Op::Delete(e) => {
@@ -87,11 +81,7 @@ fn encode_one_op(w: &mut EntryBufferWriter, op: &Op) -> Result<(), CodecError> {
     Ok(())
 }
 
-fn write_pk(
-    w: &mut EntryBufferWriter,
-    table_id: TableId,
-    pk: &[Value],
-) -> Result<(), CodecError> {
+fn write_pk(w: &mut EntryBufferWriter, table_id: TableId, pk: &[Value]) -> Result<(), CodecError> {
     let pk_count = table_id.pk_count();
     // A wrong number of PK values is a caller error.
     if pk.len() != pk_count {
@@ -171,11 +161,11 @@ fn decode_one_op<R: BufRead>(tag: u8, r: &mut EntryBufferReader<R>) -> Result<Op
             let update_count: usize = update_raw
                 .try_into()
                 .map_err(|_| CodecError::LengthTooLarge(update_raw))?;
-            let mut updates = Vec::new();
+            let mut sets = Vec::new();
             for _ in 0..update_count {
                 let column_id = read_column_id(r)?;
                 let value = read_col_value(r, column_id)?;
-                updates.push(ColumnUpdate { column_id, value });
+                sets.push(ColumnSet { column_id, value });
             }
             let null_raw = r.read_varint()?;
             let null_count: usize = null_raw
@@ -188,7 +178,8 @@ fn decode_one_op<R: BufRead>(tag: u8, r: &mut EntryBufferReader<R>) -> Result<Op
             Ok(Op::Upsert(Upsert {
                 table_id,
                 primary_key,
-                updates,
+                sets,
+                nulls,
             }))
         }
         TAG_DELETE => {
@@ -311,36 +302,29 @@ mod tests {
                 op: Op::Upsert(Upsert {
                     table_id: table_bytes_pk(),
                     primary_key: vec![Value::Bytes(b"pk1".to_vec())],
-                    updates: vec![
-                        ColumnUpdate {
+                    sets: vec![
+                        ColumnSet {
                             column_id: col_bytes(),
-                            value: Some(Value::Bytes(vec![0xDE, 0xAD])),
+                            value: Value::Bytes(vec![0xDE, 0xAD]),
                         },
-                        ColumnUpdate {
+                        ColumnSet {
                             column_id: col_text(),
-                            value: Some(Value::Text("hello".into())),
+                            value: Value::Text("hello".into()),
                         },
-                        ColumnUpdate {
+                        ColumnSet {
                             column_id: col_i64(),
-                            value: Some(Value::I64(-42)),
+                            value: Value::I64(-42),
                         },
-                        ColumnUpdate {
+                        ColumnSet {
                             column_id: col_uuid(),
-                            value: Some(Value::Uuid(ROW_UUID_1)),
+                            value: Value::Uuid(ROW_UUID_1),
                         },
-                        ColumnUpdate {
+                        ColumnSet {
                             column_id: col_max_i64(),
-                            value: Some(Value::I64(999)),
-                        },
-                        ColumnUpdate {
-                            column_id: col_text(),
-                            value: None
-                        },
-                        ColumnUpdate {
-                            column_id: col_i64(),
-                            value: None
+                            value: Value::I64(999),
                         },
                     ],
+                    nulls: vec![col_text(), col_i64()],
                 }),
             },
             // Upsert with a composite (Text, I64) PK and no nulls.
@@ -350,10 +334,11 @@ mod tests {
                 op: Op::Upsert(Upsert {
                     table_id: table_text_i64_pk(),
                     primary_key: vec![Value::Text("café".into()), Value::I64(7)],
-                    updates: vec![ColumnUpdate {
+                    sets: vec![ColumnSet {
                         column_id: col_uuid(),
-                        value: Some(Value::Uuid(ROW_UUID_1)),
+                        value: Value::Uuid(ROW_UUID_1),
                     }],
+                    nulls: vec![],
                 }),
             },
             // Delete with UUID PK.
@@ -462,10 +447,11 @@ mod tests {
         let op = Op::Upsert(Upsert {
             table_id: table_bytes_pk(),
             primary_key: vec![Value::Bytes(b"pk1".to_vec())],
-            updates: vec![ColumnUpdate {
+            sets: vec![ColumnSet {
                 column_id: col_text(),
-                value: Some(Value::Text("bad\0value".into())),
+                value: Value::Text("bad\0value".into()),
             }],
+            nulls: vec![],
         });
         let buf = std::io::Cursor::new(Vec::new());
         let mut encoder = Encoder::new(buf, TEST_MAGIC, false).unwrap();
@@ -549,7 +535,13 @@ mod tests {
             .encode_entry(&op, Timestamp::from_raw(TS1), None)
             .unwrap_err();
         assert!(
-            matches!(err, CodecError::PkCountMismatch { expected: 2, got: 1 }),
+            matches!(
+                err,
+                CodecError::PkCountMismatch {
+                    expected: 2,
+                    got: 1
+                }
+            ),
             "got {err:?}"
         );
     }
@@ -565,17 +557,21 @@ mod tests {
         let op = Op::Upsert(Upsert {
             table_id: table_bytes_pk(),
             primary_key: vec![Value::Bytes(b"pk1".to_vec())],
-            updates: vec![ColumnUpdate {
+            sets: vec![ColumnSet {
                 column_id: col_i64(),
-                value: Some(Value::Text("not an int".into())),
+                value: Value::Text("not an int".into()),
             }],
+            nulls: vec![],
         });
         let buf = std::io::Cursor::new(Vec::new());
         let mut encoder = Encoder::new(buf, TEST_MAGIC, false).unwrap();
         let err = encoder
             .encode_entry(&op, Timestamp::from_raw(TS1), None)
             .unwrap_err();
-        assert!(matches!(err, CodecError::ColumnValueMismatch), "got {err:?}");
+        assert!(
+            matches!(err, CodecError::ColumnValueMismatch),
+            "got {err:?}"
+        );
     }
 
     /// Goal: a segment claiming an absurd on-wire blob length fails cleanly
@@ -606,7 +602,10 @@ mod tests {
         segment.extend_from_slice(&entry_bytes);
 
         let (_decoded, err) = Decoder::<Op, &[u8]>::decode_all(segment.as_slice(), TEST_MAGIC);
-        assert!(matches!(err, Some(CodecError::UnexpectedEof)), "got {err:?}");
+        assert!(
+            matches!(err, Some(CodecError::UnexpectedEof)),
+            "got {err:?}"
+        );
     }
 
     /// Goal: a segment whose flags byte is neither device nor server mode is
@@ -667,7 +666,8 @@ mod tests {
         let failed = Op::Upsert(Upsert {
             table_id: table,
             primary_key: vec![Value::Uuid(PK_UUID)],
-            updates: vec![],
+            sets: vec![],
+            nulls: vec![],
         });
         let good = Op::Delete(Delete {
             table_id: table,
@@ -749,7 +749,10 @@ mod tests {
         segment.push(0x7E); // neither TAG_UPSERT/TAG_DELETE nor TAG_EXPUNGED
 
         let (_decoded, err) = Decoder::<Op, &[u8]>::decode_all(segment.as_slice(), TEST_MAGIC);
-        assert!(matches!(err, Some(CodecError::UnknownTag(0x7E))), "got {err:?}");
+        assert!(
+            matches!(err, Some(CodecError::UnknownTag(0x7E))),
+            "got {err:?}"
+        );
     }
 
     /// Goal: a flipped byte in a valid entry is caught by the integrity check.
@@ -776,7 +779,10 @@ mod tests {
         bytes[last] ^= 0xFF;
 
         let (_decoded, err) = Decoder::<Op, &[u8]>::decode_all(bytes.as_slice(), TEST_MAGIC);
-        assert!(matches!(err, Some(CodecError::HashMismatch { .. })), "got {err:?}");
+        assert!(
+            matches!(err, Some(CodecError::HashMismatch { .. })),
+            "got {err:?}"
+        );
     }
 
     /// Goal: an entry truncated mid-body fails cleanly with `UnexpectedEof`
@@ -797,7 +803,10 @@ mod tests {
         // Keep the header + tag + one byte, cutting the table id read short.
         let truncated = &bytes[..TEST_MAGIC.len() + 3];
         let (_decoded, err) = Decoder::<Op, &[u8]>::decode_all(truncated, TEST_MAGIC);
-        assert!(matches!(err, Some(CodecError::UnexpectedEof)), "got {err:?}");
+        assert!(
+            matches!(err, Some(CodecError::UnexpectedEof)),
+            "got {err:?}"
+        );
     }
 
     /// Goal: truncating only the trailing integrity bytes (body intact) also
@@ -819,7 +828,10 @@ mod tests {
         // the trailer read comes up short.
         let truncated = &bytes[..bytes.len() - 2];
         let (_decoded, err) = Decoder::<Op, &[u8]>::decode_all(truncated, TEST_MAGIC);
-        assert!(matches!(err, Some(CodecError::UnexpectedEof)), "got {err:?}");
+        assert!(
+            matches!(err, Some(CodecError::UnexpectedEof)),
+            "got {err:?}"
+        );
     }
 
     /// Goal: two apps with distinct (same-length) magics reject each other's
@@ -859,7 +871,10 @@ mod tests {
 
         let (decoded, dec_err) = Decoder::<Op, &[u8]>::decode_all(b"anything".as_slice(), b"");
         assert!(decoded.is_none());
-        assert!(matches!(dec_err, Some(CodecError::BadMagic)), "got {dec_err:?}");
+        assert!(
+            matches!(dec_err, Some(CodecError::BadMagic)),
+            "got {dec_err:?}"
+        );
     }
 
     /// Goal: when an entry fails to decode, the decoder's cross-entry state —
@@ -900,7 +915,10 @@ mod tests {
         bytes[last] ^= 0xFF;
 
         let (decoded, err) = Decoder::<Op, &[u8]>::decode_all(bytes.as_slice(), TEST_MAGIC);
-        assert!(matches!(err, Some(CodecError::HashMismatch { .. })), "got {err:?}");
+        assert!(
+            matches!(err, Some(CodecError::HashMismatch { .. })),
+            "got {err:?}"
+        );
         let decoded = decoded.unwrap();
         assert_eq!(decoded.entries.len(), 1);
         // Only the first entry's state survived the failure.

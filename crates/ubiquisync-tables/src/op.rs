@@ -35,9 +35,11 @@ pub struct Upsert {
     /// match the corresponding [`PkColType`](crate::id::PkColType)
     /// positionally.
     pub primary_key: Vec<Value>,
-    /// Columns to update with new values. The column ID's type bits determine
+    /// Columns to set with new values. The column ID's type bits determine
     /// wire encoding and merge strategy.
-    pub updates: Vec<ColumnUpdate>,
+    pub sets: Vec<ColumnSet>,
+    /// Columns to set to null.
+    pub nulls: Vec<ColumnId>
 }
 
 /// A table primary key value. One variant per
@@ -69,7 +71,7 @@ pub struct Delete {
 
 /// A column ID paired with the value to write.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ColumnUpdate {
+pub struct ColumnSet {
     pub column_id: ColumnId,
-    pub value: Option<Value>,
+    pub value: Value,
 }
