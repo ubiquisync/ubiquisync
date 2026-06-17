@@ -34,19 +34,17 @@ pub struct Upsert {
     /// determined by the table ID's PK shape bits — each value's variant must
     /// match the corresponding [`PkColType`](crate::id::PkColType)
     /// positionally.
-    pub primary_key: Vec<PkValue>,
+    pub primary_key: Vec<Value>,
     /// Columns to update with new values. The column ID's type bits determine
     /// wire encoding and merge strategy.
     pub updates: Vec<ColumnUpdate>,
-    /// Columns to set to SQL NULL. All non-PK columns are implicitly nullable.
-    pub nulls: Vec<ColumnId>,
 }
 
 /// A table primary key value. One variant per
 /// [`PkColType`](crate::id::PkColType) — PK values are row identity:
 /// they are compared, never merged.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum PkValue {
+pub enum Value {
     /// Raw byte data (length-prefixed on wire).
     Bytes(Vec<u8>),
     /// 16-byte UUID (fixed-width on wire).
@@ -66,28 +64,12 @@ pub enum PkValue {
 pub struct Delete {
     pub table_id: TableId,
     /// PK values identifying the row (see [`Upsert::primary_key`]).
-    pub primary_key: Vec<PkValue>,
-}
-
-/// A typed column value. The variant is determined by the column ID's type bits.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum ColValue {
-    /// Raw byte data (length-prefixed on wire).
-    Bytes(Vec<u8>),
-    /// UTF-8 text (length-prefixed on wire, same encoding as Bytes). Strict
-    /// UTF-8, no embedded NUL, compared as raw bytes — see the table
-    /// protocol's text rules.
-    Text(String),
-    /// 16-byte UUID (fixed-width on wire).
-    Uuid(Uuid),
-    /// Integer data. Covers I64 (LWW) and MaxI64 (max-wins) columns —
-    /// merge strategy determined by column ID.
-    I64(i64),
+    pub primary_key: Vec<Value>,
 }
 
 /// A column ID paired with the value to write.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ColumnUpdate {
     pub column_id: ColumnId,
-    pub value: ColValue,
+    pub value: Option<Value>,
 }

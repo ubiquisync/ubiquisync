@@ -17,7 +17,7 @@ use std::io::BufRead;
 use ubiquisync_core::codec::{CodecError, EntryBufferReader, EntryBufferWriter};
 
 use crate::id::{ColType, ColumnId, PkColType, TableId};
-use crate::op::{ColValue, ColumnUpdate, Delete, Op, PkValue, Upsert};
+use crate::op::{Value, ColumnUpdate, Delete, Op, Upsert};
 
 // ── Op tags ──────────────────────────────────────────────────────────────────
 // Tag 0xFF is reserved by the core codec for expunged entries; op tags must

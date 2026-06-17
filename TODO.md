@@ -6,7 +6,7 @@ than accumulate.
 
 ## Decided — implement during the engine port
 
-- [ ] **LWW tiebreak = value bytes** (decided June 2026). HLC timestamps carry
+- [ ] **LWW tiebreak = value bytes**: HLC timestamps carry
   no peer-id component, so two offline peers can mint identical
   `(wall_ms, counter)` timestamps; the source reducers compare strictly (`>`),
   so tied writes resolve first-applied-wins and peers can diverge. The decided
@@ -22,11 +22,6 @@ than accumulate.
 Behaviors in the source implementation that the docs intentionally do NOT
 describe — the spec text is the target, these are the deltas:
 
-- [x] **Skew bound was only enforced on some write paths.** In the source, a
-  store could observe remote timestamps into the shared HLC without the 60s
-  skew check, so a far-future entry could poison the clock. Fixed in the HLC
-  port: `Hlc::observe` / `HlcService::observe` take the local wall clock and
-  reject beyond-skew timestamps themselves, so no store can skip the check.
 - [ ] **Unknown column is a hard error.** The source reducer fails with
   `ColumnNotFound` for an unknown column on a known table, which breaks
   version-skewed peers (the IDs are self-describing precisely so this can
@@ -62,11 +57,6 @@ What WASM actually needs, to scope when we build the wrapper:
   panics on `wasm32-unknown-unknown`. The codec and protocol types are
   otherwise wasm-safe (they only touch `std::io` over in-memory buffers). Make
   the clock source injectable so WASM can supply `Date.now()`.
-- [ ] **Storage backend, not `fs_log`.** The filesystem sync layer (`std::fs`)
-  won't run in the browser and isn't shipped there; the browser needs a
-  different backend (OPFS / IndexedDB) driven from JS.
-- [ ] Optional: a `wasm32-unknown-unknown` build check in CI to keep the
-  protocol/codec layer browser-portable.
 
 ## Docs
 

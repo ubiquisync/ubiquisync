@@ -18,3 +18,7 @@ pub mod codec;
 pub mod dialect;
 pub mod id;
 pub mod op;
+mod reducer;
+mod schema;
+mod db;
+mod watch;
