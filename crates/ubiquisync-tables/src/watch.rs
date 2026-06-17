@@ -1,5 +1,5 @@
 use crate::id::{ColumnId, TableId};
-use crate::op::{ColValue, PkValue};
+use crate::op::Value;
 
 #[derive(Debug, Clone)]
 pub enum ChangeEvent {
@@ -10,14 +10,14 @@ pub enum ChangeEvent {
 #[derive(Clone, Eq, PartialEq, Hash)]
 pub enum WatchTarget {
     Table(TableId),
-    TableRow(TableId, Vec<PkValue>),
+    TableRow(TableId, Vec<Value>),
 }
 
 #[derive(Debug, Clone)]
 pub struct UpsertEvent {
     pub table_id: TableId,
     pub table_name: String,
-    pub primary_key: Vec<PkValue>,
+    pub primary_key: Vec<Value>,
     pub changed_columns: Vec<ColumnValue>,
 }
 
@@ -25,12 +25,12 @@ pub struct UpsertEvent {
 pub struct ColumnValue {
     pub column_id: ColumnId,
     pub name: String,
-    pub value: Option<ColValue>,
+    pub value: Option<Value>,
 }
 
 #[derive(Debug, Clone)]
 pub struct DeleteEvent {
     pub table_id: TableId,
     pub table_name: String,
-    pub primary_key: Vec<PkValue>,
+    pub primary_key: Vec<Value>,
 }
