@@ -41,7 +41,7 @@ impl TableSchema {
             cols: cols.into_iter().map(|c| (c.id, c)).collect(),
         };
         let existing_cols: Vec<ColumnDescription> =
-            if let Some(existing) = db.describe_table(&ts.name) {
+            if let Some(existing) = db.describe_table(&ts.name)? {
                 // Check pk columns
                 let n = existing.pk_cols.len();
                 if n != id.pk_count() {
@@ -56,7 +56,7 @@ impl TableSchema {
                 existing.cols
             } else {
                 let surrogate_name = surrogate_table_name(prefix, id);
-                if let Some(surrogate) = db.describe_table(&surrogate_name) {
+                if let Some(surrogate) = db.describe_table(&surrogate_name)? {
                     let n = surrogate.pk_cols.len();
                     if n != id.pk_count() {
                         todo!("error")
@@ -65,7 +65,7 @@ impl TableSchema {
                     // Check pk columns and rename
                     for i in 0..n {
                         let surrogate_name = crate::surrogate::surrogate_pk_name(i);
-                        if &surrogate.pk_cols[i].name != surrogate_name {
+                        if &surrogate.pk_cols[i].name != &surrogate_name {
                             todo!("error")
                         }
                         // Rename pk column
@@ -74,7 +74,7 @@ impl TableSchema {
                             "ALTER TABLE {} RENAME COLUMN {} TO {}",
                             quote_ident(&ts.name),
                             quote_ident(&surrogate_name),
-                            quote_ident(real_name),
+                            quote_ident(&real_name),
                         ))?;
                     }
 
@@ -178,7 +178,7 @@ impl TableSchema {
         Ok(ts)
     }
 
-    pub fn init_surrogate(prefix: &str, id: TableId, db: &dyn Db) -> Self {
+    pub fn init_surrogate(prefix: &str, id: TableId, db: &dyn Db) -> Result<Self, ReducerError> {
         let name = surrogate_table_name(prefix, id);
         let mut pk_names = vec![];
         let pk_count = id.pk_count();
@@ -191,13 +191,15 @@ impl TableSchema {
             pk_names,
             cols: BTreeMap::default(),
         };
+
+
         // TODO: check db for table info
-        ts
+        Ok(ts)
     }
 
-    pub fn ensure_column(&mut self, db: &dyn Db, col_id: ColumnId) -> Result<(), ReducerError> {
-        if self.cols.contains_key(&col_id) {
-            return Ok(());
+    pub fn ensure_column(&mut self, db: &dyn Db, col_id: ColumnId) -> Result<String, ReducerError> {
+        if let Some(col) = self.cols.get(&col_id) {
+            return Ok(col.name.clone());
         }
 
         // Create surrogate column.
@@ -206,11 +208,11 @@ impl TableSchema {
         self.cols.insert(
             col_id,
             ColumnSchema {
-                name: col_name,
+                name: col_name.clone(),
                 id: col_id,
             },
         );
-        Ok(())
+        Ok(col_name)
     }
 
     fn create_table(&self, db: &dyn Db) -> Result<(), ReducerError> {

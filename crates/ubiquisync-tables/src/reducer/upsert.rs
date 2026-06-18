@@ -3,7 +3,6 @@ use crate::db::{Db, DbValue};
 use crate::id::ColumnId;
 use crate::op::{Upsert, Value};
 use crate::reducer::{Reducer, ReducerError};
-use crate::reducer::util::quote_ident;
 use crate::watch::UpsertEvent;
 
 impl Reducer {

@@ -15,8 +15,8 @@
 use std::io::BufRead;
 
 use ubiquisync_core::codec::{CodecError, EntryBufferReader, EntryBufferWriter};
-
-use crate::id::{ColType, ColumnId, PkColType, TableId};
+use crate::col_type::{ColType, PkColType};
+use crate::id::{ColumnId, TableId};
 use crate::op::{ColumnSet, Delete, Op, Upsert, Value};
 
 // ── Op tags ──────────────────────────────────────────────────────────────────

@@ -186,6 +186,7 @@ impl ColumnId {
 
 #[cfg(test)]
 mod tests {
+    use crate::col_type::WireEncoding;
     use super::*;
 
     #[test]

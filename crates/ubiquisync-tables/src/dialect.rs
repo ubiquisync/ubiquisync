@@ -6,7 +6,6 @@
 //! scalar-max functions still to come) are abstracted behind
 //! [`SqlDialect`], implemented by each backend crate.
 
-use crate::db::DbType;
 use crate::id::{ColType, PkColType};
 
 /// Maps protocol types to a backend's SQL type names.
