@@ -1,31 +1,18 @@
-use crate::db::DbValue;
-use crate::op::PkValue;
-
-fn pk_to_db(pk: &PkValue) -> DbValue {
-    match pk {
-        PkValue::Bytes(b) => DbValue::Blob(b.clone()),
-        PkValue::Text(s) => DbValue::Text(s.clone()),
-        PkValue::Uuid(u) => DbValue::Blob(u.to_vec()),
-        PkValue::I64(i) => DbValue::Integer(*i),
-    }
-}
-
-fn col_value_to_db(value: &ColValue) -> DbValue {
-    match value {
-        ColValue::Bytes(b) => DbValue::Blob(b.clone()),
-        ColValue::Text(s) => DbValue::Text(s.clone()),
-        ColValue::Uuid(u) => DbValue::Blob(u.to_vec()),
-        ColValue::I64(i) => DbValue::Integer(*i),
-    }
-}
+use ubiquisync_core::hlc::Timestamp;
+use crate::db::{Db, DbValue};
+use crate::id::ColumnId;
+use crate::op::{Upsert, Value};
+use crate::reducer::{Reducer, ReducerError};
+use crate::reducer::util::quote_ident;
+use crate::watch::UpsertEvent;
 
 impl Reducer {
-    pub(super) fn apply_sys_upsert(
+    pub(super) fn apply_upsert(
         &self,
         db: &dyn Db,
         timestamp: Timestamp,
-        upsert: &SysUpsert,
-    ) -> Result<Option<UpsertResult>, ReducerError> {
+        upsert: &Upsert,
+    ) -> Result<Option<UpsertEvent>, ReducerError> {
         // Resolve table: known (compiled SysTable) or unknown (surrogate).
         let (sql_name, table_name, pk_col_names, resolve_col) = match self.find_sys_table(upsert.table_id) {
             Some(table) => {
@@ -36,7 +23,7 @@ impl Reducer {
             }
             None => {
                 // Unknown table — create/ensure surrogate
-                let all_col_ids: Vec<SysColumnId> = upsert.updates.iter()
+                let all_col_ids: Vec<ColumnId> = upsert.sets.iter()
                     .map(|u| u.column_id)
                     .chain(upsert.nulls.iter().copied())
                     .collect();
@@ -50,7 +37,7 @@ impl Reducer {
         };
 
         // Resolve each SysColumnUpdate into (col_id, col_name, col_type, db_value).
-        let mut update_cols: Vec<(SysColumnId, String, SysColType, DbValue)> = Vec::new();
+        let mut update_cols: Vec<(ColumnId, String, ColType, DbValue)> = Vec::new();
         for col_update in &upsert.updates {
             let col_name = resolve_col.name(col_update.column_id)?;
             let col_type = col_update.column_id.col_type();

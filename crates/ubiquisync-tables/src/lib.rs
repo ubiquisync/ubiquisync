@@ -22,3 +22,6 @@ mod reducer;
 mod schema;
 mod db;
 mod watch;
+mod col_type;
+mod surrogate;
+mod util;

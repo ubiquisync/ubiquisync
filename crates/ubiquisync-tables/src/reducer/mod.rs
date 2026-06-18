@@ -2,14 +2,17 @@ mod init;
 mod apply;
 mod upsert;
 mod delete;
+mod util;
+mod schema;
+mod surrogate;
 
 use std::collections::HashMap;
 use crate::id::TableId;
-use crate::schema::TableSchema;
+use crate::reducer::schema::TableSchema;
 
 pub struct Reducer {
     prefix: String,
-    table_schemas: HashMap<TableId, &'static TableSchema>,
+    table_schemas: HashMap<TableId, TableSchema>,
 }
 
 #[derive(Debug, thiserror::Error)]

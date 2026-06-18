@@ -1,3 +1,6 @@
+use crate::col_type::ColType;
+use crate::dialect::SqlDialect;
+
 /// A Db value — used for both parameters and query results.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DbValue {
@@ -5,6 +8,7 @@ pub enum DbValue {
     Integer(i64),
     Text(String),
     Blob(Vec<u8>),
+    Uuid([u8; 16]),
 }
 
 #[derive(Debug)]
@@ -17,7 +21,10 @@ impl DbRow {
         match self.values.get(idx) {
             Some(DbValue::Integer(v)) => Ok(*v),
             Some(DbValue::Null) => Err(DbError::UnexpectedNull(idx)),
-            Some(_) => Err(DbError::TypeMismatch { col: idx, expected: "integer" }),
+            Some(_) => Err(DbError::TypeMismatch {
+                col: idx,
+                expected: "integer",
+            }),
             None => Err(DbError::ColumnOutOfBounds(idx)),
         }
     }
@@ -26,7 +33,10 @@ impl DbRow {
         match self.values.get(idx) {
             Some(DbValue::Text(v)) => Ok(v),
             Some(DbValue::Null) => Err(DbError::UnexpectedNull(idx)),
-            Some(_) => Err(DbError::TypeMismatch { col: idx, expected: "text" }),
+            Some(_) => Err(DbError::TypeMismatch {
+                col: idx,
+                expected: "text",
+            }),
             None => Err(DbError::ColumnOutOfBounds(idx)),
         }
     }
@@ -35,7 +45,10 @@ impl DbRow {
         match self.values.get(idx) {
             Some(DbValue::Blob(v)) => Ok(v),
             Some(DbValue::Null) => Err(DbError::UnexpectedNull(idx)),
-            Some(_) => Err(DbError::TypeMismatch { col: idx, expected: "blob" }),
+            Some(_) => Err(DbError::TypeMismatch {
+                col: idx,
+                expected: "blob",
+            }),
             None => Err(DbError::ColumnOutOfBounds(idx)),
         }
     }
@@ -44,7 +57,10 @@ impl DbRow {
         match self.values.get(idx) {
             Some(DbValue::Integer(v)) => Ok(*v != 0),
             Some(DbValue::Null) => Err(DbError::UnexpectedNull(idx)),
-            Some(_) => Err(DbError::TypeMismatch { col: idx, expected: "bool/integer" }),
+            Some(_) => Err(DbError::TypeMismatch {
+                col: idx,
+                expected: "bool/integer",
+            }),
             None => Err(DbError::ColumnOutOfBounds(idx)),
         }
     }
@@ -53,7 +69,10 @@ impl DbRow {
         match self.values.get(idx) {
             Some(DbValue::Integer(v)) => Ok(Some(*v)),
             Some(DbValue::Null) => Ok(None),
-            Some(_) => Err(DbError::TypeMismatch { col: idx, expected: "integer" }),
+            Some(_) => Err(DbError::TypeMismatch {
+                col: idx,
+                expected: "integer",
+            }),
             None => Err(DbError::ColumnOutOfBounds(idx)),
         }
     }
@@ -62,24 +81,32 @@ impl DbRow {
         match self.values.get(idx) {
             Some(DbValue::Text(v)) => Ok(Some(v)),
             Some(DbValue::Null) => Ok(None),
-            Some(_) => Err(DbError::TypeMismatch { col: idx, expected: "text" }),
+            Some(_) => Err(DbError::TypeMismatch {
+                col: idx,
+                expected: "text",
+            }),
             None => Err(DbError::ColumnOutOfBounds(idx)),
         }
     }
 
     pub fn get_uuid(&self, idx: usize) -> Result<[u8; 16], DbError> {
+        // TODO match uuid or bytes
         match self.values.get(idx) {
             Some(DbValue::Blob(v)) => v.as_slice().try_into().map_err(|_| DbError::TypeMismatch {
                 col: idx,
                 expected: "16-byte UUID blob",
             }),
             Some(DbValue::Null) => Err(DbError::UnexpectedNull(idx)),
-            Some(_) => Err(DbError::TypeMismatch { col: idx, expected: "16-byte UUID blob" }),
+            Some(_) => Err(DbError::TypeMismatch {
+                col: idx,
+                expected: "16-byte UUID blob",
+            }),
             None => Err(DbError::ColumnOutOfBounds(idx)),
         }
     }
 
     pub fn get_optional_uuid(&self, idx: usize) -> Result<Option<[u8; 16]>, DbError> {
+        // TODO match uuid or bytes
         match self.values.get(idx) {
             Some(DbValue::Blob(v)) => {
                 let arr = v.as_slice().try_into().map_err(|_| DbError::TypeMismatch {
@@ -89,7 +116,10 @@ impl DbRow {
                 Ok(Some(arr))
             }
             Some(DbValue::Null) => Ok(None),
-            Some(_) => Err(DbError::TypeMismatch { col: idx, expected: "16-byte UUID blob" }),
+            Some(_) => Err(DbError::TypeMismatch {
+                col: idx,
+                expected: "16-byte UUID blob",
+            }),
             None => Err(DbError::ColumnOutOfBounds(idx)),
         }
     }
@@ -98,7 +128,10 @@ impl DbRow {
         match self.values.get(idx) {
             Some(DbValue::Blob(v)) => Ok(Some(v)),
             Some(DbValue::Null) => Ok(None),
-            Some(_) => Err(DbError::TypeMismatch { col: idx, expected: "blob" }),
+            Some(_) => Err(DbError::TypeMismatch {
+                col: idx,
+                expected: "blob",
+            }),
             None => Err(DbError::ColumnOutOfBounds(idx)),
         }
     }
@@ -116,7 +149,39 @@ pub enum DbError {
     UnexpectedNull(usize),
 }
 
+pub trait Db: SqlDialect {
+    fn describe_table(&self, name: &str) -> Result<Option<TableDescriptor>, DbError>;
+    fn exec(&self, sql: &str) -> Result<(), DbError>;
+}
 
-pub trait Db {
-    
+pub struct TableDescriptor {
+    pub name: String,
+    pub pk_cols: Vec<ColumnDescription>,
+    pub cols: Vec<ColumnDescription>,
+}
+
+pub struct ColumnDescription {
+    pub name: String,
+    pub db_type: DbType,
+    pub nullable: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DbType {
+    Integer,
+    Text,
+    Blob,
+    Uuid,
+}
+
+impl DbType {
+    pub fn is_valid_for(self, col_type: ColType) -> bool {
+        match col_type {
+            ColType::Bytes => self == DbType::Blob,
+            ColType::Text => self == DbType::Text,
+            ColType::I64 => self == DbType::Integer,
+            ColType::Uuid => self == DbType::Uuid || self == DbType::Blob,
+            ColType::MaxI64 => self == DbType::Integer,
+        }
+    }
 }

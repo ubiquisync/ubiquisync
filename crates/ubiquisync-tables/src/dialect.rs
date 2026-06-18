@@ -6,6 +6,7 @@
 //! scalar-max functions still to come) are abstracted behind
 //! [`SqlDialect`], implemented by each backend crate.
 
+use crate::db::DbType;
 use crate::id::{ColType, PkColType};
 
 /// Maps protocol types to a backend's SQL type names.
@@ -20,4 +21,6 @@ pub trait SqlDialect {
 
     /// SQL column type for a table primary key column.
     fn pk_col_type(&self, col_type: PkColType) -> &'static str;
+
+    fn lww_col_type(&self) -> &'static str;
 }
