@@ -270,6 +270,10 @@ impl TableSchema {
             ))?;
         }
     }
+
+    pub fn pk_col_names(&self) -> &[String] {
+        &self.pk_names
+    }
 }
 
 struct ExistingColInfo {
