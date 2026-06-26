@@ -48,7 +48,7 @@ impl TableSchema {
                     todo!("error")
                 }
                 for i in 0..n {
-                    if &existing.pk_cols[i].name != ts.pk_names[i] {
+                    if &existing.pk_cols[i].name != &ts.pk_names[i] {
                         todo!("error")
                     }
                 }
@@ -97,9 +97,11 @@ impl TableSchema {
 
         // Collect map of existing cols
         let mut existing_col_map = BTreeMap::default();
+        let mut have_deleted_ts_col = false;
         for col in existing_cols {
-            // if let Some((surrogate_name, is_lww_col)) = parse_surrogate_col(col.name) {}
-            if let Some(name) = parse_lww_col_name(&col.name) {
+            if col.name == "__deleted_ts" {
+                have_deleted_ts_col = true;   
+            } else if let Some(name) = parse_lww_col_name(&col.name) {
                 if let Some(existing) = existing_col_map.get_mut(&name) {
                     existing.lww_col_type = Some(col.db_type);
                 } else {
@@ -127,6 +129,9 @@ impl TableSchema {
                 }
             }
         }
+        if !have_deleted_ts_col {
+            todo!("error")
+        }
 
         // Check existing columns
         let mut cols_to_define = BTreeMap::default();
@@ -139,7 +144,7 @@ impl TableSchema {
                 // for the column type.
                 existing.validate(col.id.col_type())?;
             } else if let Some(surrogate) = parse_surrogate_col_name(existing.name.as_str()) {
-                existing.validate(surrogate)?;
+                existing.validate(surrogate.col_type())?;
                 if let Some(to_define) =  ts.cols.get(&surrogate) {
                     // Rename surrogate to real column name
                     db.exec(&format!(
@@ -228,6 +233,12 @@ impl TableSchema {
                 db.pk_col_type(self.id.pk_col_type(i))
             ));
         }
+
+        col_defs.push(format!(
+            "__deleted_ts {}",
+            db.lww_col_type(),
+        ))
+
         for (_, col) in self.cols {
             col_defs.push(format!(
                 "{} {}",
@@ -273,6 +284,14 @@ impl TableSchema {
 
     pub fn pk_col_names(&self) -> &[String] {
         &self.pk_names
+    }
+
+    pub fn get_name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn get_id(&self) -> TableId {
+        self.id
     }
 }
 

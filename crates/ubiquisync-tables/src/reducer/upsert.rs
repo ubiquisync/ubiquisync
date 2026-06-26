@@ -16,6 +16,31 @@ impl Reducer {
     ) -> Result<Option<UpsertEvent>, ReducerError> {
         let table = self.ensure_table(db, upsert.table_id)?;
 
+        let mut insert_into_cols = vec![];
+        let mut insert_into_binds = vec![];
+        let mut bind_vals = vec![];
+
+        let mut next_bind_idx = 1;
+
+        let pk_count = table.get_id().pk_count();
+        for i in 0..pk_count {
+            insert_into_cols.push(table.pk_col_names()[i]);
+            insert_into_binds.push(db.placeholder(next_bind_idx));
+            next_bind_idx += 1;
+            bind_vals.push(value_to_db(&upsert.primary_key[i]))
+        }
+
+        let pk_name_list = table.pk_col_names().join(", ");
+        
+        // list of pk placeholders: $1, $2, $3
+        let pk_placeholders = (1..=pk_count)
+            .map(|i| db.placeholder(i))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let bind_vals = vec![];
+
+
         let pk_vals: Vec<DbValue> = upsert
             .primary_key
             .iter()
@@ -34,6 +59,18 @@ impl Reducer {
             let col_name = table.ensure_column(db, *null_col_id)?;
             let col_type = null_col_id.col_type();
             update_cols.push((*null_col_id, col_name, col_type, None));
+        }
+
+
+        if update_cols.is_empty() {
+            // case where we just have primary sets to insert or ignore
+            let sql = format!("{} INTO {} ",
+                db.insert_ignore_verb(),
+                table.get_name(),
+
+            )
+        } else {
+            
         }
 
         todo!()
