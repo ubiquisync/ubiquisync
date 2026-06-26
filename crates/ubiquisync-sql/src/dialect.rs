@@ -1,55 +1,112 @@
-//! SQL dialect abstraction for storage backends.
+//! SQL dialect: the points where SQL flavors genuinely diverge.
 //!
 //! The sync engine is storage-agnostic: it builds SQL as strings and runs
-//! them through a backend connection. The few places where SQL dialects
-//! genuinely diverge (currently type names; placeholder syntax and
-//! scalar-max functions still to come) are abstracted behind
-//! [`SqlDialect`], implemented by each backend crate.
+//! them through a backend connection. The few places where SQL flavors
+//! actually differ — placeholder syntax, scalar-max function, collation,
+//! conflict clauses, and type names (via [`DbType::sql_type`]) — are captured
+//! here as a closed [`SqlDialect`] enum.
+//!
+//! A dialect is a property of the *SQL flavor*, not the driver: rusqlite, D1,
+//! and Durable Objects are three backends but all speak [`SqlDialect::Sqlite`].
+//! Backend crates (`ubiquisync-sqlite`, `ubiquisync-postgres`) therefore don't
+//! implement a dialect — they only report which one they are. Centralizing the
+//! divergences here keeps every cross-flavor difference in one auditable place.
 
-use crate::id::{ColType, PkColType};
+/// The SQL flavor a backend speaks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SqlDialect {
+    Sqlite,
+    Postgres,
+}
 
-/// Maps protocol types to a backend's SQL type names.
-///
-/// Implemented by storage backend crates (e.g. `SqliteDialect` in
-/// `ubiquisync-sqlite`). The engine never hardcodes a type name — it always
-/// goes through the active dialect, so a table created on one backend has
-/// the documented column types for that backend.
-pub trait SqlDialect {
-    /// SQL column type for a non-PK column.
-    fn col_type(&self, col_type: ColType) -> &'static str;
-
-    /// SQL column type for a table primary key column.
-    fn pk_col_type(&self, col_type: PkColType) -> &'static str;
-
-    /// SQL column type for the HLC timestamp companion of an LWW column
-    /// (the `__<col>_lww` column). Always a 64-bit integer.
-    fn lww_col_type(&self) -> &'static str;
-
+impl SqlDialect {
     /// Renders a positional bind placeholder for parameter `n` (1-based):
     /// `?n` on SQLite, `$n` on Postgres.
-    fn placeholder(&self, n: usize) -> String;
+    pub fn placeholder(&self, n: usize) -> String {
+        match self {
+            SqlDialect::Sqlite => format!("?{n}"),
+            SqlDialect::Postgres => format!("${n}"),
+        }
+    }
 
     /// Scalar two-argument max function: `MAX` on SQLite, `GREATEST` on
     /// Postgres. Callers must keep the `COALESCE` wrapping around the
     /// arguments — SQLite's `MAX` returns NULL if *any* argument is NULL
     /// while Postgres's `GREATEST` ignores NULLs; the COALESCE is what makes
     /// both backends merge identically. Do not simplify it away.
-    fn scalar_max(&self) -> &'static str;
+    pub fn scalar_max(&self) -> &'static str {
+        match self {
+            SqlDialect::Sqlite => "MAX",
+            SqlDialect::Postgres => "GREATEST",
+        }
+    }
 
     /// Collation suffix appended to text comparisons that must order
     /// bytewise (the LWW value-byte tiebreak, pull-sync cursor iteration).
     /// Empty on SQLite (TEXT already compares with BINARY collation);
     /// ` COLLATE "C"` on Postgres, whose default collation is locale-aware.
-    fn text_collate(&self) -> &'static str;
+    pub fn text_collate(&self) -> &'static str {
+        match self {
+            SqlDialect::Sqlite => "",
+            SqlDialect::Postgres => " COLLATE \"C\"",
+        }
+    }
 
     /// Leading verb for a PK-only "insert if absent" with no column updates.
     /// SQLite: `INSERT OR IGNORE`. Postgres: plain `INSERT` (the ignore is
     /// expressed by [`SqlDialect::conflict_ignore_clause`] instead).
-    fn insert_ignore_verb(&self) -> &'static str;
+    pub fn insert_ignore_verb(&self) -> &'static str {
+        match self {
+            SqlDialect::Sqlite => "INSERT OR IGNORE",
+            SqlDialect::Postgres => "INSERT",
+        }
+    }
 
     /// Trailing conflict clause paired with [`SqlDialect::insert_ignore_verb`]
     /// for a PK-only insert. Empty on SQLite (the verb carries the
     /// semantics); ` ON CONFLICT (<pk>) DO NOTHING` on Postgres. `pk_cols` is
     /// the already-quoted, comma-joined PK column list.
-    fn conflict_ignore_clause(&self, pk_cols: &str) -> String;
+    pub fn conflict_ignore_clause(&self, pk_cols: &str) -> String {
+        match self {
+            SqlDialect::Sqlite => String::new(),
+            SqlDialect::Postgres => format!(" ON CONFLICT ({pk_cols}) DO NOTHING"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn placeholder_syntax_per_dialect() {
+        assert_eq!(SqlDialect::Sqlite.placeholder(3), "?3");
+        assert_eq!(SqlDialect::Postgres.placeholder(3), "$3");
+    }
+
+    #[test]
+    fn scalar_max_per_dialect() {
+        assert_eq!(SqlDialect::Sqlite.scalar_max(), "MAX");
+        assert_eq!(SqlDialect::Postgres.scalar_max(), "GREATEST");
+    }
+
+    #[test]
+    fn text_collate_per_dialect() {
+        // SQLite already compares bytewise; Postgres needs an explicit "C".
+        assert_eq!(SqlDialect::Sqlite.text_collate(), "");
+        assert_eq!(SqlDialect::Postgres.text_collate(), " COLLATE \"C\"");
+    }
+
+    #[test]
+    fn conflict_ignore_per_dialect() {
+        // SQLite: the verb carries the ignore, no trailing clause.
+        assert_eq!(SqlDialect::Sqlite.insert_ignore_verb(), "INSERT OR IGNORE");
+        assert_eq!(SqlDialect::Sqlite.conflict_ignore_clause("\"id\""), "");
+        // Postgres: plain verb plus an explicit DO NOTHING clause.
+        assert_eq!(SqlDialect::Postgres.insert_ignore_verb(), "INSERT");
+        assert_eq!(
+            SqlDialect::Postgres.conflict_ignore_clause("\"id\""),
+            " ON CONFLICT (\"id\") DO NOTHING"
+        );
+    }
 }
