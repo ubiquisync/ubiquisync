@@ -19,6 +19,7 @@ ubiquisync-core = { path = "crates/ubiquisync-core", version = "0.0.2" }
 ubiquisync-postgres = { path = "crates/ubiquisync-postgres", version = "0.0.2" }
 ubiquisync-sqlite = { path = "crates/ubiquisync-sqlite", version = "0.0.2" }
 ubiquisync-tables = { path = "crates/ubiquisync-tables", version = "0.0.2" }
+async-trait = "0.1.89"
 bitfield-struct = "0.13.0"
 blake3 = "1.8.5"
 thiserror = "2.0.18"
