@@ -15,13 +15,11 @@
 //! backends live in companion crates such as `ubiquisync-sqlite`.
 
 pub mod codec;
-pub mod dialect;
+mod col_type;
 pub mod id;
 pub mod op;
 mod reducer;
 mod schema;
-mod db;
-mod watch;
-mod col_type;
 mod surrogate;
 mod util;
+mod watch;

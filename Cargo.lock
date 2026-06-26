@@ -174,6 +174,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ubiquisync-sql"
+version = "0.0.2"
+
+[[package]]
 name = "ubiquisync-sqlite"
 version = "0.0.2"
 dependencies = [
