@@ -149,9 +149,18 @@ pub enum DbError {
     UnexpectedNull(usize),
 }
 
-pub trait Db: SqlDialect {
+pub trait Db {
+    fn dialect(&self) -> &dyn SqlDialect;
     fn describe_table(&self, name: &str) -> Result<Option<TableDescriptor>, DbError>;
-    fn exec(&self, sql: &str) -> Result<(), DbError>;
+    fn exec(&self, sql: &str, params: &[DbValue]) -> Result<usize, DbError>;
+    fn query(&self, sql: &str, params: &[DbValue]) -> Result<Vec<DbRow>, DbError>;
+    fn new_batch(&self) -> Result<Box<dyn DbBatch>, DbError>;
+}
+
+pub trait DbBatch {
+    fn dialect(&self) -> &dyn SqlDialect;
+    fn add_statement(&mut self, sql: &str, params: &[DbValue]) -> Result<(), DbError>;
+    fn exec(self) -> Result<Vec<DbRow>, DbError>;
 }
 
 pub struct TableDescriptor {
