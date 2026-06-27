@@ -197,6 +197,7 @@ dependencies = [
  "bitfield-struct",
  "thiserror",
  "ubiquisync-core",
+ "ubiquisync-sql",
 ]
 
 [[package]]
