@@ -20,4 +20,10 @@ impl Reducer {
             }
         }
     }
+
+    pub(crate) fn require_table(&self, table_id: TableId) -> Result<&TableSchema, ReducerError> {
+        self.table_schemas
+            .get(&table_id)
+            .ok_or_else(ReducerError::TableNotFound(table_id))
+    }
 }

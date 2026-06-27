@@ -1,77 +1,117 @@
 use crate::col_type::ColType;
-use crate::db::{Db, DbValue};
 use crate::id::ColumnId;
-use crate::op::{Upsert, Value};
+use crate::op::Upsert;
 use crate::reducer::{Reducer, ReducerError};
 use crate::util::value_to_db;
 use crate::watch::UpsertEvent;
 use ubiquisync_core::hlc::Timestamp;
+use ubiquisync_sql::db::{Db, DbBatch};
 
 impl Reducer {
-    pub(crate) fn apply_upsert(
+    pub(crate) async fn sync_upsert_schema(
         &mut self,
         db: &dyn Db,
+        upsert: &Upsert,
+    ) -> Result<(), ReducerError> {
+        let table = self.ensure_table(db, upsert.table_id)?;
+        for col_update in upsert.sets.iter() {
+            table.ensure_column(db, col_update.column_id)?;
+        }
+
+        for null_col_id in upsert.nulls.iter() {
+            table.ensure_column(db, *null_col_id)?;
+        }
+    }
+
+    pub(crate) fn apply_upsert(
+        &self,
+        batch: &mut dyn DbBatch,
         timestamp: Timestamp,
         upsert: &Upsert,
     ) -> Result<Option<UpsertEvent>, ReducerError> {
-        let table = self.ensure_table(db, upsert.table_id)?;
+        let table = self.require_table(upsert.table_id)?;
 
-        let mut insert_into_cols = vec![];
-        let mut insert_into_binds = vec![];
-        let mut bind_vals = vec![];
-
+        let mut insert_into_cols = vec![]; // INSERT INTO (...)
+        let mut insert_into_binds = vec![]; // VALUES (?1, ?2, ...)
+        let mut bind_vals = vec![]; // the actual values to bind the sql to 
         let mut next_bind_idx = 1;
 
         let pk_count = table.get_id().pk_count();
         for i in 0..pk_count {
-            insert_into_cols.push(table.pk_col_names()[i]);
-            insert_into_binds.push(db.placeholder(next_bind_idx));
+            // bind pk col name to the INSERT INTO clause
+            insert_into_cols.push(table.pk_col_names()[i].clone());
+            // create positional (?1) bind params for each pk val
+            insert_into_binds.push(batch.dialect().placeholder(next_bind_idx));
             next_bind_idx += 1;
+            // add the pk val to the list of bind values
             bind_vals.push(value_to_db(&upsert.primary_key[i]))
         }
 
-        let pk_name_list = table.pk_col_names().join(", ");
-        
-        // list of pk placeholders: $1, $2, $3
-        let pk_placeholders = (1..=pk_count)
-            .map(|i| db.placeholder(i))
-            .collect::<Vec<_>>()
-            .join(", ");
-
-        let bind_vals = vec![];
-
-
-        let pk_vals: Vec<DbValue> = upsert
-            .primary_key
-            .iter()
-            .map(|pk| value_to_db(pk))
-            .collect();
-
-        let mut update_cols: Vec<(ColumnId, String, ColType, Option<DbValue>)> = Vec::new();
-        for col_update in upsert.sets.iter() {
-            let col_name = table.ensure_column(db, col_update.column_id)?;
-            let col_type = col_update.column_id.col_type();
-            let db_val = value_to_db(&col_update.value);
-            update_cols.push((col_update.column_id, col_name, col_type, Some(db_val)));
-        }
-
-        for null_col_id in upsert.nulls.iter() {
-            let col_name = table.ensure_column(db, *null_col_id)?;
-            let col_type = null_col_id.col_type();
-            update_cols.push((*null_col_id, col_name, col_type, None));
-        }
-
-
-        if update_cols.is_empty() {
+        if upsert.sets.is_empty() {
+            // TODO
             // case where we just have primary sets to insert or ignore
-            let sql = format!("{} INTO {} ",
-                db.insert_ignore_verb(),
+            let sql = format!(
+                "{} INTO {} ",
+                batch.dialect().insert_ignore_verb(),
                 table.get_name(),
-
-            )
-        } else {
-            
+            );
         }
+
+        // the SET clauses for each non-pk column
+        let mut set_clauses = vec![];
+        for col_update in upsert.sets.iter() {
+            // TODO validate value types
+            // TODO add SET and WHERE clauses
+
+            // get the column schema
+            let col_schema = table.require_column(col_update.column_id)?;
+            // bind column to the INSERT INTO clause
+            insert_into_cols.push(col_schema.name.clone());
+            // create positional (?3) bind param
+            insert_into_binds.push(batch.dialect().placeholder(next_bind_idx));
+            next_bind_idx += 1;
+            // add the val to the list of bind values
+            bind_vals.push(value_to_db(&col_update.value));
+
+            if let Some(lww_name) = col_schema.lww_name {
+                // bind lww column to the INSERT INTO clause
+                insert_into_cols.push(col_schema.name.clone());
+                // create positional (?3) bind param
+                insert_into_binds.push(batch.dialect().placeholder(next_bind_idx));
+                next_bind_idx += 1;
+                // add the pk val to the list of bind values
+                bind_vals.push(value_to_db(&col_update.value));
+            } else {
+            }
+        }
+
+        // create a list of the pk names for the ON CONFLICT statement
+        let pk_name_list = table.pk_col_names().join(", ");
+
+        // let mut update_cols: Vec<(ColumnId, String, ColType, Option<DbValue>)> = Vec::new();
+        // for col_update in upsert.sets.iter() {
+        //     let col_name = table.ensure_column(db, col_update.column_id)?;
+        //     let col_type = col_update.column_id.col_type();
+        //     let db_val = value_to_db(&col_update.value);
+        //     update_cols.push((col_update.column_id, col_name, col_type, Some(db_val)));
+        // }
+
+        // for null_col_id in upsert.nulls.iter() {
+        //     let col_name = table.ensure_column(db, *null_col_id)?;
+        //     let col_type = null_col_id.col_type();
+        //     update_cols.push((*null_col_id, col_name, col_type, None));
+        // }
+
+        // if update_cols.is_empty() {
+        //     // case where we just have primary sets to insert or ignore
+        //     let sql = format!("{} INTO {} ",
+        //         db.insert_ignore_verb(),
+        //         table.get_name(),
+
+        //     )
+        // } else {
+
+        // }
 
         todo!()
         //     // Resolve table: known (compiled SysTable) or unknown (surrogate).

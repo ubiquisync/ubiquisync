@@ -34,15 +34,21 @@ impl ubiquisync_sql::reducer::Reducer for Reducer {
     type Event = ChangeEvent;
 
     async fn sync_schema(&mut self, db: &dyn Db, op: &Op) -> Result<(), Self::Error> {
-        todo!()
+        match op {
+            Op::Upsert(upsert) => self.sync_upsert_schema(db, upsert),
+            Op::Delete(delete) => self.sync_delete_schema(db, delete),
+        }
     }
 
     async fn apply(
         &self,
-        db: &mut dyn DbBatch,
+        batch: &mut dyn DbBatch,
         timestamp: ubiquisync_core::hlc::Timestamp,
         op: &Op,
     ) -> Result<Self::Event, Self::Error> {
-        todo!()
+        match op {
+            Op::Upsert(upsert) => self.apply_upsert(batch, timestamp, upsert),
+            Op::Delete(delete) => self.apply_delete(batch, timestamp, delete),
+        }
     }
 }

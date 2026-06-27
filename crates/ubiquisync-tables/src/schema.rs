@@ -18,6 +18,7 @@ pub struct TableSchema {
 pub struct ColumnSchema {
     pub name: String,
     pub id: ColumnId,
+    pub lww_name: Option<String>,
 }
 
 impl TableSchema {
@@ -100,7 +101,7 @@ impl TableSchema {
         let mut have_deleted_ts_col = false;
         for col in existing_cols {
             if col.name == "__deleted_ts" {
-                have_deleted_ts_col = true;   
+                have_deleted_ts_col = true;
             } else if let Some(name) = parse_lww_col_name(&col.name) {
                 if let Some(existing) = existing_col_map.get_mut(&name) {
                     existing.lww_col_type = Some(col.db_type);
@@ -145,7 +146,7 @@ impl TableSchema {
                 existing.validate(col.id.col_type())?;
             } else if let Some(surrogate) = parse_surrogate_col_name(existing.name.as_str()) {
                 existing.validate(surrogate.col_type())?;
-                if let Some(to_define) =  ts.cols.get(&surrogate) {
+                if let Some(to_define) = ts.cols.get(&surrogate) {
                     // Rename surrogate to real column name
                     db.exec(&format!(
                         "ALTER TABLE {} RENAME COLUMN {} TO {}",
@@ -153,13 +154,17 @@ impl TableSchema {
                         quote_ident(&existing.name),
                         quote_ident(&to_define.name),
                     ))?;
+                    // TODO move this to outer
+                    let mut lww_name = None;
                     if to_define.id.col_type().is_lww() {
+                        let lww_col = lww_col_name(&to_define.name);
                         db.exec(&format!(
                             "ALTER TABLE {} RENAME COLUMN {} TO {}",
                             quote_ident(&ts.name),
-                            quote_ident(&lww_col_name(&to_define.name)),
                             quote_ident(&lww_col_name(&existing.name)),
+                            quote_ident(&lww_col),
                         ))?;
+                        lww_name = Some(lww_col);
                     }
 
                     // Remove the renamed surrogate column from the list of columns to define.
@@ -170,6 +175,7 @@ impl TableSchema {
                     ColumnSchema {
                         name: existing.name.clone(),
                         id: surrogate,
+                        lww_name,
                     },
                 );
             }
@@ -197,27 +203,37 @@ impl TableSchema {
             cols: BTreeMap::default(),
         };
 
-
         // TODO: check db for table info
         Ok(ts)
     }
 
-    pub fn ensure_column(&mut self, db: &dyn Db, col_id: ColumnId) -> Result<String, ReducerError> {
+    pub fn ensure_column(&mut self, db: &dyn Db, col_id: ColumnId) -> Result<(), ReducerError> {
         if let Some(col) = self.cols.get(&col_id) {
-            return Ok(col.name.clone());
+            return Ok(());
         }
 
         // Create surrogate column.
         let col_name = surrogate_col_name(col_id);
-        self.alter_table_add_col(db, &col_name, col_id);
+        let mut lww_name = None;
+        if col_id.col_type().is_lww() {
+            lww_name = Some(lww_col_name(&col_name));
+        }
+        self.alter_table_add_col(db, &col_name, &lww_name, col_id);
         self.cols.insert(
             col_id,
             ColumnSchema {
-                name: col_name.clone(),
+                name: col_name,
                 id: col_id,
+                lww_name,
             },
         );
-        Ok(col_name)
+        Ok(())
+    }
+
+    pub fn require_column(&self, col_id: ColumnId) -> Result<&ColumnSchema, ReducerError> {
+        self.cols
+            .get(&col_id)
+            .ok_or_else(ReducerError::ColumnNotFound(col_id))
     }
 
     fn create_table(&self, db: &dyn Db) -> Result<(), ReducerError> {
@@ -234,10 +250,7 @@ impl TableSchema {
             ));
         }
 
-        col_defs.push(format!(
-            "__deleted_ts {}",
-            db.lww_col_type(),
-        ))
+        col_defs.push(format!("__deleted_ts {}", db.lww_col_type()));
 
         for (_, col) in self.cols {
             col_defs.push(format!(
@@ -262,7 +275,13 @@ impl TableSchema {
         Ok(())
     }
 
-    fn alter_table_add_col(&self, db: &dyn Db, col_name: &str, col_id: ColumnId) {
+    fn alter_table_add_col(
+        &self,
+        db: &dyn Db,
+        col_name: &str,
+        lww_col_name: &Option<String>,
+        col_id: ColumnId,
+    ) {
         // TODO maybe batch these statements
         db.exec(&format!(
             // TODO ensure that we don't need to specify NULL
@@ -272,11 +291,11 @@ impl TableSchema {
             db.col_type(col_id.col_type()),
         ))?;
         // Add LWW column
-        if col_id.col_type().is_lww() {
+        if let Some(lww_col_name) = lww_col_name {
             db.exec(&format!(
                 "ALTER TABLE {} ADD COLUMN {} {}",
                 quote_ident(&self.name),
-                quote_ident(&lww_col_name(&col_name)),
+                quote_ident(&lww_col_name),
                 db.lww_col_type(),
             ))?;
         }
