@@ -1,11 +1,9 @@
-use crate::col_type::ColType;
-use crate::id::ColumnId;
 use crate::op::Upsert;
 use crate::reducer::{Reducer, ReducerError};
-use crate::util::value_to_db;
-use crate::watch::UpsertEvent;
+use crate::schema::ColumnSchema;
+use crate::util::{quote_ident, value_to_db};
 use ubiquisync_core::hlc::Timestamp;
-use ubiquisync_sql::db::{Db, DbBatch};
+use ubiquisync_sql::db::{Db, DbBatch, DbValue, StmtId};
 
 impl Reducer {
     pub(crate) async fn sync_upsert_schema(
@@ -28,65 +26,130 @@ impl Reducer {
         batch: &mut dyn DbBatch,
         timestamp: Timestamp,
         upsert: &Upsert,
-    ) -> Result<Option<UpsertEvent>, ReducerError> {
+    ) -> Result<StmtId, ReducerError> {
         let table = self.require_table(upsert.table_id)?;
+        let quoted_table_name = quote_ident(&table.get_name());
 
         let mut insert_into_cols = vec![]; // INSERT INTO (...)
         let mut insert_into_binds = vec![]; // VALUES (?1, ?2, ...)
-        let mut bind_vals = vec![]; // the actual values to bind the sql to 
+        let mut bind_vals: Vec<DbValue> = vec![]; // the actual values to bind the sql to 
         let mut next_bind_idx = 1;
 
         let pk_count = table.get_id().pk_count();
         for i in 0..pk_count {
             // bind pk col name to the INSERT INTO clause
+            // TODO quote_ident
             insert_into_cols.push(table.pk_col_names()[i].clone());
             // create positional (?1) bind params for each pk val
             insert_into_binds.push(batch.dialect().placeholder(next_bind_idx));
             next_bind_idx += 1;
             // add the pk val to the list of bind values
+            // TODO validate pkey value types
             bind_vals.push(value_to_db(&upsert.primary_key[i]))
         }
+        // create a list of the pk names for the ON CONFLICT statement
+        // TODO quote_ident
+        let pk_name_list = table.pk_col_names().join(", ");
 
-        if upsert.sets.is_empty() {
-            // TODO
-            // case where we just have primary sets to insert or ignore
-            let sql = format!(
-                "{} INTO {} ",
-                batch.dialect().insert_ignore_verb(),
-                table.get_name(),
-            );
+        let mut all_updates: Vec<(&ColumnSchema, DbValue)> = Vec::new();
+        for col_update in upsert.sets.iter() {
+            let col_schema = table.require_column(col_update.column_id)?;
+            let db_val = value_to_db(&col_update.value);
+            all_updates.push((col_schema, db_val));
         }
 
+        for null_col_id in upsert.nulls.iter() {
+            let col_schema = table.require_column(*null_col_id)?;
+            all_updates.push((col_schema, DbValue::Null));
+        }
+
+        if all_updates.sets.is_empty() {
+            // case where we just have primary sets to insert or ignore
+            let sql = format!(
+                "{} INTO {} ({}) VALUES ({}) {}",
+                batch.dialect().insert_ignore_verb(),
+                quoted_table_name,
+                insert_into_cols.join(", "),
+                insert_into_binds.join(", "),
+                batch.dialect().conflict_ignore_clause(&pk_name_list),
+            );
+            return Ok(batch.add_statement(&sql, &bind_vals));
+        }
+
+        let greatest = batch.dialect().scalar_max();
         // the SET clauses for each non-pk column
         let mut set_clauses = vec![];
-        for col_update in upsert.sets.iter() {
+        let mut where_clauses = vec![];
+        let mut returning_clauses = vec![];
+        for (col_schema, col_value) in all_updates {
             // TODO validate value types
             // TODO add SET and WHERE clauses
 
             // get the column schema
-            let col_schema = table.require_column(col_update.column_id)?;
+            let quoted_name = quote_ident(&col_schema.name);
             // bind column to the INSERT INTO clause
-            insert_into_cols.push(col_schema.name.clone());
+            insert_into_cols.push(quoted_name.clone());
             // create positional (?3) bind param
             insert_into_binds.push(batch.dialect().placeholder(next_bind_idx));
             next_bind_idx += 1;
             // add the val to the list of bind values
-            bind_vals.push(value_to_db(&col_update.value));
+            bind_vals.push(col_value);
 
             if let Some(lww_name) = col_schema.lww_name {
+                let quoted_lww = quote_ident(&lww_name);
                 // bind lww column to the INSERT INTO clause
                 insert_into_cols.push(col_schema.name.clone());
                 // create positional (?3) bind param
                 insert_into_binds.push(batch.dialect().placeholder(next_bind_idx));
                 next_bind_idx += 1;
                 // add the pk val to the list of bind values
-                bind_vals.push(value_to_db(&col_update.value));
+                bind_vals.push(DbValue::Integer(timestamp.raw() as i64));
+
+                set_clauses.push(format!(
+                    "{quoted_name} = CASE WHEN EXCLUDED.{quoted_lww} > COALESCE({quoted_table_name}.{quoted_lww}, 0)
+                                          THEN EXCLUDED.{quoted_name} ELSE {quoted_table_name}.{quoted_name}",
+                ));
+                // TODO add tie break
+                set_clauses.push(format!(
+                    "{quoted_lww} = {greatest}(COALESCE({quoted_table_name}.{quoted_lww}, 0), EXCLUDED.{quoted_lww})"
+                ));
+
+                where_clauses.push(format!(
+                    "EXCLUDED.{quoted_lww} > COALESCE({quoted_table_name}.{quoted_lww}, 0)"
+                ));
+
+                returning_clauses.push(format!(
+                    "{quoted_lww} = {}",
+                    batch.dialect().placeholder(next_bind_idx),
+                ));
+                next_bind_idx += 1;
+                bind_vals.push(DbValue::Integer(timestamp.raw() as i64));
             } else {
+                // only max i64 values can end up here
+                // TODO verify that with an if/else
+                set_clauses.push(format!(
+                   "{quoted_name} = {greatest}(COALESCE({quoted_table_name}.{quoted_name}, EXCLUDED.{quoted_name}), EXCLUDED.{quoted_name})"
+                ));
+
+                where_clauses.push(format!(
+                    "EXCLUDED.{quoted_name} > COALESCE({quoted_table_name}.{quoted_name}, 0)"
+                ));
+
+                returning_clauses.push(quoted_name);
             }
         }
 
-        // create a list of the pk names for the ON CONFLICT statement
-        let pk_name_list = table.pk_col_names().join(", ");
+        let sql = format!(
+            "INSERT INTO {quoted_table_name} ({}) VALUES ({})
+              ON CONFLICT ({}) DO UPDATE SET {} WHERE {} RETURNING {}",
+            insert_into_cols.join(", "),
+            insert_into_binds.join(", "),
+            pk_name_list.join(", "),
+            set_clauses.join(", "),
+            where_clauses.join(" OR "),
+            returning_clauses,
+        );
+        return Ok(batch.add_statement(&sql, &bind_vals));
 
         // let mut update_cols: Vec<(ColumnId, String, ColType, Option<DbValue>)> = Vec::new();
         // for col_update in upsert.sets.iter() {

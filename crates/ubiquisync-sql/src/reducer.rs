@@ -1,39 +1,67 @@
 use ubiquisync_core::hlc::Timestamp;
 
-use crate::db::{Db, DbBatch};
+use crate::db::{Db, DbBatch, DbStatementResult};
 
-/// Translates a single op into the SQL writes that materialize it.
+/// Translates a single op into the SQL writes that materialize it, in three
+/// phases so the work maps onto every backend — including ones with no
+/// interactive transaction (e.g. D1's `batch()`):
 ///
-/// Split into two phases so the work maps onto every backend, including ones
-/// with no interactive transaction (e.g. D1's `batch()`):
-///
-/// 1. [`sync_schema`](Reducer::sync_schema) runs *before* a batch is opened. It
-///    is the only phase allowed to read from or issue DDL against the database.
-/// 2. [`apply`](Reducer::apply) emits the op's mutation statements into an
-///    already-open batch. It is pure and read-free, so the batch stays a flat,
-///    declarative statement list.
+/// 1. [`prepare`](Reducer::prepare) runs *before* the batch. It is the only
+///    phase allowed to read or issue DDL, and it returns the
+///    [`ReadState`](Reducer::ReadState) `apply` needs — so every read is hoisted
+///    out of the batch.
+/// 2. [`apply`](Reducer::apply) emits the op's mutation statements into the open
+///    batch. It is pure and read-free (it consumes the `ReadState`), so the
+///    batch stays a flat, declarative statement list.
+/// 3. [`post_apply`](Reducer::post_apply) runs *after* the batch commits, when
+///    `RETURNING` rows finally exist, and turns the results into the event.
+#[async_trait::async_trait(?Send)]
 pub trait Reducer {
     /// The op vocabulary this reducer materializes (e.g. the table op enum).
     type Op;
+    /// Data read in [`prepare`](Reducer::prepare) and consumed by
+    /// [`apply`](Reducer::apply): e.g. a card's prior FSRS state, or its full
+    /// review history when an out-of-order op forces a recompute. `()` when
+    /// `apply` needs nothing read.
+    type ReadState;
+    /// Carried from [`apply`](Reducer::apply) to
+    /// [`post_apply`](Reducer::post_apply): the `StmtId`s of the emitted
+    /// statements plus any op-derived data needed to build the event.
+    type ApplyState;
     /// The change event produced for an applied op, for downstream observers.
     type Event;
-    /// Error surfaced from either phase.
+    /// Error surfaced from any phase.
     type Error;
 
-    /// Reconcile the schema needed by `op`: create or alter tables and refresh
-    /// any cached schema. Runs outside the batch — schema changes are additive
-    /// and safe to commit on their own — and is the only place reads happen, so
-    /// `apply` can rely on whatever this leaves cached.
-    async fn sync_schema(&mut self, db: &dyn Db, op: &Self::Op) -> Result<(), Self::Error>;
+    /// Reconcile the schema needed by `op` (create/alter tables, refresh any
+    /// cache) and read whatever `apply` will need, returning it as a
+    /// [`ReadState`](Reducer::ReadState). Runs outside the batch — DDL is
+    /// additive and safe to commit on its own, and hoisting reads here is what
+    /// keeps `apply` pure.
+    async fn prepare(
+        &mut self,
+        db: &dyn Db,
+        op: &Self::Op,
+    ) -> Result<Self::ReadState, Self::Error>;
 
-    /// Emit the statements that materialize `op` at `timestamp` into `batch`.
-    /// Read-free: builds SQL purely from `op` and the schema cached by
-    /// [`sync_schema`](Reducer::sync_schema). The returned event is provisional
-    /// until `batch` commits — the caller must drop it if the commit fails.
-    async fn apply(
+    /// Emit the statements that materialize `op` at `timestamp` into `batch`,
+    /// using only `op`, the cached schema, and `read`. Read-free, so it stays
+    /// expressible as a declarative batch. The returned
+    /// [`ApplyState`](Reducer::ApplyState) is provisional until `batch` commits.
+    fn apply(
         &self,
         batch: &mut dyn DbBatch,
         timestamp: Timestamp,
         op: &Self::Op,
+        read: &Self::ReadState,
+    ) -> Result<Self::ApplyState, Self::Error>;
+
+    /// Build the event once the batch has committed. `batch_result` holds the
+    /// whole batch's per-statement results in add order; locate this op's
+    /// `RETURNING` rows via the `StmtId`s stored in `apply_state`.
+    fn post_apply(
+        &self,
+        apply_state: &Self::ApplyState,
+        batch_result: &[DbStatementResult],
     ) -> Result<Self::Event, Self::Error>;
 }
