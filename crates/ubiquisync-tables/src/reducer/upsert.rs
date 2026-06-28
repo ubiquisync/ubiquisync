@@ -1,7 +1,7 @@
 use crate::col_type::ColType;
 use crate::op::{Upsert, Value};
 use crate::reducer::{ApplyState, Reducer, ReducerError};
-use crate::schema::{ColumnSchema, UPSERT_TS_COL};
+use crate::schema::{ColumnSchema, TableSchema, UPSERT_TS_COL};
 use crate::util::{quote_ident, value_to_db};
 use crate::watch::{ChangeEvent, ColumnValue, UpsertEvent};
 use ubiquisync_core::hlc::Timestamp;
@@ -37,26 +37,18 @@ impl Reducer {
         let quoted_table_name = quote_ident(table.get_name());
 
         let mut insert_into_cols = vec![]; // INSERT INTO (...)
-        let mut insert_into_binds = vec![]; // VALUES (?1, ?2, ...)
+        let mut insert_into_value_binds = vec![]; // VALUES (?1, ?2, ...)
         let mut value_binder = ValueBinder::new(dialect);
 
-        let pk_count = table.get_id().pk_count();
-        for i in 0..pk_count {
-            // bind the quoted pk col name into the INSERT column list
-            insert_into_cols.push(quote_ident(&table.pk_col_names()[i]));
-            // create positional (?1) bind params for each pk val
-            insert_into_binds.push(value_binder.bind_next(value_to_db(&upsert.primary_key[i])));
-            // add the pk val to the list of bind values
-            // TODO validate pkey value types
-        }
+        bind_pkey(
+            table,
+            &upsert.primary_key,
+            &mut insert_into_cols,
+            &mut insert_into_value_binds,
+            &mut value_binder,
+        );
 
-        // quoted, comma-joined pk list for the ON CONFLICT statement
-        let pk_name_list = table
-            .pk_col_names()
-            .iter()
-            .map(|n| quote_ident(n))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let pk_name_list = mk_pkey_name_list(table);
 
         // the SET clauses for each non-pk column
         let mut set_clauses = vec![];
@@ -66,7 +58,7 @@ impl Reducer {
 
         // UPSERT_TS_COL binding
         insert_into_cols.push(UPSERT_TS_COL.into());
-        insert_into_binds.push(value_binder.bind_next(timestamp_value.clone()));
+        insert_into_value_binds.push(value_binder.bind_next(timestamp_value.clone()));
         set_clauses.push(set_lww_sql(UPSERT_TS_COL, &quoted_table_name, dialect));
         where_clauses.push(lww_winner_sql(&quoted_table_name, UPSERT_TS_COL));
 
@@ -96,14 +88,14 @@ impl Reducer {
             // bind column to the INSERT INTO clause
             insert_into_cols.push(quoted_name.clone());
             // create positional (?3) bind param
-            insert_into_binds.push(value_binder.bind_next(value));
+            insert_into_value_binds.push(value_binder.bind_next(value));
             // add the val to the list of bind values
 
             let quoted_lww = quote_ident(&col_schema.lww_name);
             // bind the lww timestamp column into the INSERT column list
             insert_into_cols.push(quoted_lww.clone());
             // create positional (?3) bind param
-            insert_into_binds.push(value_binder.bind_next(timestamp_value.clone()));
+            insert_into_value_binds.push(value_binder.bind_next(timestamp_value.clone()));
             // add the pk val to the list of bind values
 
             let lww_clause = lww_winner_sql_with_tiebreak(
@@ -136,7 +128,7 @@ impl Reducer {
             "INSERT INTO {quoted_table_name} ({}) VALUES ({}) \
             ON CONFLICT ({}) DO UPDATE SET {} WHERE {}",
             insert_into_cols.join(", "),
-            insert_into_binds.join(", "),
+            insert_into_value_binds.join(", "),
             pk_name_list,
             set_clauses.join(", "),
             where_clauses.join(" OR "),
@@ -172,7 +164,7 @@ fn lww_winner_sql_with_tiebreak(
     )
 }
 
-fn lww_winner_sql(table_name: &str, lww_col: &str) -> String {
+pub(crate) fn lww_winner_sql(table_name: &str, lww_col: &str) -> String {
     format!("EXCLUDED.{lww_col} > COALESCE({table_name}.{lww_col}, 0)")
 }
 
@@ -195,7 +187,35 @@ fn tiebreak_sql(
     )
 }
 
-fn set_lww_sql(lww_col: &str, table_name: &str, dialect: SqlDialect) -> String {
+pub(crate) fn set_lww_sql(lww_col: &str, table_name: &str, dialect: SqlDialect) -> String {
     let greatest = dialect.scalar_max();
     format!("{lww_col} = {greatest}(COALESCE({table_name}.{lww_col}, 0), EXCLUDED.{lww_col})")
+}
+
+pub(crate) fn bind_pkey(
+    table: &TableSchema,
+    primary_key: &[Value],
+    insert_into_cols: &mut Vec<String>,
+    insert_into_value_binds: &mut Vec<String>,
+    value_binder: &mut ValueBinder,
+) {
+    let pk_count = table.get_id().pk_count();
+    for i in 0..pk_count {
+        // bind the quoted pk col name into the INSERT column list
+        insert_into_cols.push(quote_ident(&table.pk_col_names()[i]));
+        // create positional (?1) bind params for each pk val
+        insert_into_value_binds.push(value_binder.bind_next(value_to_db(&primary_key[i])));
+        // add the pk val to the list of bind values
+        // TODO validate pkey value types
+    }
+}
+
+// quoted, comma-joined pk list for the ON CONFLICT statement
+pub(crate) fn mk_pkey_name_list(table: &TableSchema) -> String {
+    table
+        .pk_col_names()
+        .iter()
+        .map(|n| quote_ident(n))
+        .collect::<Vec<_>>()
+        .join(", ")
 }

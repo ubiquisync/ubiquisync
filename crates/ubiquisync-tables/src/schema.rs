@@ -12,7 +12,7 @@ pub struct TableSchema {
     id: TableId,
     name: String,
     pk_names: Vec<String>,
-    cols: BTreeMap<ColumnId, ColumnSchema>,
+    value_cols: BTreeMap<ColumnId, ColumnSchema>,
 }
 
 #[derive(Debug, Clone)]
@@ -43,7 +43,7 @@ impl TableSchema {
             id,
             name,
             pk_names,
-            cols: cols.into_iter().map(|c| (c.id, c)).collect(),
+            value_cols: cols.into_iter().map(|c| (c.id, c)).collect(),
         };
         let existing_cols: Vec<ColumnDescription> =
             if let Some(existing) = db.describe_table(&ts.name)? {
@@ -143,7 +143,7 @@ impl TableSchema {
 
         // Check existing columns
         let mut cols_to_define = BTreeMap::default();
-        for col in ts.cols.values() {
+        for col in ts.value_cols.values() {
             cols_to_define.insert(col.name.clone(), col);
         }
         for existing in existing_col_map.values() {
@@ -153,7 +153,7 @@ impl TableSchema {
                 existing.validate(col.id.col_type())?;
             } else if let Some(surrogate) = parse_surrogate_col_name(existing.name.as_str()) {
                 existing.validate(surrogate.col_type())?;
-                if let Some(to_define) = ts.cols.get(&surrogate) {
+                if let Some(to_define) = ts.value_cols.get(&surrogate) {
                     // Rename surrogate to real column name
                     db.exec(&format!(
                         "ALTER TABLE {} RENAME COLUMN {} TO {}",
@@ -173,7 +173,7 @@ impl TableSchema {
                     // Remove the renamed surrogate column from the list of columns to define.
                     cols_to_define.remove(&to_define.name);
                 }
-                ts.cols.insert(
+                ts.value_cols.insert(
                     surrogate,
                     ColumnSchema {
                         name: existing.name.clone(),
@@ -203,7 +203,7 @@ impl TableSchema {
             id,
             name,
             pk_names,
-            cols: BTreeMap::default(),
+            value_cols: BTreeMap::default(),
         };
 
         // TODO: check db for table info
@@ -211,7 +211,7 @@ impl TableSchema {
     }
 
     pub fn ensure_column(&mut self, db: &dyn Db, col_id: ColumnId) -> Result<(), ReducerError> {
-        if let Some(col) = self.cols.get(&col_id) {
+        if let Some(col) = self.value_cols.get(&col_id) {
             return Ok(());
         }
 
@@ -219,7 +219,7 @@ impl TableSchema {
         let col_name = surrogate_col_name(col_id);
         let lww_name = lww_col_name(&col_name);
         self.alter_table_add_col(db, &col_name, &lww_name, col_id);
-        self.cols.insert(
+        self.value_cols.insert(
             col_id,
             ColumnSchema {
                 name: col_name,
@@ -231,7 +231,7 @@ impl TableSchema {
     }
 
     pub fn require_column(&self, col_id: ColumnId) -> Result<&ColumnSchema, ReducerError> {
-        self.cols
+        self.value_cols
             .get(&col_id)
             .ok_or_else(ReducerError::ColumnNotFound(col_id))
     }
@@ -253,7 +253,7 @@ impl TableSchema {
         col_defs.push(format!("{UPSERT_TS_COL} {}", db.lww_col_type()));
         col_defs.push(format!("{DELETED_TS_COL} {}", db.lww_col_type()));
 
-        for (_, col) in self.cols {
+        for (_, col) in self.value_cols {
             col_defs.push(format!(
                 "{} {}",
                 quote_ident(&col.name),
@@ -310,6 +310,10 @@ impl TableSchema {
 
     pub fn get_id(&self) -> TableId {
         self.id
+    }
+
+    pub fn non_pkey_cols(&self) -> impl Iterator<Item = ColumnSchema> {
+        self.value_cols.values()
     }
 }
 

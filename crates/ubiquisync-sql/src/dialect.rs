@@ -51,27 +51,6 @@ impl SqlDialect {
             SqlDialect::Postgres => " COLLATE \"C\"",
         }
     }
-
-    /// Leading verb for a PK-only "insert if absent" with no column updates.
-    /// SQLite: `INSERT OR IGNORE`. Postgres: plain `INSERT` (the ignore is
-    /// expressed by [`SqlDialect::conflict_ignore_clause`] instead).
-    pub fn insert_ignore_verb(&self) -> &'static str {
-        match self {
-            SqlDialect::Sqlite => "INSERT OR IGNORE",
-            SqlDialect::Postgres => "INSERT",
-        }
-    }
-
-    /// Trailing conflict clause paired with [`SqlDialect::insert_ignore_verb`]
-    /// for a PK-only insert. Empty on SQLite (the verb carries the
-    /// semantics); ` ON CONFLICT (<pk>) DO NOTHING` on Postgres. `pk_cols` is
-    /// the already-quoted, comma-joined PK column list.
-    pub fn conflict_ignore_clause(&self, pk_cols: &str) -> String {
-        match self {
-            SqlDialect::Sqlite => String::new(),
-            SqlDialect::Postgres => format!(" ON CONFLICT ({pk_cols}) DO NOTHING"),
-        }
-    }
 }
 
 pub struct PlaceholderGen {
