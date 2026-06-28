@@ -17,6 +17,7 @@
 pub mod codec;
 mod col_type;
 pub mod id;
+mod index_codec;
 pub mod op;
 mod reducer;
 mod schema;

@@ -60,28 +60,43 @@ fn encode_one_op(w: &mut EntryBufferWriter, op: &Op) -> Result<(), CodecError> {
     match op {
         Op::Upsert(e) => {
             w.write_byte(TAG_UPSERT);
-            w.write_u16_le(e.table_id.into());
-            write_pk(w, e.table_id, &e.primary_key)?;
-            w.write_varint(e.sets.len() as u64);
-            for cu in &e.sets {
-                w.write_byte(cu.column_id.into());
-                write_col_value(w, cu.column_id, &cu.value)?;
-            }
-            w.write_varint(e.nulls.len() as u64);
-            for col_id in &e.nulls {
-                w.write_byte((*col_id).into());
-            }
+            encode_one_key(w, e.table_id, &e.primary_key)?;
+            encode_one_value(w, e)
         }
         Op::Delete(e) => {
             w.write_byte(TAG_DELETE);
-            w.write_u16_le(e.table_id.into());
-            write_pk(w, e.table_id, &e.primary_key)?;
+            encode_one_key(w, e.table_id, &e.primary_key)
         }
+    }
+}
+
+pub(crate) fn encode_one_key(
+    w: &mut EntryBufferWriter,
+    table_id: TableId,
+    pkey: &[Value],
+) -> Result<(), CodecError> {
+    w.write_u16_le(table_id.into());
+    write_pk(w, table_id, &pkey)
+}
+
+pub(crate) fn encode_one_value(w: &mut EntryBufferWriter, e: &Upsert) -> Result<(), CodecError> {
+    w.write_varint(e.sets.len() as u64);
+    for cu in &e.sets {
+        w.write_byte(cu.column_id.into());
+        write_col_value(w, cu.column_id, &cu.value)?;
+    }
+    w.write_varint(e.nulls.len() as u64);
+    for col_id in &e.nulls {
+        w.write_byte((*col_id).into());
     }
     Ok(())
 }
 
-fn write_pk(w: &mut EntryBufferWriter, table_id: TableId, pk: &[Value]) -> Result<(), CodecError> {
+pub(crate) fn write_pk(
+    w: &mut EntryBufferWriter,
+    table_id: TableId,
+    pk: &[Value],
+) -> Result<(), CodecError> {
     let pk_count = table_id.pk_count();
     // A wrong number of PK values is a caller error.
     if pk.len() != pk_count {
@@ -110,7 +125,7 @@ fn write_pk(w: &mut EntryBufferWriter, table_id: TableId, pk: &[Value]) -> Resul
     Ok(())
 }
 
-fn write_col_value(
+pub(crate) fn write_col_value(
     w: &mut EntryBufferWriter,
     col_id: ColumnId,
     value: &Value,
@@ -137,10 +152,6 @@ fn write_col_value(
             Value::Uuid(u) => w.write_uuid(u),
             _ => return Err(CodecError::ColumnValueMismatch),
         },
-        ColType::MaxI64 => match value {
-            Value::I64(n) => w.write_zigzag(*n),
-            _ => return Err(CodecError::ColumnValueMismatch),
-        },
     }
     Ok(())
 }
@@ -150,31 +161,8 @@ fn write_col_value(
 fn decode_one_op<R: BufRead>(tag: u8, r: &mut EntryBufferReader<R>) -> Result<Op, CodecError> {
     match tag {
         TAG_UPSERT => {
-            let table_id = TableId::from(r.read_u16_le()?);
-            let primary_key = read_pk(r, table_id)?;
-            // Counts come from untrusted bytes. Convert with try_into (not `as`,
-            // which truncates on 32-bit targets and would mis-decode), and don't
-            // pre-allocate to them — the Vec grows as entries are actually
-            // decoded, so a too-large count just fails fast on the first absent
-            // column rather than OOM-ing up front.
-            let update_raw = r.read_varint()?;
-            let update_count: usize = update_raw
-                .try_into()
-                .map_err(|_| CodecError::LengthTooLarge(update_raw))?;
-            let mut sets = Vec::new();
-            for _ in 0..update_count {
-                let column_id = read_column_id(r)?;
-                let value = read_col_value(r, column_id)?;
-                sets.push(ColumnSet { column_id, value });
-            }
-            let null_raw = r.read_varint()?;
-            let null_count: usize = null_raw
-                .try_into()
-                .map_err(|_| CodecError::LengthTooLarge(null_raw))?;
-            let mut nulls = Vec::new();
-            for _ in 0..null_count {
-                nulls.push(read_column_id(r)?);
-            }
+            let (table_id, primary_key) = decode_one_key(r)?;
+            let (sets, nulls) = decode_one_value(r)?;
             Ok(Op::Upsert(Upsert {
                 table_id,
                 primary_key,
@@ -183,8 +171,7 @@ fn decode_one_op<R: BufRead>(tag: u8, r: &mut EntryBufferReader<R>) -> Result<Op
             }))
         }
         TAG_DELETE => {
-            let table_id = TableId::from(r.read_u16_le()?);
-            let primary_key = read_pk(r, table_id)?;
+            let (table_id, primary_key) = decode_one_key(r)?;
             Ok(Op::Delete(Delete {
                 table_id,
                 primary_key,
@@ -192,6 +179,43 @@ fn decode_one_op<R: BufRead>(tag: u8, r: &mut EntryBufferReader<R>) -> Result<Op
         }
         other => Err(CodecError::UnknownTag(other)),
     }
+}
+
+pub(crate) fn decode_one_key<'a, R: BufRead>(
+    r: &mut EntryBufferReader<'a, R>,
+) -> Result<(TableId, Vec<Value>), CodecError> {
+    let table_id = TableId::from(r.read_u16_le()?);
+    let primary_key = read_pk(r, table_id)?;
+    Ok((table_id, primary_key))
+}
+
+pub(crate) fn decode_one_value<'a, R: BufRead>(
+    r: &mut EntryBufferReader<'a, R>,
+) -> Result<(Vec<ColumnSet>, Vec<ColumnId>), CodecError> {
+    // Counts come from untrusted bytes. Convert with try_into (not `as`,
+    // which truncates on 32-bit targets and would mis-decode), and don't
+    // pre-allocate to them — the Vec grows as entries are actually
+    // decoded, so a too-large count just fails fast on the first absent
+    // column rather than OOM-ing up front.
+    let update_raw = r.read_varint()?;
+    let update_count: usize = update_raw
+        .try_into()
+        .map_err(|_| CodecError::LengthTooLarge(update_raw))?;
+    let mut sets = Vec::new();
+    for _ in 0..update_count {
+        let column_id = read_column_id(r)?;
+        let value = read_col_value(r, column_id)?;
+        sets.push(ColumnSet { column_id, value });
+    }
+    let null_raw = r.read_varint()?;
+    let null_count: usize = null_raw
+        .try_into()
+        .map_err(|_| CodecError::LengthTooLarge(null_raw))?;
+    let mut nulls = Vec::new();
+    for _ in 0..null_count {
+        nulls.push(read_column_id(r)?);
+    }
+    Ok((sets, nulls))
 }
 
 fn read_pk<R: BufRead>(
@@ -227,7 +251,7 @@ fn read_col_value<R: BufRead>(
         }
         ColType::Bytes => Ok(Value::Bytes(r.read_blob()?)),
         ColType::Uuid => Ok(Value::Uuid(r.read_uuid()?)),
-        ColType::I64 | ColType::MaxI64 => Ok(Value::I64(r.read_zigzag()?)),
+        ColType::I64 => Ok(Value::I64(r.read_zigzag()?)),
     }
 }
 
@@ -275,9 +299,6 @@ mod tests {
     fn col_uuid() -> ColumnId {
         ColumnId::new().with_index(3).with_col_type(ColType::Uuid)
     }
-    fn col_max_i64() -> ColumnId {
-        ColumnId::new().with_index(4).with_col_type(ColType::MaxI64)
-    }
 
     // ── Test timestamps (HLC-style) ─────────────────────────────────────
     const TS1: u64 = 1_700_000_000_000 << 16;
@@ -320,7 +341,7 @@ mod tests {
                             value: Value::Uuid(ROW_UUID_1),
                         },
                         ColumnSet {
-                            column_id: col_max_i64(),
+                            column_id: col_i64(),
                             value: Value::I64(999),
                         },
                     ],
