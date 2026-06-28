@@ -1,5 +1,6 @@
+use ubiquisync_sql::db::{ColumnDescription, Db, DbType};
+
 use crate::col_type::ColType;
-use crate::db::{ColumnDescription, Db, DbType};
 use crate::id::{ColumnId, TableId};
 use crate::reducer::ReducerError;
 use crate::surrogate::{parse_surrogate_col_name, surrogate_col_name, surrogate_table_name};

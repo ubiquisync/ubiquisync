@@ -1,9 +1,9 @@
 use crate::op::Upsert;
 use crate::reducer::{Reducer, ReducerError};
-use crate::schema::ColumnSchema;
+use crate::schema::{ColumnSchema, UPSERT_TS_COL};
 use crate::util::{quote_ident, value_to_db};
 use ubiquisync_core::hlc::Timestamp;
-use ubiquisync_sql::db::{Db, DbBatch, DbValue, StmtId};
+use ubiquisync_sql::db::{Db, DbBatch, DbValue, StmtId, ValueBinder};
 
 impl Reducer {
     pub(crate) async fn sync_upsert_schema(
@@ -28,25 +28,25 @@ impl Reducer {
         timestamp: Timestamp,
         upsert: &Upsert,
     ) -> Result<StmtId, ReducerError> {
+        let dialect = batch.dialect();
+
         let table = self.require_table(upsert.table_id)?;
         let quoted_table_name = quote_ident(table.get_name());
 
         let mut insert_into_cols = vec![]; // INSERT INTO (...)
         let mut insert_into_binds = vec![]; // VALUES (?1, ?2, ...)
-        let mut bind_vals: Vec<DbValue> = vec![]; // the actual values to bind the sql to 
-        let mut next_bind_idx = 1;
+        let mut value_binder = ValueBinder::new(dialect);
 
         let pk_count = table.get_id().pk_count();
         for i in 0..pk_count {
             // bind the quoted pk col name into the INSERT column list
             insert_into_cols.push(quote_ident(&table.pk_col_names()[i]));
             // create positional (?1) bind params for each pk val
-            insert_into_binds.push(batch.dialect().placeholder(next_bind_idx));
-            next_bind_idx += 1;
+            insert_into_binds.push(value_binder.bind_next(value_to_db(&upsert.primary_key[i])));
             // add the pk val to the list of bind values
             // TODO validate pkey value types
-            bind_vals.push(value_to_db(&upsert.primary_key[i]))
         }
+
         // quoted, comma-joined pk list for the ON CONFLICT statement
         let pk_name_list = table
             .pk_col_names()
@@ -54,6 +54,23 @@ impl Reducer {
             .map(|n| quote_ident(n))
             .collect::<Vec<_>>()
             .join(", ");
+
+        let greatest = batch.dialect().scalar_max();
+        // the SET clauses for each non-pk column
+        let mut set_clauses = vec![];
+        let mut where_clauses = vec![];
+
+        let timestamp_value = DbValue::Integer(timestamp.raw() as i64);
+
+        // UPSERT_TS_COL binding
+        insert_into_cols.push(UPSERT_TS_COL.into());
+        insert_into_binds.push(value_binder.bind_next(timestamp_value.clone()));
+        set_clauses.push(format!(
+            "{UPSERT_TS_COL} = {greatest}(COALESCE({quoted_table_name}.{UPSERT_TS_COL}, 0), EXCLUDED.{UPSERT_TS_COL})"
+        ));
+        where_clauses.push(format!(
+            "EXCLUDED.{UPSERT_TS_COL} > COALESCE({quoted_table_name}.{UPSERT_TS_COL}, 0)"
+        ));
 
         let mut all_updates: Vec<(&ColumnSchema, DbValue)> = Vec::new();
         for col_update in upsert.sets.iter() {
@@ -67,23 +84,6 @@ impl Reducer {
             all_updates.push((col_schema, DbValue::Null));
         }
 
-        if all_updates.is_empty() {
-            // case where we just have primary sets to insert or ignore
-            let sql = format!(
-                "{} INTO {} ({}) VALUES ({}) {}",
-                batch.dialect().insert_ignore_verb(),
-                quoted_table_name,
-                insert_into_cols.join(", "),
-                insert_into_binds.join(", "),
-                batch.dialect().conflict_ignore_clause(&pk_name_list),
-            );
-            return Ok(batch.add_statement(&sql, &bind_vals));
-        }
-
-        let greatest = batch.dialect().scalar_max();
-        // the SET clauses for each non-pk column
-        let mut set_clauses = vec![];
-        let mut where_clauses = vec![];
         let mut returning_clauses = vec![];
         for (col_schema, col_value) in all_updates {
             // TODO validate value types
@@ -94,24 +94,20 @@ impl Reducer {
             // bind column to the INSERT INTO clause
             insert_into_cols.push(quoted_name.clone());
             // create positional (?3) bind param
-            insert_into_binds.push(batch.dialect().placeholder(next_bind_idx));
-            next_bind_idx += 1;
+            insert_into_binds.push(value_binder.bind_next(col_value));
             // add the val to the list of bind values
-            bind_vals.push(col_value);
 
             let quoted_lww = quote_ident(&col_schema.lww_name);
             // bind the lww timestamp column into the INSERT column list
             insert_into_cols.push(quoted_lww.clone());
             // create positional (?3) bind param
-            insert_into_binds.push(batch.dialect().placeholder(next_bind_idx));
-            next_bind_idx += 1;
+            insert_into_binds.push(value_binder.bind_next(timestamp_value.clone()));
             // add the pk val to the list of bind values
-            bind_vals.push(DbValue::Integer(timestamp.raw() as i64));
 
             set_clauses.push(format!(
-                "{quoted_name} = CASE WHEN EXCLUDED.{quoted_lww} > COALESCE({quoted_table_name}.{quoted_lww}, 0)
-                                      THEN EXCLUDED.{quoted_name} ELSE {quoted_table_name}.{quoted_name} END",
+                "{quoted_name} = CASE WHEN EXCLUDED.{quoted_lww} > COALESCE({quoted_table_name}.{quoted_lww}, 0) THEN EXCLUDED.{quoted_name} ELSE {quoted_table_name}.{quoted_name} END",
             ));
+
             // TODO add tie break
             set_clauses.push(format!(
                 "{quoted_lww} = {greatest}(COALESCE({quoted_table_name}.{quoted_lww}, 0), EXCLUDED.{quoted_lww})"
@@ -123,23 +119,24 @@ impl Reducer {
 
             returning_clauses.push(format!(
                 "{quoted_lww} = {}",
-                batch.dialect().placeholder(next_bind_idx),
+                value_binder.bind_next(timestamp_value.clone())
             ));
-            next_bind_idx += 1;
-            bind_vals.push(DbValue::Integer(timestamp.raw() as i64));
         }
 
-        let sql = format!(
+        let mut sql = format!(
             "INSERT INTO {quoted_table_name} ({}) VALUES ({})
-              ON CONFLICT ({}) DO UPDATE SET {} WHERE {} RETURNING {}",
+              ON CONFLICT ({}) DO UPDATE SET {} WHERE {}",
             insert_into_cols.join(", "),
             insert_into_binds.join(", "),
             pk_name_list,
             set_clauses.join(", "),
             where_clauses.join(" OR "),
-            returning_clauses.join(", "),
         );
-        return Ok(batch.add_statement(&sql, &bind_vals));
+        if !returning_clauses.is_empty() {
+            sql.push_str(&format!(" RETURNING {}", returning_clauses.join(", ")));
+        }
+
+        return Ok(batch.add_statement(&sql, &value_binder.values()));
 
         // let mut update_cols: Vec<(ColumnId, String, ColType, Option<DbValue>)> = Vec::new();
         // for col_update in upsert.sets.iter() {

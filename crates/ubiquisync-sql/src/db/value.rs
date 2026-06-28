@@ -1,3 +1,5 @@
+use crate::dialect::{PlaceholderGen, SqlDialect};
+
 use super::DbError;
 
 /// A Db value — used for both parameters and query results.
@@ -133,5 +135,28 @@ impl DbRow {
             }),
             None => Err(DbError::ColumnOutOfBounds(idx)),
         }
+    }
+}
+
+pub struct ValueBinder {
+    placeholder_gen: PlaceholderGen,
+    values: Vec<DbValue>,
+}
+
+impl ValueBinder {
+    pub fn new(dialect: SqlDialect) -> Self {
+        Self {
+            placeholder_gen: PlaceholderGen::new(dialect),
+            values: vec![],
+        }
+    }
+
+    pub fn bind_next(&mut self, value: DbValue) -> String {
+        self.values.push(value);
+        self.placeholder_gen.next()
+    }
+
+    pub fn values(self) -> Vec<DbValue> {
+        self.values
     }
 }

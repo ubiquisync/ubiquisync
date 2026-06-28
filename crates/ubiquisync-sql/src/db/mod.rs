@@ -8,7 +8,7 @@ mod value;
 pub use batch::{DbBatch, DbStatementResult, StmtId};
 pub use error::DbError;
 pub use schema::{ColumnDescription, DbType, TableDescriptor};
-pub use value::{DbRow, DbValue};
+pub use value::{DbRow, DbValue, ValueBinder};
 
 use async_trait::async_trait;
 

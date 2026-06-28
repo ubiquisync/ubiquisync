@@ -74,6 +74,26 @@ impl SqlDialect {
     }
 }
 
+pub struct PlaceholderGen {
+    dialect: SqlDialect,
+    next_idx: usize,
+}
+
+impl PlaceholderGen {
+    pub fn new(dialect: SqlDialect) -> Self {
+        Self {
+            dialect,
+            next_idx: 1,
+        }
+    }
+
+    pub fn next(&mut self) -> String {
+        let p = self.dialect.placeholder(self.next_idx);
+        self.next_idx += 1;
+        p
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
