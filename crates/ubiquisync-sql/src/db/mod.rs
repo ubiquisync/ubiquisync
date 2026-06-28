@@ -17,7 +17,8 @@ use crate::dialect::SqlDialect;
 /// A SQL backend: reads, one-off writes/DDL, and a factory for atomic batches.
 ///
 /// Async because backends are not all synchronous — rusqlite and Durable
-/// Object `SqlStorage` are, but D1 and Postgres are Promise-/network-based.
+/// Object `SqlStorage` are colocated with the data, but HTTP-fronted SQLite
+/// (D1, Turso/libSQL, Bunny) and Postgres are Promise-/network-based.
 /// Marked `?Send` (via `#[async_trait(?Send)]`) so the same trait compiles on
 /// `wasm32` targets (Cloudflare Workers), where the underlying JS futures are
 /// not `Send`. Native multi-threaded backends are still free to be `Send`

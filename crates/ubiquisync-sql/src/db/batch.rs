@@ -37,10 +37,20 @@ pub struct DbStatementResult {
 /// There is deliberately **no read method** on a batch. A queued statement may
 /// not depend on the result of an earlier one in the same batch — all reads
 /// must happen on [`Db`](super::Db) *before* the batch is assembled. This keeps
-/// a batch expressible as a flat, declarative statement list, which is what
-/// lets it map onto backends that have no interactive transactions (notably
-/// D1's `batch()`), as well as onto real transactions (rusqlite `BEGIN/COMMIT`,
-/// Durable Object `transactionSync`).
+/// a batch expressible as a flat, declarative statement list.
+///
+/// That declarative shape is the portable lowest common denominator across
+/// SQLite backends. Any backend where compute is *network-distant* from the
+/// database can't safely expose an interactive `BEGIN`/`COMMIT`: a client could
+/// open a write transaction and then crash or stall, stranding SQLite's single
+/// write slot. So the whole category of HTTP-fronted edge SQLite exposes only a
+/// batch/pipeline primitive that opens and closes the transaction database-side
+/// in one round trip — Cloudflare D1's `batch()`, Turso/libSQL's remote client
+/// (its stateless HTTP requests share no transaction context), and Bunny (also
+/// libSQL-over-HTTP). The same flat list also maps cleanly onto backends that
+/// *do* offer a real interactive transaction because compute is colocated with
+/// the data — rusqlite `BEGIN/COMMIT`, Durable Object `transactionSync`. One
+/// batch abstraction therefore runs identically everywhere.
 #[async_trait(?Send)]
 pub trait DbBatch {
     /// The SQL dialect this batch speaks. Available here because callers build
