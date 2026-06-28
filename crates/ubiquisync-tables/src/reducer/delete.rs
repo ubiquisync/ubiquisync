@@ -11,7 +11,7 @@ impl Reducer {
         &mut self,
         db: &dyn Db,
         delete: &Delete,
-    ) -> Result<StmtId, ReducerError> {
+    ) -> Result<(), ReducerError> {
         self.ensure_table(db, delete.table_id)?;
         Ok(())
     }
@@ -46,16 +46,18 @@ impl Reducer {
 
         // DELETED_TS_COL binding
         insert_into_cols.push(DELETED_TS_COL.into());
-        insert_into_value_binds.push(value_binder.bind_next(timestamp_value.clone()));
+        let ts_placeholder = value_binder.bind_next(timestamp_value.clone());
+        insert_into_value_binds.push(ts_placeholder.clone());
         set_clauses.push(set_lww_sql(DELETED_TS_COL, &quoted_table_name, dialect));
 
         for col in table.non_pkey_cols() {
             let quoted_col = quote_ident(&col.name);
             let quoted_lww = quote_ident(&col.lww_name);
-            let ts_placeholder = value_binder.bind_next(timestamp_value.clone());
             set_clauses.push(format!(
-                "{quoted_col} = CASE WHEN {quoted_lww} < {ts_placeholder} \
-                THEN NULL ELSE {quoted_col} END"
+                "{quoted_col} = CASE WHEN {quoted_lww} < {ts_placeholder} THEN NULL ELSE {quoted_col} END",
+            ));
+            set_clauses.push(format!(
+                "{quoted_lww} = CASE WHEN {quoted_lww} < {ts_placeholder} THEN NULL ELSE {quoted_lww} END",
             ))
         }
 

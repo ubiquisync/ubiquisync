@@ -1,7 +1,7 @@
 use crate::col_type::ColType;
 use crate::op::{Upsert, Value};
 use crate::reducer::{ApplyState, Reducer, ReducerError};
-use crate::schema::{ColumnSchema, TableSchema, UPSERT_TS_COL};
+use crate::schema::{ColumnSchema, DELETED_TS_COL, TableSchema, UPSERT_TS_COL};
 use crate::util::{quote_ident, value_to_db};
 use crate::watch::{ChangeEvent, ColumnValue, UpsertEvent};
 use ubiquisync_core::hlc::Timestamp;
@@ -55,10 +55,11 @@ impl Reducer {
         let mut where_clauses = vec![];
 
         let timestamp_value = DbValue::Integer(timestamp.raw() as i64);
+        let timestamp_placeholder = value_binder.bind_next(timestamp_value.clone());
 
         // UPSERT_TS_COL binding
         insert_into_cols.push(UPSERT_TS_COL.into());
-        insert_into_value_binds.push(value_binder.bind_next(timestamp_value.clone()));
+        insert_into_value_binds.push(timestamp_placeholder);
         set_clauses.push(set_lww_sql(UPSERT_TS_COL, &quoted_table_name, dialect));
         where_clauses.push(lww_winner_sql(&quoted_table_name, UPSERT_TS_COL));
 
@@ -94,8 +95,7 @@ impl Reducer {
             let quoted_lww = quote_ident(&col_schema.lww_name);
             // bind the lww timestamp column into the INSERT column list
             insert_into_cols.push(quoted_lww.clone());
-            // create positional (?3) bind param
-            insert_into_value_binds.push(value_binder.bind_next(timestamp_value.clone()));
+            insert_into_value_binds.push(timestamp_placeholder);
             // add the pk val to the list of bind values
 
             let lww_clause = lww_winner_sql_with_tiebreak(
@@ -112,10 +112,7 @@ impl Reducer {
 
             where_clauses.push(lww_clause);
 
-            returning_clauses.push(format!(
-                "{quoted_lww} = {}",
-                value_binder.bind_next(timestamp_value.clone())
-            ));
+            returning_clauses.push(format!("{quoted_lww} = {timestamp_placeholder}"));
 
             changed_col_events.push(ColumnValue {
                 column_id: col_schema.id,
@@ -126,7 +123,8 @@ impl Reducer {
 
         let mut sql = format!(
             "INSERT INTO {quoted_table_name} ({}) VALUES ({}) \
-            ON CONFLICT ({}) DO UPDATE SET {} WHERE {}",
+            ON CONFLICT ({}) DO UPDATE SET {} WHERE ({}) \
+            AND {timestamp_placeholder} >= COALESCE({DELETED_TS_COL},0)",
             insert_into_cols.join(", "),
             insert_into_value_binds.join(", "),
             pk_name_list,
