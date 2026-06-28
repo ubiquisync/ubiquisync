@@ -95,48 +95,35 @@ impl Reducer {
             // add the val to the list of bind values
             bind_vals.push(col_value);
 
-            if let Some(lww_name) = col_schema.lww_name {
-                let quoted_lww = quote_ident(&lww_name);
-                // bind lww column to the INSERT INTO clause
-                insert_into_cols.push(col_schema.name.clone());
-                // create positional (?3) bind param
-                insert_into_binds.push(batch.dialect().placeholder(next_bind_idx));
-                next_bind_idx += 1;
-                // add the pk val to the list of bind values
-                bind_vals.push(DbValue::Integer(timestamp.raw() as i64));
+            let lww_name = col_schema.lww_name
+            let quoted_lww = quote_ident(&lww_name);
+            // bind lww column to the INSERT INTO clause
+            insert_into_cols.push(col_schema.name.clone());
+            // create positional (?3) bind param
+            insert_into_binds.push(batch.dialect().placeholder(next_bind_idx));
+            next_bind_idx += 1;
+            // add the pk val to the list of bind values
+            bind_vals.push(DbValue::Integer(timestamp.raw() as i64));
 
-                set_clauses.push(format!(
-                    "{quoted_name} = CASE WHEN EXCLUDED.{quoted_lww} > COALESCE({quoted_table_name}.{quoted_lww}, 0)
-                                          THEN EXCLUDED.{quoted_name} ELSE {quoted_table_name}.{quoted_name}",
-                ));
-                // TODO add tie break
-                set_clauses.push(format!(
-                    "{quoted_lww} = {greatest}(COALESCE({quoted_table_name}.{quoted_lww}, 0), EXCLUDED.{quoted_lww})"
-                ));
+            set_clauses.push(format!(
+                "{quoted_name} = CASE WHEN EXCLUDED.{quoted_lww} > COALESCE({quoted_table_name}.{quoted_lww}, 0)
+                                      THEN EXCLUDED.{quoted_name} ELSE {quoted_table_name}.{quoted_name}",
+            ));
+            // TODO add tie break
+            set_clauses.push(format!(
+                "{quoted_lww} = {greatest}(COALESCE({quoted_table_name}.{quoted_lww}, 0), EXCLUDED.{quoted_lww})"
+            ));
 
-                where_clauses.push(format!(
-                    "EXCLUDED.{quoted_lww} > COALESCE({quoted_table_name}.{quoted_lww}, 0)"
-                ));
+            where_clauses.push(format!(
+                "EXCLUDED.{quoted_lww} > COALESCE({quoted_table_name}.{quoted_lww}, 0)"
+            ));
 
-                returning_clauses.push(format!(
-                    "{quoted_lww} = {}",
-                    batch.dialect().placeholder(next_bind_idx),
-                ));
-                next_bind_idx += 1;
-                bind_vals.push(DbValue::Integer(timestamp.raw() as i64));
-            } else {
-                // only max i64 values can end up here
-                // TODO verify that with an if/else
-                set_clauses.push(format!(
-                   "{quoted_name} = {greatest}(COALESCE({quoted_table_name}.{quoted_name}, EXCLUDED.{quoted_name}), EXCLUDED.{quoted_name})"
-                ));
-
-                where_clauses.push(format!(
-                    "EXCLUDED.{quoted_name} > COALESCE({quoted_table_name}.{quoted_name}, 0)"
-                ));
-
-                returning_clauses.push(quoted_name);
-            }
+            returning_clauses.push(format!(
+                "{quoted_lww} = {}",
+                batch.dialect().placeholder(next_bind_idx),
+            ));
+            next_bind_idx += 1;
+            bind_vals.push(DbValue::Integer(timestamp.raw() as i64));
         }
 
         let sql = format!(
