@@ -21,6 +21,9 @@ pub struct ColumnSchema {
     pub lww_name: String,
 }
 
+pub const DELETED_TS_COL: &'static str = "__deleted_ts";
+pub const UPSERT_TS_COL: &'static str = "__upsert_ts";
+
 impl TableSchema {
     pub fn init_default(
         db: &dyn Db,
@@ -101,8 +104,10 @@ impl TableSchema {
         let mut have_deleted_ts_col = false;
         let mut have_upsert_ts_col = false;
         for col in existing_cols {
-            if col.name == "__deleted_ts" {
+            if col.name == DELETED_TS_COL {
                 have_deleted_ts_col = true;
+            } else if col.name == UPSERT_TS_COL {
+                have_upsert_ts_col = true;
             } else if let Some(name) = parse_lww_col_name(&col.name) {
                 if let Some(existing) = existing_col_map.get_mut(&name) {
                     existing.lww_col_type = Some(col.db_type);
@@ -244,8 +249,8 @@ impl TableSchema {
             ));
         }
 
-        col_defs.push(format!("__upsert_ts {}", db.lww_col_type()));
-        col_defs.push(format!("__deleted_ts {}", db.lww_col_type()));
+        col_defs.push(format!("{UPSERT_TS_COL} {}", db.lww_col_type()));
+        col_defs.push(format!("{DELETED_TS_COL} {}", db.lww_col_type()));
 
         for (_, col) in self.cols {
             col_defs.push(format!(

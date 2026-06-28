@@ -19,6 +19,7 @@ impl Reducer {
         for null_col_id in upsert.nulls.iter() {
             table.ensure_column(db, *null_col_id)?;
         }
+        Ok(())
     }
 
     pub(crate) fn apply_upsert(
@@ -28,7 +29,7 @@ impl Reducer {
         upsert: &Upsert,
     ) -> Result<StmtId, ReducerError> {
         let table = self.require_table(upsert.table_id)?;
-        let quoted_table_name = quote_ident(&table.get_name());
+        let quoted_table_name = quote_ident(table.get_name());
 
         let mut insert_into_cols = vec![]; // INSERT INTO (...)
         let mut insert_into_binds = vec![]; // VALUES (?1, ?2, ...)
@@ -37,9 +38,8 @@ impl Reducer {
 
         let pk_count = table.get_id().pk_count();
         for i in 0..pk_count {
-            // bind pk col name to the INSERT INTO clause
-            // TODO quote_ident
-            insert_into_cols.push(table.pk_col_names()[i].clone());
+            // bind the quoted pk col name into the INSERT column list
+            insert_into_cols.push(quote_ident(&table.pk_col_names()[i]));
             // create positional (?1) bind params for each pk val
             insert_into_binds.push(batch.dialect().placeholder(next_bind_idx));
             next_bind_idx += 1;
@@ -47,9 +47,13 @@ impl Reducer {
             // TODO validate pkey value types
             bind_vals.push(value_to_db(&upsert.primary_key[i]))
         }
-        // create a list of the pk names for the ON CONFLICT statement
-        // TODO quote_ident
-        let pk_name_list = table.pk_col_names().join(", ");
+        // quoted, comma-joined pk list for the ON CONFLICT statement
+        let pk_name_list = table
+            .pk_col_names()
+            .iter()
+            .map(|n| quote_ident(n))
+            .collect::<Vec<_>>()
+            .join(", ");
 
         let mut all_updates: Vec<(&ColumnSchema, DbValue)> = Vec::new();
         for col_update in upsert.sets.iter() {
@@ -95,10 +99,9 @@ impl Reducer {
             // add the val to the list of bind values
             bind_vals.push(col_value);
 
-            let lww_name = col_schema.lww_name;
-            let quoted_lww = quote_ident(&lww_name);
-            // bind lww column to the INSERT INTO clause
-            insert_into_cols.push(col_schema.name.clone());
+            let quoted_lww = quote_ident(&col_schema.lww_name);
+            // bind the lww timestamp column into the INSERT column list
+            insert_into_cols.push(quoted_lww.clone());
             // create positional (?3) bind param
             insert_into_binds.push(batch.dialect().placeholder(next_bind_idx));
             next_bind_idx += 1;
@@ -131,10 +134,10 @@ impl Reducer {
               ON CONFLICT ({}) DO UPDATE SET {} WHERE {} RETURNING {}",
             insert_into_cols.join(", "),
             insert_into_binds.join(", "),
-            pk_name_list.join(", "),
+            pk_name_list,
             set_clauses.join(", "),
             where_clauses.join(" OR "),
-            returning_clauses,
+            returning_clauses.join(", "),
         );
         return Ok(batch.add_statement(&sql, &bind_vals));
 
