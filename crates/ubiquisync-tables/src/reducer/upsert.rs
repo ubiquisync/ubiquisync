@@ -63,7 +63,7 @@ impl Reducer {
             all_updates.push((col_schema, DbValue::Null));
         }
 
-        if all_updates.sets.is_empty() {
+        if all_updates.is_empty() {
             // case where we just have primary sets to insert or ignore
             let sql = format!(
                 "{} INTO {} ({}) VALUES ({}) {}",
@@ -95,7 +95,7 @@ impl Reducer {
             // add the val to the list of bind values
             bind_vals.push(col_value);
 
-            let lww_name = col_schema.lww_name
+            let lww_name = col_schema.lww_name;
             let quoted_lww = quote_ident(&lww_name);
             // bind lww column to the INSERT INTO clause
             insert_into_cols.push(col_schema.name.clone());
@@ -107,7 +107,7 @@ impl Reducer {
 
             set_clauses.push(format!(
                 "{quoted_name} = CASE WHEN EXCLUDED.{quoted_lww} > COALESCE({quoted_table_name}.{quoted_lww}, 0)
-                                      THEN EXCLUDED.{quoted_name} ELSE {quoted_table_name}.{quoted_name}",
+                                      THEN EXCLUDED.{quoted_name} ELSE {quoted_table_name}.{quoted_name} END",
             ));
             // TODO add tie break
             set_clauses.push(format!(
