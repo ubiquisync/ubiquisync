@@ -28,7 +28,7 @@ impl ColType {
         }
     }
 
-    const fn from_bits(value: u8) -> Self {
+    pub const fn from_bits(value: u8) -> Self {
         match value & 0b11 {
             0 => Self::Bytes,
             1 => Self::Uuid,

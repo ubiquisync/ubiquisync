@@ -46,8 +46,8 @@
 //! and re-sync them as opaque LWW values, which is exactly the correct
 //! behavior for data they do not understand.
 
+use crate::col_type::ColType;
 use bitfield_struct::bitfield;
-use crate::col_type::{ColType, PkColType};
 
 /// Type-encoded table ID.
 ///
@@ -65,7 +65,7 @@ impl TableId {
     /// `const`-evaluable so table IDs can be compile-time constants; invalid
     /// shapes (0 or >4 PK columns, index out of range for the count) panic,
     /// which surfaces as a compile error in const context.
-    pub const fn new(pk_types: &[PkColType], index: u16) -> Self {
+    pub const fn new(pk_types: &[ColType], index: u16) -> Self {
         let count = pk_types.len();
         assert!(count >= 1 && count <= 4, "PK column count must be 1-4");
         let index_bits = Self::index_bits_for(count);
@@ -101,9 +101,9 @@ impl TableId {
     }
 
     /// Type of PK column `i` (0-based). Panics if `i >= pk_count()`.
-    pub const fn pk_col_type(&self, i: usize) -> PkColType {
+    pub const fn pk_col_type(&self, i: usize) -> ColType {
         assert!(i < self.pk_count(), "PK column index out of range");
-        PkColType::from_bits(((self.0 >> (12 - 2 * i)) & 0b11) as u8)
+        ColType::from_bits(((self.0 >> (12 - 2 * i)) & 0b11) as u8)
     }
 
     /// Width of the table index field for this ID's PK count
@@ -163,13 +163,13 @@ impl core::fmt::Debug for TableId {
 #[bitfield(u8)]
 #[derive(PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub struct ColumnId {
-    // -- Column index (low 5 bits) --
+    // -- Column index (low 6 bits) --
     /// Arbitrary column index within the table.
     #[bits(5)]
     pub index: u8,
 
-    // -- Type bits (high 3 bits) --
-    /// Column wire type (bits 5–7).
+    // -- Type bits (high 2 bits) --
+    /// Column wire type (bits 6–7).
     #[bits(3)]
     pub col_type: ColType,
 }
@@ -186,23 +186,18 @@ impl ColumnId {
 
 #[cfg(test)]
 mod tests {
-    use crate::col_type::WireEncoding;
     use super::*;
+    use crate::col_type::WireEncoding;
 
     #[test]
     fn table_id_round_trip_all_pk_counts() {
         // Goal: a table ID survives a raw u16 round trip for every PK shape.
         // Given: one table ID per PK count, with mixed PK column types.
-        let shapes: [&[PkColType]; 4] = [
-            &[PkColType::Uuid],
-            &[PkColType::Bytes, PkColType::Uuid],
-            &[PkColType::Text, PkColType::I64, PkColType::Uuid],
-            &[
-                PkColType::Bytes,
-                PkColType::Text,
-                PkColType::I64,
-                PkColType::Uuid,
-            ],
+        let shapes: [&[ColType]; 4] = [
+            &[ColType::Uuid],
+            &[ColType::Bytes, ColType::Uuid],
+            &[ColType::Text, ColType::I64, ColType::Uuid],
+            &[ColType::Bytes, ColType::Text, ColType::I64, ColType::Uuid],
         ];
         for (n, pk_types) in shapes.iter().enumerate() {
             // When: constructing the ID and round-tripping through u16.
@@ -223,7 +218,7 @@ mod tests {
     fn table_id_index_in_low_bits() {
         // Goal: the table index occupies the low bits unshifted.
         // Given: a 1-PK Bytes table (count=0, type=0 → all shape bits zero).
-        let id = TableId::new(&[PkColType::Bytes], 1);
+        let id = TableId::new(&[ColType::Bytes], 1);
         // Then: the raw value is exactly the index.
         assert_eq!(id.raw(), 1);
     }
@@ -232,12 +227,12 @@ mod tests {
     fn table_id_pk_shape_in_high_bits() {
         // Goal: PK shape packs into the high bits in declaration order.
         // Given: 1-col UUID PK: count=0, t1=Uuid(01).
-        let id = TableId::new(&[PkColType::Uuid], 0);
+        let id = TableId::new(&[ColType::Uuid], 0);
         // Then: count in bits 15-14, t1 in bits 13-12.
         assert_eq!(id.raw() >> 12, 0b00_01);
 
         // Given: 2-col (Text, I64) PK: count=1, t1=Text(10), t2=I64(11).
-        let id = TableId::new(&[PkColType::Text, PkColType::I64], 0);
+        let id = TableId::new(&[ColType::Text, ColType::I64], 0);
         // Then: high 6 bits are count(01) | t1(10) | t2(11).
         assert_eq!(id.raw() >> 10, 0b01_10_11);
     }
@@ -247,13 +242,13 @@ mod tests {
         // Goal: the index width shrinks by 2 bits per extra PK column.
         // Given/When: the max index for each PK count.
         // Then: 12, 10, 8, 6 bits respectively, all constructible.
-        let one = TableId::new(&[PkColType::Uuid], 4095);
+        let one = TableId::new(&[ColType::Uuid], 4095);
         assert_eq!((one.index_bits(), one.index()), (12, 4095));
-        let two = TableId::new(&[PkColType::Uuid; 2], 1023);
+        let two = TableId::new(&[ColType::Uuid; 2], 1023);
         assert_eq!((two.index_bits(), two.index()), (10, 1023));
-        let three = TableId::new(&[PkColType::Uuid; 3], 255);
+        let three = TableId::new(&[ColType::Uuid; 3], 255);
         assert_eq!((three.index_bits(), three.index()), (8, 255));
-        let four = TableId::new(&[PkColType::Uuid; 4], 63);
+        let four = TableId::new(&[ColType::Uuid; 4], 63);
         assert_eq!((four.index_bits(), four.index()), (6, 63));
     }
 
@@ -264,7 +259,7 @@ mod tests {
         // not a silent truncation that would collide with another table.
         // Given: a 1-PK table whose index needs 13 bits.
         // When: constructing it. Then: panic.
-        let _ = TableId::new(&[PkColType::Uuid], 4096);
+        let _ = TableId::new(&[ColType::Uuid], 4096);
     }
 
     #[test]
@@ -288,25 +283,17 @@ mod tests {
     #[test]
     fn pk_type_wire_encodings() {
         // Goal: each PK type maps to its documented wire encoding.
-        assert_eq!(
-            PkColType::Bytes.wire_encoding(),
-            WireEncoding::LengthPrefixed
-        );
-        assert_eq!(
-            PkColType::Text.wire_encoding(),
-            WireEncoding::LengthPrefixed
-        );
-        assert_eq!(PkColType::Uuid.wire_encoding(), WireEncoding::Fixed16);
-        assert_eq!(PkColType::I64.wire_encoding(), WireEncoding::ZigzagVarint);
+        assert_eq!(ColType::Bytes.wire_encoding(), WireEncoding::LengthPrefixed);
+        assert_eq!(ColType::Text.wire_encoding(), WireEncoding::LengthPrefixed);
+        assert_eq!(ColType::Uuid.wire_encoding(), WireEncoding::Fixed16);
+        assert_eq!(ColType::I64.wire_encoding(), WireEncoding::ZigzagVarint);
     }
 
     #[test]
     fn column_id_round_trip() {
         // Goal: a column ID survives a raw u8 round trip.
         // Given: a Text column at index 3.
-        let id = ColumnId::new()
-            .with_index(3)
-            .with_col_type(ColType::Text);
+        let id = ColumnId::new().with_index(3).with_col_type(ColType::Text);
 
         assert_eq!(id.index(), 3);
         assert_eq!(id.col_type(), ColType::Text);
@@ -320,9 +307,7 @@ mod tests {
     #[test]
     fn column_id_index_in_low_bits() {
         // Goal: the column index occupies the low bits unshifted.
-        let id = ColumnId::new()
-            .with_index(1)
-            .with_col_type(ColType::Bytes);
+        let id = ColumnId::new().with_index(1).with_col_type(ColType::Bytes);
         let raw: u8 = id.into();
         assert_eq!(raw, 1);
     }
@@ -331,17 +316,13 @@ mod tests {
     fn column_id_type_in_high_bits() {
         // I64: bits 5-7=col_type(2)=010, index=0
         // high 3 bits = 010
-        let id = ColumnId::new()
-            .with_index(0)
-            .with_col_type(ColType::I64);
+        let id = ColumnId::new().with_index(0).with_col_type(ColType::I64);
         let raw: u8 = id.into();
         assert_eq!(raw >> 5, 0b010);
 
         // Text: bits 5-7=col_type(1)=001, index=0
         // high 3 bits = 001
-        let id = ColumnId::new()
-            .with_index(0)
-            .with_col_type(ColType::Text);
+        let id = ColumnId::new().with_index(0).with_col_type(ColType::Text);
         let raw: u8 = id.into();
         assert_eq!(raw >> 5, 0b001);
     }
@@ -362,9 +343,9 @@ mod tests {
     #[test]
     fn table_id_const_constructible() {
         // Goal: table IDs work as compile-time constants for def macros.
-        const SETTINGS: TableId = TableId::new(&[PkColType::Text], 7);
+        const SETTINGS: TableId = TableId::new(&[ColType::Text], 7);
         assert_eq!(SETTINGS.pk_count(), 1);
-        assert_eq!(SETTINGS.pk_col_type(0), PkColType::Text);
+        assert_eq!(SETTINGS.pk_col_type(0), ColType::Text);
         assert_eq!(SETTINGS.index(), 7);
     }
 }

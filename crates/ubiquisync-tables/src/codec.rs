@@ -14,10 +14,10 @@
 
 use std::io::BufRead;
 
-use ubiquisync_core::codec::{CodecError, EntryBufferReader, EntryBufferWriter};
-use crate::col_type::{ColType, PkColType};
+use crate::col_type::ColType;
 use crate::id::{ColumnId, TableId};
 use crate::op::{ColumnSet, Delete, Op, Upsert, Value};
+use ubiquisync_core::codec::{CodecError, EntryBufferReader, EntryBufferWriter};
 
 // ── Op tags ──────────────────────────────────────────────────────────────────
 // Tag 0xFF is reserved by the core codec for expunged entries; op tags must
@@ -97,13 +97,13 @@ fn write_pk(w: &mut EntryBufferWriter, table_id: TableId, pk: &[Value]) -> Resul
     // error (it would otherwise serialize with the wrong wire shape).
     for (i, v) in pk.iter().enumerate() {
         match (table_id.pk_col_type(i), v) {
-            (PkColType::Bytes, Value::Bytes(b)) => w.write_blob(b),
-            (PkColType::Uuid, Value::Uuid(u)) => w.write_uuid(u),
-            (PkColType::Text, Value::Text(s)) => {
+            (ColType::Bytes, Value::Bytes(b)) => w.write_blob(b),
+            (ColType::Uuid, Value::Uuid(u)) => w.write_uuid(u),
+            (ColType::Text, Value::Text(s)) => {
                 check_text(s)?;
                 w.write_blob(s.as_bytes());
             }
-            (PkColType::I64, Value::I64(n)) => w.write_zigzag(*n),
+            (ColType::I64, Value::I64(n)) => w.write_zigzag(*n),
             _ => return Err(CodecError::PkValueMismatch),
         }
     }
@@ -202,14 +202,14 @@ fn read_pk<R: BufRead>(
     let mut pk = Vec::with_capacity(pk_count);
     for i in 0..pk_count {
         pk.push(match table_id.pk_col_type(i) {
-            PkColType::Bytes => Value::Bytes(r.read_blob()?),
-            PkColType::Uuid => Value::Uuid(r.read_uuid()?),
-            PkColType::Text => {
+            ColType::Bytes => Value::Bytes(r.read_blob()?),
+            ColType::Uuid => Value::Uuid(r.read_uuid()?),
+            ColType::Text => {
                 let s = String::from_utf8(r.read_blob()?)?;
                 check_text(&s)?;
                 Value::Text(s)
             }
-            PkColType::I64 => Value::I64(r.read_zigzag()?),
+            ColType::I64 => Value::I64(r.read_zigzag()?),
         });
     }
     Ok(pk)
@@ -252,14 +252,14 @@ mod tests {
 
     // ── Tables exercising different PK shapes ────────────────────────────
     fn table_bytes_pk() -> TableId {
-        TableId::new(&[PkColType::Bytes], 1)
+        TableId::new(&[ColType::Bytes], 1)
     }
     fn table_uuid_pk() -> TableId {
-        TableId::new(&[PkColType::Uuid], 2)
+        TableId::new(&[ColType::Uuid], 2)
     }
     // Composite PK exercising the Text and I64 PK column types.
     fn table_text_i64_pk() -> TableId {
-        TableId::new(&[PkColType::Text, PkColType::I64], 3)
+        TableId::new(&[ColType::Text, ColType::I64], 3)
     }
 
     // ── One ColumnId per col type ────────────────────────────────────────
@@ -466,7 +466,7 @@ mod tests {
     #[test]
     fn encode_rejects_embedded_nul_in_text_pk() {
         let op = Op::Delete(Delete {
-            table_id: TableId::new(&[PkColType::Text], 4),
+            table_id: TableId::new(&[ColType::Text], 4),
             primary_key: vec![Value::Text("bad\0key".into())],
         });
         let buf = std::io::Cursor::new(Vec::new());
