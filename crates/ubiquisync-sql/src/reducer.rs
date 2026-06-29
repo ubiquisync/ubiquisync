@@ -38,11 +38,8 @@ pub trait Reducer {
     /// [`ReadState`](Reducer::ReadState). Runs outside the batch — DDL is
     /// additive and safe to commit on its own, and hoisting reads here is what
     /// keeps `apply` pure.
-    async fn prepare(
-        &mut self,
-        db: &dyn Db,
-        op: &Self::Op,
-    ) -> Result<Self::ReadState, Self::Error>;
+    async fn prepare(&mut self, db: &dyn Db, op: &Self::Op)
+    -> Result<Self::ReadState, Self::Error>;
 
     /// Emit the statements that materialize `op` at `timestamp` into `batch`,
     /// using only `op`, the cached schema, and `read`. Read-free, so it stays
@@ -53,7 +50,7 @@ pub trait Reducer {
         batch: &mut dyn DbBatch,
         timestamp: Timestamp,
         op: &Self::Op,
-        read: &Self::ReadState,
+        read: Self::ReadState,
     ) -> Result<Self::ApplyState, Self::Error>;
 
     /// Build the event once the batch has committed. `batch_result` holds the
@@ -61,7 +58,7 @@ pub trait Reducer {
     /// `RETURNING` rows via the `StmtId`s stored in `apply_state`.
     fn post_apply(
         &self,
-        apply_state: &Self::ApplyState,
+        apply_state: Self::ApplyState,
         batch_result: &[DbStatementResult],
     ) -> Result<Self::Event, Self::Error>;
 }

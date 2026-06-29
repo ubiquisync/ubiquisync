@@ -1,28 +1,33 @@
 use ubiquisync_core::{
-    hlc::{HlcError, HlcService, HlcStorage},
+    hlc::{HlcError, HlcService, wall_ms},
     log_entry::LogEntry,
+    uuid::Uuid,
 };
 
 use crate::{
     db::{Db, DbError},
     hlc_storage::SqlHlcStorage,
     reducer::Reducer,
+    tracker::LogTracker,
 };
 
-pub struct Processor<R: Reducer, D: Db> {
+pub struct Processor<R: Reducer, D: Db, T> {
     reducer: R,
     db: D,
     hlc: HlcService<SqlHlcStorage>,
+    tracker: T,
 }
 
-impl<R: Reducer, D: Db> Processor<R, D> {
+impl<R: Reducer, D: Db, T: LogTracker<R::Op>> Processor<R, D, T> {
     async fn process_one(
         &mut self,
+        peer_id: &Uuid,
+        peer_idx: u64,
         entry: LogEntry<R::Op>,
     ) -> Result<R::Event, ProcessorError<R::Error>> {
         let op = &entry.op;
         let timestamp = entry.timestamp;
-        let prepare_state = self.reducer.prepare(db, op).await?;
+        let prepare_state = self.reducer.prepare(&self.db, op).await?;
         let mut batch = self.db.new_batch();
         self.hlc.observe(timestamp, wall_ms(), batch.as_mut())?;
         let apply_state = self
