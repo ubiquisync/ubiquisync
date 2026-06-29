@@ -32,6 +32,8 @@ pub enum ReducerError {
     },
     #[error("not implemented: {0}")]
     NotImplemented(String),
+    #[error("unknown: {0}")]
+    Unknown(String),
 }
 
 #[async_trait::async_trait(?Send)]

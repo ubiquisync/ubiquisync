@@ -12,10 +12,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone)]
 pub struct TableSchema {
-    id: TableId,
-    name: String,
-    pk_names: Vec<String>,
-    value_cols: BTreeMap<ColumnId, ColumnSchema>,
+    pub id: TableId,
+    pub name: String,
+    pub pk_names: Vec<String>,
+    pub value_cols: Vec<ColumnSchema>,
 }
 
 #[derive(Debug, Clone)]
@@ -26,8 +26,9 @@ pub struct ColumnSchema {
 }
 
 #[derive(Debug, Clone)]
-pub struct SurrogateTableSchema {
+struct SurrogateTableSchema {
     id: TableId,
+    name: String,
     cols: BTreeSet<ColumnId>,
 }
 
@@ -59,12 +60,34 @@ fn validate_upsert_delete_ts_cols(
 }
 
 impl SurrogateTableSchema {
+    fn new_from_id(prefix: &str, id: TableId) -> Self {
+        let name = schema.id.name(prefix);
+        Self {
+            id,
+            name,
+            cols: Default::default(),
+        }
+    }
+
+    fn new_from_schema(prefix: &str, schema: &TableSchema) -> Self {
+        let name = schema.id.name(prefix);
+        let cols = BTreeSet::new();
+        for col in schema.value_cols {
+            cols.insert(col.id);
+        }
+        Self { id, name, cols }
+    }
+
     fn reconstruct_from_db(
         prefix: &str,
         db_table: DbTableDescriptor,
     ) -> Result<Self, ReducerError> {
-        let table_name = &db_table.name;
-        let id = parse_surrogate_table_name(prefix, table_name).ok_or(todo!())?;
+        let name = &db_table.name;
+        let id = if let Some(id) = TableId::parse(prefix, name) {
+            id
+        } else {
+            return Err(ReducerError::Unknown(format!("can't parse table {name}"))))
+        };
 
         // Validate primary key
         let pk_count = id.pk_count();
@@ -145,7 +168,75 @@ impl SurrogateTableSchema {
             }
         }
 
-        Ok(Self { id, cols })
+        Ok(Self { id, name: name.into(), cols })
+    }
+
+    async fn create_table(&self, db: &dyn Db) -> Result<(), ReducerError> {
+        let mut col_defs = vec![];
+
+        let pk_count = self.id.pk_count();
+        // TODO do we need to quote identifers since they're auto-generated??
+        for i in 0..pk_count {
+            col_defs.push(format("{} {}", self.id.pk_name(i), self.id.pk_col_type(i).db_type()));
+        }
+
+        col_defs.push(format!("{UPSERT_TS_COL} {}", db.lww_col_type()));
+        col_defs.push(format!("{DELETED_TS_COL} {}", db.lww_col_type()));
+
+        for col in &self.cols{
+            col_defs.push(format("{} {}", col.name(), col.col_type().db_type()));
+            col_defs.push(format! ("{} {}", col.lww_name(), DbType::Integer));
+        }
+        let without_rowid = db.dialect().without_rowid();
+        db.exec(
+            &format!(
+                "CREATE TABLE {} ({}) PRIMARY KEY ({}){without_rowid};",
+                self.name,
+                col_defs.join(", "),
+                self.pk_names.join(", ")
+            ),
+            &[],
+        ).await?;
+        Ok(())
+    }
+
+    pub(crate) async fn ensure_column(
+        &mut self,
+        db: &dyn Db,
+        col_id: ColumnId,
+    ) -> Result<(), ReducerError> {
+        if self.cols.contains(&col_id) {
+            return Ok(());
+        }
+
+        let mut batch = db.new_batch();
+        // Add column
+        // TODO do we need to quote the names now that they're all surrogates
+        batch.add_statement(
+            &format!(
+                // TODO ensure that we don't need to specify NULL
+                "ALTER TABLE {} ADD COLUMN {} {};",
+                self.name,
+                col_id.name(),
+                db.col_type(col_id.col_type()),
+            ),
+            &[],
+        );
+        // Add LWW column
+        batch.add_statement(
+            &format!(
+                "ALTER TABLE {} ADD COLUMN {} {};",
+                self.name,
+                col_id.name(),
+                db.lww_col_type(),
+            ),
+            &[],
+        );
+        batch.commit().await?;
+
+        self.cols.insert(col_id);
+
+        Ok(())
     }
 }
 
@@ -449,38 +540,6 @@ impl TableSchema {
         )
         .await?;
         Ok(())
-    }
-
-    async fn alter_table_add_col(
-        &self,
-        db: &dyn Db,
-        col_name: &str,
-        lww_col_name: &str,
-        col_id: ColumnId,
-    ) {
-        // TODO maybe batch these statements
-        db.exec(
-            &format!(
-                // TODO ensure that we don't need to specify NULL
-                "ALTER TABLE {} ADD COLUMN {} {};",
-                quote_ident(&self.name),
-                quote_ident(&col_name),
-                db.col_type(col_id.col_type()),
-            ),
-            &[],
-        )
-        .await?;
-        // Add LWW column
-        db.exec(
-            &format!(
-                "ALTER TABLE {} ADD COLUMN {} {};",
-                quote_ident(&self.name),
-                quote_ident(&lww_col_name),
-                db.lww_col_type(),
-            ),
-            &[],
-        )
-        .await?;
     }
 
     pub fn pk_col_names(&self) -> &[String] {

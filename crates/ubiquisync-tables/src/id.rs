@@ -100,6 +100,11 @@ impl TableId {
         ((self.0 >> 14) as usize) + 1
     }
 
+    pub const fn pk_name(&self, i: usize) -> String {
+        assert!(i < self.pk_count(), "PK column index out of range");
+        format("k{i}")
+    }
+
     /// Type of PK column `i` (0-based). Panics if `i >= pk_count()`.
     pub const fn pk_col_type(&self, i: usize) -> ColType {
         assert!(i < self.pk_count(), "PK column index out of range");

@@ -1,11 +1,9 @@
 use ubiquisync_sql::db::DbType;
 
-/// Column type for table columns, encoded in [`ColumnId`] type bits.
+/// Column type, encoded as 2 bits in [`ColumnId`] and in [`TableId`] PK shapes.
 ///
-/// The type set is **closed**. Values 5–7 are invalid (not reserved).
-/// A peer encountering an invalid type treats it as a protocol error —
-/// this doubles as corruption detection, since a bit-flipped ID fails
-/// loudly instead of silently misparsing.
+/// The type set is **closed** and the 2-bit field is total: all four values
+/// are valid, so a column or PK type can never fail to parse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ColType {
@@ -31,12 +29,20 @@ impl ColType {
     }
 
     pub const fn from_bits(value: u8) -> Self {
+        // Must invert the `#[repr(u8)]` discriminants exactly, since the wire
+        // encoding packs the type via `self as u8` / `into_bits`.
         match value & 0b11 {
             0 => Self::Bytes,
-            1 => Self::Uuid,
-            2 => Self::Text,
-            _ => Self::I64,
+            1 => Self::Text,
+            2 => Self::I64,
+            _ => Self::Uuid,
         }
+    }
+
+    /// Inverse of [`from_bits`]: packs the type into its 2 bits. Required by the
+    /// `ColumnId` bitfield; equivalent to the `#[repr(u8)]` discriminant.
+    const fn into_bits(self) -> u8 {
+        self as _
     }
 
     /// The generic SQL storage class this column type materializes to.
@@ -74,6 +80,6 @@ pub enum WireEncoding {
     LengthPrefixed,
     /// Fixed 16 bytes, no length prefix (UUID).
     Fixed16,
-    /// Zigzag-encoded varint (I64, MaxI64).
+    /// Zigzag-encoded varint (I64).
     ZigzagVarint,
 }
