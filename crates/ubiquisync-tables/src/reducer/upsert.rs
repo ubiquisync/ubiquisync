@@ -14,13 +14,13 @@ impl Reducer {
         db: &dyn Db,
         upsert: &Upsert,
     ) -> Result<(), ReducerError> {
-        let table = self.ensure_table(db, upsert.table_id)?;
+        let table = self.ensure_table(db, upsert.table_id).await?;
         for col_update in upsert.sets.iter() {
-            table.ensure_column(db, col_update.column_id)?;
+            table.ensure_column(db, col_update.column_id).await?;
         }
 
         for null_col_id in upsert.nulls.iter() {
-            table.ensure_column(db, *null_col_id)?;
+            table.ensure_column(db, *null_col_id).await?;
         }
         Ok(())
     }

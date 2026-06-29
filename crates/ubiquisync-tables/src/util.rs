@@ -14,7 +14,7 @@ pub fn lww_col_name(name: &str) -> String {
 }
 
 pub fn parse_lww_col_name(name: &str) -> Option<String> {
-    name.strip_prefix("__")
+    name.strip_prefix("__")?
         .strip_suffix("_lww")
         .map(|s| s.to_string())
 }

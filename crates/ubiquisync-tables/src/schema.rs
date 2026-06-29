@@ -26,7 +26,7 @@ pub const DELETED_TS_COL: &'static str = "__deleted_ts";
 pub const UPSERT_TS_COL: &'static str = "__upsert_ts";
 
 impl TableSchema {
-    pub fn init_default(
+    pub async fn init_default(
         db: &dyn Db,
         prefix: &str,
         id: TableId,
@@ -46,7 +46,7 @@ impl TableSchema {
             value_cols: cols.into_iter().map(|c| (c.id, c)).collect(),
         };
         let existing_cols: Vec<ColumnDescription> =
-            if let Some(existing) = db.describe_table(&ts.name)? {
+            if let Some(existing) = db.describe_table(&ts.name).await? {
                 // Check pk columns
                 let n = existing.pk_cols.len();
                 if n != id.pk_count() {
@@ -61,7 +61,7 @@ impl TableSchema {
                 existing.cols
             } else {
                 let surrogate_name = surrogate_table_name(prefix, id);
-                if let Some(surrogate) = db.describe_table(&surrogate_name)? {
+                if let Some(surrogate) = db.describe_table(&surrogate_name).await? {
                     let n = surrogate.pk_cols.len();
                     if n != id.pk_count() {
                         todo!("error")
@@ -80,7 +80,7 @@ impl TableSchema {
                             quote_ident(&ts.name),
                             quote_ident(&surrogate_name),
                             quote_ident(&real_name),
-                        ))?;
+                        ), &[]).await?;
                     }
 
                     // Rename
@@ -88,12 +88,12 @@ impl TableSchema {
                         "ALTER TABLE {} RENAME TO {}",
                         quote_ident(&surrogate_name),
                         quote_ident(&ts.name),
-                    ))?;
+                    ), &[]).await?;
 
                     surrogate.cols
                 } else {
                     // Create table
-                    ts.create_table(db)?;
+                    ts.create_table(db).await?;
 
                     // No existing schema to check so we're done.
                     return Ok(ts);
@@ -160,7 +160,7 @@ impl TableSchema {
                         quote_ident(&ts.name),
                         quote_ident(&existing.name),
                         quote_ident(&to_define.name),
-                    ))?;
+                    ), &[]).await?;
                     // TODO move this to outer
                     let lww_name = lww_col_name(&to_define.name);
                     db.exec(&format!(
@@ -168,7 +168,7 @@ impl TableSchema {
                         quote_ident(&ts.name),
                         quote_ident(&lww_col_name(&existing.name)),
                         quote_ident(&lww_name),
-                    ))?;
+                    ), &[]).await?;
 
                     // Remove the renamed surrogate column from the list of columns to define.
                     cols_to_define.remove(&to_define.name);
@@ -192,7 +192,11 @@ impl TableSchema {
         Ok(ts)
     }
 
-    pub fn init_surrogate(prefix: &str, id: TableId, db: &dyn Db) -> Result<Self, ReducerError> {
+    pub async fn init_surrogate(
+        prefix: &str,
+        id: TableId,
+        db: &dyn Db,
+    ) -> Result<Self, ReducerError> {
         let name = surrogate_table_name(prefix, id);
         let mut pk_names = vec![];
         let pk_count = id.pk_count();
@@ -210,7 +214,11 @@ impl TableSchema {
         Ok(ts)
     }
 
-    pub fn ensure_column(&mut self, db: &dyn Db, col_id: ColumnId) -> Result<(), ReducerError> {
+    pub async fn ensure_column(
+        &mut self,
+        db: &dyn Db,
+        col_id: ColumnId,
+    ) -> Result<(), ReducerError> {
         if let Some(col) = self.value_cols.get(&col_id) {
             return Ok(());
         }
@@ -218,7 +226,7 @@ impl TableSchema {
         // Create surrogate column.
         let col_name = surrogate_col_name(col_id);
         let lww_name = lww_col_name(&col_name);
-        self.alter_table_add_col(db, &col_name, &lww_name, col_id);
+        self.alter_table_add_col(db, &col_name, &lww_name, col_id).await;
         self.value_cols.insert(
             col_id,
             ColumnSchema {
@@ -233,16 +241,16 @@ impl TableSchema {
     pub fn require_column(&self, col_id: ColumnId) -> Result<&ColumnSchema, ReducerError> {
         self.value_cols
             .get(&col_id)
-            .ok_or_else(ReducerError::ColumnNotFound(col_id))
+            .ok_or(ReducerError::ColumnNotFound(col_id))
     }
 
-    fn create_table(&self, db: &dyn Db) -> Result<(), ReducerError> {
-        let pk_count = self.pk_count();
+    async fn create_table(&self, db: &dyn Db) -> Result<(), ReducerError> {
+        let pk_count = self.id.pk_count();
         if pk_count != self.pk_names.len() {
             todo!("error")
         }
         let mut col_defs = vec![];
-        for i in pk_count {
+        for i in 0..pk_count {
             col_defs.push(format!(
                 "{} {}",
                 quote_ident(&self.pk_names[i]),
@@ -253,7 +261,7 @@ impl TableSchema {
         col_defs.push(format!("{UPSERT_TS_COL} {}", db.lww_col_type()));
         col_defs.push(format!("{DELETED_TS_COL} {}", db.lww_col_type()));
 
-        for (_, col) in self.value_cols {
+        for (_, col) in &self.value_cols {
             col_defs.push(format!(
                 "{} {}",
                 quote_ident(&col.name),
@@ -272,11 +280,11 @@ impl TableSchema {
             self.name,
             col_defs.join(", "),
             self.pk_names.join(", ")
-        ))?;
+        ), &[]).await?;
         Ok(())
     }
 
-    fn alter_table_add_col(
+    async fn alter_table_add_col(
         &self,
         db: &dyn Db,
         col_name: &str,
@@ -290,14 +298,14 @@ impl TableSchema {
             quote_ident(&self.name),
             quote_ident(&col_name),
             db.col_type(col_id.col_type()),
-        ))?;
+        ), &[]).await?;
         // Add LWW column
         db.exec(&format!(
             "ALTER TABLE {} ADD COLUMN {} {}",
             quote_ident(&self.name),
             quote_ident(&lww_col_name),
             db.lww_col_type(),
-        ))?;
+        ), &[]).await?;
     }
 
     pub fn pk_col_names(&self) -> &[String] {

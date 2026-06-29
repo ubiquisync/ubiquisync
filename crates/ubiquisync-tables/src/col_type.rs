@@ -1,3 +1,5 @@
+use ubiquisync_sql::db::DbType;
+
 /// Column type for table columns, encoded in [`ColumnId`] type bits.
 ///
 /// The type set is **closed**. Values 5–7 are invalid (not reserved).
@@ -34,6 +36,32 @@ impl ColType {
             1 => Self::Uuid,
             2 => Self::Text,
             _ => Self::I64,
+        }
+    }
+
+    /// The generic SQL storage class this column type materializes to.
+    /// Drives `CREATE TABLE`/`ALTER TABLE` column type names via
+    /// [`DbType::sql_type`].
+    pub const fn db_type(self) -> DbType {
+        match self {
+            Self::Bytes => DbType::Blob,
+            Self::Text => DbType::Text,
+            Self::I64 => DbType::Integer,
+            Self::Uuid => DbType::Uuid,
+        }
+    }
+
+    /// Whether an existing database column of type `db` can hold values of
+    /// this column type. Used during schema reconciliation to detect a table
+    /// whose on-disk types disagree with the declared schema. UUIDs accept a
+    /// raw `Blob` since that is how they are stored on backends without a
+    /// native UUID type.
+    pub const fn accepts(self, db: DbType) -> bool {
+        match self {
+            Self::Bytes => matches!(db, DbType::Blob),
+            Self::Text => matches!(db, DbType::Text),
+            Self::I64 => matches!(db, DbType::Integer),
+            Self::Uuid => matches!(db, DbType::Uuid | DbType::Blob),
         }
     }
 }

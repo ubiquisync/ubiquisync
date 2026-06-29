@@ -12,7 +12,7 @@ impl Reducer {
         db: &dyn Db,
         delete: &Delete,
     ) -> Result<(), ReducerError> {
-        self.ensure_table(db, delete.table_id)?;
+        self.ensure_table(db, delete.table_id).await?;
         Ok(())
     }
 

@@ -18,7 +18,8 @@ pub fn surrogate_pk_name(pos: usize) -> String {
 }
 
 pub fn parse_surrogate_col_name(name: &str) -> Option<ColumnId> {
-    name.strip_prefix("__c0x")
+    // Must match the prefix emitted by `surrogate_col_name`.
+    name.strip_prefix("c0x")
         .and_then(|s| u8::from_str_radix(s, 16).ok())
         .and_then(ColumnId::try_from_raw)
 }
