@@ -12,10 +12,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone)]
 pub struct TableSchema {
-    pub id: TableId,
-    pub name: String,
-    pub pk_names: Vec<String>,
-    pub value_cols: Vec<ColumnSchema>,
+    id: TableId,
+    name: String,
+    pk_names: Vec<String>,
+    value_cols: HashMap<ColumnId, ColumnSchema>,
 }
 
 #[derive(Debug, Clone)]

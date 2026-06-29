@@ -7,7 +7,7 @@ mod value;
 
 pub use batch::{DbBatch, DbStatementResult, StmtId};
 pub use error::DbError;
-pub use schema::{ColumnDescription, DbType, TableDescriptor};
+pub use schema::{DbColumnDescription, DbTableDescriptor, DbType};
 pub use value::{DbRow, DbValue, ValueBinder};
 
 use async_trait::async_trait;
@@ -31,7 +31,7 @@ pub trait Db {
 
     /// Introspect a table's columns and primary key, or `None` if it does not
     /// exist. Used for schema reconciliation *before* a batch is built.
-    async fn describe_table(&self, name: &str) -> Result<Option<TableDescriptor>, DbError>;
+    async fn describe_table(&self, name: &str) -> Result<Option<DbTableDescriptor>, DbError>;
 
     /// Execute a single statement outside any batch (autocommit). For DDL
     /// (`CREATE TABLE`, `ALTER TABLE ... ADD COLUMN`) and one-off writes.

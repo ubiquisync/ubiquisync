@@ -1,12 +1,12 @@
 use crate::dialect::SqlDialect;
 
-pub struct TableDescriptor {
+pub struct DbTableDescriptor {
     pub name: String,
-    pub pk_cols: Vec<ColumnDescription>,
-    pub cols: Vec<ColumnDescription>,
+    pub pk_cols: Vec<DbColumnDescription>,
+    pub cols: Vec<DbColumnDescription>,
 }
 
-pub struct ColumnDescription {
+pub struct DbColumnDescription {
     pub name: String,
     pub db_type: DbType,
     pub nullable: bool,

@@ -5,7 +5,6 @@ impl DbType {
             ColType::Text => self == DbType::Text,
             ColType::I64 => self == DbType::Integer,
             ColType::Uuid => self == DbType::Uuid || self == DbType::Blob,
-            ColType::MaxI64 => self == DbType::Integer,
         }
     }
 }

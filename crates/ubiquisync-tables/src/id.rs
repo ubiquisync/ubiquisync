@@ -29,13 +29,14 @@
 //! ## Column IDs (`ColumnId`, u8)
 //!
 //! ```text
-//! ┌─────────────┬───────────────┐
-//! │    type     │ column index  │
-//! │   (3 bits)  │   (5 bits)    │
-//! └─────────────┴───────────────┘
+//! ┌───────────┬─────────────────┐
+//! │   type    │  column index   │
+//! │  (2 bits) │    (6 bits)     │
+//! └───────────┴─────────────────┘
 //! ```
 //!
-//! Type bits (high 3): column wire type. Values 5–7 are invalid (protocol error).
+//! Type bits (high 2): column wire type. All four values are valid, so every
+//! byte decodes to a column ID — there is no protocol-error path.
 //!
 //! ## Frozen type vocabulary
 //!
@@ -162,8 +163,8 @@ impl core::fmt::Debug for TableId {
 
 /// Type-encoded column ID.
 ///
-/// High 3 bits encode the column's wire type, making the ID self-describing
-/// for wire parsing. The lower 5 bits are an arbitrary column index within
+/// High 2 bits encode the column's wire type, making the ID self-describing
+/// for wire parsing. The lower 6 bits are an arbitrary column index within
 /// the table. All non-PK columns are implicitly nullable.
 #[bitfield(u8)]
 #[derive(PartialEq, Eq, Hash, Ord, PartialOrd)]
@@ -180,11 +181,11 @@ pub struct ColumnId {
 }
 
 impl ColumnId {
-    /// Validate that the column type bits are valid (not 5, 6, or 7).
-    /// Returns `None` if the raw byte encodes an invalid column type.
+    /// Parse a column ID from a raw byte. The 2-bit type field admits all four
+    /// `ColType` values, so every byte is a valid column ID and this never
+    /// returns `None`; it keeps the fallible signature the codec decode path
+    /// expects.
     pub fn try_from_raw(raw: u8) -> Option<Self> {
-        let type_bits = (raw >> 5) & 0x07;
-        ColType::try_from_bits(type_bits)?;
         Some(Self::from(raw))
     }
 }
@@ -231,15 +232,15 @@ mod tests {
     #[test]
     fn table_id_pk_shape_in_high_bits() {
         // Goal: PK shape packs into the high bits in declaration order.
-        // Given: 1-col UUID PK: count=0, t1=Uuid(01).
+        // Given: 1-col UUID PK: count=0, t1=Uuid(11).
         let id = TableId::new(&[ColType::Uuid], 0);
         // Then: count in bits 15-14, t1 in bits 13-12.
-        assert_eq!(id.raw() >> 12, 0b00_01);
+        assert_eq!(id.raw() >> 12, 0b00_11);
 
-        // Given: 2-col (Text, I64) PK: count=1, t1=Text(10), t2=I64(11).
+        // Given: 2-col (Text, I64) PK: count=1, t1=Text(01), t2=I64(10).
         let id = TableId::new(&[ColType::Text, ColType::I64], 0);
-        // Then: high 6 bits are count(01) | t1(10) | t2(11).
-        assert_eq!(id.raw() >> 10, 0b01_10_11);
+        // Then: high 6 bits are count(01) | t1(01) | t2(10).
+        assert_eq!(id.raw() >> 10, 0b01_01_10);
     }
 
     #[test]
@@ -319,30 +320,25 @@ mod tests {
 
     #[test]
     fn column_id_type_in_high_bits() {
-        // I64: bits 5-7=col_type(2)=010, index=0
-        // high 3 bits = 010
+        // I64: bits 6-7=col_type(2)=10, index=0
         let id = ColumnId::new().with_index(0).with_col_type(ColType::I64);
         let raw: u8 = id.into();
-        assert_eq!(raw >> 5, 0b010);
+        assert_eq!(raw >> 6, 0b10);
 
-        // Text: bits 5-7=col_type(1)=001, index=0
-        // high 3 bits = 001
+        // Text: bits 6-7=col_type(1)=01, index=0
         let id = ColumnId::new().with_index(0).with_col_type(ColType::Text);
         let raw: u8 = id.into();
-        assert_eq!(raw >> 5, 0b001);
+        assert_eq!(raw >> 6, 0b01);
     }
 
     #[test]
-    fn invalid_col_type_detected() {
-        // Goal: type values 5-7 are protocol errors, 0-4 are valid.
-        assert!(ColType::try_from_bits(4).is_some()); // MaxI64
-        assert!(ColType::try_from_bits(5).is_none());
-        assert!(ColType::try_from_bits(6).is_none());
-        assert!(ColType::try_from_bits(7).is_none());
-
-        // Then: try_from_raw rejects a byte whose type bits are invalid.
-        assert!(ColumnId::try_from_raw(0b101_00000).is_none());
-        assert!(ColumnId::try_from_raw(0b100_00011).is_some());
+    fn every_byte_is_a_valid_column_id() {
+        // Goal: with a 2-bit type field every value is assigned, so there is no
+        // invalid column type — every byte decodes and re-encodes to itself.
+        for raw in 0..=u8::MAX {
+            let id = ColumnId::try_from_raw(raw).expect("every byte is a valid column ID");
+            assert_eq!(u8::from(id), raw);
+        }
     }
 
     #[test]
