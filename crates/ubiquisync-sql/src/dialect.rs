@@ -51,6 +51,13 @@ impl SqlDialect {
             SqlDialect::Postgres => " COLLATE \"C\"",
         }
     }
+
+    pub fn without_rowid(&self) -> &'static str {
+        match self {
+            SqlDialect::Sqlite => " WITHOUT ROWID",
+            SqlDialect::Postgres => "",
+        }
+    }
 }
 
 pub struct PlaceholderGen {

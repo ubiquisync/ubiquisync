@@ -11,7 +11,7 @@ use crate::{
     util::quote_ident,
 };
 
-#[async_trait::async_trait]
+#[async_trait::async_trait(?Send)]
 pub trait LogTracker<Op>: Sized {
     async fn init(db: &dyn Db, prefix: &str) -> Result<Self, DbError>;
 
@@ -19,7 +19,7 @@ pub trait LogTracker<Op>: Sized {
         &self,
         client_id: &Uuid,
         client_idx: u64,
-        entry: LogEntry<Op>,
+        entry: &LogEntry<Op>,
         batch: &mut dyn DbBatch,
     ) -> Result<(), CodecError>;
 }
@@ -29,7 +29,7 @@ pub struct LogIndexTracker<Op> {
     _phantom: PhantomData<Op>,
 }
 
-#[async_trait::async_trait]
+#[async_trait::async_trait(?Send)]
 impl<Op: IndexableOp> LogTracker<Op> for LogIndexTracker<Op> {
     async fn init(db: &dyn Db, prefix: &str) -> Result<Self, DbError> {
         let quoted_table_name = quote_ident(&format!("{prefix}__oplog"));
@@ -37,17 +37,18 @@ impl<Op: IndexableOp> LogTracker<Op> for LogIndexTracker<Op> {
         let int_type = DbType::Integer.sql_type(dialect);
         let blob_type = DbType::Blob.sql_type(dialect);
         let uuid_type = DbType::Uuid.sql_type(dialect);
+        let without_rowid = dialect.without_rowid();
         let sql = format!(
-            "CREATE TABLE {quoted_table_name} (\
+            "CREATE TABLE IF NOT EXISTS {quoted_table_name} (\
             client_id {uuid_type} NOT NULL,\
             client_idx {int_type} NOT NULL,\
             user_id {uuid_type} NULL,\
-            ts {int_type} NOT NULL,
-            tag {int_type} NOT NULL,
-            index_key {blob_type} NULL,
-            index_value {blob_type} NULL,
-            PRIMARY KEY(client_id, client_idx)
-            );"
+            ts {int_type} NOT NULL,\
+            tag {int_type} NOT NULL,\
+            index_key {blob_type} NULL,\
+            index_value {blob_type} NULL,\
+            PRIMARY KEY(client_id, client_idx))\
+            {without_rowid};"
         );
         db.exec(&sql, &[]).await?;
         Ok(Self {

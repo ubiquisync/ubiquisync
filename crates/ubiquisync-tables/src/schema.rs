@@ -75,20 +75,28 @@ impl TableSchema {
                         }
                         // Rename pk column
                         let real_name = ts.pk_names[i];
-                        db.exec(&format!(
-                            "ALTER TABLE {} RENAME COLUMN {} TO {}",
-                            quote_ident(&ts.name),
-                            quote_ident(&surrogate_name),
-                            quote_ident(&real_name),
-                        ), &[]).await?;
+                        db.exec(
+                            &format!(
+                                "ALTER TABLE {} RENAME COLUMN {} TO {}",
+                                quote_ident(&ts.name),
+                                quote_ident(&surrogate_name),
+                                quote_ident(&real_name),
+                            ),
+                            &[],
+                        )
+                        .await?;
                     }
 
                     // Rename
-                    db.exec(&format!(
-                        "ALTER TABLE {} RENAME TO {}",
-                        quote_ident(&surrogate_name),
-                        quote_ident(&ts.name),
-                    ), &[]).await?;
+                    db.exec(
+                        &format!(
+                            "ALTER TABLE {} RENAME TO {}",
+                            quote_ident(&surrogate_name),
+                            quote_ident(&ts.name),
+                        ),
+                        &[],
+                    )
+                    .await?;
 
                     surrogate.cols
                 } else {
@@ -155,20 +163,28 @@ impl TableSchema {
                 existing.validate(surrogate.col_type())?;
                 if let Some(to_define) = ts.value_cols.get(&surrogate) {
                     // Rename surrogate to real column name
-                    db.exec(&format!(
-                        "ALTER TABLE {} RENAME COLUMN {} TO {}",
-                        quote_ident(&ts.name),
-                        quote_ident(&existing.name),
-                        quote_ident(&to_define.name),
-                    ), &[]).await?;
+                    db.exec(
+                        &format!(
+                            "ALTER TABLE {} RENAME COLUMN {} TO {}",
+                            quote_ident(&ts.name),
+                            quote_ident(&existing.name),
+                            quote_ident(&to_define.name),
+                        ),
+                        &[],
+                    )
+                    .await?;
                     // TODO move this to outer
                     let lww_name = lww_col_name(&to_define.name);
-                    db.exec(&format!(
-                        "ALTER TABLE {} RENAME COLUMN {} TO {}",
-                        quote_ident(&ts.name),
-                        quote_ident(&lww_col_name(&existing.name)),
-                        quote_ident(&lww_name),
-                    ), &[]).await?;
+                    db.exec(
+                        &format!(
+                            "ALTER TABLE {} RENAME COLUMN {} TO {}",
+                            quote_ident(&ts.name),
+                            quote_ident(&lww_col_name(&existing.name)),
+                            quote_ident(&lww_name),
+                        ),
+                        &[],
+                    )
+                    .await?;
 
                     // Remove the renamed surrogate column from the list of columns to define.
                     cols_to_define.remove(&to_define.name);
@@ -226,7 +242,8 @@ impl TableSchema {
         // Create surrogate column.
         let col_name = surrogate_col_name(col_id);
         let lww_name = lww_col_name(&col_name);
-        self.alter_table_add_col(db, &col_name, &lww_name, col_id).await;
+        self.alter_table_add_col(db, &col_name, &lww_name, col_id)
+            .await;
         self.value_cols.insert(
             col_id,
             ColumnSchema {
@@ -275,12 +292,16 @@ impl TableSchema {
                 })
             }
         }
-        db.exec(&format!(
-            "CREATE TABLE {} ({}) PRIMARY KEY ({})",
-            self.name,
-            col_defs.join(", "),
-            self.pk_names.join(", ")
-        ), &[]).await?;
+        db.exec(
+            &format!(
+                "CREATE TABLE {} ({}) PRIMARY KEY ({})",
+                self.name,
+                col_defs.join(", "),
+                self.pk_names.join(", ")
+            ),
+            &[],
+        )
+        .await?;
         Ok(())
     }
 
@@ -292,20 +313,28 @@ impl TableSchema {
         col_id: ColumnId,
     ) {
         // TODO maybe batch these statements
-        db.exec(&format!(
-            // TODO ensure that we don't need to specify NULL
-            "ALTER TABLE {} ADD COLUMN {} {}",
-            quote_ident(&self.name),
-            quote_ident(&col_name),
-            db.col_type(col_id.col_type()),
-        ), &[]).await?;
+        db.exec(
+            &format!(
+                // TODO ensure that we don't need to specify NULL
+                "ALTER TABLE {} ADD COLUMN {} {}",
+                quote_ident(&self.name),
+                quote_ident(&col_name),
+                db.col_type(col_id.col_type()),
+            ),
+            &[],
+        )
+        .await?;
         // Add LWW column
-        db.exec(&format!(
-            "ALTER TABLE {} ADD COLUMN {} {}",
-            quote_ident(&self.name),
-            quote_ident(&lww_col_name),
-            db.lww_col_type(),
-        ), &[]).await?;
+        db.exec(
+            &format!(
+                "ALTER TABLE {} ADD COLUMN {} {}",
+                quote_ident(&self.name),
+                quote_ident(&lww_col_name),
+                db.lww_col_type(),
+            ),
+            &[],
+        )
+        .await?;
     }
 
     pub fn pk_col_names(&self) -> &[String] {
