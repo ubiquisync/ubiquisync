@@ -3,7 +3,7 @@ use ubiquisync_sql::db::DbValue;
 use crate::op::Value;
 
 pub fn lww_col_name(name: &str) -> String {
-    // TODO: is the best naming convention for lww columns
+    // TODO: is the best naming convention for lww columns?
     format!("__{}_lww", name)
 }
 

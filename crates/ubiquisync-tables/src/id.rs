@@ -165,12 +165,12 @@ impl core::fmt::Debug for TableId {
 pub struct ColumnId {
     // -- Column index (low 6 bits) --
     /// Arbitrary column index within the table.
-    #[bits(5)]
+    #[bits(6)]
     pub index: u8,
 
     // -- Type bits (high 2 bits) --
     /// Column wire type (bits 6–7).
-    #[bits(3)]
+    #[bits(2)]
     pub col_type: ColType,
 }
 

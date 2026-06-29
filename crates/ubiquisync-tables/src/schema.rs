@@ -1,11 +1,14 @@
-use ubiquisync_sql::db::{ColumnDescription, Db, DbType};
+use ubiquisync_sql::db::{Db, DbColumnDescription, DbTableDescriptor, DbType};
 
 use crate::col_type::ColType;
 use crate::id::{ColumnId, TableId};
 use crate::reducer::ReducerError;
-use crate::surrogate::{parse_surrogate_col_name, surrogate_col_name, surrogate_table_name};
-use crate::util::{lww_col_name, parse_lww_col_name, quote_ident};
-use std::collections::BTreeMap;
+use crate::surrogate::{
+    parse_surrogate_col_name, parse_surrogate_table_name, surrogate_col_name, surrogate_pk_name,
+    surrogate_table_name,
+};
+use crate::util::{lww_col_name, parse_lww_col_name};
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone)]
 pub struct TableSchema {
@@ -22,8 +25,129 @@ pub struct ColumnSchema {
     pub lww_name: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct SurrogateTableSchema {
+    id: TableId,
+    cols: BTreeSet<ColumnId>,
+}
+
 pub const DELETED_TS_COL: &'static str = "__deleted_ts";
 pub const UPSERT_TS_COL: &'static str = "__upsert_ts";
+
+fn schema_mismatch<T>(id: TableId, table: &str, detail: String) -> Result<T, ReducerError> {
+    return Err(ReducerError::SchemaMismatch {
+        id,
+        table: table.into(),
+        detail: detail.into(),
+    });
+}
+
+fn validate_upsert_delete_ts_cols(
+    col_name: &str,
+    col_map: &mut BTreeMap<String, DbColumnDescription>,
+) -> Result<(), ReducerError> {
+    // Remove the col from the column map so it doesn't get picked up as a regular column.
+    if let Some(col) = col_map.remove(col_name) {
+        let db_type = col.db_type;
+        if db_type != DbType::Integer {
+            return schema_mismatch(id, table, format!("invalid {col_name} type {db_type}"));
+        }
+    } else {
+        return schema_mismatch(id, table, format!("missing {col_name}"));
+    }
+    Ok(())
+}
+
+impl SurrogateTableSchema {
+    fn reconstruct_from_db(
+        prefix: &str,
+        db_table: DbTableDescriptor,
+    ) -> Result<Self, ReducerError> {
+        let table_name = &db_table.name;
+        let id = parse_surrogate_table_name(prefix, table_name).ok_or(todo!())?;
+
+        // Validate primary key
+        let pk_count = id.pk_count();
+        let actual_pk_count = db_table.pk_cols.len();
+        if pk_count != actual_pk_count {
+            return schema_mismatch(
+                id,
+                table,
+                format!("invalid primary key count, expected {pk_count} got {actual_pk_count}"),
+            );
+        }
+        for i in 0..n {
+            let db_col = db_table.pk_cols[i];
+            let db_type = db_col.db_type;
+            let pk_type = id.pk_col_type(i);
+            // Check primary key type match
+            if !pk_type.accepts(db_type) {
+                return schema_mismatch(
+                    id,
+                    table,
+                    format!("invalid primary key type at {i} expected {pk_type} got {db_type}"),
+                );
+            }
+
+            // Check primary key name match
+            let col_name = &db_col.name;
+            let expected_col_name = surrogate_pk_name(i);
+            if col_name != expected_col_name {
+                return schema_mismatch(
+                    id,
+                    table,
+                    format!(
+                        "expected primary key column {i} to be named {expected_col_name} got {col_name}"
+                    ),
+                );
+            }
+        }
+
+        // Put all other cols in a map
+        let mut db_col_map = BTreeMap::new();
+        for col in db_table.cols {
+            db_col_map.insert(col.name.clone(), col.clone());
+        }
+
+        // Validate __upsert_ts and __deleted_ts cols
+        validate_upsert_delete_ts_cols(UPSERT_TS_COL, &mut db_col_map)?;
+        validate_upsert_delete_ts_cols(DELETED_TS_COL, &mut db_col_map)?;
+
+        let cols = BTreeSet::new();
+        // Extract other columns into value column/lww column pairs
+        for col in db_table.cols {
+            // If we can find an lww col match for this column then we track both it and
+            // its lww column as a column pair and remove them from the map.
+            if let Some(lww_col) = db_col_map.remove(&lww_col_name(&col.name)) {
+                let col = db_col_map.remove(&col.name);
+                let col_name = &col.name;
+                if let Some(col_id) = parse_surrogate_col_name(col_name) {
+                    let db_type = col.db_type;
+                    let col_type = col_id.col_type();
+                    if !col_type.accepts(db_type) {
+                        return schema_mismatch(
+                            id,
+                            table,
+                            format!(
+                                "column {id} db type {db_type} doesn't match column type {col_type}"
+                            ),
+                        );
+                    }
+
+                    cols.insert(col_id);
+                } else {
+                    return schema_mismatch(
+                        id,
+                        table,
+                        format!("can't parse surrogate column {col_name}"),
+                    );
+                }
+            }
+        }
+
+        Ok(Self { id, cols })
+    }
+}
 
 impl TableSchema {
     pub async fn init_default(
@@ -38,14 +162,35 @@ impl TableSchema {
         if id.pk_count() != pk_names.len() {
             todo!("error")
         }
-        let name = format!("{prefix}{name}");
+        let name = format!("{prefix}__{name}");
         let mut ts = Self {
             id,
             name,
             pk_names,
             value_cols: cols.into_iter().map(|c| (c.id, c)).collect(),
         };
-        let existing_cols: Vec<ColumnDescription> =
+
+        // cases:
+        // - existing surrogate table
+        // - existing named table
+        // - no table
+        //
+        //
+        if let Some(existing) = db.describe_table(&ts.name).await? {
+            // check that existing has __deleted_ts and __upsert_ts cols
+            // Check pk columns
+            let n = existing.pk_cols.len();
+            if n != id.pk_count() {
+                todo!("error")
+            }
+            for i in 0..n {
+                if &existing.pk_cols[i].name != &ts.pk_names[i] {
+                    todo!("error")
+                }
+            }
+        }
+
+        let existing_cols: Vec<DbColumnDescription> =
             if let Some(existing) = db.describe_table(&ts.name).await? {
                 // Check pk columns
                 let n = existing.pk_cols.len();
@@ -292,9 +437,10 @@ impl TableSchema {
                 })
             }
         }
+        let without_rowid = db.dialect().without_rowid();
         db.exec(
             &format!(
-                "CREATE TABLE {} ({}) PRIMARY KEY ({})",
+                "CREATE TABLE {} ({}) PRIMARY KEY ({}){without_rowid};",
                 self.name,
                 col_defs.join(", "),
                 self.pk_names.join(", ")
@@ -316,7 +462,7 @@ impl TableSchema {
         db.exec(
             &format!(
                 // TODO ensure that we don't need to specify NULL
-                "ALTER TABLE {} ADD COLUMN {} {}",
+                "ALTER TABLE {} ADD COLUMN {} {};",
                 quote_ident(&self.name),
                 quote_ident(&col_name),
                 db.col_type(col_id.col_type()),
@@ -327,7 +473,7 @@ impl TableSchema {
         // Add LWW column
         db.exec(
             &format!(
-                "ALTER TABLE {} ADD COLUMN {} {}",
+                "ALTER TABLE {} ADD COLUMN {} {};",
                 quote_ident(&self.name),
                 quote_ident(&lww_col_name),
                 db.lww_col_type(),

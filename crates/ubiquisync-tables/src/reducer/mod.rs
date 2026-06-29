@@ -25,7 +25,11 @@ pub enum ReducerError {
     #[error("system column {0:?} not found")]
     ColumnNotFound(ColumnId),
     #[error("schema mismatch for table {table:?}: {detail}")]
-    SchemaMismatch { table: String, detail: String },
+    SchemaMismatch {
+        id: TableId,
+        table: String,
+        detail: String,
+    },
     #[error("not implemented: {0}")]
     NotImplemented(String),
 }

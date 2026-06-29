@@ -6,6 +6,12 @@ pub fn surrogate_table_name(prefix: &str, table_id: TableId) -> String {
     format!("{prefix}t0x{raw:04X}")
 }
 
+pub fn parse_surrogate_table_name(prefix: &str, name: &str) -> Option<TableId> {
+    name.strip_prefix(prefix)
+        .and_then(|s| s.strip_prefix("t0x"))
+        .and_then(TableId::try_from_raw)
+}
+
 /// Surrogate SQL column name for an unknown column ID.
 pub fn surrogate_col_name(col_id: ColumnId) -> String {
     let raw: u8 = col_id.into();
