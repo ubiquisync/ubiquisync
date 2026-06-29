@@ -6,14 +6,15 @@ mod upsert;
 
 use crate::id::{ColumnId, TableId};
 use crate::op::Op;
-use crate::schema::TableSchema;
+use crate::schema::{SurrogateTableSchema, TableSchema};
 use crate::watch::ChangeEvent;
 use std::collections::HashMap;
 use ubiquisync_sql::db::{Db, DbBatch, DbError, DbStatementResult, StmtId};
 
 pub struct Reducer {
     prefix: String,
-    table_schemas: HashMap<TableId, TableSchema>,
+    all_tables: HashMap<TableId, SurrogateTableSchema>,
+    named_tables: HashMap<TableId, >
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -60,7 +61,7 @@ impl ubiquisync_sql::reducer::Reducer for Reducer {
     ) -> Result<ApplyState, Self::Error> {
         match op {
             Op::Upsert(upsert) => self.apply_upsert(batch, timestamp, upsert),
-            Op::Delete(delete) => self.apply_delete(batch, timestamp, delete),
+            Op::Delete(delete) => self.(batch, timestamp, delete),
         }
     }
 

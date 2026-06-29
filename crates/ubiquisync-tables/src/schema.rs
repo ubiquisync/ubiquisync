@@ -26,7 +26,7 @@ pub struct ColumnSchema {
 }
 
 #[derive(Debug, Clone)]
-struct SurrogateTableSchema {
+pub(crate) struct SurrogateTableSchema {
     id: TableId,
     name: String,
     cols: BTreeSet<ColumnId>,
@@ -67,6 +67,16 @@ impl SurrogateTableSchema {
             name,
             cols: Default::default(),
         }
+    }
+
+    pub(crate) async fn init_surrogate(prefix: &str, id: TableId, db: &dyn Db) -> Result<Self, ReducerError> {
+        let res = Self::new_from_id(prefix, id);
+        res.create_table(db).await?;
+        Ok(res)
+    }
+
+    pub(crate) fn get_name(&self) -> &str {
+        &self.name
     }
 
     fn new_from_schema(prefix: &str, schema: &TableSchema) -> Self {

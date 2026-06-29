@@ -1,4 +1,5 @@
 use crate::col_type::ColType;
+use crate::id::TableId;
 use crate::op::{Upsert, Value};
 use crate::reducer::{ApplyState, Reducer, ReducerError};
 use crate::schema::{ColumnSchema, DELETED_TS_COL, TableSchema, UPSERT_TS_COL};
@@ -33,15 +34,16 @@ impl Reducer {
     ) -> Result<ApplyState, ReducerError> {
         let dialect = batch.dialect();
 
-        let table = self.require_table(upsert.table_id)?;
-        let quoted_table_name = quote_ident(table.get_name());
+        let table_id = upsert.table_id;
+        let table = self.require_table(table_id)?;
+        let quoted_table_name = table.get_name();
 
         let mut insert_into_cols = vec![]; // INSERT INTO (...)
         let mut insert_into_value_binds = vec![]; // VALUES (?1, ?2, ...)
         let mut value_binder = ValueBinder::new(dialect);
 
         bind_pkey(
-            table,
+            table_id,
             &upsert.primary_key,
             &mut insert_into_cols,
             &mut insert_into_value_binds,
@@ -191,16 +193,16 @@ pub(crate) fn set_lww_sql(lww_col: &str, table_name: &str, dialect: SqlDialect) 
 }
 
 pub(crate) fn bind_pkey(
-    table: &TableSchema,
+    table_id: TableId,
     primary_key: &[Value],
     insert_into_cols: &mut Vec<String>,
     insert_into_value_binds: &mut Vec<String>,
     value_binder: &mut ValueBinder,
 ) {
-    let pk_count = table.get_id().pk_count();
+    let pk_count = table_id.pk_count();
     for i in 0..pk_count {
         // bind the quoted pk col name into the INSERT column list
-        insert_into_cols.push(quote_ident(&table.pk_col_names()[i]));
+        insert_into_cols.push(quote_ident(table_id.pk_name(i)));
         // create positional (?1) bind params for each pk val
         insert_into_value_binds.push(value_binder.bind_next(value_to_db(&primary_key[i])));
         // add the pk val to the list of bind values
@@ -208,12 +210,12 @@ pub(crate) fn bind_pkey(
     }
 }
 
-// quoted, comma-joined pk list for the ON CONFLICT statement
-pub(crate) fn mk_pkey_name_list(table: &TableSchema) -> String {
-    table
-        .pk_col_names()
-        .iter()
-        .map(|n| quote_ident(n))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
+// // quoted, comma-joined pk list for the ON CONFLICT statement
+// pub(crate) fn mk_pkey_name_list(table: &TableSchema) -> String {
+//     table
+//         .pk_col_names()
+//         .iter()
+//         .map(|n| quote_ident(n))
+//         .collect::<Vec<_>>()
+//         .join(", ")
+// }
