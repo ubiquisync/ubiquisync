@@ -286,9 +286,7 @@ dependencies = [
 name = "ubiquisync-tables"
 version = "0.0.2"
 dependencies = [
- "async-trait",
  "bitfield-struct",
- "thiserror",
  "ubiquisync-core",
  "ubiquisync-sql",
 ]
