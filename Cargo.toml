@@ -15,7 +15,7 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/ubiquisync/ubiquisync"
 
-# Workspace lints are out-in and must be enabled per crate as each crate is ready.
+# Workspace lints are opt-in and must be enabled per crate as each crate is ready.
 [workspace.lints.rust]
 missing_docs = "deny"
 
