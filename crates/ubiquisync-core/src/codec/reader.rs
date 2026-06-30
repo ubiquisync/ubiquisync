@@ -30,7 +30,7 @@ impl<'a, R: BufRead> EntryBufferReader<'a, R> {
         self.reader.read_exact(len, true)
     }
 
-    /// Read an unsigned LEB128 varint.
+    /// Read an unsigned varint (7 data bits per byte, little-endian).
     pub fn read_varint(&mut self) -> Result<u64, CodecError> {
         self.reader.read_varint(true)
     }

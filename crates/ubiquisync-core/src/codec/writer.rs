@@ -25,7 +25,7 @@ impl<'a> EntryBufferWriter<'a> {
         self.buf.append(&[b]);
     }
 
-    /// Append `v` as an unsigned LEB128 varint.
+    /// Append `v` as an unsigned varint (7 data bits per byte, little-endian).
     pub fn write_varint(&mut self, mut v: u64) {
         loop {
             let byte = (v & 0x7f) as u8;
