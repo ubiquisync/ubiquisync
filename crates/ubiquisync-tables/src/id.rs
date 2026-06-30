@@ -101,14 +101,14 @@ impl TableId {
         ((self.0 >> 14) as usize) + 1
     }
 
-    pub fn pk_name(&self, i: usize) -> String {
+    pub fn pk_col_name(&self, i: usize) -> String {
         assert!(i < self.pk_count(), "PK column index out of range");
         format!("k{i}")
     }
 
-    pub fn pk_name_list(&self) -> String {
+    pub fn pk_col_name_list(&self) -> String {
         (0..self.pk_count())
-            .map(|i| self.pk_name(i))
+            .map(|i| self.pk_col_name(i))
             .collect::<Vec<_>>()
             .join(", ")
     }
@@ -355,5 +355,28 @@ mod tests {
         assert_eq!(SETTINGS.pk_count(), 1);
         assert_eq!(SETTINGS.pk_col_type(0), ColType::Text);
         assert_eq!(SETTINGS.index(), 7);
+    }
+
+    #[test]
+    fn pk_names_are_positional() {
+        // Goal: PK column names are `k0..k{n-1}` in declaration order, and the
+        // comma-joined list matches.
+        let single = TableId::new(&[ColType::Uuid], 1);
+        assert_eq!(single.pk_col_name(0), "k0");
+        assert_eq!(single.pk_col_name_list(), "k0");
+
+        let composite = TableId::new(&[ColType::Text, ColType::I64, ColType::Uuid], 1);
+        assert_eq!(composite.pk_col_name(0), "k0");
+        assert_eq!(composite.pk_col_name(2), "k2");
+        assert_eq!(composite.pk_col_name_list(), "k0, k1, k2");
+    }
+
+    #[test]
+    #[should_panic(expected = "PK column index out of range")]
+    fn pk_name_rejects_out_of_range() {
+        // Goal: asking for a PK column past the table's PK count panics rather
+        // than fabricating a name.
+        let id = TableId::new(&[ColType::Uuid], 1);
+        let _ = id.pk_col_name(1);
     }
 }

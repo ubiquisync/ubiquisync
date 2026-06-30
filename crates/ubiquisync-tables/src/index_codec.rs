@@ -83,3 +83,110 @@ pub fn decode_index_value(value: &[u8]) -> Result<(Vec<ColumnSet>, Vec<ColumnId>
     let mut ebr = EntryBufferReader::new(&mut r, &mut dict);
     decode_one_value(&mut ebr)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::col_type::ColType;
+
+    fn col(index: u8, ct: ColType) -> ColumnId {
+        ColumnId::new().with_index(index).with_col_type(ct)
+    }
+
+    // Upsert exercising a composite PK plus one column of every wire shape, and
+    // a nulled column.
+    fn rich_upsert() -> Op {
+        Op::Upsert(Upsert {
+            table_id: TableId::new(&[ColType::Text, ColType::I64], 3),
+            primary_key: vec![Value::Text("café".into()), Value::I64(7)],
+            sets: vec![
+                ColumnSet {
+                    column_id: col(1, ColType::Bytes),
+                    value: Value::Bytes(vec![0xDE, 0xAD]),
+                },
+                ColumnSet {
+                    column_id: col(2, ColType::I64),
+                    value: Value::I64(-42),
+                },
+                ColumnSet {
+                    column_id: col(3, ColType::Uuid),
+                    value: Value::Uuid([0x20; 16]),
+                },
+            ],
+            nulls: vec![col(4, ColType::Text)],
+        })
+    }
+
+    fn delete() -> Op {
+        Op::Delete(Delete {
+            table_id: TableId::new(&[ColType::Uuid], 2),
+            primary_key: vec![Value::Uuid([0xE0; 16])],
+        })
+    }
+
+    /// Goal: an op survives the split into `(tag, key, value)` and back, for
+    /// both variants — `from_index_parts` is the exact inverse of
+    /// `to_index_entry`.
+    #[test]
+    fn index_entry_round_trip() {
+        for op in [rich_upsert(), delete()] {
+            let e = op.to_index_entry().unwrap();
+            let back = Op::from_index_parts(e.tag, &e.key, &e.value).unwrap();
+            assert_eq!(op, back, "round trip for {op:?}");
+        }
+    }
+
+    /// Goal: the `key`/`value` bytes are the raw op body only — no integrity
+    /// hash trailer is appended (a 4-byte blake3 prefix used to leak in via
+    /// `finalize`).
+    #[test]
+    fn index_bytes_have_no_hash_trailer() {
+        // Single Bytes PK "pk1": 2 (table id u16) + 1 (blob len) + 3 (bytes).
+        let key = encode_index_key(
+            TableId::new(&[ColType::Bytes], 1),
+            &[Value::Bytes(b"pk1".to_vec())],
+        )
+        .unwrap();
+        assert_eq!(key.len(), 6, "key must not carry a 4-byte hash trailer");
+
+        // Empty upsert body: one zero varint for `sets`, one for `nulls`.
+        let value = encode_index_value(&Upsert {
+            table_id: TableId::new(&[ColType::Bytes], 1),
+            primary_key: vec![Value::Bytes(b"pk1".to_vec())],
+            sets: vec![],
+            nulls: vec![],
+        })
+        .unwrap();
+        assert_eq!(value.len(), 2, "value must not carry a 4-byte hash trailer");
+    }
+
+    /// Goal: the `key` is pure row identity — an upsert and a delete addressing
+    /// the same `(table, primary key)` produce byte-identical keys, and the
+    /// delete's `value` is empty.
+    #[test]
+    fn key_is_identity_only() {
+        let table = TableId::new(&[ColType::Uuid], 2);
+        let pk = vec![Value::Uuid([0xE0; 16])];
+        let upsert = Op::Upsert(Upsert {
+            table_id: table,
+            primary_key: pk.clone(),
+            sets: vec![ColumnSet {
+                column_id: col(1, ColType::I64),
+                value: Value::I64(1),
+            }],
+            nulls: vec![],
+        })
+        .to_index_entry()
+        .unwrap();
+        let delete = delete().to_index_entry().unwrap();
+        assert_eq!(upsert.key, delete.key, "key depends only on table + PK");
+        assert!(delete.value.is_empty(), "delete carries no payload");
+    }
+
+    /// Goal: an unknown tag is rejected rather than silently mis-decoded.
+    #[test]
+    fn from_index_parts_rejects_unknown_tag() {
+        let err = Op::from_index_parts(0x7E, &[], &[]).unwrap_err();
+        assert!(matches!(err, CodecError::UnknownTag(0x7E)), "got {err:?}");
+    }
+}

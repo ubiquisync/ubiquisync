@@ -86,3 +86,35 @@ pub enum WireEncoding {
     /// Zigzag-encoded varint (I64).
     ZigzagVarint,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Goal: each column type materializes to its documented SQL storage class.
+    #[test]
+    fn db_type_mapping() {
+        assert_eq!(ColType::Bytes.db_type(), DbType::Blob);
+        assert_eq!(ColType::Text.db_type(), DbType::Text);
+        assert_eq!(ColType::I64.db_type(), DbType::Integer);
+        assert_eq!(ColType::Uuid.db_type(), DbType::Uuid);
+    }
+
+    /// Goal: a column type accepts exactly its own storage class — except UUID,
+    /// which also accepts a raw `Blob` (how it is stored on backends without a
+    /// native UUID type).
+    #[test]
+    fn accepts_matches_storage_class() {
+        let all = [DbType::Blob, DbType::Text, DbType::Integer, DbType::Uuid];
+        for &ct in &[ColType::Bytes, ColType::Text, ColType::I64, ColType::Uuid] {
+            for &db in &all {
+                let expected = db == ct.db_type() || (ct == ColType::Uuid && db == DbType::Blob);
+                assert_eq!(
+                    ct.accepts(db),
+                    expected,
+                    "{ct:?}.accepts({db:?}) should be {expected}"
+                );
+            }
+        }
+    }
+}
