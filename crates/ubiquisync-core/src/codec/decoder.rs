@@ -12,6 +12,9 @@ use crate::hlc::Timestamp;
 use crate::log_entry::LogEntry;
 use crate::uuid::Uuid;
 
+/// Streaming decoder for one segment: reads the header on construction, then
+/// yields entries one at a time, carrying the cross-entry state (timestamp
+/// base, UUID dictionary) that delta- and dictionary-decoding need.
 pub struct Decoder<E, R> {
     buf: Reader<R>,
     last_timestamp: u64,
@@ -20,16 +23,26 @@ pub struct Decoder<E, R> {
     _phantom: PhantomData<E>,
 }
 
+/// The result of decoding a whole segment, including the end state needed to
+/// append more entries to it.
 pub struct DecodedLogs<E> {
+    /// The decoded entries, in segment order.
     pub entries: Vec<DecodedEntry<E>>,
+    /// The UUID dictionary built while decoding (`uuid → id`), for an encoder
+    /// that continues the segment.
     pub uuid_dict: HashMap<Uuid, u32>,
+    /// The last absolute timestamp seen, the base for further delta encoding.
     pub last_timestamp: u64,
+    /// Whether the segment was written in server mode (entries carry user ids).
     pub server_mode: bool,
 }
 
+/// One decoded entry: a live log entry or an expunged-entry marker.
 #[derive(Clone)]
 pub enum DecodedEntry<E> {
+    /// A normal log entry.
     LogEntry(LogEntry<E>),
+    /// A tombstone naming the hash of the entry that was expunged.
     Expunged(blake3::Hash),
 }
 
@@ -68,6 +81,9 @@ impl<E: Op, R: BufRead> Decoder<E, R> {
         }))
     }
 
+    /// Decode the next entry, or `None` at end of segment. On error, the
+    /// decoder's cross-entry state is rolled back so a partial failure doesn't
+    /// corrupt subsequent decoding.
     pub fn decode_entry(&mut self) -> Result<Option<DecodedEntry<E>>, CodecError> {
         let dict_len_before = self.uuids.len();
         let result = self.try_decode_entry();
@@ -116,8 +132,10 @@ impl<E: Op, R: BufRead> Decoder<E, R> {
         })))
     }
 
-    // Decodes all entries and returns any error.
-    // Entries that were decoded are still returned even if there was an error.
+    /// Decode an entire segment in one call. Returns whatever entries decoded
+    /// successfully *plus* the first error, if any — entries before a failure
+    /// are still returned. `None` logs means the input held no segment (empty)
+    /// or the header itself was rejected (with the error).
     pub fn decode_all(buf: R, magic: &[u8]) -> (Option<DecodedLogs<E>>, Option<CodecError>) {
         match Self::new(buf, magic) {
             Ok(Some(mut decoder)) => {

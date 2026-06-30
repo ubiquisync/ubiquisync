@@ -1,4 +1,9 @@
-/// `quote_ident("name")` → `"name"`, `quote_ident("select")` → `"select"`
+//! Small SQL string helpers shared across backends.
+
+/// Quote a SQL identifier by wrapping it in double quotes and doubling any
+/// internal quote, so names that collide with keywords or contain specials are
+/// safe to splice into SQL. `quote_ident("name")` → `"name"`,
+/// `quote_ident("select")` → `"select"`.
 pub fn quote_ident(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }

@@ -10,3 +10,6 @@ repository.workspace = true
 ubiquisync-core = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
+
+[lints]
+workspace = true

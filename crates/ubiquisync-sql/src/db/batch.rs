@@ -23,7 +23,9 @@ pub struct StmtId(pub usize);
 /// anything.
 #[derive(Debug)]
 pub struct DbStatementResult {
+    /// The INSERT/UPDATE/DELETE row count for the statement.
     pub rows_affected: usize,
+    /// The statement's `RETURNING` rows; empty when it had no `RETURNING` clause.
     pub rows: Vec<DbRow>,
 }
 

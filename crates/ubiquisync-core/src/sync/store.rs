@@ -18,6 +18,9 @@ use super::error::SyncError;
 /// Returns the peer's cursor position after the write — i.e. the number of
 /// entries now in the stream, which is the index of the next entry to write.
 pub trait LogEntrySink<E> {
+    /// Encode and append `entries` under timestamp `ts` (and `user_id` in
+    /// server mode), returning the stream's new cursor position — the entry
+    /// count after the write.
     fn write(
         &mut self,
         ts: Timestamp,
