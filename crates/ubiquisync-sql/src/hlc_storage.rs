@@ -12,7 +12,11 @@
 
 use ubiquisync_core::hlc::HlcStorage;
 
-use crate::db::{Db, DbBatch, DbError, DbValue};
+use crate::{
+    db::{Db, DbBatch, DbError, DbType, DbValue},
+    dialect::SqlDialect,
+    util::quote_ident,
+};
 
 /// Persistence for the clock register, scoped to a table-name prefix.
 pub struct SqlHlcStorage {
@@ -27,15 +31,15 @@ impl SqlHlcStorage {
     /// read, done once at startup. `prefix` namespaces the table so multiple
     /// stores can share a database.
     pub async fn open(db: &dyn Db, prefix: &str) -> Result<Self, DbError> {
-        let table = format!("{prefix}__hlc");
-        db.exec(&create_sql(&table), &[]).await?;
+        let table = quote_ident(&format!("{prefix}__hlc"));
+        db.exec(&create_sql(&table, db.dialect()), &[]).await?;
         let seed = match db.query(&load_sql(&table), &[]).await?.first() {
-            Some(row) => Some(row.get_i64(0)? as u64),
+            Some(row) => Some(row.get_u64(0)?),
             None => None,
         };
         Ok(Self {
             seed,
-            persist_sql: persist_sql(&table),
+            persist_sql: persist_sql(&table, db.dialect()),
         })
     }
 }
@@ -50,20 +54,24 @@ impl HlcStorage for SqlHlcStorage {
     }
 
     /// Enqueue the clock-state upsert into `sink`. Durable when the caller
-    /// commits the sink. The packed `u64` is always below 2^48 (48-bit millis +
-    /// 16-bit counter), so it round-trips through SQLite's signed 64-bit integer.
+    /// commits the sink. The packed `u64` occupies the full 64-bit width
+    /// (48-bit millis `<< 16` | 16-bit counter), so [`DbValue::from_u64`]
+    /// rejects a value past `i64::MAX` rather than wrap it negative — which
+    /// would also break the signed `MAX`-guard merge. The real clock stays far
+    /// below that bound (millis below 2^47, ~year 6400).
     fn save(&self, sink: &mut Self::Sink, raw: u64) -> Result<(), Self::Error> {
-        sink.add_statement(&self.persist_sql, &[DbValue::Integer(raw as i64)]);
+        sink.add_statement(&self.persist_sql, &[DbValue::from_u64(raw)?]);
         Ok(())
     }
 }
 
 /// DDL for the register: exactly one row, pinned at `id = 1`.
-fn create_sql(table: &str) -> String {
+fn create_sql(table: &str, dialect: SqlDialect) -> String {
+    let int_type = DbType::Integer.sql_type(dialect);
     format!(
         "CREATE TABLE IF NOT EXISTS {table} (\n    \
-         id INTEGER PRIMARY KEY CHECK (id = 1),\n    \
-         ts INTEGER NOT NULL DEFAULT 0\n)"
+         id {int_type} PRIMARY KEY CHECK (id = 1),\n    \
+         ts {int_type} NOT NULL DEFAULT 0\n)"
     )
 }
 
@@ -74,9 +82,11 @@ fn load_sql(table: &str) -> String {
 
 /// MAX-guarded upsert: a stale commit cannot lower the stored clock below a
 /// value an earlier-issued (but later-committed) write set.
-fn persist_sql(table: &str) -> String {
+fn persist_sql(table: &str, dialect: SqlDialect) -> String {
+    let max = dialect.scalar_max();
+    let p1 = dialect.placeholder(1);
     format!(
-        "INSERT INTO {table} (id, ts) VALUES (1, ?1) \
-         ON CONFLICT(id) DO UPDATE SET ts = MAX(ts, excluded.ts)"
+        "INSERT INTO {table} (id, ts) VALUES (1, {p1}) \
+         ON CONFLICT(id) DO UPDATE SET ts = {max}(COALESCE(ts, 0), EXCLUDED.ts)"
     )
 }

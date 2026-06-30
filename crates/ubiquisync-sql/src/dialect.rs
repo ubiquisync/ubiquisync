@@ -3,8 +3,8 @@
 //! The sync engine is storage-agnostic: it builds SQL as strings and runs
 //! them through a backend connection. The few places where SQL flavors
 //! actually differ — placeholder syntax, scalar-max function, collation,
-//! conflict clauses, and type names (via [`DbType::sql_type`]) — are captured
-//! here as a closed [`SqlDialect`] enum.
+//! and type names (via [`DbType::sql_type`]) — are captured here as a closed
+//! [`SqlDialect`] enum.
 //!
 //! A dialect is a property of the *SQL flavor*, not the driver: rusqlite, D1,
 //! and Durable Objects are three backends but all speak [`SqlDialect::Sqlite`].
@@ -73,7 +73,7 @@ impl PlaceholderGen {
         }
     }
 
-    pub fn next(&mut self) -> String {
+    pub fn next_placeholder(&mut self) -> String {
         let p = self.dialect.placeholder(self.next_idx);
         self.next_idx += 1;
         p
@@ -101,18 +101,5 @@ mod tests {
         // SQLite already compares bytewise; Postgres needs an explicit "C".
         assert_eq!(SqlDialect::Sqlite.text_collate(), "");
         assert_eq!(SqlDialect::Postgres.text_collate(), " COLLATE \"C\"");
-    }
-
-    #[test]
-    fn conflict_ignore_per_dialect() {
-        // SQLite: the verb carries the ignore, no trailing clause.
-        assert_eq!(SqlDialect::Sqlite.insert_ignore_verb(), "INSERT OR IGNORE");
-        assert_eq!(SqlDialect::Sqlite.conflict_ignore_clause("\"id\""), "");
-        // Postgres: plain verb plus an explicit DO NOTHING clause.
-        assert_eq!(SqlDialect::Postgres.insert_ignore_verb(), "INSERT");
-        assert_eq!(
-            SqlDialect::Postgres.conflict_ignore_clause("\"id\""),
-            " ON CONFLICT (\"id\") DO NOTHING"
-        );
     }
 }
