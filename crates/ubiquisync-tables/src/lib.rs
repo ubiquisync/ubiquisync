@@ -19,6 +19,7 @@ mod col_type;
 pub mod id;
 mod index_codec;
 pub mod op;
+mod physical_schema;
 mod reducer;
 mod schema;
 mod surrogate;
