@@ -56,7 +56,7 @@ pub trait IndexableOp: Op {
 pub struct OpIndexEntry {
     /// The op's tag byte (the same one [`Op::encode`] writes).
     pub tag: u8,
-    /// Key part of op's for efficient querying based on affected row/entity.
+    /// The op's key part, for efficient querying by the affected row/entity.
     pub key: Vec<u8>,
     /// The op-specific payload after `key`; may be empty.
     pub value: Vec<u8>,

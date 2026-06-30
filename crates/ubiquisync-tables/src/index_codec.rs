@@ -124,12 +124,30 @@ mod tests {
         })
     }
 
+    // Upsert whose PK *and* a column value carry the *same* UUID. `key` and
+    // `value` are encoded (and decoded) with independent dictionaries, so the
+    // value's UUID must serialize inline rather than as a back-reference into
+    // the key's dictionary — this op only round-trips if that holds.
+    fn shared_uuid_upsert() -> Op {
+        let u = [0x5A; 16];
+        Op::Upsert(Upsert {
+            table_id: TableId::new(&[ColType::Uuid], 9),
+            primary_key: vec![Value::Uuid(u)],
+            sets: vec![ColumnSet {
+                column_id: col(1, ColType::Uuid),
+                value: Value::Uuid(u),
+            }],
+            nulls: vec![],
+        })
+    }
+
     /// Goal: an op survives the split into `(tag, key, value)` and back, for
     /// both variants — `from_index_parts` is the exact inverse of
-    /// `to_index_entry`.
+    /// `to_index_entry`. Includes an op that shares a UUID across the
+    /// key/value boundary to pin the independent-dictionary behavior.
     #[test]
     fn index_entry_round_trip() {
-        for op in [rich_upsert(), delete()] {
+        for op in [rich_upsert(), delete(), shared_uuid_upsert()] {
             let e = op.to_index_entry().unwrap();
             let back = Op::from_index_parts(e.tag, &e.key, &e.value).unwrap();
             assert_eq!(op, back, "round trip for {op:?}");

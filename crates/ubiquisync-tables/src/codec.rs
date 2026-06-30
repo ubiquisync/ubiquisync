@@ -309,14 +309,14 @@ mod tests {
     // this stands in for one in the codec tests.
     const TEST_MAGIC: &[u8] = b"TESTMAGIC";
 
-    /// Build test entries exercising both op types, all 5 col types, nulls,
+    /// Build test entries exercising both op types, all 4 col types, nulls,
     /// and PK shapes covering every PK column type (Bytes, Uuid, Text, I64),
     /// including a composite PK. In server mode, entries alternate user
     /// attribution.
     fn make_test_entries(server_mode: bool) -> Vec<LogEntry<Op>> {
         let user = |u| if server_mode { Some(u) } else { None };
         vec![
-            // Upsert with Bytes PK and all 5 col types + nulls.
+            // Upsert with Bytes PK and all 4 col types + nulls.
             LogEntry {
                 user_id: user(USER_1),
                 timestamp: Timestamp::from_raw(TS1),

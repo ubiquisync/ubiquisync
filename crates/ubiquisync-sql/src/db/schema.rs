@@ -16,7 +16,7 @@ pub struct DbColumnDescription {
 ///
 /// This is the vocabulary the dialect names: a data domain (e.g. the tables
 /// protocol) maps its own column types down to a `DbType`, and the dialect
-/// turns that into a concrete backend type name via [`DbType::sql_type`]. The
+/// turns that into a concrete backend type name via [`sql_type`](Self::sql_type). The
 /// `Uuid` variant is kept distinct from `Blob` so a backend may later map it
 /// to a native UUID type rather than raw bytes.
 #[derive(Debug, Clone, Copy, PartialEq)]

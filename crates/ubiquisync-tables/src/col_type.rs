@@ -20,7 +20,7 @@ pub enum ColType {
 }
 
 impl ColType {
-    /// Returns the wire encoding used for this PK column type.
+    /// Returns the wire encoding used for this column type.
     pub const fn wire_encoding(&self) -> WireEncoding {
         match self {
             Self::Bytes | Self::Text => WireEncoding::LengthPrefixed,

@@ -3,7 +3,7 @@
 //! The sync engine is storage-agnostic: it builds SQL as strings and runs
 //! them through a backend connection. The few places where SQL flavors
 //! actually differ — placeholder syntax, scalar-max function, collation,
-//! and type names (via [`DbType::sql_type`]) — are captured here as a closed
+//! and type names (via [`DbType::sql_type`](crate::db::DbType::sql_type)) — are captured here as a closed
 //! [`SqlDialect`] enum.
 //!
 //! A dialect is a property of the *SQL flavor*, not the driver: rusqlite, D1,
