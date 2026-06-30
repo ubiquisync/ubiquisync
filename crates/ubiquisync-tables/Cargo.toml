@@ -9,6 +9,4 @@ repository.workspace = true
 [dependencies]
 ubiquisync-core = { workspace = true }
 ubiquisync-sql = { workspace = true }
-async-trait = { workspace = true }
 bitfield-struct = { workspace = true }
-thiserror = { workspace = true }

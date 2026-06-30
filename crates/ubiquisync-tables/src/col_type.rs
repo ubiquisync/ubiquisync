@@ -1,6 +1,7 @@
 use ubiquisync_sql::db::DbType;
 
-/// Column type, encoded as 2 bits in [`ColumnId`] and in [`TableId`] PK shapes.
+/// Column type, encoded as 2 bits in [`ColumnId`](crate::id::ColumnId) and in
+/// [`TableId`](crate::id::TableId) PK shapes.
 ///
 /// The type set is **closed** and the 2-bit field is total: all four values
 /// are valid, so a column or PK type can never fail to parse.
@@ -19,15 +20,6 @@ pub enum ColType {
 }
 
 impl ColType {
-    /// Returns the wire encoding used for this PK column type.
-    pub const fn wire_encoding(&self) -> WireEncoding {
-        match self {
-            Self::Bytes | Self::Text => WireEncoding::LengthPrefixed,
-            Self::Uuid => WireEncoding::Fixed16,
-            Self::I64 => WireEncoding::ZigzagVarint,
-        }
-    }
-
     pub const fn from_bits(value: u8) -> Self {
         // Must invert the `#[repr(u8)]` discriminants exactly, since the wire
         // encoding packs the type via `self as u8` / `into_bits`.
@@ -39,9 +31,10 @@ impl ColType {
         }
     }
 
-    /// Inverse of [`from_bits`]: packs the type into its 2 bits. Required by the
-    /// `ColumnId` bitfield; equivalent to the `#[repr(u8)]` discriminant.
-    const fn into_bits(self) -> u8 {
+    /// Inverse of [`from_bits`](Self::from_bits): packs the type into its 2
+    /// bits. Required by the `ColumnId` bitfield; equivalent to the
+    /// `#[repr(u8)]` discriminant.
+    pub const fn into_bits(self) -> u8 {
         self as _
     }
 
@@ -72,14 +65,41 @@ impl ColType {
     }
 }
 
-/// Wire encoding family for a column type. Determined by the type bits
-/// in a [`ColumnId`] or the PK shape bits in a [`TableId`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WireEncoding {
-    /// Length-prefixed variable-length bytes (Bytes, Text).
-    LengthPrefixed,
-    /// Fixed 16 bytes, no length prefix (UUID).
-    Fixed16,
-    /// Zigzag-encoded varint (I64).
-    ZigzagVarint,
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Goal: each column type materializes to its documented SQL storage class.
+    #[test]
+    fn db_type_mapping() {
+        assert_eq!(ColType::Bytes.db_type(), DbType::Blob);
+        assert_eq!(ColType::Text.db_type(), DbType::Text);
+        assert_eq!(ColType::I64.db_type(), DbType::Integer);
+        assert_eq!(ColType::Uuid.db_type(), DbType::Uuid);
+    }
+
+    /// Goal: a column type accepts exactly its own storage class — except UUID,
+    /// which also accepts a raw `Blob` (how it is stored on backends without a
+    /// native UUID type). The unmodeled `DbType::Other` is accepted by nothing,
+    /// so reconciliation treats it as a mismatch.
+    #[test]
+    fn accepts_matches_storage_class() {
+        let all = [
+            DbType::Blob,
+            DbType::Text,
+            DbType::Integer,
+            DbType::Uuid,
+            DbType::Other,
+        ];
+        for &ct in &[ColType::Bytes, ColType::Text, ColType::I64, ColType::Uuid] {
+            for &db in &all {
+                let expected = db == ct.db_type() || (ct == ColType::Uuid && db == DbType::Blob);
+                assert_eq!(
+                    ct.accepts(db),
+                    expected,
+                    "{ct:?}.accepts({db:?}) should be {expected}"
+                );
+            }
+        }
+    }
 }

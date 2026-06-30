@@ -101,14 +101,14 @@ impl TableId {
         ((self.0 >> 14) as usize) + 1
     }
 
-    pub const fn pk_name(&self, i: usize) -> String {
+    pub fn pk_col_name(&self, i: usize) -> String {
         assert!(i < self.pk_count(), "PK column index out of range");
-        format("k{i}")
+        format!("k{i}")
     }
 
-    pub fn pk_name_list(&self) -> String {
+    pub fn pk_col_name_list(&self) -> String {
         (0..self.pk_count())
-            .map(|i| self.pk_name(i))
+            .map(|i| self.pk_col_name(i))
             .collect::<Vec<_>>()
             .join(", ")
     }
@@ -187,20 +187,9 @@ pub struct ColumnId {
     pub col_type: ColType,
 }
 
-impl ColumnId {
-    /// Parse a column ID from a raw byte. The 2-bit type field admits all four
-    /// `ColType` values, so every byte is a valid column ID and this never
-    /// returns `None`; it keeps the fallible signature the codec decode path
-    /// expects.
-    pub fn try_from_raw(raw: u8) -> Option<Self> {
-        Some(Self::from(raw))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::col_type::WireEncoding;
 
     #[test]
     fn table_id_round_trip_all_pk_counts() {
@@ -294,15 +283,6 @@ mod tests {
     }
 
     #[test]
-    fn pk_type_wire_encodings() {
-        // Goal: each PK type maps to its documented wire encoding.
-        assert_eq!(ColType::Bytes.wire_encoding(), WireEncoding::LengthPrefixed);
-        assert_eq!(ColType::Text.wire_encoding(), WireEncoding::LengthPrefixed);
-        assert_eq!(ColType::Uuid.wire_encoding(), WireEncoding::Fixed16);
-        assert_eq!(ColType::I64.wire_encoding(), WireEncoding::ZigzagVarint);
-    }
-
-    #[test]
     fn column_id_round_trip() {
         // Goal: a column ID survives a raw u8 round trip.
         // Given: a Text column at index 3.
@@ -343,7 +323,7 @@ mod tests {
         // Goal: with a 2-bit type field every value is assigned, so there is no
         // invalid column type — every byte decodes and re-encodes to itself.
         for raw in 0..=u8::MAX {
-            let id = ColumnId::try_from_raw(raw).expect("every byte is a valid column ID");
+            let id = ColumnId::from(raw);
             assert_eq!(u8::from(id), raw);
         }
     }
@@ -355,5 +335,28 @@ mod tests {
         assert_eq!(SETTINGS.pk_count(), 1);
         assert_eq!(SETTINGS.pk_col_type(0), ColType::Text);
         assert_eq!(SETTINGS.index(), 7);
+    }
+
+    #[test]
+    fn pk_names_are_positional() {
+        // Goal: PK column names are `k0..k{n-1}` in declaration order, and the
+        // comma-joined list matches.
+        let single = TableId::new(&[ColType::Uuid], 1);
+        assert_eq!(single.pk_col_name(0), "k0");
+        assert_eq!(single.pk_col_name_list(), "k0");
+
+        let composite = TableId::new(&[ColType::Text, ColType::I64, ColType::Uuid], 1);
+        assert_eq!(composite.pk_col_name(0), "k0");
+        assert_eq!(composite.pk_col_name(2), "k2");
+        assert_eq!(composite.pk_col_name_list(), "k0, k1, k2");
+    }
+
+    #[test]
+    #[should_panic(expected = "PK column index out of range")]
+    fn pk_name_rejects_out_of_range() {
+        // Goal: asking for a PK column past the table's PK count panics rather
+        // than fabricating a name.
+        let id = TableId::new(&[ColType::Uuid], 1);
+        let _ = id.pk_col_name(1);
     }
 }

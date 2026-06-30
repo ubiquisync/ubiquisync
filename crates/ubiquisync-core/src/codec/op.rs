@@ -35,42 +35,29 @@ pub trait Op: Sized {
 }
 
 /// An [`Op`] that can also be split into an indexable `(tag, key, value)`
-/// triple for the SQL op-log, where `key` carries row identity (table id +
-/// primary key) so history can be queried per-row or per-table.
+/// triple for the SQL op-log. `key` is the indexable identity (such as table + primary key).
+/// `value` is the op's remaining payload.
 ///
-/// # Round-trip and cross-consistency
+/// # Round-trip
 ///
 /// [`from_index_parts`](IndexableOp::from_index_parts) must invert
-/// [`to_index_entry`](IndexableOp::to_index_entry). Critically, the split must
-/// also agree with [`Op::encode`]: `key` followed by `value` must reproduce
-/// exactly the body [`Op::encode`] writes after the tag. Entries are hashed
-/// over that canonical byte form in both the folder log and the SQL op-log, so
-/// any divergence would give the *same* entry two different hashes depending on
-/// its source — breaking expunged markers (`tag = 0xFF`, value = the hash)
-/// across peers.
-///
-/// # Key encoding
-///
-/// `key` must place the table id as a fixed-width leading prefix, so the single
-/// op-log key column serves both exact-row lookups (`key = ?`) and whole-table
-/// scans (a prefix range).
+/// [`to_index_entry`](IndexableOp::to_index_entry), so the full op can be
+/// reconstructed from its stored parts.
 pub trait IndexableOp: Op {
-    /// Split `self` into its `(tag, key, value)` triple. `key ++ value` must
-    /// equal the body [`Op::encode`] writes after the tag.
+    /// Split `self` into its `(tag, key, value)` triple.
     fn to_index_entry(&self) -> Result<OpIndexEntry, CodecError>;
     /// Reconstruct an op from a stored triple. The inverse of
     /// [`to_index_entry`](IndexableOp::to_index_entry).
     fn from_index_parts(tag: u8, key: &[u8], value: &[u8]) -> Result<Self, CodecError>;
 }
 
-/// The indexable form of an op: a tag plus the identity (`key`) and payload
-/// (`value`) halves of its encoded body. See [`IndexableOp`].
+/// The indexable form of an op: its tag plus the `key`/`value` split of its
+/// body. See [`IndexableOp`].
 pub struct OpIndexEntry {
-    /// Op variant discriminant. Never `0xFF`, which is reserved for expunged
-    /// markers.
+    /// The op's tag byte (the same one [`Op::encode`] writes).
     pub tag: u8,
-    /// Row identity — table id (fixed-width prefix) followed by the primary key.
+    /// The op's key part, for efficient querying by the affected row/entity.
     pub key: Vec<u8>,
-    /// The remainder of the op body after `key`.
+    /// The op-specific payload after `key`; may be empty.
     pub value: Vec<u8>,
 }
