@@ -293,8 +293,10 @@ fn affinity(declared_type: &str) -> DbType {
         DbType::Integer
     } else if t.contains("CHAR") || t.contains("CLOB") || t.contains("TEXT") {
         DbType::Text
-    } else {
+    } else if t == "BLOB" {
         DbType::Blob
+    } else {
+        DbType::Other
     }
 }
 
