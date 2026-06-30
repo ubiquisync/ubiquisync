@@ -2,7 +2,7 @@
 //!
 //! This is the op-specific half of the segment codec: it implements the core
 //! [`Op`](ubiquisync_core::codec::Op) trait for this crate's
-//! [`Op`](crate::op::Op) enum, encoding and decoding op bodies dispatched by
+//! [`Op`] enum, encoding and decoding op bodies dispatched by
 //! tag. The generic envelope framing (segment header, timestamp deltas, UUID
 //! dictionary compression, blake3 trailer, expungement) lives in
 //! [`ubiquisync_core::codec`] and drives this code through the trait.
@@ -14,10 +14,10 @@
 
 use std::io::BufRead;
 
+use crate::col_type::ColType;
+use crate::id::{ColumnId, TableId};
+use crate::op::{ColumnSet, Delete, Op, Upsert, Value};
 use ubiquisync_core::codec::{CodecError, EntryBufferReader, EntryBufferWriter};
-
-use crate::id::{ColType, ColumnId, PkColType, TableId};
-use crate::op::{ColValue, ColumnUpdate, Delete, Op, PkValue, Upsert};
 
 // ── Op tags ──────────────────────────────────────────────────────────────────
 // Tag 0xFF is reserved by the core codec for expunged entries; op tags must
@@ -60,31 +60,42 @@ fn encode_one_op(w: &mut EntryBufferWriter, op: &Op) -> Result<(), CodecError> {
     match op {
         Op::Upsert(e) => {
             w.write_byte(TAG_UPSERT);
-            w.write_u16_le(e.table_id.into());
-            write_pk(w, e.table_id, &e.primary_key)?;
-            w.write_varint(e.updates.len() as u64);
-            for cu in &e.updates {
-                w.write_byte(cu.column_id.into());
-                write_col_value(w, cu.column_id, &cu.value)?;
-            }
-            w.write_varint(e.nulls.len() as u64);
-            for col_id in &e.nulls {
-                w.write_byte((*col_id).into());
-            }
+            encode_one_key(w, e.table_id, &e.primary_key)?;
+            encode_one_value(w, e)
         }
         Op::Delete(e) => {
             w.write_byte(TAG_DELETE);
-            w.write_u16_le(e.table_id.into());
-            write_pk(w, e.table_id, &e.primary_key)?;
+            encode_one_key(w, e.table_id, &e.primary_key)
         }
+    }
+}
+
+pub(crate) fn encode_one_key(
+    w: &mut EntryBufferWriter,
+    table_id: TableId,
+    pkey: &[Value],
+) -> Result<(), CodecError> {
+    w.write_u16_le(table_id.into());
+    write_pk(w, table_id, pkey)
+}
+
+pub(crate) fn encode_one_value(w: &mut EntryBufferWriter, e: &Upsert) -> Result<(), CodecError> {
+    w.write_varint(e.sets.len() as u64);
+    for set in &e.sets {
+        w.write_byte(set.column_id.into());
+        write_col_value(w, set.column_id, &set.value)?;
+    }
+    w.write_varint(e.nulls.len() as u64);
+    for col_id in &e.nulls {
+        w.write_byte((*col_id).into());
     }
     Ok(())
 }
 
-fn write_pk(
+pub(crate) fn write_pk(
     w: &mut EntryBufferWriter,
     table_id: TableId,
-    pk: &[PkValue],
+    pk: &[Value],
 ) -> Result<(), CodecError> {
     let pk_count = table_id.pk_count();
     // A wrong number of PK values is a caller error.
@@ -101,48 +112,44 @@ fn write_pk(
     // error (it would otherwise serialize with the wrong wire shape).
     for (i, v) in pk.iter().enumerate() {
         match (table_id.pk_col_type(i), v) {
-            (PkColType::Bytes, PkValue::Bytes(b)) => w.write_blob(b),
-            (PkColType::Uuid, PkValue::Uuid(u)) => w.write_uuid(u),
-            (PkColType::Text, PkValue::Text(s)) => {
+            (ColType::Bytes, Value::Bytes(b)) => w.write_blob(b),
+            (ColType::Uuid, Value::Uuid(u)) => w.write_uuid(u),
+            (ColType::Text, Value::Text(s)) => {
                 check_text(s)?;
                 w.write_blob(s.as_bytes());
             }
-            (PkColType::I64, PkValue::I64(n)) => w.write_zigzag(*n),
+            (ColType::I64, Value::I64(n)) => w.write_zigzag(*n),
             _ => return Err(CodecError::PkValueMismatch),
         }
     }
     Ok(())
 }
 
-fn write_col_value(
+pub(crate) fn write_col_value(
     w: &mut EntryBufferWriter,
     col_id: ColumnId,
-    value: &ColValue,
+    value: &Value,
 ) -> Result<(), CodecError> {
     // The value variant must match the column ID's declared type; a mismatch
     // is a caller error.
     match col_id.col_type() {
         ColType::Bytes => match value {
-            ColValue::Bytes(b) => w.write_blob(b),
+            Value::Bytes(b) => w.write_blob(b),
             _ => return Err(CodecError::ColumnValueMismatch),
         },
         ColType::Text => match value {
-            ColValue::Text(s) => {
+            Value::Text(s) => {
                 check_text(s)?;
                 w.write_blob(s.as_bytes());
             }
             _ => return Err(CodecError::ColumnValueMismatch),
         },
         ColType::I64 => match value {
-            ColValue::I64(n) => w.write_zigzag(*n),
+            Value::I64(n) => w.write_zigzag(*n),
             _ => return Err(CodecError::ColumnValueMismatch),
         },
         ColType::Uuid => match value {
-            ColValue::Uuid(u) => w.write_uuid(u),
-            _ => return Err(CodecError::ColumnValueMismatch),
-        },
-        ColType::MaxI64 => match value {
-            ColValue::I64(n) => w.write_zigzag(*n),
+            Value::Uuid(u) => w.write_uuid(u),
             _ => return Err(CodecError::ColumnValueMismatch),
         },
     }
@@ -154,41 +161,17 @@ fn write_col_value(
 fn decode_one_op<R: BufRead>(tag: u8, r: &mut EntryBufferReader<R>) -> Result<Op, CodecError> {
     match tag {
         TAG_UPSERT => {
-            let table_id = TableId::from(r.read_u16_le()?);
-            let primary_key = read_pk(r, table_id)?;
-            // Counts come from untrusted bytes. Convert with try_into (not `as`,
-            // which truncates on 32-bit targets and would mis-decode), and don't
-            // pre-allocate to them — the Vec grows as entries are actually
-            // decoded, so a too-large count just fails fast on the first absent
-            // column rather than OOM-ing up front.
-            let update_raw = r.read_varint()?;
-            let update_count: usize = update_raw
-                .try_into()
-                .map_err(|_| CodecError::LengthTooLarge(update_raw))?;
-            let mut updates = Vec::new();
-            for _ in 0..update_count {
-                let column_id = read_column_id(r)?;
-                let value = read_col_value(r, column_id)?;
-                updates.push(ColumnUpdate { column_id, value });
-            }
-            let null_raw = r.read_varint()?;
-            let null_count: usize = null_raw
-                .try_into()
-                .map_err(|_| CodecError::LengthTooLarge(null_raw))?;
-            let mut nulls = Vec::new();
-            for _ in 0..null_count {
-                nulls.push(read_column_id(r)?);
-            }
+            let (table_id, primary_key) = decode_one_key(r)?;
+            let (sets, nulls) = decode_one_value(r)?;
             Ok(Op::Upsert(Upsert {
                 table_id,
                 primary_key,
-                updates,
+                sets,
                 nulls,
             }))
         }
         TAG_DELETE => {
-            let table_id = TableId::from(r.read_u16_le()?);
-            let primary_key = read_pk(r, table_id)?;
+            let (table_id, primary_key) = decode_one_key(r)?;
             Ok(Op::Delete(Delete {
                 table_id,
                 primary_key,
@@ -198,22 +181,59 @@ fn decode_one_op<R: BufRead>(tag: u8, r: &mut EntryBufferReader<R>) -> Result<Op
     }
 }
 
+pub(crate) fn decode_one_key<'a, R: BufRead>(
+    r: &mut EntryBufferReader<'a, R>,
+) -> Result<(TableId, Vec<Value>), CodecError> {
+    let table_id = TableId::from(r.read_u16_le()?);
+    let primary_key = read_pk(r, table_id)?;
+    Ok((table_id, primary_key))
+}
+
+pub(crate) fn decode_one_value<'a, R: BufRead>(
+    r: &mut EntryBufferReader<'a, R>,
+) -> Result<(Vec<ColumnSet>, Vec<ColumnId>), CodecError> {
+    // Counts come from untrusted bytes. Convert with try_into (not `as`,
+    // which truncates on 32-bit targets and would mis-decode), and don't
+    // pre-allocate to them — the Vec grows as entries are actually
+    // decoded, so a too-large count just fails fast on the first absent
+    // column rather than OOM-ing up front.
+    let set_raw = r.read_varint()?;
+    let set_count: usize = set_raw
+        .try_into()
+        .map_err(|_| CodecError::LengthTooLarge(set_raw))?;
+    let mut sets = Vec::new();
+    for _ in 0..set_count {
+        let column_id = read_column_id(r)?;
+        let value = read_col_value(r, column_id)?;
+        sets.push(ColumnSet { column_id, value });
+    }
+    let null_raw = r.read_varint()?;
+    let null_count: usize = null_raw
+        .try_into()
+        .map_err(|_| CodecError::LengthTooLarge(null_raw))?;
+    let mut nulls = Vec::new();
+    for _ in 0..null_count {
+        nulls.push(read_column_id(r)?);
+    }
+    Ok((sets, nulls))
+}
+
 fn read_pk<R: BufRead>(
     r: &mut EntryBufferReader<R>,
     table_id: TableId,
-) -> Result<Vec<PkValue>, CodecError> {
+) -> Result<Vec<Value>, CodecError> {
     let pk_count = table_id.pk_count();
     let mut pk = Vec::with_capacity(pk_count);
     for i in 0..pk_count {
         pk.push(match table_id.pk_col_type(i) {
-            PkColType::Bytes => PkValue::Bytes(r.read_blob()?),
-            PkColType::Uuid => PkValue::Uuid(r.read_uuid()?),
-            PkColType::Text => {
+            ColType::Bytes => Value::Bytes(r.read_blob()?),
+            ColType::Uuid => Value::Uuid(r.read_uuid()?),
+            ColType::Text => {
                 let s = String::from_utf8(r.read_blob()?)?;
                 check_text(&s)?;
-                PkValue::Text(s)
+                Value::Text(s)
             }
-            PkColType::I64 => PkValue::I64(r.read_zigzag()?),
+            ColType::I64 => Value::I64(r.read_zigzag()?),
         });
     }
     Ok(pk)
@@ -222,22 +242,23 @@ fn read_pk<R: BufRead>(
 fn read_col_value<R: BufRead>(
     r: &mut EntryBufferReader<R>,
     col_id: ColumnId,
-) -> Result<ColValue, CodecError> {
+) -> Result<Value, CodecError> {
     match col_id.col_type() {
         ColType::Text => {
             let s = String::from_utf8(r.read_blob()?)?;
             check_text(&s)?;
-            Ok(ColValue::Text(s))
+            Ok(Value::Text(s))
         }
-        ColType::Bytes => Ok(ColValue::Bytes(r.read_blob()?)),
-        ColType::Uuid => Ok(ColValue::Uuid(r.read_uuid()?)),
-        ColType::I64 | ColType::MaxI64 => Ok(ColValue::I64(r.read_zigzag()?)),
+        ColType::Bytes => Ok(Value::Bytes(r.read_blob()?)),
+        ColType::Uuid => Ok(Value::Uuid(r.read_uuid()?)),
+        ColType::I64 => Ok(Value::I64(r.read_zigzag()?)),
     }
 }
 
 fn read_column_id<R: BufRead>(r: &mut EntryBufferReader<R>) -> Result<ColumnId, CodecError> {
-    let raw = r.read_byte()?;
-    ColumnId::try_from_raw(raw).ok_or(CodecError::InvalidColumnType(raw))
+    // Every byte is a valid column ID: the 2-bit type field admits all four
+    // `ColType` values, so this only fails if the byte itself can't be read.
+    Ok(ColumnId::from(r.read_byte()?))
 }
 
 #[cfg(test)]
@@ -256,14 +277,14 @@ mod tests {
 
     // ── Tables exercising different PK shapes ────────────────────────────
     fn table_bytes_pk() -> TableId {
-        TableId::new(&[PkColType::Bytes], 1)
+        TableId::new(&[ColType::Bytes], 1)
     }
     fn table_uuid_pk() -> TableId {
-        TableId::new(&[PkColType::Uuid], 2)
+        TableId::new(&[ColType::Uuid], 2)
     }
     // Composite PK exercising the Text and I64 PK column types.
     fn table_text_i64_pk() -> TableId {
-        TableId::new(&[PkColType::Text, PkColType::I64], 3)
+        TableId::new(&[ColType::Text, ColType::I64], 3)
     }
 
     // ── One ColumnId per col type ────────────────────────────────────────
@@ -279,9 +300,6 @@ mod tests {
     fn col_uuid() -> ColumnId {
         ColumnId::new().with_index(3).with_col_type(ColType::Uuid)
     }
-    fn col_max_i64() -> ColumnId {
-        ColumnId::new().with_index(4).with_col_type(ColType::MaxI64)
-    }
 
     // ── Test timestamps (HLC-style) ─────────────────────────────────────
     const TS1: u64 = 1_700_000_000_000 << 16;
@@ -292,40 +310,40 @@ mod tests {
     // this stands in for one in the codec tests.
     const TEST_MAGIC: &[u8] = b"TESTMAGIC";
 
-    /// Build test entries exercising both op types, all 5 col types, nulls,
+    /// Build test entries exercising both op types, all 4 col types, nulls,
     /// and PK shapes covering every PK column type (Bytes, Uuid, Text, I64),
     /// including a composite PK. In server mode, entries alternate user
     /// attribution.
     fn make_test_entries(server_mode: bool) -> Vec<LogEntry<Op>> {
         let user = |u| if server_mode { Some(u) } else { None };
         vec![
-            // Upsert with Bytes PK and all 5 col types + nulls.
+            // Upsert with Bytes PK and all 4 col types + nulls.
             LogEntry {
                 user_id: user(USER_1),
                 timestamp: Timestamp::from_raw(TS1),
                 op: Op::Upsert(Upsert {
                     table_id: table_bytes_pk(),
-                    primary_key: vec![PkValue::Bytes(b"pk1".to_vec())],
-                    updates: vec![
-                        ColumnUpdate {
+                    primary_key: vec![Value::Bytes(b"pk1".to_vec())],
+                    sets: vec![
+                        ColumnSet {
                             column_id: col_bytes(),
-                            value: ColValue::Bytes(vec![0xDE, 0xAD]),
+                            value: Value::Bytes(vec![0xDE, 0xAD]),
                         },
-                        ColumnUpdate {
+                        ColumnSet {
                             column_id: col_text(),
-                            value: ColValue::Text("hello".into()),
+                            value: Value::Text("hello".into()),
                         },
-                        ColumnUpdate {
+                        ColumnSet {
                             column_id: col_i64(),
-                            value: ColValue::I64(-42),
+                            value: Value::I64(-42),
                         },
-                        ColumnUpdate {
+                        ColumnSet {
                             column_id: col_uuid(),
-                            value: ColValue::Uuid(ROW_UUID_1),
+                            value: Value::Uuid(ROW_UUID_1),
                         },
-                        ColumnUpdate {
-                            column_id: col_max_i64(),
-                            value: ColValue::I64(999),
+                        ColumnSet {
+                            column_id: col_i64(),
+                            value: Value::I64(999),
                         },
                     ],
                     nulls: vec![col_text(), col_i64()],
@@ -337,10 +355,10 @@ mod tests {
                 timestamp: Timestamp::from_raw(TS2),
                 op: Op::Upsert(Upsert {
                     table_id: table_text_i64_pk(),
-                    primary_key: vec![PkValue::Text("café".into()), PkValue::I64(7)],
-                    updates: vec![ColumnUpdate {
+                    primary_key: vec![Value::Text("café".into()), Value::I64(7)],
+                    sets: vec![ColumnSet {
                         column_id: col_uuid(),
-                        value: ColValue::Uuid(ROW_UUID_1),
+                        value: Value::Uuid(ROW_UUID_1),
                     }],
                     nulls: vec![],
                 }),
@@ -351,7 +369,7 @@ mod tests {
                 timestamp: Timestamp::from_raw(TS3),
                 op: Op::Delete(Delete {
                     table_id: table_uuid_pk(),
-                    primary_key: vec![PkValue::Uuid(PK_UUID)],
+                    primary_key: vec![Value::Uuid(PK_UUID)],
                 }),
             },
         ]
@@ -450,10 +468,10 @@ mod tests {
     fn encode_rejects_embedded_nul_in_text_column() {
         let op = Op::Upsert(Upsert {
             table_id: table_bytes_pk(),
-            primary_key: vec![PkValue::Bytes(b"pk1".to_vec())],
-            updates: vec![ColumnUpdate {
+            primary_key: vec![Value::Bytes(b"pk1".to_vec())],
+            sets: vec![ColumnSet {
                 column_id: col_text(),
-                value: ColValue::Text("bad\0value".into()),
+                value: Value::Text("bad\0value".into()),
             }],
             nulls: vec![],
         });
@@ -470,8 +488,8 @@ mod tests {
     #[test]
     fn encode_rejects_embedded_nul_in_text_pk() {
         let op = Op::Delete(Delete {
-            table_id: TableId::new(&[PkColType::Text], 4),
-            primary_key: vec![PkValue::Text("bad\0key".into())],
+            table_id: TableId::new(&[ColType::Text], 4),
+            primary_key: vec![Value::Text("bad\0key".into())],
         });
         let buf = std::io::Cursor::new(Vec::new());
         let mut encoder = Encoder::new(buf, TEST_MAGIC, false).unwrap();
@@ -531,7 +549,7 @@ mod tests {
     fn encode_rejects_pk_count_mismatch() {
         let op = Op::Delete(Delete {
             table_id: table_text_i64_pk(),
-            primary_key: vec![PkValue::Text("only-one".into())],
+            primary_key: vec![Value::Text("only-one".into())],
         });
         let buf = std::io::Cursor::new(Vec::new());
         let mut encoder = Encoder::new(buf, TEST_MAGIC, false).unwrap();
@@ -539,7 +557,13 @@ mod tests {
             .encode_entry(&op, Timestamp::from_raw(TS1), None)
             .unwrap_err();
         assert!(
-            matches!(err, CodecError::PkCountMismatch { expected: 2, got: 1 }),
+            matches!(
+                err,
+                CodecError::PkCountMismatch {
+                    expected: 2,
+                    got: 1
+                }
+            ),
             "got {err:?}"
         );
     }
@@ -554,10 +578,10 @@ mod tests {
     fn encode_rejects_column_value_type_mismatch() {
         let op = Op::Upsert(Upsert {
             table_id: table_bytes_pk(),
-            primary_key: vec![PkValue::Bytes(b"pk1".to_vec())],
-            updates: vec![ColumnUpdate {
+            primary_key: vec![Value::Bytes(b"pk1".to_vec())],
+            sets: vec![ColumnSet {
                 column_id: col_i64(),
-                value: ColValue::Text("not an int".into()),
+                value: Value::Text("not an int".into()),
             }],
             nulls: vec![],
         });
@@ -566,7 +590,10 @@ mod tests {
         let err = encoder
             .encode_entry(&op, Timestamp::from_raw(TS1), None)
             .unwrap_err();
-        assert!(matches!(err, CodecError::ColumnValueMismatch), "got {err:?}");
+        assert!(
+            matches!(err, CodecError::ColumnValueMismatch),
+            "got {err:?}"
+        );
     }
 
     /// Goal: a segment claiming an absurd on-wire blob length fails cleanly
@@ -597,7 +624,10 @@ mod tests {
         segment.extend_from_slice(&entry_bytes);
 
         let (_decoded, err) = Decoder::<Op, &[u8]>::decode_all(segment.as_slice(), TEST_MAGIC);
-        assert!(matches!(err, Some(CodecError::UnexpectedEof)), "got {err:?}");
+        assert!(
+            matches!(err, Some(CodecError::UnexpectedEof)),
+            "got {err:?}"
+        );
     }
 
     /// Goal: a segment whose flags byte is neither device nor server mode is
@@ -630,7 +660,7 @@ mod tests {
     fn encode_rejects_pk_value_type_mismatch() {
         let op = Op::Delete(Delete {
             table_id: table_uuid_pk(),
-            primary_key: vec![PkValue::Text("not a uuid".into())],
+            primary_key: vec![Value::Text("not a uuid".into())],
         });
         let buf = std::io::Cursor::new(Vec::new());
         let mut encoder = Encoder::new(buf, TEST_MAGIC, false).unwrap();
@@ -657,13 +687,13 @@ mod tests {
 
         let failed = Op::Upsert(Upsert {
             table_id: table,
-            primary_key: vec![PkValue::Uuid(PK_UUID)],
-            updates: vec![],
+            primary_key: vec![Value::Uuid(PK_UUID)],
+            sets: vec![],
             nulls: vec![],
         });
         let good = Op::Delete(Delete {
             table_id: table,
-            primary_key: vec![PkValue::Uuid(PK_UUID)],
+            primary_key: vec![Value::Uuid(PK_UUID)],
         });
 
         let buf = std::io::Cursor::new(Vec::new());
@@ -741,7 +771,10 @@ mod tests {
         segment.push(0x7E); // neither TAG_UPSERT/TAG_DELETE nor TAG_EXPUNGED
 
         let (_decoded, err) = Decoder::<Op, &[u8]>::decode_all(segment.as_slice(), TEST_MAGIC);
-        assert!(matches!(err, Some(CodecError::UnknownTag(0x7E))), "got {err:?}");
+        assert!(
+            matches!(err, Some(CodecError::UnknownTag(0x7E))),
+            "got {err:?}"
+        );
     }
 
     /// Goal: a flipped byte in a valid entry is caught by the integrity check.
@@ -754,7 +787,7 @@ mod tests {
     fn decode_detects_hash_mismatch() {
         let op = Op::Delete(Delete {
             table_id: table_uuid_pk(),
-            primary_key: vec![PkValue::Uuid(PK_UUID)],
+            primary_key: vec![Value::Uuid(PK_UUID)],
         });
         let buf = std::io::Cursor::new(Vec::new());
         let mut encoder = Encoder::new(buf, TEST_MAGIC, false).unwrap();
@@ -768,7 +801,10 @@ mod tests {
         bytes[last] ^= 0xFF;
 
         let (_decoded, err) = Decoder::<Op, &[u8]>::decode_all(bytes.as_slice(), TEST_MAGIC);
-        assert!(matches!(err, Some(CodecError::HashMismatch { .. })), "got {err:?}");
+        assert!(
+            matches!(err, Some(CodecError::HashMismatch { .. })),
+            "got {err:?}"
+        );
     }
 
     /// Goal: an entry truncated mid-body fails cleanly with `UnexpectedEof`
@@ -777,7 +813,7 @@ mod tests {
     fn decode_rejects_truncated_entry() {
         let op = Op::Delete(Delete {
             table_id: table_uuid_pk(),
-            primary_key: vec![PkValue::Uuid(PK_UUID)],
+            primary_key: vec![Value::Uuid(PK_UUID)],
         });
         let buf = std::io::Cursor::new(Vec::new());
         let mut encoder = Encoder::new(buf, TEST_MAGIC, false).unwrap();
@@ -789,7 +825,10 @@ mod tests {
         // Keep the header + tag + one byte, cutting the table id read short.
         let truncated = &bytes[..TEST_MAGIC.len() + 3];
         let (_decoded, err) = Decoder::<Op, &[u8]>::decode_all(truncated, TEST_MAGIC);
-        assert!(matches!(err, Some(CodecError::UnexpectedEof)), "got {err:?}");
+        assert!(
+            matches!(err, Some(CodecError::UnexpectedEof)),
+            "got {err:?}"
+        );
     }
 
     /// Goal: truncating only the trailing integrity bytes (body intact) also
@@ -798,7 +837,7 @@ mod tests {
     fn decode_truncated_trailer_is_unexpected_eof() {
         let op = Op::Delete(Delete {
             table_id: table_uuid_pk(),
-            primary_key: vec![PkValue::Uuid(PK_UUID)],
+            primary_key: vec![Value::Uuid(PK_UUID)],
         });
         let buf = std::io::Cursor::new(Vec::new());
         let mut encoder = Encoder::new(buf, TEST_MAGIC, false).unwrap();
@@ -811,7 +850,10 @@ mod tests {
         // the trailer read comes up short.
         let truncated = &bytes[..bytes.len() - 2];
         let (_decoded, err) = Decoder::<Op, &[u8]>::decode_all(truncated, TEST_MAGIC);
-        assert!(matches!(err, Some(CodecError::UnexpectedEof)), "got {err:?}");
+        assert!(
+            matches!(err, Some(CodecError::UnexpectedEof)),
+            "got {err:?}"
+        );
     }
 
     /// Goal: two apps with distinct (same-length) magics reject each other's
@@ -823,7 +865,7 @@ mod tests {
 
         let op = Op::Delete(Delete {
             table_id: table_uuid_pk(),
-            primary_key: vec![PkValue::Uuid(PK_UUID)],
+            primary_key: vec![Value::Uuid(PK_UUID)],
         });
         let buf = std::io::Cursor::new(Vec::new());
         let mut encoder = Encoder::new(buf, magic_a, false).unwrap();
@@ -851,7 +893,10 @@ mod tests {
 
         let (decoded, dec_err) = Decoder::<Op, &[u8]>::decode_all(b"anything".as_slice(), b"");
         assert!(decoded.is_none());
-        assert!(matches!(dec_err, Some(CodecError::BadMagic)), "got {dec_err:?}");
+        assert!(
+            matches!(dec_err, Some(CodecError::BadMagic)),
+            "got {dec_err:?}"
+        );
     }
 
     /// Goal: when an entry fails to decode, the decoder's cross-entry state —
@@ -870,11 +915,11 @@ mod tests {
         let table = table_uuid_pk();
         let first = Op::Delete(Delete {
             table_id: table,
-            primary_key: vec![PkValue::Uuid(PK_UUID)],
+            primary_key: vec![Value::Uuid(PK_UUID)],
         });
         let second = Op::Delete(Delete {
             table_id: table,
-            primary_key: vec![PkValue::Uuid(ROW_UUID_1)],
+            primary_key: vec![Value::Uuid(ROW_UUID_1)],
         });
 
         let buf = std::io::Cursor::new(Vec::new());
@@ -892,7 +937,10 @@ mod tests {
         bytes[last] ^= 0xFF;
 
         let (decoded, err) = Decoder::<Op, &[u8]>::decode_all(bytes.as_slice(), TEST_MAGIC);
-        assert!(matches!(err, Some(CodecError::HashMismatch { .. })), "got {err:?}");
+        assert!(
+            matches!(err, Some(CodecError::HashMismatch { .. })),
+            "got {err:?}"
+        );
         let decoded = decoded.unwrap();
         assert_eq!(decoded.entries.len(), 1);
         // Only the first entry's state survived the failure.
