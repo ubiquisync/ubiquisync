@@ -33,3 +33,31 @@ pub trait Op: Sized {
     /// `0xFF` ([`TAG_EXPUNGED`](crate::codec::TAG_EXPUNGED)), which is reserved.
     fn encode(&self, w: &mut EntryBufferWriter) -> Result<(), CodecError>;
 }
+
+/// An [`Op`] that can also be split into an indexable `(tag, key, value)`
+/// triple for the SQL op-log. `key` is the indexable identity (such as table + primary key).
+/// `value` is the op's remaining payload.
+///
+/// # Round-trip
+///
+/// [`from_index_parts`](IndexableOp::from_index_parts) must invert
+/// [`to_index_entry`](IndexableOp::to_index_entry), so the full op can be
+/// reconstructed from its stored parts.
+pub trait IndexableOp: Op {
+    /// Split `self` into its `(tag, key, value)` triple.
+    fn to_index_entry(&self) -> Result<OpIndexEntry, CodecError>;
+    /// Reconstruct an op from a stored triple. The inverse of
+    /// [`to_index_entry`](IndexableOp::to_index_entry).
+    fn from_index_parts(tag: u8, key: &[u8], value: &[u8]) -> Result<Self, CodecError>;
+}
+
+/// The indexable form of an op: its tag plus the `key`/`value` split of its
+/// body. See [`IndexableOp`].
+pub struct OpIndexEntry {
+    /// The op's tag byte (the same one [`Op::encode`] writes).
+    pub tag: u8,
+    /// The op's key part, for efficient querying by the affected row/entity.
+    pub key: Vec<u8>,
+    /// The op-specific payload after `key`; may be empty.
+    pub value: Vec<u8>,
+}

@@ -29,13 +29,14 @@
 //! ## Column IDs (`ColumnId`, u8)
 //!
 //! ```text
-//! ┌─────────────┬───────────────┐
-//! │    type     │ column index  │
-//! │   (3 bits)  │   (5 bits)    │
-//! └─────────────┴───────────────┘
+//! ┌───────────┬─────────────────┐
+//! │   type    │  column index   │
+//! │  (2 bits) │    (6 bits)     │
+//! └───────────┴─────────────────┘
 //! ```
 //!
-//! Type bits (high 3): column wire type. Values 5–7 are invalid (protocol error).
+//! Type bits (high 2): column wire type. All four values are valid, so every
+//! byte decodes to a column ID — there is no protocol-error path.
 //!
 //! ## Frozen type vocabulary
 //!
@@ -46,127 +47,8 @@
 //! and re-sync them as opaque LWW values, which is exactly the correct
 //! behavior for data they do not understand.
 
+use crate::col_type::ColType;
 use bitfield_struct::bitfield;
-
-/// Primary key column type, encoded as 2 bits in the [`TableId`] PK shape.
-///
-/// All four 2-bit values are valid — the field is total, so PK shapes can
-/// never fail to parse. PK values are row identity: they are compared, never
-/// merged, so every type here is deterministic by construction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum PkColType {
-    /// Variable-length byte string (length-prefixed on wire).
-    Bytes = 0,
-    /// Fixed 16-byte UUID (no length prefix on wire).
-    Uuid = 1,
-    /// UTF-8 text (length-prefixed on wire). Must be valid UTF-8 with no
-    /// embedded NUL bytes. Compared as raw bytes: no Unicode normalization,
-    /// no case folding — "café" in NFC and NFD are different keys.
-    Text = 2,
-    /// Signed 64-bit integer (zigzag varint on wire).
-    I64 = 3,
-}
-
-impl PkColType {
-    /// Returns the wire encoding used for this PK column type.
-    pub const fn wire_encoding(&self) -> WireEncoding {
-        match self {
-            Self::Bytes | Self::Text => WireEncoding::LengthPrefixed,
-            Self::Uuid => WireEncoding::Fixed16,
-            Self::I64 => WireEncoding::ZigzagVarint,
-        }
-    }
-
-    const fn from_bits(value: u8) -> Self {
-        match value & 0b11 {
-            0 => Self::Bytes,
-            1 => Self::Uuid,
-            2 => Self::Text,
-            _ => Self::I64,
-        }
-    }
-}
-
-/// Column type for table columns, encoded in [`ColumnId`] type bits.
-///
-/// The type set is **closed**. Values 5–7 are invalid (not reserved).
-/// A peer encountering an invalid type treats it as a protocol error —
-/// this doubles as corruption detection, since a bit-flipped ID fails
-/// loudly instead of silently misparsing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum ColType {
-    /// `BLOB`. Length-prefixed on wire. LWW merge.
-    Bytes = 0,
-    /// `TEXT`. Length-prefixed on wire. LWW merge. Must be valid UTF-8
-    /// (validated at decode) with no embedded NUL bytes.
-    Text = 1,
-    /// `INTEGER`. Zigzag varint on wire. LWW merge.
-    I64 = 2,
-    /// `BLOB` (16-byte). Fixed 16 bytes on wire. LWW merge.
-    Uuid = 3,
-    /// `INTEGER`. Zigzag varint on wire. Max-wins merge (value only increases).
-    /// No timestamp companion needed. Use for monotonic values like `revoked_at`.
-    /// For min semantics, negate at the application layer.
-    /// Also the building block for counter patterns: a table keyed by
-    /// `(counter_id, peer_id)` where each peer raises only its own row's
-    /// MaxI64 value is a deterministic G-counter (sum rows at read time).
-    MaxI64 = 4,
-    // 5, 6, 7 = invalid (protocol error).
-}
-
-/// Wire encoding family for a column type. Determined by the type bits
-/// in a [`ColumnId`] or the PK shape bits in a [`TableId`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WireEncoding {
-    /// Length-prefixed variable-length bytes (Bytes, Text).
-    LengthPrefixed,
-    /// Fixed 16 bytes, no length prefix (UUID).
-    Fixed16,
-    /// Zigzag-encoded varint (I64, MaxI64).
-    ZigzagVarint,
-}
-
-impl ColType {
-    /// Returns the wire encoding used for this column type.
-    pub const fn wire_encoding(&self) -> WireEncoding {
-        match self {
-            Self::Bytes | Self::Text => WireEncoding::LengthPrefixed,
-            Self::Uuid => WireEncoding::Fixed16,
-            Self::I64 | Self::MaxI64 => WireEncoding::ZigzagVarint,
-        }
-    }
-
-    const fn into_bits(self) -> u8 {
-        self as _
-    }
-
-    /// Returns `None` for invalid type values (5, 6, 7).
-    pub const fn try_from_bits(value: u8) -> Option<Self> {
-        match value {
-            0 => Some(Self::Bytes),
-            1 => Some(Self::Text),
-            2 => Some(Self::I64),
-            3 => Some(Self::Uuid),
-            4 => Some(Self::MaxI64),
-            _ => None,
-        }
-    }
-
-    const fn from_bits(value: u8) -> Self {
-        match value {
-            0 => Self::Bytes,
-            1 => Self::Text,
-            2 => Self::I64,
-            3 => Self::Uuid,
-            4 => Self::MaxI64,
-            // bitfield-struct requires a total function; callers should
-            // validate with try_from_bits before constructing.
-            _ => panic!("invalid ColType"),
-        }
-    }
-}
 
 /// Type-encoded table ID.
 ///
@@ -184,7 +66,7 @@ impl TableId {
     /// `const`-evaluable so table IDs can be compile-time constants; invalid
     /// shapes (0 or >4 PK columns, index out of range for the count) panic,
     /// which surfaces as a compile error in const context.
-    pub const fn new(pk_types: &[PkColType], index: u16) -> Self {
+    pub const fn new(pk_types: &[ColType], index: u16) -> Self {
         let count = pk_types.len();
         assert!(count >= 1 && count <= 4, "PK column count must be 1-4");
         let index_bits = Self::index_bits_for(count);
@@ -219,10 +101,22 @@ impl TableId {
         ((self.0 >> 14) as usize) + 1
     }
 
-    /// Type of PK column `i` (0-based). Panics if `i >= pk_count()`.
-    pub const fn pk_col_type(&self, i: usize) -> PkColType {
+    pub fn pk_col_name(&self, i: usize) -> String {
         assert!(i < self.pk_count(), "PK column index out of range");
-        PkColType::from_bits(((self.0 >> (12 - 2 * i)) & 0b11) as u8)
+        format!("k{i}")
+    }
+
+    pub fn pk_col_name_list(&self) -> String {
+        (0..self.pk_count())
+            .map(|i| self.pk_col_name(i))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// Type of PK column `i` (0-based). Panics if `i >= pk_count()`.
+    pub const fn pk_col_type(&self, i: usize) -> ColType {
+        assert!(i < self.pk_count(), "PK column index out of range");
+        ColType::from_bits(((self.0 >> (12 - 2 * i)) & 0b11) as u8)
     }
 
     /// Width of the table index field for this ID's PK count
@@ -276,31 +170,21 @@ impl core::fmt::Debug for TableId {
 
 /// Type-encoded column ID.
 ///
-/// High 3 bits encode the column's wire type, making the ID self-describing
-/// for wire parsing. The lower 5 bits are an arbitrary column index within
+/// High 2 bits encode the column's wire type, making the ID self-describing
+/// for wire parsing. The lower 6 bits are an arbitrary column index within
 /// the table. All non-PK columns are implicitly nullable.
 #[bitfield(u8)]
-#[derive(PartialEq, Eq, Hash)]
+#[derive(PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub struct ColumnId {
-    // -- Column index (low 5 bits) --
+    // -- Column index (low 6 bits) --
     /// Arbitrary column index within the table.
-    #[bits(5)]
+    #[bits(6)]
     pub index: u8,
 
-    // -- Type bits (high 3 bits) --
-    /// Column wire type (bits 5–7).
-    #[bits(3)]
+    // -- Type bits (high 2 bits) --
+    /// Column wire type (bits 6–7).
+    #[bits(2)]
     pub col_type: ColType,
-}
-
-impl ColumnId {
-    /// Validate that the column type bits are valid (not 5, 6, or 7).
-    /// Returns `None` if the raw byte encodes an invalid column type.
-    pub fn try_from_raw(raw: u8) -> Option<Self> {
-        let type_bits = (raw >> 5) & 0x07;
-        ColType::try_from_bits(type_bits)?;
-        Some(Self::from(raw))
-    }
 }
 
 #[cfg(test)]
@@ -311,16 +195,11 @@ mod tests {
     fn table_id_round_trip_all_pk_counts() {
         // Goal: a table ID survives a raw u16 round trip for every PK shape.
         // Given: one table ID per PK count, with mixed PK column types.
-        let shapes: [&[PkColType]; 4] = [
-            &[PkColType::Uuid],
-            &[PkColType::Bytes, PkColType::Uuid],
-            &[PkColType::Text, PkColType::I64, PkColType::Uuid],
-            &[
-                PkColType::Bytes,
-                PkColType::Text,
-                PkColType::I64,
-                PkColType::Uuid,
-            ],
+        let shapes: [&[ColType]; 4] = [
+            &[ColType::Uuid],
+            &[ColType::Bytes, ColType::Uuid],
+            &[ColType::Text, ColType::I64, ColType::Uuid],
+            &[ColType::Bytes, ColType::Text, ColType::I64, ColType::Uuid],
         ];
         for (n, pk_types) in shapes.iter().enumerate() {
             // When: constructing the ID and round-tripping through u16.
@@ -341,7 +220,7 @@ mod tests {
     fn table_id_index_in_low_bits() {
         // Goal: the table index occupies the low bits unshifted.
         // Given: a 1-PK Bytes table (count=0, type=0 → all shape bits zero).
-        let id = TableId::new(&[PkColType::Bytes], 1);
+        let id = TableId::new(&[ColType::Bytes], 1);
         // Then: the raw value is exactly the index.
         assert_eq!(id.raw(), 1);
     }
@@ -349,15 +228,15 @@ mod tests {
     #[test]
     fn table_id_pk_shape_in_high_bits() {
         // Goal: PK shape packs into the high bits in declaration order.
-        // Given: 1-col UUID PK: count=0, t1=Uuid(01).
-        let id = TableId::new(&[PkColType::Uuid], 0);
+        // Given: 1-col UUID PK: count=0, t1=Uuid(11).
+        let id = TableId::new(&[ColType::Uuid], 0);
         // Then: count in bits 15-14, t1 in bits 13-12.
-        assert_eq!(id.raw() >> 12, 0b00_01);
+        assert_eq!(id.raw() >> 12, 0b00_11);
 
-        // Given: 2-col (Text, I64) PK: count=1, t1=Text(10), t2=I64(11).
-        let id = TableId::new(&[PkColType::Text, PkColType::I64], 0);
-        // Then: high 6 bits are count(01) | t1(10) | t2(11).
-        assert_eq!(id.raw() >> 10, 0b01_10_11);
+        // Given: 2-col (Text, I64) PK: count=1, t1=Text(01), t2=I64(10).
+        let id = TableId::new(&[ColType::Text, ColType::I64], 0);
+        // Then: high 6 bits are count(01) | t1(01) | t2(10).
+        assert_eq!(id.raw() >> 10, 0b01_01_10);
     }
 
     #[test]
@@ -365,13 +244,13 @@ mod tests {
         // Goal: the index width shrinks by 2 bits per extra PK column.
         // Given/When: the max index for each PK count.
         // Then: 12, 10, 8, 6 bits respectively, all constructible.
-        let one = TableId::new(&[PkColType::Uuid], 4095);
+        let one = TableId::new(&[ColType::Uuid], 4095);
         assert_eq!((one.index_bits(), one.index()), (12, 4095));
-        let two = TableId::new(&[PkColType::Uuid; 2], 1023);
+        let two = TableId::new(&[ColType::Uuid; 2], 1023);
         assert_eq!((two.index_bits(), two.index()), (10, 1023));
-        let three = TableId::new(&[PkColType::Uuid; 3], 255);
+        let three = TableId::new(&[ColType::Uuid; 3], 255);
         assert_eq!((three.index_bits(), three.index()), (8, 255));
-        let four = TableId::new(&[PkColType::Uuid; 4], 63);
+        let four = TableId::new(&[ColType::Uuid; 4], 63);
         assert_eq!((four.index_bits(), four.index()), (6, 63));
     }
 
@@ -382,7 +261,7 @@ mod tests {
         // not a silent truncation that would collide with another table.
         // Given: a 1-PK table whose index needs 13 bits.
         // When: constructing it. Then: panic.
-        let _ = TableId::new(&[PkColType::Uuid], 4096);
+        let _ = TableId::new(&[ColType::Uuid], 4096);
     }
 
     #[test]
@@ -404,27 +283,10 @@ mod tests {
     }
 
     #[test]
-    fn pk_type_wire_encodings() {
-        // Goal: each PK type maps to its documented wire encoding.
-        assert_eq!(
-            PkColType::Bytes.wire_encoding(),
-            WireEncoding::LengthPrefixed
-        );
-        assert_eq!(
-            PkColType::Text.wire_encoding(),
-            WireEncoding::LengthPrefixed
-        );
-        assert_eq!(PkColType::Uuid.wire_encoding(), WireEncoding::Fixed16);
-        assert_eq!(PkColType::I64.wire_encoding(), WireEncoding::ZigzagVarint);
-    }
-
-    #[test]
     fn column_id_round_trip() {
         // Goal: a column ID survives a raw u8 round trip.
         // Given: a Text column at index 3.
-        let id = ColumnId::new()
-            .with_index(3)
-            .with_col_type(ColType::Text);
+        let id = ColumnId::new().with_index(3).with_col_type(ColType::Text);
 
         assert_eq!(id.index(), 3);
         assert_eq!(id.col_type(), ColType::Text);
@@ -438,51 +300,63 @@ mod tests {
     #[test]
     fn column_id_index_in_low_bits() {
         // Goal: the column index occupies the low bits unshifted.
-        let id = ColumnId::new()
-            .with_index(1)
-            .with_col_type(ColType::Bytes);
+        let id = ColumnId::new().with_index(1).with_col_type(ColType::Bytes);
         let raw: u8 = id.into();
         assert_eq!(raw, 1);
     }
 
     #[test]
     fn column_id_type_in_high_bits() {
-        // I64: bits 5-7=col_type(2)=010, index=0
-        // high 3 bits = 010
-        let id = ColumnId::new()
-            .with_index(0)
-            .with_col_type(ColType::I64);
+        // I64: bits 6-7=col_type(2)=10, index=0
+        let id = ColumnId::new().with_index(0).with_col_type(ColType::I64);
         let raw: u8 = id.into();
-        assert_eq!(raw >> 5, 0b010);
+        assert_eq!(raw >> 6, 0b10);
 
-        // Text: bits 5-7=col_type(1)=001, index=0
-        // high 3 bits = 001
-        let id = ColumnId::new()
-            .with_index(0)
-            .with_col_type(ColType::Text);
+        // Text: bits 6-7=col_type(1)=01, index=0
+        let id = ColumnId::new().with_index(0).with_col_type(ColType::Text);
         let raw: u8 = id.into();
-        assert_eq!(raw >> 5, 0b001);
+        assert_eq!(raw >> 6, 0b01);
     }
 
     #[test]
-    fn invalid_col_type_detected() {
-        // Goal: type values 5-7 are protocol errors, 0-4 are valid.
-        assert!(ColType::try_from_bits(4).is_some()); // MaxI64
-        assert!(ColType::try_from_bits(5).is_none());
-        assert!(ColType::try_from_bits(6).is_none());
-        assert!(ColType::try_from_bits(7).is_none());
-
-        // Then: try_from_raw rejects a byte whose type bits are invalid.
-        assert!(ColumnId::try_from_raw(0b101_00000).is_none());
-        assert!(ColumnId::try_from_raw(0b100_00011).is_some());
+    fn every_byte_is_a_valid_column_id() {
+        // Goal: with a 2-bit type field every value is assigned, so there is no
+        // invalid column type — every byte decodes and re-encodes to itself.
+        for raw in 0..=u8::MAX {
+            let id = ColumnId::from(raw);
+            assert_eq!(u8::from(id), raw);
+        }
     }
 
     #[test]
     fn table_id_const_constructible() {
         // Goal: table IDs work as compile-time constants for def macros.
-        const SETTINGS: TableId = TableId::new(&[PkColType::Text], 7);
+        const SETTINGS: TableId = TableId::new(&[ColType::Text], 7);
         assert_eq!(SETTINGS.pk_count(), 1);
-        assert_eq!(SETTINGS.pk_col_type(0), PkColType::Text);
+        assert_eq!(SETTINGS.pk_col_type(0), ColType::Text);
         assert_eq!(SETTINGS.index(), 7);
+    }
+
+    #[test]
+    fn pk_names_are_positional() {
+        // Goal: PK column names are `k0..k{n-1}` in declaration order, and the
+        // comma-joined list matches.
+        let single = TableId::new(&[ColType::Uuid], 1);
+        assert_eq!(single.pk_col_name(0), "k0");
+        assert_eq!(single.pk_col_name_list(), "k0");
+
+        let composite = TableId::new(&[ColType::Text, ColType::I64, ColType::Uuid], 1);
+        assert_eq!(composite.pk_col_name(0), "k0");
+        assert_eq!(composite.pk_col_name(2), "k2");
+        assert_eq!(composite.pk_col_name_list(), "k0, k1, k2");
+    }
+
+    #[test]
+    #[should_panic(expected = "PK column index out of range")]
+    fn pk_name_rejects_out_of_range() {
+        // Goal: asking for a PK column past the table's PK count panics rather
+        // than fabricating a name.
+        let id = TableId::new(&[ColType::Uuid], 1);
+        let _ = id.pk_col_name(1);
     }
 }

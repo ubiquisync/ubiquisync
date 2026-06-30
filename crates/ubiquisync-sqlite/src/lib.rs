@@ -296,12 +296,11 @@ fn affinity(declared_type: &str) -> DbType {
 /// constraint failures to [`DbError::UniqueViolation`] so op-log ingestion can
 /// detect an already-ingested entry.
 fn map_err(err: rusqlite::Error) -> DbError {
-    if let rusqlite::Error::SqliteFailure(e, _) = &err {
-        if e.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
-            || e.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY
-        {
-            return DbError::UniqueViolation;
-        }
+    if let rusqlite::Error::SqliteFailure(e, _) = &err
+        && (e.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
+            || e.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY)
+    {
+        return DbError::UniqueViolation;
     }
     DbError::Sql(err.to_string())
 }
