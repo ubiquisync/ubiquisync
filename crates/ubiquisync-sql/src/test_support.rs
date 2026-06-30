@@ -176,11 +176,13 @@ async fn oplog_row_count<D: Db>(db: &D) -> i64 {
 }
 
 async fn oplog_user_id<D: Db>(db: &D, client_idx: u64) -> Option<Uuid> {
+    let mut binder = ValueBinder::new(db.dialect());
+    let idx = binder.bind_next(DbValue::from_u64(client_idx).unwrap());
     let sql = format!(
-        "SELECT user_id FROM {} WHERE client_idx = {client_idx}",
+        "SELECT user_id FROM {} WHERE client_idx = {idx}",
         quote_ident(&format!("{PREFIX}__oplog"))
     );
-    db.query(&sql, &[]).await.unwrap()[0]
+    db.query(&sql, &binder.values()).await.unwrap()[0]
         .get_optional_uuid(0)
         .unwrap()
 }
