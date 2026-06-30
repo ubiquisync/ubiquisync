@@ -15,6 +15,7 @@
 //! backends live in companion crates such as `ubiquisync-sqlite`.
 
 pub mod codec;
-pub mod dialect;
 pub mod id;
 pub mod op;
+pub mod col_type;
+pub mod index_codec;

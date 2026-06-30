@@ -33,3 +33,44 @@ pub trait Op: Sized {
     /// `0xFF` ([`TAG_EXPUNGED`](crate::codec::TAG_EXPUNGED)), which is reserved.
     fn encode(&self, w: &mut EntryBufferWriter) -> Result<(), CodecError>;
 }
+
+/// An [`Op`] that can also be split into an indexable `(tag, key, value)`
+/// triple for the SQL op-log, where `key` carries row identity (table id +
+/// primary key) so history can be queried per-row or per-table.
+///
+/// # Round-trip and cross-consistency
+///
+/// [`from_index_parts`](IndexableOp::from_index_parts) must invert
+/// [`to_index_entry`](IndexableOp::to_index_entry). Critically, the split must
+/// also agree with [`Op::encode`]: `key` followed by `value` must reproduce
+/// exactly the body [`Op::encode`] writes after the tag. Entries are hashed
+/// over that canonical byte form in both the folder log and the SQL op-log, so
+/// any divergence would give the *same* entry two different hashes depending on
+/// its source — breaking expunged markers (`tag = 0xFF`, value = the hash)
+/// across peers.
+///
+/// # Key encoding
+///
+/// `key` must place the table id as a fixed-width leading prefix, so the single
+/// op-log key column serves both exact-row lookups (`key = ?`) and whole-table
+/// scans (a prefix range).
+pub trait IndexableOp: Op {
+    /// Split `self` into its `(tag, key, value)` triple. `key ++ value` must
+    /// equal the body [`Op::encode`] writes after the tag.
+    fn to_index_entry(&self) -> Result<OpIndexEntry, CodecError>;
+    /// Reconstruct an op from a stored triple. The inverse of
+    /// [`to_index_entry`](IndexableOp::to_index_entry).
+    fn from_index_parts(tag: u8, key: &[u8], value: &[u8]) -> Result<Self, CodecError>;
+}
+
+/// The indexable form of an op: a tag plus the identity (`key`) and payload
+/// (`value`) halves of its encoded body. See [`IndexableOp`].
+pub struct OpIndexEntry {
+    /// Op variant discriminant. Never `0xFF`, which is reserved for expunged
+    /// markers.
+    pub tag: u8,
+    /// Row identity — table id (fixed-width prefix) followed by the primary key.
+    pub key: Vec<u8>,
+    /// The remainder of the op body after `key`.
+    pub value: Vec<u8>,
+}

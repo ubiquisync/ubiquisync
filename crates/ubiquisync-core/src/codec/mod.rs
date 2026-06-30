@@ -24,6 +24,6 @@ pub use consts::{FLAG_DEVICE, FLAG_SERVER, TAG_EXPUNGED};
 pub use decoder::{DecodedEntry, DecodedLogs, Decoder};
 pub use encoder::Encoder;
 pub use error::CodecError;
-pub use op::Op;
-pub use reader::EntryBufferReader;
+pub use op::{IndexableOp, Op, OpIndexEntry};
+pub use reader::{EntryBufferReader, Reader};
 pub use writer::EntryBufferWriter;
