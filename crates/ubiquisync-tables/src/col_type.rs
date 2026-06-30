@@ -20,15 +20,6 @@ pub enum ColType {
 }
 
 impl ColType {
-    /// Returns the wire encoding used for this column type.
-    pub const fn wire_encoding(&self) -> WireEncoding {
-        match self {
-            Self::Bytes | Self::Text => WireEncoding::LengthPrefixed,
-            Self::Uuid => WireEncoding::Fixed16,
-            Self::I64 => WireEncoding::ZigzagVarint,
-        }
-    }
-
     pub const fn from_bits(value: u8) -> Self {
         // Must invert the `#[repr(u8)]` discriminants exactly, since the wire
         // encoding packs the type via `self as u8` / `into_bits`.
@@ -72,19 +63,6 @@ impl ColType {
             Self::Uuid => matches!(db, DbType::Uuid | DbType::Blob),
         }
     }
-}
-
-/// Wire encoding family for a column type. Determined by the type bits
-/// in a [`ColumnId`](crate::id::ColumnId) or the PK shape bits in a
-/// [`TableId`](crate::id::TableId).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WireEncoding {
-    /// Length-prefixed variable-length bytes (Bytes, Text).
-    LengthPrefixed,
-    /// Fixed 16 bytes, no length prefix (UUID).
-    Fixed16,
-    /// Zigzag-encoded varint (I64).
-    ZigzagVarint,
 }
 
 #[cfg(test)]
