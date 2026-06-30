@@ -123,6 +123,14 @@ impl SurrogateTableSchema {
                 );
             }
 
+            if db_col.nullable {
+                return schema_mismatch(
+                    id,
+                    table,
+                    format!("primary key {i} shouldn't be nullable"),
+                );
+            }
+
             // Check primary key name match
             let col_name = &db_col.name;
             let expected_col_name = surrogate_pk_name(i);
@@ -153,29 +161,34 @@ impl SurrogateTableSchema {
             // If we can find an lww col match for this column then we track both it and
             // its lww column as a column pair and remove them from the map.
             if let Some(lww_col) = db_col_map.remove(&lww_col_name(&col.name)) {
-                let col = db_col_map.remove(&col.name);
-                let col_name = &col.name;
-                if let Some(col_id) = parse_surrogate_col_name(col_name) {
-                    let db_type = col.db_type;
-                    let col_type = col_id.col_type();
-                    if !col_type.accepts(db_type) {
+                // TODO check lww_col type and nullable
+                if let Some(col)= db_col_map.remove(&col.name) {
+                    if let Some(col_id) = parse_surrogate_col_name(col_name) {
+                        let db_type = col.db_type;
+                        let col_type = col_id.col_type();
+                        if !col_type.accepts(db_type) {
+                            return schema_mismatch(
+                                id,
+                                table,
+                                format!(
+                                    "column {id} db type {db_type} doesn't match column type {col_type}"
+                                ),
+                            );
+                        }
+
+
+                        // TODO check nullable
+                        cols.insert(col_id);
+                    } else {
                         return schema_mismatch(
                             id,
                             table,
-                            format!(
-                                "column {id} db type {db_type} doesn't match column type {col_type}"
-                            ),
+                            format!("can't parse surrogate column {col_name}"),
                         );
                     }
-
-                    cols.insert(col_id);
-                } else {
-                    return schema_mismatch(
-                        id,
-                        table,
-                        format!("can't parse surrogate column {col_name}"),
-                    );
-                }
+                }  else {
+                    todo!("missing column match");
+                }                
             }
         }
 
@@ -188,7 +201,7 @@ impl SurrogateTableSchema {
         let pk_count = self.id.pk_count();
         // TODO do we need to quote identifers since they're auto-generated??
         for i in 0..pk_count {
-            col_defs.push(format("{} {}", self.id.pk_name(i), self.id.pk_col_type(i).db_type()));
+            col_defs.push(format("{} {} NOT NULL", self.id.pk_name(i), self.id.pk_col_type(i).db_type()));
         }
 
         col_defs.push(format!("{UPSERT_TS_COL} {}", db.lww_col_type()));
