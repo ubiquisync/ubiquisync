@@ -28,6 +28,7 @@ pub enum Op {
 /// [`LogEntry`](ubiquisync_core::log_entry::LogEntry).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Upsert {
+    /// The table this row belongs to.
     pub table_id: TableId,
     /// PK values identifying the row. Count and per-column wire encoding are
     /// determined by the table ID's PK shape bits — each value's variant must
@@ -64,6 +65,7 @@ pub enum Value {
 /// [`LogEntry`](ubiquisync_core::log_entry::LogEntry).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Delete {
+    /// The table the row belongs to.
     pub table_id: TableId,
     /// PK values identifying the row (see [`Upsert::primary_key`]).
     pub primary_key: Vec<Value>,
@@ -72,6 +74,8 @@ pub struct Delete {
 /// A column ID paired with the value to write.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ColumnSet {
+    /// The column being written; its type bits fix the value's wire encoding.
     pub column_id: ColumnId,
+    /// The value to write — its variant must match `column_id`'s declared type.
     pub value: Value,
 }
