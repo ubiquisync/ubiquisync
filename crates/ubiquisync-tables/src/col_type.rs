@@ -80,10 +80,17 @@ mod tests {
 
     /// Goal: a column type accepts exactly its own storage class — except UUID,
     /// which also accepts a raw `Blob` (how it is stored on backends without a
-    /// native UUID type).
+    /// native UUID type). The unmodeled `DbType::Other` is accepted by nothing,
+    /// so reconciliation treats it as a mismatch.
     #[test]
     fn accepts_matches_storage_class() {
-        let all = [DbType::Blob, DbType::Text, DbType::Integer, DbType::Uuid];
+        let all = [
+            DbType::Blob,
+            DbType::Text,
+            DbType::Integer,
+            DbType::Uuid,
+            DbType::Other,
+        ];
         for &ct in &[ColType::Bytes, ColType::Text, ColType::I64, ColType::Uuid] {
             for &db in &all {
                 let expected = db == ct.db_type() || (ct == ColType::Uuid && db == DbType::Blob);

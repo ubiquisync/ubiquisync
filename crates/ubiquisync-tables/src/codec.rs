@@ -81,9 +81,9 @@ pub(crate) fn encode_one_key(
 
 pub(crate) fn encode_one_value(w: &mut EntryBufferWriter, e: &Upsert) -> Result<(), CodecError> {
     w.write_varint(e.sets.len() as u64);
-    for cu in &e.sets {
-        w.write_byte(cu.column_id.into());
-        write_col_value(w, cu.column_id, &cu.value)?;
+    for set in &e.sets {
+        w.write_byte(set.column_id.into());
+        write_col_value(w, set.column_id, &set.value)?;
     }
     w.write_varint(e.nulls.len() as u64);
     for col_id in &e.nulls {
@@ -197,12 +197,12 @@ pub(crate) fn decode_one_value<'a, R: BufRead>(
     // pre-allocate to them — the Vec grows as entries are actually
     // decoded, so a too-large count just fails fast on the first absent
     // column rather than OOM-ing up front.
-    let update_raw = r.read_varint()?;
-    let update_count: usize = update_raw
+    let set_raw = r.read_varint()?;
+    let set_count: usize = set_raw
         .try_into()
-        .map_err(|_| CodecError::LengthTooLarge(update_raw))?;
+        .map_err(|_| CodecError::LengthTooLarge(set_raw))?;
     let mut sets = Vec::new();
-    for _ in 0..update_count {
+    for _ in 0..set_count {
         let column_id = read_column_id(r)?;
         let value = read_col_value(r, column_id)?;
         sets.push(ColumnSet { column_id, value });
