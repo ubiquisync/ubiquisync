@@ -23,11 +23,16 @@ pub trait HlcStorage {
     /// Backend error type surfaced through the service's results.
     type Error;
 
+    /// The transaction/batch `save` enqueues into (e.g. a `DbBatch`).
+    /// `?Sized` so a backend can use a trait object (`dyn DbBatch`).
+    type Sink: ?Sized;
+
     /// Load the last persisted clock state, or `None` for a fresh store.
     fn load(&self) -> Result<Option<u64>, Self::Error>;
 
-    /// Durably replace the persisted clock state.
-    fn save(&self, raw: u64) -> Result<(), Self::Error>;
+    /// Enqueue a write of the clock state into `sink`; it becomes durable when
+    /// the caller commits the sink, not before.
+    fn save(&self, sink: &mut Self::Sink, raw: u64) -> Result<(), Self::Error>;
 }
 
 /// Error from a clock operation: either the storage backend failed, or a
@@ -93,20 +98,20 @@ impl<S: HlcStorage> HlcService<S> {
         self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Generate a fresh timestamp for a local write and persist the new
-    /// state. Always advances; always writes — the state must be durable
-    /// before the timestamp is used, or a crash could reissue it.
-    pub fn now(&self) -> Result<Timestamp, S::Error> {
+    /// Generate a fresh timestamp for a local write and enqueue the new state
+    /// into `sink`. Always advances; always writes — the state must reach the
+    /// committing batch, or a crash could reissue it.
+    pub fn now(&self, sink: &mut S::Sink) -> Result<Timestamp, S::Error> {
         let mut hlc = self.lock();
         let ts = hlc.tick(wall_ms());
-        self.storage.save(hlc.state().raw())?;
+        self.storage.save(sink, hlc.state().raw())?;
         Ok(ts)
     }
 
     /// Absorb a remote timestamp, enforcing the skew bound (see
-    /// [`Hlc::observe`]). Persists only when the in-memory state actually
-    /// advances — observe is a no-op for stale receipts and we don't want
-    /// to spam the register.
+    /// [`Hlc::observe`]). Saves into `sink` only when the in-memory state
+    /// actually advances — observe is a no-op for stale receipts and we don't
+    /// want to spam the register.
     ///
     /// `local_wall_ms` is supplied by the caller — typically a single
     /// [`wall_ms`](super::wall_ms) reading taken once when a received
@@ -121,6 +126,7 @@ impl<S: HlcStorage> HlcService<S> {
         &self,
         received: Timestamp,
         local_wall_ms: u64,
+        sink: &mut S::Sink,
     ) -> Result<(), HlcError<S::Error>> {
         let mut hlc = self.lock();
         let before = hlc.state();
@@ -128,7 +134,7 @@ impl<S: HlcStorage> HlcService<S> {
             .map_err(HlcError::Skew)?;
         let after = hlc.state();
         if after != before {
-            self.storage.save(after.raw()).map_err(HlcError::Storage)?;
+            self.storage.save(sink, after.raw()).map_err(HlcError::Storage)?;
         }
         Ok(())
     }
@@ -160,6 +166,7 @@ mod tests {
 
     impl HlcStorage for &MemStorage {
         type Error = std::convert::Infallible;
+        type Sink = ();
 
         fn load(&self) -> Result<Option<u64>, Self::Error> {
             Ok(self
@@ -168,7 +175,7 @@ mod tests {
                 .then(|| self.value.load(Ordering::SeqCst)))
         }
 
-        fn save(&self, raw: u64) -> Result<(), Self::Error> {
+        fn save(&self, _sink: &mut (), raw: u64) -> Result<(), Self::Error> {
             self.value.store(raw, Ordering::SeqCst);
             self.present.store(true, Ordering::SeqCst);
             self.saves.fetch_add(1, Ordering::SeqCst);
@@ -185,8 +192,8 @@ mod tests {
         let svc = HlcService::open(&mem).unwrap();
         // When: ticking twice. Then: storage holds the latest tick and was
         // written once per tick.
-        let t1 = svc.now().unwrap();
-        let t2 = svc.now().unwrap();
+        let t1 = svc.now(&mut ()).unwrap();
+        let t2 = svc.now(&mut ()).unwrap();
         assert!(t2 > t1);
         assert_eq!(mem.value.load(Ordering::SeqCst), t2.raw());
         assert_eq!(mem.saves.load(Ordering::SeqCst), 2);
@@ -199,11 +206,11 @@ mod tests {
         let mem = MemStorage::default();
         let last = {
             let svc = HlcService::open(&mem).unwrap();
-            svc.now().unwrap()
+            svc.now(&mut ()).unwrap()
         };
         // When: reopening over the same storage and ticking.
         let svc2 = HlcService::open(&mem).unwrap();
-        let t = svc2.now().unwrap();
+        let t = svc2.now(&mut ()).unwrap();
         // Then: the new tick beats everything from the previous life.
         assert!(t > last);
     }
@@ -216,11 +223,11 @@ mod tests {
         let svc = HlcService::open(&mem).unwrap();
         let local = wall_ms();
         let ahead = Timestamp::from_parts(local + MAX_SKEW_MS, 7);
-        svc.observe(ahead, local).unwrap();
+        svc.observe(ahead, local, &mut ()).unwrap();
         let saves_after_advance = mem.saves.load(Ordering::SeqCst);
         assert_eq!(saves_after_advance, 1, "advancing observe persists");
         // When: observing something older. Then: no new save.
-        svc.observe(Timestamp::from_parts(local, 0), local).unwrap();
+        svc.observe(Timestamp::from_parts(local, 0), local, &mut ()).unwrap();
         assert_eq!(mem.saves.load(Ordering::SeqCst), saves_after_advance);
         assert_eq!(svc.state(), ahead);
     }
@@ -235,7 +242,7 @@ mod tests {
         let local = wall_ms();
         let too_far = Timestamp::from_parts(local + MAX_SKEW_MS + 1, 0);
         // When: observing it. Then: HlcError::Skew, state still 0, no save.
-        let err = svc.observe(too_far, local).unwrap_err();
+        let err = svc.observe(too_far, local, &mut ()).unwrap_err();
         assert!(matches!(err, HlcError::Skew(_)));
         assert_eq!(svc.state(), Timestamp::from_raw(0));
         assert_eq!(mem.saves.load(Ordering::SeqCst), 0);
@@ -247,12 +254,13 @@ mod tests {
 
     impl HlcStorage for FailingStorage {
         type Error = &'static str;
+        type Sink = ();
 
         fn load(&self) -> Result<Option<u64>, Self::Error> {
             Ok(None)
         }
 
-        fn save(&self, _raw: u64) -> Result<(), Self::Error> {
+        fn save(&self, _sink: &mut (), _raw: u64) -> Result<(), Self::Error> {
             Err("save failed")
         }
     }
@@ -262,7 +270,7 @@ mod tests {
         // A timestamp must never be handed back when its covering state could
         // not be persisted — the storage error propagates in its place.
         let svc = HlcService::open(FailingStorage).unwrap();
-        assert!(svc.now().is_err());
+        assert!(svc.now(&mut ()).is_err());
     }
 
     #[test]
@@ -273,7 +281,7 @@ mod tests {
         let local = wall_ms();
         let ahead = Timestamp::from_parts(local + MAX_SKEW_MS, 1);
         assert!(matches!(
-            svc.observe(ahead, local),
+            svc.observe(ahead, local, &mut ()),
             Err(HlcError::Storage(_))
         ));
     }
@@ -285,7 +293,7 @@ mod tests {
         // `storage.save` would) does not brick the clock for everyone else.
         let mem = MemStorage::default();
         let svc = HlcService::open(&mem).unwrap();
-        let t1 = svc.now().unwrap();
+        let t1 = svc.now(&mut ()).unwrap();
         // Poison the mutex by panicking while holding the guard.
         let _ = catch_unwind(AssertUnwindSafe(|| {
             let _guard = svc.lock();
@@ -293,7 +301,7 @@ mod tests {
         }));
         // A bare `.lock().unwrap()` would panic here; `lock()` recovers the
         // guard, so the clock stays usable and still strictly monotone.
-        let t2 = svc.now().unwrap();
+        let t2 = svc.now(&mut ()).unwrap();
         assert!(t2 > t1);
     }
 
@@ -305,7 +313,7 @@ mod tests {
         let svc = HlcService::open(&mem).unwrap();
         let mut all: Vec<Timestamp> = std::thread::scope(|s| {
             let handles: Vec<_> = (0..8)
-                .map(|_| s.spawn(|| (0..100).map(|_| svc.now().unwrap()).collect::<Vec<_>>()))
+                .map(|_| s.spawn(|| (0..100).map(|_| svc.now(&mut ()).unwrap()).collect::<Vec<_>>()))
                 .collect();
             handles
                 .into_iter()

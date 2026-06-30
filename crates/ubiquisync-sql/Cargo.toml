@@ -1,0 +1,12 @@
+[package]
+name = "ubiquisync-sql"
+description = "SQL primitives for Ubiquisync — structured SQL data synced over commodity cloud storage or a dedicated server."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ubiquisync-core = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
