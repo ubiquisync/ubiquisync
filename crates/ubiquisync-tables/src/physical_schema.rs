@@ -1,10 +1,11 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use ubiquisync_sql::db::Db;
+use ubiquisync_sql::db::{Db, DbTableDescriptor};
 
 use crate::{
     error::TablesError,
     id::{ColumnId, TableId},
+    schema::TableSchema,
 };
 
 #[derive(Debug, Clone)]
@@ -42,23 +43,23 @@ impl PhysicalTableSchema {
     }
 
     fn new_from_schema(prefix: &str, schema: &TableSchema) -> Self {
-        let name = schema.id.name(prefix);
-        let cols = BTreeSet::new();
-        for col in schema.value_cols {
-            cols.insert(col.id);
+        let id = schema.id;
+        let name = id.table_name(prefix);
+        let mut cols = BTreeSet::new();
+        for (id, _) in schema.value_cols.iter() {
+            cols.insert(*id);
         }
         Self { id, name, cols }
     }
 
-    fn reconstruct_from_db(
-        prefix: &str,
-        db_table: DbTableDescriptor,
-    ) -> Result<Self, ReducerError> {
+    fn reconstruct_from_db(prefix: &str, db_table: DbTableDescriptor) -> Result<Self, TablesError> {
         let name = &db_table.name;
-        let id = if let Some(id) = TableId::parse(prefix, name) {
+        let id = if let Some(id) = TableId::parse_table_name(prefix, name) {
             id
         } else {
-            return Err(ReducerError::Unknown(format!("can't parse table {name}")));
+            return Err(TablesError::SchemaError(format!(
+                "can't parse table {name}"
+            )));
         };
 
         // Validate primary key
@@ -67,7 +68,6 @@ impl PhysicalTableSchema {
         if pk_count != actual_pk_count {
             return schema_mismatch(
                 id,
-                table,
                 format!("invalid primary key count, expected {pk_count} got {actual_pk_count}"),
             );
         }
@@ -79,17 +79,12 @@ impl PhysicalTableSchema {
             if !pk_type.accepts(db_type) {
                 return schema_mismatch(
                     id,
-                    table,
                     format!("invalid primary key type at {i} expected {pk_type} got {db_type}"),
                 );
             }
 
             if db_col.nullable {
-                return schema_mismatch(
-                    id,
-                    table,
-                    format!("primary key {i} shouldn't be nullable"),
-                );
+                return schema_mismatch(id, format!("primary key {i} shouldn't be nullable"));
             }
 
             // Check primary key name match
@@ -98,7 +93,6 @@ impl PhysicalTableSchema {
             if col_name != expected_col_name {
                 return schema_mismatch(
                     id,
-                    table,
                     format!(
                         "expected primary key column {i} to be named {expected_col_name} got {col_name}"
                     ),
@@ -233,12 +227,8 @@ impl PhysicalTableSchema {
     }
 }
 
-fn schema_mismatch<T>(id: TableId, table: &str, detail: String) -> Result<T, ReducerError> {
-    return Err(ReducerError::SchemaMismatch {
-        id,
-        table: table.into(),
-        detail: detail.into(),
-    });
+fn schema_mismatch<T>(id: TableId, detail: String) -> Result<T, ReducerError> {
+    return Err(ReducerError::Schema(format!("table {id}: {detail}")));
 }
 
 fn validate_upsert_delete_ts_cols(

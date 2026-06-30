@@ -24,3 +24,4 @@ mod index_codec;
 mod naming;
 pub mod op;
 mod physical_schema;
+mod schema;

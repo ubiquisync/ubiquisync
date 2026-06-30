@@ -1,11 +1,13 @@
 use crate::dialect::SqlDialect;
 
+#[derive(Debug, Clone)]
 pub struct DbTableDescriptor {
     pub name: String,
     pub pk_cols: Vec<DbColumnDescription>,
     pub cols: Vec<DbColumnDescription>,
 }
 
+#[derive(Debug, Clone)]
 pub struct DbColumnDescription {
     pub name: String,
     pub db_type: DbType,
