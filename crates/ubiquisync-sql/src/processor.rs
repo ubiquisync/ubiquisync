@@ -1,5 +1,4 @@
 use ubiquisync_core::{
-    codec::CodecError,
     hlc::{HlcError, HlcService, wall_ms},
     log_entry::LogEntry,
     uuid::Uuid,
@@ -9,7 +8,7 @@ use crate::{
     db::{Db, DbError},
     hlc_storage::SqlHlcStorage,
     reducer::Reducer,
-    tracker::LogTracker,
+    tracker::{LogTracker, LogTrackerError},
 };
 
 pub struct Processor<R: Reducer, D: Db, T> {
@@ -20,10 +19,30 @@ pub struct Processor<R: Reducer, D: Db, T> {
 }
 
 impl<R: Reducer, D: Db, T: LogTracker<R::Op>> Processor<R, D, T> {
+    /// Wire up a processor against `db`: open the HLC register and the tracker's
+    /// op-log (both namespaced by `prefix`), seed the in-memory clock from the
+    /// persisted state, and take ownership of `reducer`. The two schema setups
+    /// run as their own autocommit DDL — they are additive and safe to commit
+    /// before any entry is ingested.
+    pub(crate) async fn open(
+        reducer: R,
+        db: D,
+        prefix: &str,
+    ) -> Result<Self, ProcessorError<R::Error>> {
+        let hlc = HlcService::open(SqlHlcStorage::open(&db, prefix).await?)?;
+        let tracker = T::init(&db, prefix).await?;
+        Ok(Self {
+            reducer,
+            db,
+            hlc,
+            tracker,
+        })
+    }
+
     /// Ingest one log entry. Returns `Ok(None)` when the entry was already
     /// ingested — a duplicate `(client_id, client_idx)` fails the batch's unique
     /// constraint, rolling everything back, so nothing is re-applied.
-    async fn process_one(
+    pub(crate) async fn process_one(
         &mut self,
         client_id: &Uuid,
         client_idx: u64,
@@ -66,8 +85,8 @@ pub enum ProcessorError<E> {
     Reducer(E),
     #[error("hlc error: {0}")]
     Hlc(#[from] HlcError<DbError>),
-    #[error("codec error: {0}")]
-    Codec(#[from] CodecError),
+    #[error("tracker error: {0}")]
+    Tracker(#[from] LogTrackerError),
     #[error("db error: {0}")]
     Db(#[from] DbError),
 }

@@ -21,7 +21,20 @@ pub trait LogTracker<Op>: Sized {
         client_idx: u64,
         entry: &LogEntry<Op>,
         batch: &mut dyn DbBatch,
-    ) -> Result<(), CodecError>;
+    ) -> Result<(), LogTrackerError>;
+}
+
+/// Failure from [`LogTracker::track_one`]. Splitting the op into its index
+/// triple is a [`CodecError`]; binding a value that won't fit the backend's
+/// signed-integer column (a `u64` past `i64::MAX`, via [`DbValue::from_u64`])
+/// is a [`DbError`]. Both are surfaced so the tracker can use the same checked
+/// conversion the rest of the crate relies on instead of a lossy `as` cast.
+#[derive(Debug, thiserror::Error)]
+pub enum LogTrackerError {
+    #[error("codec error: {0}")]
+    Codec(#[from] CodecError),
+    #[error("db error: {0}")]
+    Db(#[from] DbError),
 }
 
 pub struct LogIndexTracker<Op> {
@@ -63,22 +76,23 @@ impl<Op: IndexableOp> LogTracker<Op> for LogIndexTracker<Op> {
         client_idx: u64,
         entry: &LogEntry<Op>,
         batch: &mut dyn DbBatch,
-    ) -> Result<(), CodecError> {
+    ) -> Result<(), LogTrackerError> {
         let mut value_binder = ValueBinder::new(batch.dialect());
 
         let client_id_bind = value_binder.bind_next(DbValue::Uuid(*client_id));
-        // u64 stored in SQLite's signed i64 column: the cast is bit-preserving
-        // (round-trips losslessly back to u64) and client_idx, a stream counter,
-        // never approaches 2^63.
-        let client_idx_bind = value_binder.bind_next(DbValue::Integer(client_idx as i64));
+        // `client_idx` is a u64 stream counter going into a signed-integer
+        // column. `from_u64` rejects a value past `i64::MAX` rather than wrap it
+        // negative — the same checked store the rest of the crate uses.
+        let client_idx_bind = value_binder.bind_next(DbValue::from_u64(client_idx)?);
         let user_id_bind = if let Some(user_id) = entry.user_id {
             value_binder.bind_next(DbValue::Uuid(user_id))
         } else {
             value_binder.bind_next(DbValue::Null)
         };
-        // Same u64->i64 store; the packed clock keeps the sign bit unset until
-        // ~year 6400, so ordering/MAX on ts stays correct.
-        let ts_bind = value_binder.bind_next(DbValue::Integer(entry.timestamp.raw() as i64));
+        // The packed HLC timestamp is a full-width u64; store it through the same
+        // `from_u64` guard `SqlHlcStorage` uses, so a value past `i64::MAX` can't
+        // wrap negative and misorder a `MAX`/`GREATEST` merge on `ts`.
+        let ts_bind = value_binder.bind_next(DbValue::from_u64(entry.timestamp.raw())?);
 
         let index_entry = entry.op.to_index_entry()?;
         let tag_bind = value_binder.bind_next(DbValue::Integer(index_entry.tag as i64));
