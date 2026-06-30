@@ -20,6 +20,9 @@ pub enum ColType {
 }
 
 impl ColType {
+    /// Decode a [`ColType`] from its low 2 bits — the inverse of
+    /// [`into_bits`](Self::into_bits). Total over all four values, so it never
+    /// fails. Required by the `ColumnId` bitfield.
     pub const fn from_bits(value: u8) -> Self {
         // Must invert the `#[repr(u8)]` discriminants exactly, since the wire
         // encoding packs the type via `self as u8` / `into_bits`.

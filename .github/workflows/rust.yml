@@ -16,7 +16,16 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy
     - name: Build
       run: cargo build --verbose
+    - name: Clippy
+      run: cargo clippy --workspace --all-targets -- -D warnings
+    - name: Docs
+      run: cargo doc --workspace --no-deps
+      env:
+        RUSTDOCFLAGS: -D warnings
     - name: Run tests
       run: cargo test --verbose
