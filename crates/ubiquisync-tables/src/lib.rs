@@ -18,6 +18,7 @@
 
 pub mod codec;
 mod col_type;
+pub mod error;
 pub mod id;
 mod index_codec;
 mod naming;

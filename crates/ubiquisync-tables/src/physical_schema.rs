@@ -1,5 +1,14 @@
+use std::collections::BTreeSet;
+
+use ubiquisync_sql::db::Db;
+
+use crate::{
+    error::TablesError,
+    id::{ColumnId, TableId},
+};
+
 #[derive(Debug, Clone)]
-pub(crate) struct SurrogateTableSchema {
+pub(crate) struct PhysicalTableSchema {
     id: TableId,
     name: String,
     cols: BTreeSet<ColumnId>,
@@ -10,7 +19,7 @@ pub const UPSERT_TS_COL: &'static str = "__upsert_ts";
 
 impl PhysicalTableSchema {
     fn new_from_id(prefix: &str, id: TableId) -> Self {
-        let name = schema.id.name(prefix);
+        let name = id.table_name(prefix);
         Self {
             id,
             name,
@@ -22,7 +31,7 @@ impl PhysicalTableSchema {
         prefix: &str,
         id: TableId,
         db: &dyn Db,
-    ) -> Result<Self, ReducerError> {
+    ) -> Result<Self, TablesError> {
         let res = Self::new_from_id(prefix, id);
         res.create_table(db).await?;
         Ok(res)
