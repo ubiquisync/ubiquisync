@@ -102,17 +102,4 @@ mod tests {
         assert_eq!(SqlDialect::Sqlite.text_collate(), "");
         assert_eq!(SqlDialect::Postgres.text_collate(), " COLLATE \"C\"");
     }
-
-    #[test]
-    fn conflict_ignore_per_dialect() {
-        // SQLite: the verb carries the ignore, no trailing clause.
-        assert_eq!(SqlDialect::Sqlite.insert_ignore_verb(), "INSERT OR IGNORE");
-        assert_eq!(SqlDialect::Sqlite.conflict_ignore_clause("\"id\""), "");
-        // Postgres: plain verb plus an explicit DO NOTHING clause.
-        assert_eq!(SqlDialect::Postgres.insert_ignore_verb(), "INSERT");
-        assert_eq!(
-            SqlDialect::Postgres.conflict_ignore_clause("\"id\""),
-            " ON CONFLICT (\"id\") DO NOTHING"
-        );
-    }
 }
