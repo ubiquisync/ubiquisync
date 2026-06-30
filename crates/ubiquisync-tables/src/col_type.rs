@@ -1,6 +1,7 @@
 use ubiquisync_sql::db::DbType;
 
-/// Column type, encoded as 2 bits in [`ColumnId`] and in [`TableId`] PK shapes.
+/// Column type, encoded as 2 bits in [`ColumnId`](crate::id::ColumnId) and in
+/// [`TableId`](crate::id::TableId) PK shapes.
 ///
 /// The type set is **closed** and the 2-bit field is total: all four values
 /// are valid, so a column or PK type can never fail to parse.
@@ -39,8 +40,9 @@ impl ColType {
         }
     }
 
-    /// Inverse of [`from_bits`]: packs the type into its 2 bits. Required by the
-    /// `ColumnId` bitfield; equivalent to the `#[repr(u8)]` discriminant.
+    /// Inverse of [`from_bits`](Self::from_bits): packs the type into its 2
+    /// bits. Required by the `ColumnId` bitfield; equivalent to the
+    /// `#[repr(u8)]` discriminant.
     pub const fn into_bits(self) -> u8 {
         self as _
     }
@@ -73,7 +75,8 @@ impl ColType {
 }
 
 /// Wire encoding family for a column type. Determined by the type bits
-/// in a [`ColumnId`] or the PK shape bits in a [`TableId`].
+/// in a [`ColumnId`](crate::id::ColumnId) or the PK shape bits in a
+/// [`TableId`](crate::id::TableId).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WireEncoding {
     /// Length-prefixed variable-length bytes (Bytes, Text).

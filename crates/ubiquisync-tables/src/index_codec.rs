@@ -18,7 +18,7 @@ impl IndexableOp for Op {
             Op::Upsert(upsert) => Ok(OpIndexEntry {
                 tag: TAG_UPSERT,
                 key: encode_index_key(upsert.table_id, &upsert.primary_key)?,
-                value: encode_index_value(&upsert)?,
+                value: encode_index_value(upsert)?,
             }),
             Op::Delete(delete) => Ok(OpIndexEntry {
                 tag: TAG_DELETE,
@@ -53,35 +53,33 @@ impl IndexableOp for Op {
 }
 
 pub fn encode_index_key(table_id: TableId, pkey: &[Value]) -> Result<Vec<u8>, CodecError> {
-    // TODO actually doing hashing is unnecessary but it lets us reuse our existing codec
-    // in the future we could remove hashing
+    // Reuse the wire codec for the body bytes, but take them without the
+    // integrity-hash trailer `finalize` would append — the op-log column
+    // stores raw key bytes and the entry hash already lives in the log.
     let mut dict = HashMap::new();
     let mut w = EntryBufferWriter::new(&mut dict);
     encode_one_key(&mut w, table_id, pkey)?;
-    let (res, _) = w.finalize();
-    Ok(res)
+    Ok(w.into_bytes())
 }
 
 fn encode_index_value(e: &Upsert) -> Result<Vec<u8>, CodecError> {
-    // TODO actually doing hashing is unnecessary but it lets us reuse our existing codec
-    // in the future we could remove hashing
+    // See `encode_index_key`: body bytes only, no integrity-hash trailer.
     let mut dict = HashMap::new();
     let mut w = EntryBufferWriter::new(&mut dict);
     encode_one_value(&mut w, e)?;
-    let (res, _) = w.finalize();
-    Ok(res)
+    Ok(w.into_bytes())
 }
 
 pub fn decode_index_key(key: &[u8]) -> Result<(TableId, Vec<Value>), CodecError> {
     let mut dict = HashMap::new();
     let mut r = Reader::new(key);
     let mut ebr = EntryBufferReader::new(&mut r, &mut dict);
-    Ok(decode_one_key(&mut ebr)?)
+    decode_one_key(&mut ebr)
 }
 
-pub fn decode_index_value(key: &[u8]) -> Result<(Vec<ColumnSet>, Vec<ColumnId>), CodecError> {
+pub fn decode_index_value(value: &[u8]) -> Result<(Vec<ColumnSet>, Vec<ColumnId>), CodecError> {
     let mut dict = HashMap::new();
-    let mut r = Reader::new(key);
+    let mut r = Reader::new(value);
     let mut ebr = EntryBufferReader::new(&mut r, &mut dict);
-    Ok(decode_one_value(&mut ebr)?)
+    decode_one_value(&mut ebr)
 }

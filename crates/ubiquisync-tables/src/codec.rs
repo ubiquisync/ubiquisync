@@ -76,7 +76,7 @@ pub(crate) fn encode_one_key(
     pkey: &[Value],
 ) -> Result<(), CodecError> {
     w.write_u16_le(table_id.into());
-    write_pk(w, table_id, &pkey)
+    write_pk(w, table_id, pkey)
 }
 
 pub(crate) fn encode_one_value(w: &mut EntryBufferWriter, e: &Upsert) -> Result<(), CodecError> {

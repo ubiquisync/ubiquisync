@@ -23,28 +23,28 @@ pub enum Op {
 
 // ── Table operations ─────────────────────────────────────────────────────────
 
-/// Inserts or merges a row in a table. Merge strategy (LWW or
-/// max-wins) is determined by each column's type bits in its [`ColumnId`].
-/// Timestamp comes from the enclosing
+/// Inserts or merges a row in a table. Every column merges last-writer-wins,
+/// keyed by the timestamp from the enclosing
 /// [`LogEntry`](ubiquisync_core::log_entry::LogEntry).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Upsert {
     pub table_id: TableId,
     /// PK values identifying the row. Count and per-column wire encoding are
     /// determined by the table ID's PK shape bits — each value's variant must
-    /// match the corresponding [`PkColType`](crate::id::PkColType)
+    /// match the corresponding [`pk_col_type`](crate::id::TableId::pk_col_type)
     /// positionally.
     pub primary_key: Vec<Value>,
     /// Columns to set with new values. The column ID's type bits determine
-    /// wire encoding and merge strategy.
+    /// the wire encoding.
     pub sets: Vec<ColumnSet>,
-    /// Columns to set to null.
-    pub nulls: Vec<ColumnId>
+    /// Columns to set to SQL NULL. All non-PK columns are implicitly nullable.
+    pub nulls: Vec<ColumnId>,
 }
 
-/// A table primary key value. One variant per
-/// [`PkColType`](crate::id::PkColType) — PK values are row identity:
-/// they are compared, never merged.
+/// A typed value — used both as a primary-key component and as a column value.
+/// The variant is fixed positionally by the table's PK shape (for PK values)
+/// or by the column ID's type bits (for column values). PK values are row
+/// identity (compared, never merged); column values merge last-writer-wins.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Value {
     /// Raw byte data (length-prefixed on wire).
