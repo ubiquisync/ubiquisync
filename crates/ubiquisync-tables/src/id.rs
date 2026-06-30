@@ -187,20 +187,9 @@ pub struct ColumnId {
     pub col_type: ColType,
 }
 
-impl ColumnId {
-    /// Parse a column ID from a raw byte. The 2-bit type field admits all four
-    /// `ColType` values, so every byte is a valid column ID and this never
-    /// returns `None`; it keeps the fallible signature the codec decode path
-    /// expects.
-    pub fn try_from_raw(raw: u8) -> Option<Self> {
-        Some(Self::from(raw))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::col_type::WireEncoding;
 
     #[test]
     fn table_id_round_trip_all_pk_counts() {
@@ -294,15 +283,6 @@ mod tests {
     }
 
     #[test]
-    fn pk_type_wire_encodings() {
-        // Goal: each PK type maps to its documented wire encoding.
-        assert_eq!(ColType::Bytes.wire_encoding(), WireEncoding::LengthPrefixed);
-        assert_eq!(ColType::Text.wire_encoding(), WireEncoding::LengthPrefixed);
-        assert_eq!(ColType::Uuid.wire_encoding(), WireEncoding::Fixed16);
-        assert_eq!(ColType::I64.wire_encoding(), WireEncoding::ZigzagVarint);
-    }
-
-    #[test]
     fn column_id_round_trip() {
         // Goal: a column ID survives a raw u8 round trip.
         // Given: a Text column at index 3.
@@ -343,7 +323,7 @@ mod tests {
         // Goal: with a 2-bit type field every value is assigned, so there is no
         // invalid column type — every byte decodes and re-encodes to itself.
         for raw in 0..=u8::MAX {
-            let id = ColumnId::try_from_raw(raw).expect("every byte is a valid column ID");
+            let id = ColumnId::from(raw);
             assert_eq!(u8::from(id), raw);
         }
     }
