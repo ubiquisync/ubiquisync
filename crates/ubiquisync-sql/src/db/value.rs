@@ -97,6 +97,7 @@ impl DbRow {
                 col: idx,
                 expected: "16-byte UUID blob",
             }),
+            Some(DbValue::Uuid(v)) => Ok(*v),
             Some(DbValue::Null) => Err(DbError::UnexpectedNull(idx)),
             Some(_) => Err(DbError::TypeMismatch {
                 col: idx,
@@ -116,6 +117,7 @@ impl DbRow {
                 })?;
                 Ok(Some(arr))
             }
+            Some(DbValue::Uuid(v)) => Ok(Some(*v)),
             Some(DbValue::Null) => Ok(None),
             Some(_) => Err(DbError::TypeMismatch {
                 col: idx,

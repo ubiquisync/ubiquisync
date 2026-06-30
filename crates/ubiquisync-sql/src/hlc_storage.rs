@@ -12,7 +12,11 @@
 
 use ubiquisync_core::hlc::HlcStorage;
 
-use crate::db::{Db, DbBatch, DbError, DbValue};
+use crate::{
+    db::{Db, DbBatch, DbError, DbValue},
+    dialect::SqlDialect,
+    util::quote_ident,
+};
 
 /// Persistence for the clock register, scoped to a table-name prefix.
 pub struct SqlHlcStorage {
@@ -27,7 +31,7 @@ impl SqlHlcStorage {
     /// read, done once at startup. `prefix` namespaces the table so multiple
     /// stores can share a database.
     pub async fn open(db: &dyn Db, prefix: &str) -> Result<Self, DbError> {
-        let table = format!("{prefix}__hlc");
+        let table = quote_ident(&format!("{prefix}__hlc"));
         db.exec(&create_sql(&table), &[]).await?;
         let seed = match db.query(&load_sql(&table), &[]).await?.first() {
             Some(row) => Some(row.get_i64(0)? as u64),
@@ -35,7 +39,7 @@ impl SqlHlcStorage {
         };
         Ok(Self {
             seed,
-            persist_sql: persist_sql(&table),
+            persist_sql: persist_sql(&table, db.dialect()),
         })
     }
 }
@@ -74,9 +78,11 @@ fn load_sql(table: &str) -> String {
 
 /// MAX-guarded upsert: a stale commit cannot lower the stored clock below a
 /// value an earlier-issued (but later-committed) write set.
-fn persist_sql(table: &str) -> String {
+fn persist_sql(table: &str, dialect: SqlDialect) -> String {
+    let max = dialect.scalar_max();
+    let p1 = dialect.placeholder(1);
     format!(
-        "INSERT INTO {table} (id, ts) VALUES (1, ?1) \
-         ON CONFLICT(id) DO UPDATE SET ts = MAX(ts, excluded.ts)"
+        "INSERT INTO {table} (id, ts) VALUES (1, {p1}) \
+         ON CONFLICT(id) DO UPDATE SET ts = {max}(ts, excluded.ts)"
     )
 }
