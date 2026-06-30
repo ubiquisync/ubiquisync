@@ -91,7 +91,6 @@ impl DbRow {
     }
 
     pub fn get_uuid(&self, idx: usize) -> Result<[u8; 16], DbError> {
-        // TODO match uuid or bytes
         match self.values.get(idx) {
             Some(DbValue::Blob(v)) => v.as_slice().try_into().map_err(|_| DbError::TypeMismatch {
                 col: idx,
@@ -108,7 +107,6 @@ impl DbRow {
     }
 
     pub fn get_optional_uuid(&self, idx: usize) -> Result<Option<[u8; 16]>, DbError> {
-        // TODO match uuid or bytes
         match self.values.get(idx) {
             Some(DbValue::Blob(v)) => {
                 let arr = v.as_slice().try_into().map_err(|_| DbError::TypeMismatch {

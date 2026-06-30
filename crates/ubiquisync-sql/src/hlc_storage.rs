@@ -13,7 +13,7 @@
 use ubiquisync_core::hlc::HlcStorage;
 
 use crate::{
-    db::{Db, DbBatch, DbError, DbValue},
+    db::{Db, DbBatch, DbError, DbType, DbValue},
     dialect::SqlDialect,
     util::quote_ident,
 };
@@ -32,7 +32,7 @@ impl SqlHlcStorage {
     /// stores can share a database.
     pub async fn open(db: &dyn Db, prefix: &str) -> Result<Self, DbError> {
         let table = quote_ident(&format!("{prefix}__hlc"));
-        db.exec(&create_sql(&table), &[]).await?;
+        db.exec(&create_sql(&table, db.dialect()), &[]).await?;
         let seed = match db.query(&load_sql(&table), &[]).await?.first() {
             Some(row) => Some(row.get_i64(0)? as u64),
             None => None,
@@ -63,11 +63,12 @@ impl HlcStorage for SqlHlcStorage {
 }
 
 /// DDL for the register: exactly one row, pinned at `id = 1`.
-fn create_sql(table: &str) -> String {
+fn create_sql(table: &str, dialect: SqlDialect) -> String {
+    let int_type = DbType::Integer.sql_type(dialect);
     format!(
         "CREATE TABLE IF NOT EXISTS {table} (\n    \
-         id INTEGER PRIMARY KEY CHECK (id = 1),\n    \
-         ts INTEGER NOT NULL DEFAULT 0\n)"
+         id {int_type} PRIMARY KEY CHECK (id = 1),\n    \
+         ts {int_type} NOT NULL DEFAULT 0\n)"
     )
 }
 
@@ -83,6 +84,6 @@ fn persist_sql(table: &str, dialect: SqlDialect) -> String {
     let p1 = dialect.placeholder(1);
     format!(
         "INSERT INTO {table} (id, ts) VALUES (1, {p1}) \
-         ON CONFLICT(id) DO UPDATE SET ts = {max}(ts, excluded.ts)"
+         ON CONFLICT(id) DO UPDATE SET ts = {max}(COALESCE(ts, 0), EXCLUDED.ts)"
     )
 }
