@@ -285,7 +285,7 @@ fn affinity(declared_type: &str) -> DbType {
         DbType::Integer
     } else if t.contains("CHAR") || t.contains("CLOB") || t.contains("TEXT") {
         DbType::Text
-    } else if t == "BLOB" {
+    } else if t.contains("BLOB") {
         DbType::Blob
     } else {
         DbType::Other
@@ -477,13 +477,21 @@ mod tests {
     }
 
     #[test]
-    fn unmodeled_column_type_maps_to_other() {
+    fn affinity_maps_declared_types() {
         let db = SqliteDb::open_in_memory().unwrap();
-        block_on(db.exec("CREATE TABLE m (a INTEGER, r REAL, n NUMERIC)", &[])).unwrap();
+        // `BLOB(16)`/`VARCHAR(8)` are substring matches per SQLite affinity; REAL
+        // and NUMERIC are types the engine doesn't model → Other.
+        block_on(db.exec(
+            "CREATE TABLE m (a INTEGER, s VARCHAR(8), b BLOB(16), r REAL, n NUMERIC)",
+            &[],
+        ))
+        .unwrap();
         let desc = block_on(db.describe_table("m")).unwrap().unwrap();
         let by_name: std::collections::HashMap<_, _> =
             desc.cols.iter().map(|c| (c.name.as_str(), c.db_type)).collect();
         assert_eq!(by_name["a"], DbType::Integer);
+        assert_eq!(by_name["s"], DbType::Text);
+        assert_eq!(by_name["b"], DbType::Blob);
         assert_eq!(by_name["r"], DbType::Other);
         assert_eq!(by_name["n"], DbType::Other);
     }
