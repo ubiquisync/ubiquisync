@@ -49,7 +49,11 @@ impl<E: Op, W: Write> Encoder<E, W> {
             uuids: HashMap::default(),
             server_mode,
             entry_index: 0,
-            size: 0,
+            // Seed with the header bytes just written (magic + 1 flag byte) so
+            // `size()` reports total bytes on the sink — letting a persistent
+            // backend's runtime size match the file length it reads back on
+            // reopen.
+            size: magic.len() + 1,
             _phantom: std::marker::PhantomData,
         })
     }
@@ -116,6 +120,9 @@ impl<E: Op, W: Write> Encoder<E, W> {
         Ok(self.entry_index)
     }
 
+    /// Total bytes written to the sink so far — the segment header (magic + 1
+    /// flag byte) plus every encoded entry. Equals the on-disk file length, so
+    /// backends can use it for size thresholds consistently across a restart.
     pub fn size(&self) -> usize {
         self.size
     }
