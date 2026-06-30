@@ -2,7 +2,7 @@
 //!
 //! This is the op-specific half of the segment codec: it implements the core
 //! [`Op`](ubiquisync_core::codec::Op) trait for this crate's
-//! [`Op`](crate::op::Op) enum, encoding and decoding op bodies dispatched by
+//! [`Op`] enum, encoding and decoding op bodies dispatched by
 //! tag. The generic envelope framing (segment header, timestamp deltas, UUID
 //! dictionary compression, blake3 trailer, expungement) lives in
 //! [`ubiquisync_core::codec`] and drives this code through the trait.
