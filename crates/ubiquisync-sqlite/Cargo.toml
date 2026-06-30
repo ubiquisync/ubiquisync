@@ -7,4 +7,4 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-ubiquisync-tables = { workspace = true }
+ubiquisync-sql = { workspace = true }
