@@ -8,3 +8,5 @@ repository.workspace = true
 
 [dependencies]
 ubiquisync-sql = { workspace = true }
+async-trait = { workspace = true }
+rusqlite = { version = "0.31", features = ["bundled"] }

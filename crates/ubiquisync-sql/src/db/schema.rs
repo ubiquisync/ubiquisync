@@ -25,6 +25,13 @@ pub enum DbType {
     Text,
     Blob,
     Uuid,
+    /// A column type the engine does not model (e.g. SQLite `REAL`/`NUMERIC`, a
+    /// Postgres enum). Produced only by backend introspection
+    /// ([`Db::describe_table`](super::Db::describe_table)) when a real table has
+    /// a column outside the engine's vocabulary; the engine never *emits* it as
+    /// DDL. Schema reconciliation treats it as a mismatch rather than silently
+    /// coercing it to a class it isn't.
+    Other,
 }
 
 impl DbType {
@@ -41,6 +48,11 @@ impl DbType {
             (SqlDialect::Postgres, DbType::Integer) => "BIGINT",
             (SqlDialect::Postgres, DbType::Text) => "TEXT",
             (SqlDialect::Postgres, DbType::Blob | DbType::Uuid) => "BYTEA",
+            // `Other` is introspection-only — it names a column type the engine
+            // doesn't model, so it has no DDL spelling and is never emitted.
+            (_, DbType::Other) => {
+                unreachable!("DbType::Other is introspection-only and never rendered as DDL")
+            }
         }
     }
 }
