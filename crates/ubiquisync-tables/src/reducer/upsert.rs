@@ -76,7 +76,7 @@ impl Reducer {
 
         let mut returning_clauses = vec![];
         let mut changed_col_events = vec![];
-        for (col_schema, col_value) in all_updates {
+        for (col_id, col_value) in all_updates {
             // TODO validate value types
             let value = if let Some(col_value) = col_value {
                 value_to_db(&col_value)
@@ -85,7 +85,7 @@ impl Reducer {
             };
 
             // get the column schema
-            let quoted_name = quote_ident(&col_schema.name);
+            let quoted_name = col_id.name();
             // bind column to the INSERT INTO clause
             insert_into_cols.push(quoted_name.clone());
             // create positional (?3) bind param

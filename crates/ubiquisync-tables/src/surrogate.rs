@@ -3,12 +3,12 @@ use crate::id::{ColumnId, TableId};
 impl TableId {
     pub fn name(&self, prefix: &str) -> String {
         let raw: u16 = self.into();
-        format!("{prefix}t0x{raw:04X}")
+        format!("{prefix}__t0x{raw:04X}")
     }
 
     pub fn parse(prefix: &str, name: &str) -> Option<Self> {
         name.strip_prefix(prefix)
-            .and_then(|s| s.strip_prefix("t0x"))
+            .and_thn(|s| s.strip_prefix("__t0x"))
             .and_then(TableId::try_from_raw)
     }
 }
