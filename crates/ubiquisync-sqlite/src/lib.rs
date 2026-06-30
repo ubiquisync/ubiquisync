@@ -16,7 +16,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use async_trait::async_trait;
-use rusqlite::types::{Value as SqlValue, ValueRef};
+use rusqlite::types::{ToSqlOutput, ValueRef};
 use rusqlite::{Connection, params_from_iter};
 
 use ubiquisync_sql::db::{
@@ -231,16 +231,22 @@ fn run_statement(
     })
 }
 
-/// Map a [`DbValue`] parameter to a rusqlite value. UUIDs are stored as their 16
-/// raw bytes, matching [`DbType::Uuid`]'s `BLOB` storage class.
-fn to_sql_value(value: &DbValue) -> SqlValue {
-    match value {
-        DbValue::Null => SqlValue::Null,
-        DbValue::Integer(i) => SqlValue::Integer(*i),
-        DbValue::Text(s) => SqlValue::Text(s.clone()),
-        DbValue::Blob(b) => SqlValue::Blob(b.clone()),
-        DbValue::Uuid(u) => SqlValue::Blob(u.to_vec()),
-    }
+/// Bind a [`DbValue`] parameter, borrowing its bytes rather than copying.
+///
+/// Returns a [`ToSqlOutput::Borrowed`] [`ValueRef`] that points straight into the
+/// `DbValue`, so binding a large text/blob (or a tight write loop) costs no
+/// per-statement allocation — the buffer is read in place at bind time. UUIDs
+/// are bound as their 16 raw bytes, matching [`DbType::Uuid`]'s `BLOB` storage
+/// class.
+fn to_sql_value(value: &DbValue) -> ToSqlOutput<'_> {
+    let value_ref = match value {
+        DbValue::Null => ValueRef::Null,
+        DbValue::Integer(i) => ValueRef::Integer(*i),
+        DbValue::Text(s) => ValueRef::Text(s.as_bytes()),
+        DbValue::Blob(b) => ValueRef::Blob(b.as_slice()),
+        DbValue::Uuid(u) => ValueRef::Blob(u.as_slice()),
+    };
+    ToSqlOutput::Borrowed(value_ref)
 }
 
 /// Map a rusqlite result cell to a [`DbValue`].
