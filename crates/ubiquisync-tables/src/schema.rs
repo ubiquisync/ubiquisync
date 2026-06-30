@@ -201,7 +201,7 @@ impl SurrogateTableSchema {
         let without_rowid = db.dialect().without_rowid();
         db.exec(
             &format!(
-                "CREATE TABLE {} ({}) PRIMARY KEY ({}){without_rowid};",
+                "CREATE TABLE {} ({}, PRIMARY KEY ({})){without_rowid};",
                 self.name,
                 col_defs.join(", "),
                 self.pk_names.join(", ")
@@ -238,8 +238,8 @@ impl SurrogateTableSchema {
             &format!(
                 "ALTER TABLE {} ADD COLUMN {} {};",
                 self.name,
-                col_id.name(),
-                db.lww_col_type(),
+                col_id.lww_name(),
+                DbType::Integer,
             ),
             &[],
         );
@@ -280,7 +280,8 @@ impl TableSchema {
 
         let mut batch = db.new_batch();
         batch.add_statement(&format!("DROP VIEW IF EXISTS {quoted_name}"), &[]);
-        batch.add_statement(&format!("CREATE VIEW {quoted_name} AS SELECT {} FROM {surrogate_name}",
+        batch.add_statement(&format!("CREATE VIEW {quoted_name} AS SELECT {} FROM {surrogate_name} \
+            WHERE COALESCE({UPSERT_TS_COL}, 0) >= COALESCE({DELETED_TS_COL}, 0)",
             select_clauses.join(", ")),
             &[]);
         batch.commit().await?;

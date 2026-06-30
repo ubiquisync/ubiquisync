@@ -50,7 +50,7 @@ impl Reducer {
             &mut value_binder,
         );
 
-        let pk_name_list = mk_pkey_name_list(table);
+        let pk_name_list = table_id.pk_name_list();
 
         // the SET clauses for each non-pk column
         let mut set_clauses = vec![];
@@ -65,15 +65,13 @@ impl Reducer {
         set_clauses.push(set_lww_sql(UPSERT_TS_COL, &quoted_table_name, dialect));
         where_clauses.push(lww_winner_sql(&quoted_table_name, UPSERT_TS_COL));
 
-        let mut all_updates: Vec<(&ColumnSchema, Option<Value>)> = Vec::new();
+        let mut all_updates: Vec<(ColumnId, Option<Value>)> = Vec::new();
         for col_update in upsert.sets.iter() {
-            let col_schema = table.require_column(col_update.column_id)?;
-            all_updates.push((col_schema, Some(col_update.value)));
+            all_updates.push((col_update.column_id, Some(col_update.value)));
         }
 
         for null_col_id in upsert.nulls.iter() {
-            let col_schema = table.require_column(*null_col_id)?;
-            all_updates.push((col_schema, None));
+            all_updates.push((*null_col_id, None));
         }
 
         let mut returning_clauses = vec![];

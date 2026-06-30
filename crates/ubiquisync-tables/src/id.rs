@@ -106,6 +106,13 @@ impl TableId {
         format("k{i}")
     }
 
+    pub fn pk_name_list(&self) -> String {
+        (0..self.pk_count())
+            .map(|i| self.pk_name(i))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
     /// Type of PK column `i` (0-based). Panics if `i >= pk_count()`.
     pub const fn pk_col_type(&self, i: usize) -> ColType {
         assert!(i < self.pk_count(), "PK column index out of range");

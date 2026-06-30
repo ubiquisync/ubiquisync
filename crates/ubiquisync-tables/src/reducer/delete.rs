@@ -1,3 +1,6 @@
+use std::os::unix::fs::MetadataExt;
+use std::panic::take_hook;
+
 use crate::op::Delete;
 use crate::reducer::upsert::{bind_pkey, lww_winner_sql, mk_pkey_name_list, set_lww_sql};
 use crate::reducer::{Reducer, ReducerError};
@@ -23,8 +26,9 @@ impl Reducer {
         delete: &Delete,
     ) -> Result<StmtId, ReducerError> {
         let dialect = batch.dialect();
-        let table = self.require_table(delete.table_id)?;
-        let quoted_table_name = quote_ident(table.get_name());
+        let table_id = delete.table_id;
+        let table = self.require_table(table_id)?;
+        let quoted_table_name = table.get_name();
 
         // Because deletes are soft deletes, counter-intuitively we're actually building a INSERT ON CONFLICT SET statement
         let mut insert_into_cols = vec![]; // INSERT INTO (...)
