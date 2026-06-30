@@ -34,7 +34,7 @@ impl SqlHlcStorage {
         let table = quote_ident(&format!("{prefix}__hlc"));
         db.exec(&create_sql(&table, db.dialect()), &[]).await?;
         let seed = match db.query(&load_sql(&table), &[]).await?.first() {
-            Some(row) => Some(row.get_i64(0)? as u64),
+            Some(row) => Some(row.get_u64(0)?),
             None => None,
         };
         Ok(Self {
@@ -54,10 +54,13 @@ impl HlcStorage for SqlHlcStorage {
     }
 
     /// Enqueue the clock-state upsert into `sink`. Durable when the caller
-    /// commits the sink. The packed `u64` is always below 2^48 (48-bit millis +
-    /// 16-bit counter), so it round-trips through SQLite's signed 64-bit integer.
+    /// commits the sink. The packed `u64` occupies the full 64-bit width
+    /// (48-bit millis `<< 16` | 16-bit counter), so [`DbValue::from_u64`]
+    /// rejects a value past `i64::MAX` rather than wrap it negative — which
+    /// would also break the signed `MAX`-guard merge. The real clock stays far
+    /// below that bound (millis below 2^47, ~year 6400).
     fn save(&self, sink: &mut Self::Sink, raw: u64) -> Result<(), Self::Error> {
-        sink.add_statement(&self.persist_sql, &[DbValue::Integer(raw as i64)]);
+        sink.add_statement(&self.persist_sql, &[DbValue::from_u64(raw)?]);
         Ok(())
     }
 }
