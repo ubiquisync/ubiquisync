@@ -192,8 +192,13 @@ fn entry(key: &[u8], value: i64, millis: u64, user_id: Option<Uuid>) -> LogEntry
 }
 
 fn oplog_row_count<D: Db>(db: &D) -> i64 {
-    let sql = format!("SELECT COUNT(*) FROM {}", quote_ident(&format!("{PREFIX}__oplog")));
-    block_on(db.query(&sql, &[])).unwrap()[0].get_i64(0).unwrap()
+    let sql = format!(
+        "SELECT COUNT(*) FROM {}",
+        quote_ident(&format!("{PREFIX}__oplog"))
+    );
+    block_on(db.query(&sql, &[])).unwrap()[0]
+        .get_i64(0)
+        .unwrap()
 }
 
 fn oplog_user_id<D: Db>(db: &D, client_idx: u64) -> Option<Uuid> {
@@ -212,7 +217,9 @@ fn clock_register<D: Db>(db: &D) -> u64 {
         "SELECT ts FROM {} WHERE id = 1",
         quote_ident(&format!("{PREFIX}__hlc"))
     );
-    block_on(db.query(&sql, &[])).unwrap()[0].get_u64(0).unwrap()
+    block_on(db.query(&sql, &[])).unwrap()[0]
+        .get_u64(0)
+        .unwrap()
 }
 
 /// Drives one processor through the max-register scenarios against `db`.
@@ -235,12 +242,9 @@ pub fn run_max_register_suite<D: Db>(db: D) {
 
     // A larger value advances it. This entry carries a user id, so its op-log
     // row exercises the `Some(user)` binding path.
-    let r = block_on(processor.process_one(
-        &CLIENT,
-        2,
-        &entry(b"x", 9, 1_700_000_000_002, Some(USER)),
-    ))
-    .unwrap();
+    let r =
+        block_on(processor.process_one(&CLIENT, 2, &entry(b"x", 9, 1_700_000_000_002, Some(USER))))
+            .unwrap();
     assert_eq!(r, 9, "larger value raises the register");
     assert_eq!(
         oplog_user_id(processor.db(), 2),
@@ -257,14 +261,18 @@ pub fn run_max_register_suite<D: Db>(db: D) {
     let committed_rows = oplog_row_count(processor.db());
     let committed_clock = clock_register(processor.db());
     assert_eq!(committed_rows, 3);
-    assert_eq!(committed_clock, Timestamp::from_parts(1_700_000_000_002, 0).raw());
+    assert_eq!(
+        committed_clock,
+        Timestamp::from_parts(1_700_000_000_002, 0).raw()
+    );
 
     // Re-ingesting (CLIENT, 0) is a duplicate. Its timestamp (…003) is *higher*
     // than the persisted clock and its value (100) would raise the register, so
     // a missed rollback would be visible in all three of: the register, the
     // op-log row count, and the persisted clock.
-    let err = block_on(processor.process_one(&CLIENT, 0, &entry(b"x", 100, 1_700_000_000_003, None)))
-        .unwrap_err();
+    let err =
+        block_on(processor.process_one(&CLIENT, 0, &entry(b"x", 100, 1_700_000_000_003, None)))
+            .unwrap_err();
     assert!(
         matches!(err, ProcessorError::Db(DbError::UniqueViolation)),
         "duplicate surfaces as a unique violation, got {err:?}"
