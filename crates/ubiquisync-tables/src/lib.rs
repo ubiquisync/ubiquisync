@@ -8,13 +8,16 @@
 //!
 //! This crate defines the table data domain: tables with a compile-time
 //! schema, addressed by self-describing [type-encoded IDs](crate::id), mutated
-//! by a small [op vocabulary](crate::op), encoded to the log wire format by the
-//! [codec](crate::codec), and materialized to SQL through a backend
-//! [`SqlDialect`](crate::dialect::SqlDialect). The storage-agnostic log engine,
-//! clock, and codec framing live in [`ubiquisync-core`](ubiquisync_core); SQL
-//! backends live in companion crates such as `ubiquisync-sqlite`.
+//! by a small [op vocabulary](crate::op), and encoded to the log wire format by
+//! the [codec](crate::codec). Each [`ColType`](crate::col_type::ColType) maps to
+//! a generic SQL storage class ([`DbType`](ubiquisync_sql::db::DbType)) that
+//! storage backends turn into concrete column types. The storage-agnostic log
+//! engine, clock, and codec framing live in
+//! [`ubiquisync-core`](ubiquisync_core); SQL backends live in companion crates
+//! such as `ubiquisync-sqlite`.
 
 pub mod codec;
-pub mod dialect;
+pub mod col_type;
 pub mod id;
+pub mod index_codec;
 pub mod op;

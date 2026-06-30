@@ -97,6 +97,15 @@ impl<'a> EntryBufferWriter<'a> {
     pub fn finalize(self) -> (Vec<u8>, blake3::Hash) {
         self.buf.finalize()
     }
+
+    /// Return just the encoded body, **without** the truncated-hash integrity
+    /// trailer that [`finalize`](Self::finalize) appends. Used by callers that
+    /// reuse the wire encoding for storage and supply their own framing — e.g.
+    /// the SQL op-log index codec, which stores the raw `key`/`value` bytes and
+    /// has no use for a per-blob integrity hash.
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.buf.into_bytes()
+    }
 }
 
 struct HashWriter {
@@ -135,5 +144,10 @@ impl HashWriter {
         let mut buf = self.buf;
         buf.extend_from_slice(&hash.as_bytes()[..4]);
         (buf, hash)
+    }
+
+    /// Return the accumulated buffer without computing or appending the hash.
+    fn into_bytes(self) -> Vec<u8> {
+        self.buf
     }
 }

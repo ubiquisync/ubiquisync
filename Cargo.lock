@@ -288,6 +288,7 @@ version = "0.0.2"
 dependencies = [
  "bitfield-struct",
  "ubiquisync-core",
+ "ubiquisync-sql",
 ]
 
 [[package]]
