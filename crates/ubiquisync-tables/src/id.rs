@@ -101,11 +101,15 @@ impl TableId {
         ((self.0 >> 14) as usize) + 1
     }
 
+    /// SQL column name for PK column `i` (0-based): `k0`, `k1`, … Panics if
+    /// `i >= pk_count()`.
     pub fn pk_col_name(&self, i: usize) -> String {
         assert!(i < self.pk_count(), "PK column index out of range");
         format!("k{i}")
     }
 
+    /// Comma-separated list of this table's PK column names, e.g. `k0, k1` —
+    /// for splicing into SQL key clauses.
     pub fn pk_col_name_list(&self) -> String {
         (0..self.pk_count())
             .map(|i| self.pk_col_name(i))
