@@ -101,7 +101,7 @@ impl DbRow {
             Some(DbValue::Null) => Err(DbError::UnexpectedNull(idx)),
             Some(_) => Err(DbError::TypeMismatch {
                 col: idx,
-                expected: "16-byte UUID blob",
+                expected: "uuid or 16-byte blob",
             }),
             None => Err(DbError::ColumnOutOfBounds(idx)),
         }
@@ -121,7 +121,7 @@ impl DbRow {
             Some(DbValue::Null) => Ok(None),
             Some(_) => Err(DbError::TypeMismatch {
                 col: idx,
-                expected: "16-byte UUID blob",
+                expected: "uuid or 16-byte blob",
             }),
             None => Err(DbError::ColumnOutOfBounds(idx)),
         }
