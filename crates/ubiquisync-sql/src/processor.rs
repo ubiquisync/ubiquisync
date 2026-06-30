@@ -11,6 +11,11 @@ use crate::{
     tracker::{LogTracker, LogTrackerError},
 };
 
+// The processor is reachable today only from the in-crate `test_support`
+// harness; the public ingestion entry point that drives it is not wired up yet.
+// Suppress the resulting dead-code lints rather than prematurely commit to a
+// `pub` surface — these clear once a caller lands.
+#[allow(dead_code)]
 pub struct Processor<R: Reducer, D: Db, T> {
     reducer: R,
     db: D,
@@ -18,6 +23,7 @@ pub struct Processor<R: Reducer, D: Db, T> {
     tracker: T,
 }
 
+#[allow(dead_code)]
 impl<R: Reducer, D: Db, T: LogTracker<R::Op>> Processor<R, D, T> {
     /// Wire up a processor against `db`: open the HLC register and the tracker's
     /// op-log (both namespaced by `prefix`), seed the in-memory clock from the
@@ -39,15 +45,26 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>> Processor<R, D, T> {
         })
     }
 
-    /// Ingest one log entry. Returns `Ok(None)` when the entry was already
-    /// ingested — a duplicate `(client_id, client_idx)` fails the batch's unique
-    /// constraint, rolling everything back, so nothing is re-applied.
+    /// The backend this processor writes through. For test/diagnostic reads of
+    /// the op-log and clock register the processor manages.
+    pub(crate) fn db(&self) -> &D {
+        &self.db
+    }
+
+    /// Ingest one log entry atomically: observe its HLC timestamp, record it in
+    /// the op-log, and apply the reducer's writes in one all-or-nothing batch.
+    ///
+    /// Re-ingesting an applied `(client_id, client_idx)` hits the op-log PK and
+    /// surfaces as [`DbError::UniqueViolation`](crate::db::DbError::UniqueViolation)
+    /// (the batch rolls back); it is not swallowed. Callers dedup against their
+    /// known last-ingested index — we can't portably tell an op-log conflict from
+    /// a reducer's own constraint, so reducers must use idempotent upserts.
     pub(crate) async fn process_one(
         &mut self,
         client_id: &Uuid,
         client_idx: u64,
         entry: &LogEntry<R::Op>,
-    ) -> Result<Option<R::Event>, ProcessorError<R::Error>> {
+    ) -> Result<R::Event, ProcessorError<R::Error>> {
         let op = &entry.op;
         let timestamp = entry.timestamp;
         let prepare_state = self
@@ -63,16 +80,12 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>> Processor<R, D, T> {
             .reducer
             .apply(batch.as_mut(), timestamp, op, prepare_state)
             .map_err(ProcessorError::Reducer)?;
-        let batch_result = match batch.commit().await {
-            Ok(result) => result,
-            Err(DbError::UniqueViolation) => return Ok(None),
-            Err(e) => return Err(e.into()),
-        };
+        let batch_result = batch.commit().await?;
         let event = self
             .reducer
             .post_apply(apply_state, &batch_result)
             .map_err(ProcessorError::Reducer)?;
-        Ok(Some(event))
+        Ok(event)
     }
 }
 

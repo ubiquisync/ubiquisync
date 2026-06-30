@@ -29,7 +29,7 @@ use ubiquisync_core::{
 
 use crate::{
     db::{Db, DbBatch, DbError, DbStatementResult, DbType, DbValue, StmtId, ValueBinder},
-    processor::Processor,
+    processor::{Processor, ProcessorError},
     reducer::Reducer,
     tracker::LogIndexTracker,
     util::quote_ident,
@@ -148,9 +148,12 @@ impl Reducer for MaxRegister {
         let k = binder.bind_next(DbValue::Blob(op.key.clone()));
         let v = binder.bind_next(DbValue::Integer(op.value));
         let max = batch.dialect().scalar_max();
+        // COALESCE the stored side: SQLite `MAX` returns NULL on a NULL arg
+        // while Postgres `GREATEST` ignores NULLs, so the wrapper is what makes
+        // the merge agree across dialects (mirrors `SqlHlcStorage`).
         let sql = format!(
             "INSERT INTO {tbl} (k, v) VALUES ({k}, {v}) \
-             ON CONFLICT(k) DO UPDATE SET v = {max}(v, EXCLUDED.v) RETURNING v",
+             ON CONFLICT(k) DO UPDATE SET v = {max}(COALESCE(v, 0), EXCLUDED.v) RETURNING v",
             tbl = self.table
         );
         Ok(batch.add_statement(&sql, &binder.values()))
@@ -161,6 +164,9 @@ impl Reducer for MaxRegister {
         apply_state: StmtId,
         batch_result: &[DbStatementResult],
     ) -> Result<i64, DbError> {
+        // Safe to index `rows[0]` only because this upsert's `DO UPDATE` is
+        // unconditional, so `RETURNING` always yields a row. A reducer with a
+        // guarded upsert must handle an empty result instead.
         batch_result[apply_state.0].rows[0].get_i64(0)
     }
 }
@@ -170,10 +176,12 @@ impl Reducer for MaxRegister {
 type MaxProcessor<D> = Processor<MaxRegister, D, LogIndexTracker<MaxOp>>;
 
 const CLIENT: Uuid = [7u8; 16];
+const USER: Uuid = [9u8; 16];
+const PREFIX: &str = "app";
 
-fn entry(key: &[u8], value: i64, millis: u64) -> LogEntry<MaxOp> {
+fn entry(key: &[u8], value: i64, millis: u64, user_id: Option<Uuid>) -> LogEntry<MaxOp> {
     LogEntry {
-        user_id: None,
+        user_id,
         // A past wall component is always within the HLC skew bound.
         timestamp: Timestamp::from_parts(millis, 0),
         op: MaxOp {
@@ -183,37 +191,111 @@ fn entry(key: &[u8], value: i64, millis: u64) -> LogEntry<MaxOp> {
     }
 }
 
+fn oplog_row_count<D: Db>(db: &D) -> i64 {
+    let sql = format!("SELECT COUNT(*) FROM {}", quote_ident(&format!("{PREFIX}__oplog")));
+    block_on(db.query(&sql, &[])).unwrap()[0].get_i64(0).unwrap()
+}
+
+fn oplog_user_id<D: Db>(db: &D, client_idx: u64) -> Option<Uuid> {
+    let sql = format!(
+        "SELECT user_id FROM {} WHERE client_idx = {client_idx}",
+        quote_ident(&format!("{PREFIX}__oplog"))
+    );
+    block_on(db.query(&sql, &[])).unwrap()[0]
+        .get_optional_uuid(0)
+        .unwrap()
+}
+
+/// The durably persisted HLC clock — the value seeded on the next `open`.
+fn clock_register<D: Db>(db: &D) -> u64 {
+    let sql = format!(
+        "SELECT ts FROM {} WHERE id = 1",
+        quote_ident(&format!("{PREFIX}__hlc"))
+    );
+    block_on(db.query(&sql, &[])).unwrap()[0].get_u64(0).unwrap()
+}
+
 /// Drives one processor through the max-register scenarios against `db`.
 /// Generic over the backend so each driver crate's tests can reuse it verbatim
 /// — call it with a freshly opened, empty database.
 pub fn run_max_register_suite<D: Db>(db: D) {
     let mut processor: MaxProcessor<D> =
-        block_on(Processor::open(MaxRegister::new("reg"), db, "app")).unwrap();
+        block_on(Processor::open(MaxRegister::new("reg"), db, PREFIX)).unwrap();
 
     // First write seeds the register.
-    let r = block_on(processor.process_one(&CLIENT, 0, &entry(b"x", 5, 1_700_000_000_000))).unwrap();
-    assert_eq!(r, Some(5), "first write sets the value");
+    let r = block_on(processor.process_one(&CLIENT, 0, &entry(b"x", 5, 1_700_000_000_000, None)))
+        .unwrap();
+    assert_eq!(r, 5, "first write sets the value");
 
     // A smaller value loses the max merge but is still a real (non-duplicate)
     // apply, so it returns the unchanged max.
-    let r = block_on(processor.process_one(&CLIENT, 1, &entry(b"x", 3, 1_700_000_000_001))).unwrap();
-    assert_eq!(r, Some(5), "smaller value does not lower the register");
+    let r = block_on(processor.process_one(&CLIENT, 1, &entry(b"x", 3, 1_700_000_000_001, None)))
+        .unwrap();
+    assert_eq!(r, 5, "smaller value does not lower the register");
 
-    // A larger value advances it.
-    let r = block_on(processor.process_one(&CLIENT, 2, &entry(b"x", 9, 1_700_000_000_002))).unwrap();
-    assert_eq!(r, Some(9), "larger value raises the register");
+    // A larger value advances it. This entry carries a user id, so its op-log
+    // row exercises the `Some(user)` binding path.
+    let r = block_on(processor.process_one(
+        &CLIENT,
+        2,
+        &entry(b"x", 9, 1_700_000_000_002, Some(USER)),
+    ))
+    .unwrap();
+    assert_eq!(r, 9, "larger value raises the register");
+    assert_eq!(
+        oplog_user_id(processor.db(), 2),
+        Some(USER),
+        "attributed entry stores its user id"
+    );
+    assert_eq!(
+        oplog_user_id(processor.db(), 0),
+        None,
+        "unattributed entry stores NULL user id"
+    );
 
-    // Re-ingesting (CLIENT, 0) is a duplicate: the op-log PK conflict must roll
-    // the *whole* batch back, including this op's would-be max bump to 100.
-    let r =
-        block_on(processor.process_one(&CLIENT, 0, &entry(b"x", 100, 1_700_000_000_003))).unwrap();
-    assert_eq!(r, None, "duplicate (client_id, client_idx) is skipped");
+    // State the three committed entries left behind, for the rollback checks.
+    let committed_rows = oplog_row_count(processor.db());
+    let committed_clock = clock_register(processor.db());
+    assert_eq!(committed_rows, 3);
+    assert_eq!(committed_clock, Timestamp::from_parts(1_700_000_000_002, 0).raw());
 
-    // Prove the duplicate applied nothing: the register is still 9, not 100.
-    let r = block_on(processor.process_one(&CLIENT, 3, &entry(b"x", 1, 1_700_000_000_004))).unwrap();
-    assert_eq!(r, Some(9), "rolled-back duplicate left the register at 9");
+    // Re-ingesting (CLIENT, 0) is a duplicate. Its timestamp (…003) is *higher*
+    // than the persisted clock and its value (100) would raise the register, so
+    // a missed rollback would be visible in all three of: the register, the
+    // op-log row count, and the persisted clock.
+    let err = block_on(processor.process_one(&CLIENT, 0, &entry(b"x", 100, 1_700_000_000_003, None)))
+        .unwrap_err();
+    assert!(
+        matches!(err, ProcessorError::Db(DbError::UniqueViolation)),
+        "duplicate surfaces as a unique violation, got {err:?}"
+    );
+    assert_eq!(
+        oplog_row_count(processor.db()),
+        committed_rows,
+        "rolled-back duplicate added no op-log row"
+    );
+    assert_eq!(
+        clock_register(processor.db()),
+        committed_clock,
+        "rolled-back observe did not advance the persisted clock"
+    );
+
+    // Prove the duplicate applied nothing at the data layer: still 9, not 100.
+    let r = block_on(processor.process_one(&CLIENT, 3, &entry(b"x", 1, 1_700_000_000_004, None)))
+        .unwrap();
+    assert_eq!(r, 9, "rolled-back duplicate left the register at 9");
+
+    // Replaying a byte-identical, already-applied entry (the real dedup case)
+    // also surfaces the violation rather than silently re-applying.
+    let err = block_on(processor.process_one(&CLIENT, 1, &entry(b"x", 3, 1_700_000_000_001, None)))
+        .unwrap_err();
+    assert!(
+        matches!(err, ProcessorError::Db(DbError::UniqueViolation)),
+        "identical replay surfaces as a unique violation, got {err:?}"
+    );
 
     // A different key is an independent register.
-    let r = block_on(processor.process_one(&CLIENT, 4, &entry(b"y", 7, 1_700_000_000_005))).unwrap();
-    assert_eq!(r, Some(7), "distinct key has its own register");
+    let r = block_on(processor.process_one(&CLIENT, 4, &entry(b"y", 7, 1_700_000_000_005, None)))
+        .unwrap();
+    assert_eq!(r, 7, "distinct key has its own register");
 }
