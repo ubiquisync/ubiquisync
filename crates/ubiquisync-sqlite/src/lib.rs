@@ -13,7 +13,7 @@
 //! crate only drives the connection.
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use async_trait::async_trait;
 use rusqlite::types::{Value as SqlValue, ValueRef};
@@ -55,6 +55,16 @@ impl SqliteDb {
             conn: Arc::new(Mutex::new(conn)),
         }
     }
+
+    /// Acquire the connection, mapping a poisoned mutex to a [`DbError`] rather
+    /// than panicking. A poison means a prior caller panicked mid-statement, so
+    /// the connection may be mid-transaction; we surface that as an error and
+    /// let the caller decide, instead of crashing the whole process.
+    fn lock(&self) -> Result<MutexGuard<'_, Connection>, DbError> {
+        self.conn
+            .lock()
+            .map_err(|_| DbError::Sql("sqlite connection mutex poisoned".to_string()))
+    }
 }
 
 #[async_trait(?Send)]
@@ -64,7 +74,7 @@ impl Db for SqliteDb {
     }
 
     async fn describe_table(&self, name: &str) -> Result<Option<DbTableDescriptor>, DbError> {
-        let conn = self.conn.lock().expect("connection mutex poisoned");
+        let conn = self.lock()?;
 
         // `pragma_table_info` is a table-valued function, so the table name can
         // be bound as a parameter (a bare `PRAGMA table_info(...)` cannot). It
@@ -117,13 +127,13 @@ impl Db for SqliteDb {
     }
 
     async fn exec(&self, sql: &str, params: &[DbValue]) -> Result<usize, DbError> {
-        let conn = self.conn.lock().expect("connection mutex poisoned");
+        let conn = self.lock()?;
         let result = run_statement(&conn, sql, params)?;
         Ok(result.rows_affected)
     }
 
     async fn query(&self, sql: &str, params: &[DbValue]) -> Result<Vec<DbRow>, DbError> {
-        let conn = self.conn.lock().expect("connection mutex poisoned");
+        let conn = self.lock()?;
         let result = run_statement(&conn, sql, params)?;
         Ok(result.rows)
     }
@@ -155,7 +165,10 @@ impl DbBatch for SqliteBatch {
     }
 
     async fn commit(self: Box<Self>) -> Result<Vec<DbStatementResult>, DbError> {
-        let conn = self.conn.lock().expect("connection mutex poisoned");
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| DbError::Sql("sqlite connection mutex poisoned".to_string()))?;
 
         // A real interactive transaction: compute is colocated with the data,
         // so we open BEGIN/COMMIT directly. Any error returns early and drops
@@ -174,7 +187,22 @@ impl DbBatch for SqliteBatch {
 ///
 /// Works for DDL, writes, reads, and `RETURNING` writes uniformly: we always go
 /// through `prepare`/`query` (rather than `execute`, which errors on a statement
-/// that yields rows). `changes()` reports the INSERT/UPDATE/DELETE row count.
+/// that yields rows).
+///
+/// `rows_affected` is `Connection::changes()` — the direct row count of the most
+/// recent INSERT/UPDATE/DELETE, excluding trigger/cascade rows — gated so that a
+/// statement which modified no rows reports 0.
+///
+/// `changes()` is the right primitive for the caller's question "did this
+/// conditional upsert apply?": it is 1 when the target row was written (inserted,
+/// or conflict-updated with its `WHERE` passing) and 0 when the `WHERE` held the
+/// write off. But `changes()` is *not reset* by DDL or SELECT, so a `CREATE
+/// TABLE`/`SELECT` run after a prior write would echo that write's count. An
+/// upsert is itself DML and so resets `changes()` correctly even when preceded by
+/// DDL; the stale read only affects non-DML statements, whose true count is 0. We
+/// detect "did this statement modify any rows" via the monotonic cumulative
+/// counter and report 0 when it did not — fixing DDL/SELECT without inflating the
+/// write count the way a raw cumulative delta would when triggers fire.
 fn run_statement(
     conn: &Connection,
     sql: &str,
@@ -183,6 +211,7 @@ fn run_statement(
     let mut stmt = conn.prepare(sql).map_err(map_err)?;
     let col_count = stmt.column_count();
 
+    let total_before = total_changes(conn);
     let mut rows_out = Vec::new();
     let mut rows = stmt
         .query(params_from_iter(params.iter().map(to_sql_value)))
@@ -196,10 +225,29 @@ fn run_statement(
     }
     drop(rows);
 
+    // Gate `changes()` on whether this statement modified any rows at all, so a
+    // non-DML statement reports 0 rather than a previous write's stale count.
+    let rows_affected = if total_changes(conn) != total_before {
+        conn.changes() as usize
+    } else {
+        0
+    };
     Ok(DbStatementResult {
-        rows_affected: conn.changes() as usize,
+        rows_affected,
         rows: rows_out,
     })
+}
+
+/// The cumulative number of rows inserted/updated/deleted on this connection
+/// since it was opened (`sqlite3_total_changes`). Unlike `Connection::changes()`
+/// it is monotonic and not reset by DDL/SELECT, so a change across a statement
+/// tells us whether that statement modified any rows. rusqlite 0.31 has no safe
+/// wrapper, so we call the ffi binding directly.
+fn total_changes(conn: &Connection) -> i64 {
+    // SAFETY: `handle()` returns this connection's live `sqlite3*`, valid for the
+    // duration of the borrow; `sqlite3_total_changes` only reads a counter off it
+    // and never mutates or stores the pointer.
+    unsafe { rusqlite::ffi::sqlite3_total_changes(conn.handle()) as i64 }
 }
 
 /// Map a [`DbValue`] parameter to a rusqlite value. UUIDs are stored as their 16
@@ -377,6 +425,74 @@ mod tests {
         let desc = block_on(db.describe_table("c")).unwrap().unwrap();
         let pk: Vec<_> = desc.pk_cols.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(pk, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn rows_affected_not_stale_after_ddl() {
+        // After a write that changed a row, a subsequent non-DML statement must
+        // report 0 affected — not the prior write's count (the `changes()` trap).
+        let db = setup();
+        let n = block_on(db.exec("INSERT INTO t (id, name) VALUES (1, 'a')", &[])).unwrap();
+        assert_eq!(n, 1);
+        let n = block_on(db.exec("CREATE TABLE t2 (x INTEGER)", &[])).unwrap();
+        assert_eq!(n, 0, "DDL after a write should report 0 rows affected");
+    }
+
+    #[test]
+    fn update_and_delete_report_affected_rows() {
+        let db = setup();
+        for id in 1..=3 {
+            block_on(db.exec(
+                "INSERT INTO t (id, name) VALUES (?1, 'x')",
+                &[DbValue::Integer(id)],
+            ))
+            .unwrap();
+        }
+        let updated =
+            block_on(db.exec("UPDATE t SET name = 'y' WHERE id <= 2", &[])).unwrap();
+        assert_eq!(updated, 2);
+        let deleted = block_on(db.exec("DELETE FROM t", &[])).unwrap();
+        assert_eq!(deleted, 3);
+    }
+
+    #[test]
+    fn conditional_upsert_reports_applied() {
+        // The real use case: an LWW upsert with a WHERE guard. `rows_affected`
+        // must be 1 when the row is written and 0 when the WHERE holds it off —
+        // even with a DDL statement run in between (the `changes()` staleness
+        // trap). Each upsert resets `changes()` itself, so the answer tracks the
+        // upsert, not the preceding DDL.
+        let db = SqliteDb::open_in_memory().unwrap();
+        block_on(db.exec(
+            "CREATE TABLE lww (pk INTEGER PRIMARY KEY, val TEXT, ts INTEGER)",
+            &[],
+        ))
+        .unwrap();
+
+        let upsert = "INSERT INTO lww (pk, val, ts) VALUES (?1, ?2, ?3) \
+             ON CONFLICT(pk) DO UPDATE SET val = excluded.val, ts = excluded.ts \
+             WHERE excluded.ts > lww.ts";
+        let up = |val: &str, ts: i64| {
+            block_on(db.exec(
+                upsert,
+                &[DbValue::Integer(1), DbValue::Text(val.into()), DbValue::Integer(ts)],
+            ))
+        };
+
+        // First write inserts.
+        assert_eq!(up("a", 5).unwrap(), 1);
+        // A DDL in between would leave a stale changes()==1 if read naively...
+        assert_eq!(
+            block_on(db.exec("CREATE TABLE scratch (x INTEGER)", &[])).unwrap(),
+            0
+        );
+        // ...but the older-timestamp upsert is a no-op: WHERE fails → 0 applied.
+        assert_eq!(up("stale", 3).unwrap(), 0);
+        // A newer timestamp wins → applied.
+        assert_eq!(up("b", 9).unwrap(), 1);
+
+        let rows = block_on(db.query("SELECT val FROM lww WHERE pk = 1", &[])).unwrap();
+        assert_eq!(rows[0].get_text(0).unwrap(), "b");
     }
 
     #[test]
