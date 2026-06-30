@@ -41,22 +41,10 @@ pub trait Op: Sized {
 /// # Round-trip and cross-consistency
 ///
 /// [`from_index_parts`](IndexableOp::from_index_parts) must invert
-/// [`to_index_entry`](IndexableOp::to_index_entry). Critically, the split must
-/// also agree with [`Op::encode`]: `key` followed by `value` must reproduce
-/// exactly the body [`Op::encode`] writes after the tag. Entries are hashed
-/// over that canonical byte form in both the folder log and the SQL op-log, so
-/// any divergence would give the *same* entry two different hashes depending on
-/// its source — breaking expunged markers (`tag = 0xFF`, value = the hash)
-/// across peers.
-///
-/// # Key encoding
-///
-/// `key` must place the table id as a fixed-width leading prefix, so the single
-/// op-log key column serves both exact-row lookups (`key = ?`) and whole-table
-/// scans (a prefix range).
+/// [`to_index_entry`](IndexableOp::to_index_entry) so that it is possible
+/// to deode the full Op from the index parts.
 pub trait IndexableOp: Op {
-    /// Split `self` into its `(tag, key, value)` triple. `key ++ value` must
-    /// equal the body [`Op::encode`] writes after the tag.
+    /// Split `self` into its `(tag, key, value)` triple.
     fn to_index_entry(&self) -> Result<OpIndexEntry, CodecError>;
     /// Reconstruct an op from a stored triple. The inverse of
     /// [`to_index_entry`](IndexableOp::to_index_entry).
