@@ -11,12 +11,13 @@ use crate::{
     tracker::{LogTracker, LogTrackerError},
 };
 
-// The processor is reachable today only from the in-crate `test_support`
-// harness; the public ingestion entry point that drives it is not wired up yet.
-// Suppress the resulting dead-code lints rather than prematurely commit to a
-// `pub` surface — these clear once a caller lands.
+// Crate-private until the public ingestion entry point that drives it is wired
+// up: exposing the type while its constructor stayed `pub(crate)` would let
+// downstream see a `Processor` it can't build. `#[allow(dead_code)]` because the
+// only caller today is the in-crate `test_support` harness, so a normal build
+// sees it as unused — clears once a caller lands.
 #[allow(dead_code)]
-pub struct Processor<R: Reducer, D: Db, T> {
+pub(crate) struct Processor<R: Reducer, D: Db, T> {
     reducer: R,
     db: D,
     hlc: HlcService<SqlHlcStorage>,
@@ -91,9 +92,9 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>> Processor<R, D, T> {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProcessorError<E> {
-    // No `#[from]` here: a blanket `From<E>` would overlap the concrete
-    // `From<DbError>` / `From<CodecError>` impls, so reducer errors are mapped
-    // explicitly at the call sites.
+    // No `#[from]` here: it would generate a blanket `From<E>` that conflicts
+    // with the concrete `From<DbError>` impl below whenever a reducer chooses
+    // `Error = DbError`. Reducer errors are mapped explicitly at the call sites.
     #[error("reducer error: {0}")]
     Reducer(E),
     #[error("hlc error: {0}")]

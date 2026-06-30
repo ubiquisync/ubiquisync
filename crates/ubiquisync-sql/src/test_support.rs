@@ -14,10 +14,7 @@
 //! Postgres driver lands, a second test that hands the suite a `PgDb` is all it
 //! takes.
 
-use std::future::Future;
 use std::io::BufRead;
-use std::pin::pin;
-use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 use async_trait::async_trait;
 use ubiquisync_core::{
@@ -34,27 +31,6 @@ use crate::{
     tracker::LogIndexTracker,
     util::quote_ident,
 };
-
-/// Minimal executor: every future in these crates resolves without ever
-/// yielding (the bodies do no real `.await`), so polling once in a loop with a
-/// no-op waker is sufficient — no async runtime dependency needed. Mirrors the
-/// helper the SQLite crate's own tests use.
-fn block_on<F: Future>(fut: F) -> F::Output {
-    const VTABLE: RawWakerVTable = RawWakerVTable::new(
-        |_| RawWaker::new(std::ptr::null(), &VTABLE),
-        |_| {},
-        |_| {},
-        |_| {},
-    );
-    let waker = unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) };
-    let mut cx = Context::from_waker(&waker);
-    let mut fut = pin!(fut);
-    loop {
-        if let Poll::Ready(v) = fut.as_mut().poll(&mut cx) {
-            return v;
-        }
-    }
-}
 
 // ── Mock op vocabulary ──────────────────────────────────────────────────────
 
@@ -191,75 +167,80 @@ fn entry(key: &[u8], value: i64, millis: u64, user_id: Option<Uuid>) -> LogEntry
     }
 }
 
-fn oplog_row_count<D: Db>(db: &D) -> i64 {
+async fn oplog_row_count<D: Db>(db: &D) -> i64 {
     let sql = format!(
         "SELECT COUNT(*) FROM {}",
         quote_ident(&format!("{PREFIX}__oplog"))
     );
-    block_on(db.query(&sql, &[])).unwrap()[0]
-        .get_i64(0)
-        .unwrap()
+    db.query(&sql, &[]).await.unwrap()[0].get_i64(0).unwrap()
 }
 
-fn oplog_user_id<D: Db>(db: &D, client_idx: u64) -> Option<Uuid> {
+async fn oplog_user_id<D: Db>(db: &D, client_idx: u64) -> Option<Uuid> {
     let sql = format!(
         "SELECT user_id FROM {} WHERE client_idx = {client_idx}",
         quote_ident(&format!("{PREFIX}__oplog"))
     );
-    block_on(db.query(&sql, &[])).unwrap()[0]
+    db.query(&sql, &[]).await.unwrap()[0]
         .get_optional_uuid(0)
         .unwrap()
 }
 
 /// The durably persisted HLC clock — the value seeded on the next `open`.
-fn clock_register<D: Db>(db: &D) -> u64 {
+async fn clock_register<D: Db>(db: &D) -> u64 {
     let sql = format!(
         "SELECT ts FROM {} WHERE id = 1",
         quote_ident(&format!("{PREFIX}__hlc"))
     );
-    block_on(db.query(&sql, &[])).unwrap()[0]
-        .get_u64(0)
-        .unwrap()
+    db.query(&sql, &[]).await.unwrap()[0].get_u64(0).unwrap()
 }
 
 /// Drives one processor through the max-register scenarios against `db`.
+///
 /// Generic over the backend so each driver crate's tests can reuse it verbatim
-/// — call it with a freshly opened, empty database.
-pub fn run_max_register_suite<D: Db>(db: D) {
-    let mut processor: MaxProcessor<D> =
-        block_on(Processor::open(MaxRegister::new("reg"), db, PREFIX)).unwrap();
+/// — call it with a freshly opened, empty database. Returned as a future rather
+/// than blocking internally, so each driver runs it inside its own runtime (a
+/// trivial poll for synchronous backends, a real executor for async ones).
+pub async fn run_max_register_suite<D: Db>(db: D) {
+    let mut processor: MaxProcessor<D> = Processor::open(MaxRegister::new("reg"), db, PREFIX)
+        .await
+        .unwrap();
 
     // First write seeds the register.
-    let r = block_on(processor.process_one(&CLIENT, 0, &entry(b"x", 5, 1_700_000_000_000, None)))
+    let r = processor
+        .process_one(&CLIENT, 0, &entry(b"x", 5, 1_700_000_000_000, None))
+        .await
         .unwrap();
     assert_eq!(r, 5, "first write sets the value");
 
     // A smaller value loses the max merge but is still a real (non-duplicate)
     // apply, so it returns the unchanged max.
-    let r = block_on(processor.process_one(&CLIENT, 1, &entry(b"x", 3, 1_700_000_000_001, None)))
+    let r = processor
+        .process_one(&CLIENT, 1, &entry(b"x", 3, 1_700_000_000_001, None))
+        .await
         .unwrap();
     assert_eq!(r, 5, "smaller value does not lower the register");
 
     // A larger value advances it. This entry carries a user id, so its op-log
     // row exercises the `Some(user)` binding path.
-    let r =
-        block_on(processor.process_one(&CLIENT, 2, &entry(b"x", 9, 1_700_000_000_002, Some(USER))))
-            .unwrap();
+    let r = processor
+        .process_one(&CLIENT, 2, &entry(b"x", 9, 1_700_000_000_002, Some(USER)))
+        .await
+        .unwrap();
     assert_eq!(r, 9, "larger value raises the register");
     assert_eq!(
-        oplog_user_id(processor.db(), 2),
+        oplog_user_id(processor.db(), 2).await,
         Some(USER),
         "attributed entry stores its user id"
     );
     assert_eq!(
-        oplog_user_id(processor.db(), 0),
+        oplog_user_id(processor.db(), 0).await,
         None,
         "unattributed entry stores NULL user id"
     );
 
     // State the three committed entries left behind, for the rollback checks.
-    let committed_rows = oplog_row_count(processor.db());
-    let committed_clock = clock_register(processor.db());
+    let committed_rows = oplog_row_count(processor.db()).await;
+    let committed_clock = clock_register(processor.db()).await;
     assert_eq!(committed_rows, 3);
     assert_eq!(
         committed_clock,
@@ -270,32 +251,37 @@ pub fn run_max_register_suite<D: Db>(db: D) {
     // than the persisted clock and its value (100) would raise the register, so
     // a missed rollback would be visible in all three of: the register, the
     // op-log row count, and the persisted clock.
-    let err =
-        block_on(processor.process_one(&CLIENT, 0, &entry(b"x", 100, 1_700_000_000_003, None)))
-            .unwrap_err();
+    let err = processor
+        .process_one(&CLIENT, 0, &entry(b"x", 100, 1_700_000_000_003, None))
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, ProcessorError::Db(DbError::UniqueViolation)),
         "duplicate surfaces as a unique violation, got {err:?}"
     );
     assert_eq!(
-        oplog_row_count(processor.db()),
+        oplog_row_count(processor.db()).await,
         committed_rows,
         "rolled-back duplicate added no op-log row"
     );
     assert_eq!(
-        clock_register(processor.db()),
+        clock_register(processor.db()).await,
         committed_clock,
         "rolled-back observe did not advance the persisted clock"
     );
 
     // Prove the duplicate applied nothing at the data layer: still 9, not 100.
-    let r = block_on(processor.process_one(&CLIENT, 3, &entry(b"x", 1, 1_700_000_000_004, None)))
+    let r = processor
+        .process_one(&CLIENT, 3, &entry(b"x", 1, 1_700_000_000_004, None))
+        .await
         .unwrap();
     assert_eq!(r, 9, "rolled-back duplicate left the register at 9");
 
     // Replaying a byte-identical, already-applied entry (the real dedup case)
     // also surfaces the violation rather than silently re-applying.
-    let err = block_on(processor.process_one(&CLIENT, 1, &entry(b"x", 3, 1_700_000_000_001, None)))
+    let err = processor
+        .process_one(&CLIENT, 1, &entry(b"x", 3, 1_700_000_000_001, None))
+        .await
         .unwrap_err();
     assert!(
         matches!(err, ProcessorError::Db(DbError::UniqueViolation)),
@@ -303,7 +289,9 @@ pub fn run_max_register_suite<D: Db>(db: D) {
     );
 
     // A different key is an independent register.
-    let r = block_on(processor.process_one(&CLIENT, 4, &entry(b"y", 7, 1_700_000_000_005, None)))
+    let r = processor
+        .process_one(&CLIENT, 4, &entry(b"y", 7, 1_700_000_000_005, None))
+        .await
         .unwrap();
     assert_eq!(r, 7, "distinct key has its own register");
 }

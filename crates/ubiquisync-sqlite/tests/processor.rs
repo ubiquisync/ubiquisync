@@ -7,5 +7,7 @@ use ubiquisync_sqlite::SqliteDb;
 
 #[test]
 fn max_register_suite() {
-    run_max_register_suite(SqliteDb::open_in_memory().unwrap());
+    // SQLite's futures are synchronous, so any executor drives the suite to
+    // completion; `pollster` is a minimal, wakeup-correct `block_on`.
+    pollster::block_on(run_max_register_suite(SqliteDb::open_in_memory().unwrap()));
 }
