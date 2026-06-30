@@ -17,7 +17,9 @@
 //! such as `ubiquisync-sqlite`.
 
 pub mod codec;
-pub mod col_type;
+mod col_type;
 pub mod id;
-pub mod index_codec;
+mod index_codec;
+mod naming;
 pub mod op;
+mod physical_schema;
