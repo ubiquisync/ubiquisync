@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::BufRead;
 
 use ubiquisync_core::codec::{
     CodecError, EntryBufferReader, EntryBufferWriter, IndexableOp, OpIndexEntry, Reader,
@@ -73,15 +74,35 @@ fn encode_index_value(e: &Upsert) -> Result<Vec<u8>, CodecError> {
 pub fn decode_index_key(key: &[u8]) -> Result<(TableId, Vec<Value>), CodecError> {
     let mut dict = HashMap::new();
     let mut r = Reader::new(key);
-    let mut ebr = EntryBufferReader::new(&mut r, &mut dict);
-    decode_one_key(&mut ebr)
+    let decoded = {
+        let mut ebr = EntryBufferReader::new(&mut r, &mut dict);
+        decode_one_key(&mut ebr)?
+    };
+    reject_trailing(&mut r)?;
+    Ok(decoded)
 }
 
 pub fn decode_index_value(value: &[u8]) -> Result<(Vec<ColumnSet>, Vec<ColumnId>), CodecError> {
     let mut dict = HashMap::new();
     let mut r = Reader::new(value);
-    let mut ebr = EntryBufferReader::new(&mut r, &mut dict);
-    decode_one_value(&mut ebr)
+    let decoded = {
+        let mut ebr = EntryBufferReader::new(&mut r, &mut dict);
+        decode_one_value(&mut ebr)?
+    };
+    reject_trailing(&mut r)?;
+    Ok(decoded)
+}
+
+/// An index blob must decode to exactly its bytes. Leftover bytes signal a
+/// mis-decode — a wrong column, appended garbage, or decoder drift — so reject
+/// them rather than silently ignoring them. (These blobs carry no integrity
+/// hash; the authoritative log does.)
+fn reject_trailing<R: BufRead>(r: &mut Reader<R>) -> Result<(), CodecError> {
+    if r.is_eof()? {
+        Ok(())
+    } else {
+        Err(CodecError::TrailingBytes)
+    }
 }
 
 #[cfg(test)]
@@ -206,5 +227,26 @@ mod tests {
     fn from_index_parts_rejects_unknown_tag() {
         let err = Op::from_index_parts(0x7E, &[], &[]).unwrap_err();
         assert!(matches!(err, CodecError::UnknownTag(0x7E)), "got {err:?}");
+    }
+
+    /// Goal: trailing bytes after a valid key/value are rejected, not silently
+    /// ignored — they signal a mis-decode.
+    #[test]
+    fn decode_rejects_trailing_bytes() {
+        let e = rich_upsert().to_index_entry().unwrap();
+
+        let mut key = e.key.clone();
+        key.push(0xAB);
+        assert!(
+            matches!(decode_index_key(&key), Err(CodecError::TrailingBytes)),
+            "trailing key byte must be rejected"
+        );
+
+        let mut value = e.value.clone();
+        value.push(0xAB);
+        assert!(
+            matches!(decode_index_value(&value), Err(CodecError::TrailingBytes)),
+            "trailing value byte must be rejected"
+        );
     }
 }

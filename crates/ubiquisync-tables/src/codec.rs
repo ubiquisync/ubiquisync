@@ -256,8 +256,9 @@ fn read_col_value<R: BufRead>(
 }
 
 fn read_column_id<R: BufRead>(r: &mut EntryBufferReader<R>) -> Result<ColumnId, CodecError> {
-    let raw = r.read_byte()?;
-    ColumnId::try_from_raw(raw).ok_or(CodecError::InvalidColumnType(raw))
+    // Every byte is a valid column ID: the 2-bit type field admits all four
+    // `ColType` values, so this only fails if the byte itself can't be read.
+    Ok(ColumnId::from(r.read_byte()?))
 }
 
 #[cfg(test)]
