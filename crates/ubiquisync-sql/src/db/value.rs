@@ -244,4 +244,26 @@ mod tests {
         };
         assert!(matches!(row.get_u64(0), Err(DbError::IntegerOutOfRange(_))));
     }
+
+    #[test]
+    fn get_optional_u64_passes_null_through_and_still_guards_range() {
+        // NULL is a clean None; a present-but-negative value is still rejected.
+        let null_row = DbRow {
+            values: vec![DbValue::Null],
+        };
+        assert_eq!(null_row.get_optional_u64(0).unwrap(), None);
+
+        let value_row = DbRow {
+            values: vec![DbValue::Integer(42)],
+        };
+        assert_eq!(value_row.get_optional_u64(0).unwrap(), Some(42));
+
+        let negative_row = DbRow {
+            values: vec![DbValue::Integer(-1)],
+        };
+        assert!(matches!(
+            negative_row.get_optional_u64(0),
+            Err(DbError::IntegerOutOfRange(_))
+        ));
+    }
 }
