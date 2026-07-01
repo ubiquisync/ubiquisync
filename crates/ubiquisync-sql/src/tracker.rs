@@ -1,3 +1,11 @@
+//! Recording the log entries a processor ingests.
+//!
+//! [`LogTracker`] is the hook the processor calls for every ingested entry,
+//! enqueued into the same batch that applies the entry. Implementations decide
+//! what to record. [`LogIndexTracker`] is the built-in one — an op-log table,
+//! keyed by `(client_id, client_idx)`, that dedup, revision history, and
+//! attribution read back from without replaying the reducer.
+
 use std::marker::PhantomData;
 
 use ubiquisync_core::{
@@ -11,10 +19,21 @@ use crate::{
     util::quote_ident,
 };
 
+/// Records each log entry as the processor ingests it.
+///
+/// The processor calls [`init`](LogTracker::init) once at startup, then
+/// [`track_one`](LogTracker::track_one) for every ingested entry, inside the
+/// batch that applies that entry. What gets recorded, and how, is up to the
+/// implementation — see [`LogIndexTracker`] for the built-in op-log.
 #[async_trait::async_trait(?Send)]
 pub trait LogTracker<Op>: Sized {
+    /// Initialize this tracker's backing state, namespaced by `prefix`, and
+    /// return an instance bound to it.
     async fn init(db: &dyn Db, prefix: &str) -> Result<Self, DbError>;
 
+    /// Record `entry`, identified by `(client_id, client_idx)`, by enqueuing its
+    /// writes into `batch` so they commit together with the rest of the entry's
+    /// application. Must not commit on its own.
     fn track_one(
         &self,
         client_id: &Uuid,
@@ -31,12 +50,18 @@ pub trait LogTracker<Op>: Sized {
 /// conversion the rest of the crate relies on instead of a lossy `as` cast.
 #[derive(Debug, thiserror::Error)]
 pub enum LogTrackerError {
+    /// Splitting the op into its index triple failed.
     #[error("codec error: {0}")]
     Codec(#[from] CodecError),
+    /// A backend operation failed — including a `u64` that won't fit the
+    /// signed-integer column.
     #[error("db error: {0}")]
     Db(#[from] DbError),
 }
 
+/// The default [`LogTracker`]: writes each entry into a single
+/// `<prefix>__oplog` table keyed by `(client_id, client_idx)`, storing the HLC
+/// timestamp and the op's decoded index key/value.
 pub struct LogIndexTracker<Op> {
     quoted_table_name: String,
     _phantom: PhantomData<Op>,

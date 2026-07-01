@@ -1,3 +1,10 @@
+//! Op → SQL translation: the [`Reducer`] trait a data domain implements to turn
+//! each of its ops into the backend writes that materialize it.
+//!
+//! Kept as its own module so the [ingestion processor](crate::processor) can
+//! drive any reducer generically. See [`Reducer`] for the three-phase
+//! prepare/apply/post_apply contract that lets one op map onto every backend.
+
 use ubiquisync_core::hlc::Timestamp;
 
 use crate::db::{Db, DbBatch, DbStatementResult};

@@ -26,6 +26,8 @@ use super::error::SyncError;
 ///
 /// Without one of these, a mid-batch failure double-applies entries.
 pub trait LogProcessor<E> {
+    /// The processor's own error type; must absorb [`SyncError`] so the engine
+    /// can surface transport failures through it.
     type Error: From<SyncError>;
 
     /// Returns the next-entry index for the given peer; `0` if the peer has

@@ -2,12 +2,17 @@ use std::collections::HashMap;
 
 use crate::{codec::error::CodecError, uuid::Uuid};
 
+/// Encodes one log entry's body: accumulates bytes while feeding a rolling
+/// blake3 hash, and deduplicates UUIDs against a dictionary shared across the
+/// segment's entries.
 pub struct EntryBufferWriter<'a> {
     buf: HashWriter,
     uuid_dict: &'a mut HashMap<Uuid, u32>,
 }
 
 impl<'a> EntryBufferWriter<'a> {
+    /// Create a writer that shares `uuid_dict` for UUID dictionary compression
+    /// across the entries of one segment.
     pub fn new(uuid_dict: &'a mut HashMap<Uuid, u32>) -> Self {
         Self {
             buf: HashWriter::new(),
@@ -15,10 +20,12 @@ impl<'a> EntryBufferWriter<'a> {
         }
     }
 
+    /// Append a single raw byte.
     pub fn write_byte(&mut self, b: u8) {
         self.buf.append(&[b]);
     }
 
+    /// Append `v` as an unsigned varint (7 data bits per byte, little-endian).
     pub fn write_varint(&mut self, mut v: u64) {
         loop {
             let byte = (v & 0x7f) as u8;
@@ -32,15 +39,18 @@ impl<'a> EntryBufferWriter<'a> {
         }
     }
 
+    /// Append a length-prefixed byte string: a varint length, then the bytes.
     pub fn write_blob(&mut self, data: &[u8]) {
         self.write_varint(data.len() as u64);
         self.buf.append(data);
     }
 
+    /// Append a `u16` in little-endian order.
     pub fn write_u16_le(&mut self, v: u16) {
         self.buf.append(&v.to_le_bytes());
     }
 
+    /// Append a signed integer as a zigzag-encoded varint.
     pub fn write_zigzag(&mut self, n: i64) {
         let encoded = ((n << 1) ^ (n >> 63)) as u64;
         self.write_varint(encoded);

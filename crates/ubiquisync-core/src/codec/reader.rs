@@ -2,12 +2,17 @@ use crate::{codec::error::CodecError, uuid::Uuid};
 use std::collections::HashMap;
 use std::io::BufRead;
 
+/// Decodes one log entry's body — the read counterpart to
+/// [`EntryBufferWriter`](super::writer::EntryBufferWriter). Feeds bytes through
+/// the rolling hash and resolves dictionary-compressed UUIDs.
 pub struct EntryBufferReader<'a, R> {
     reader: HashReader<'a, R>,
     uuid_dict: &'a mut HashMap<u32, Uuid>,
 }
 
 impl<'a, R: BufRead> EntryBufferReader<'a, R> {
+    /// Wrap `reader`, sharing `uuid_dict` to resolve UUID dictionary references
+    /// across the entries of one segment.
     pub fn new(reader: &'a mut Reader<R>, uuid_dict: &'a mut HashMap<u32, Uuid>) -> Self {
         Self {
             reader: HashReader::new(reader),
@@ -15,18 +20,22 @@ impl<'a, R: BufRead> EntryBufferReader<'a, R> {
         }
     }
 
+    /// Read a single byte.
     pub fn read_byte(&mut self) -> Result<u8, CodecError> {
         self.reader.read_exact(1, true).map(|b| b[0])
     }
 
+    /// Read exactly `len` raw bytes.
     pub fn read_bytes(&mut self, len: usize) -> Result<Vec<u8>, CodecError> {
         self.reader.read_exact(len, true)
     }
 
+    /// Read an unsigned varint (7 data bits per byte, little-endian).
     pub fn read_varint(&mut self) -> Result<u64, CodecError> {
         self.reader.read_varint(true)
     }
 
+    /// Read a length-prefixed byte string (varint length, then the bytes).
     pub fn read_blob(&mut self) -> Result<Vec<u8>, CodecError> {
         let len = self.read_varint()?;
         // try_into, not `as`: on 32-bit targets (e.g. wasm32) `as usize` would
@@ -35,12 +44,14 @@ impl<'a, R: BufRead> EntryBufferReader<'a, R> {
         self.reader.read_exact(len, true)
     }
 
+    /// Read a little-endian `u16`.
     pub fn read_u16_le(&mut self) -> Result<u16, CodecError> {
         self.reader
             .read_exact(2, true)
             .map(|b| u16::from_le_bytes([b[0], b[1]]))
     }
 
+    /// Read a zigzag-encoded signed varint.
     pub fn read_zigzag(&mut self) -> Result<i64, CodecError> {
         let encoded = self.read_varint()?;
         Ok(((encoded >> 1) as i64) ^ -((encoded & 1) as i64))
@@ -60,6 +71,9 @@ impl<'a, R: BufRead> EntryBufferReader<'a, R> {
         Ok(current)
     }
 
+    /// Read a UUID, resolving dictionary compression: a `0` sentinel means the
+    /// 16 bytes follow inline (and are registered for later reuse); any other
+    /// value is a 1-based index into the segment's UUID dictionary.
     pub fn read_uuid(&mut self) -> Result<Uuid, CodecError> {
         // Do not hash raw bytes from the buffer because the hash will be the actual UUID!
         let x = self.reader.read_varint(false)?;
@@ -139,15 +153,19 @@ impl<'a, R: BufRead> HashReader<'a, R> {
     }
 }
 
+/// A thin [`BufRead`] wrapper that the codec reads a segment from, tracking
+/// position only enough to answer [`is_eof`](Self::is_eof).
 pub struct Reader<R> {
     reader: R,
 }
 
 impl<R: BufRead> Reader<R> {
+    /// Wrap an underlying [`BufRead`] source.
     pub fn new(reader: R) -> Self {
         Self { reader }
     }
 
+    /// Whether the underlying source has no more bytes.
     pub fn is_eof(&mut self) -> Result<bool, CodecError> {
         Ok(self.reader.fill_buf()?.is_empty())
     }

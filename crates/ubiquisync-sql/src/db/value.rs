@@ -5,10 +5,15 @@ use super::DbError;
 /// A Db value — used for both parameters and query results.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DbValue {
+    /// SQL NULL.
     Null,
+    /// Signed 64-bit integer.
     Integer(i64),
+    /// UTF-8 text.
     Text(String),
+    /// Raw byte string.
     Blob(Vec<u8>),
+    /// 16-byte UUID.
     Uuid([u8; 16]),
 }
 
@@ -28,12 +33,16 @@ impl DbValue {
     }
 }
 
+/// One result row: a positional list of column values.
 #[derive(Debug)]
 pub struct DbRow {
+    /// The row's column values, in `SELECT`/column order.
     pub values: Vec<DbValue>,
 }
 
 impl DbRow {
+    /// Read column `idx` as an `i64`. Errors if it is NULL, not an integer, or
+    /// out of bounds.
     pub fn get_i64(&self, idx: usize) -> Result<i64, DbError> {
         match self.values.get(idx) {
             Some(DbValue::Integer(v)) => Ok(*v),
@@ -46,6 +55,8 @@ impl DbRow {
         }
     }
 
+    /// Read column `idx` as text. Errors if it is NULL, not text, or out of
+    /// bounds.
     pub fn get_text(&self, idx: usize) -> Result<&str, DbError> {
         match self.values.get(idx) {
             Some(DbValue::Text(v)) => Ok(v),
@@ -58,6 +69,8 @@ impl DbRow {
         }
     }
 
+    /// Read column `idx` as a byte blob. Errors if it is NULL, not a blob, or
+    /// out of bounds.
     pub fn get_blob(&self, idx: usize) -> Result<&[u8], DbError> {
         match self.values.get(idx) {
             Some(DbValue::Blob(v)) => Ok(v),
@@ -95,6 +108,8 @@ impl DbRow {
         }
     }
 
+    /// Read column `idx` as a bool — a stored integer, `true` iff nonzero.
+    /// Errors if it is NULL, not an integer, or out of bounds.
     pub fn get_bool(&self, idx: usize) -> Result<bool, DbError> {
         match self.values.get(idx) {
             Some(DbValue::Integer(v)) => Ok(*v != 0),
@@ -107,6 +122,8 @@ impl DbRow {
         }
     }
 
+    /// Read column `idx` as an optional `i64`: `None` when NULL. Errors if it
+    /// is not an integer or out of bounds.
     pub fn get_optional_i64(&self, idx: usize) -> Result<Option<i64>, DbError> {
         match self.values.get(idx) {
             Some(DbValue::Integer(v)) => Ok(Some(*v)),
@@ -119,6 +136,8 @@ impl DbRow {
         }
     }
 
+    /// Read column `idx` as optional text: `None` when NULL. Errors if it is
+    /// not text or out of bounds.
     pub fn get_optional_text(&self, idx: usize) -> Result<Option<&str>, DbError> {
         match self.values.get(idx) {
             Some(DbValue::Text(v)) => Ok(Some(v)),
@@ -131,6 +150,9 @@ impl DbRow {
         }
     }
 
+    /// Read column `idx` as a 16-byte UUID, accepting either a native UUID
+    /// value or a 16-byte blob. Errors if it is NULL, a wrong-length blob,
+    /// another type, or out of bounds.
     pub fn get_uuid(&self, idx: usize) -> Result<[u8; 16], DbError> {
         match self.values.get(idx) {
             Some(DbValue::Blob(v)) => v.as_slice().try_into().map_err(|_| DbError::TypeMismatch {
@@ -147,6 +169,9 @@ impl DbRow {
         }
     }
 
+    /// Read column `idx` as an optional 16-byte UUID (native UUID or 16-byte
+    /// blob): `None` when NULL. Errors on a wrong-length blob, another type, or
+    /// out of bounds.
     pub fn get_optional_uuid(&self, idx: usize) -> Result<Option<[u8; 16]>, DbError> {
         match self.values.get(idx) {
             Some(DbValue::Blob(v)) => {
@@ -166,6 +191,8 @@ impl DbRow {
         }
     }
 
+    /// Read column `idx` as an optional byte blob: `None` when NULL. Errors if
+    /// it is not a blob or out of bounds.
     pub fn get_optional_blob(&self, idx: usize) -> Result<Option<&[u8]>, DbError> {
         match self.values.get(idx) {
             Some(DbValue::Blob(v)) => Ok(Some(v)),
@@ -179,12 +206,17 @@ impl DbRow {
     }
 }
 
+/// Builds a parameterized statement: each [`bind_next`](Self::bind_next)
+/// records a value and returns its placeholder string, so a query builder can
+/// splice placeholders into SQL text and hand the collected values to the
+/// driver in bind order.
 pub struct ValueBinder {
     placeholder_gen: PlaceholderGen,
     values: Vec<DbValue>,
 }
 
 impl ValueBinder {
+    /// Start an empty binder for `dialect`.
     pub fn new(dialect: SqlDialect) -> Self {
         Self {
             placeholder_gen: PlaceholderGen::new(dialect),
@@ -192,11 +224,13 @@ impl ValueBinder {
         }
     }
 
+    /// Record `value` and return its placeholder (`?n` / `$n`) for the SQL text.
     pub fn bind_next(&mut self, value: DbValue) -> String {
         self.values.push(value);
         self.placeholder_gen.next_placeholder()
     }
 
+    /// Consume the binder, returning the bound values in bind order.
     pub fn values(self) -> Vec<DbValue> {
         self.values
     }

@@ -11,6 +11,9 @@ use crate::{
     uuid::Uuid,
 };
 
+/// Streaming encoder for one segment: writes the header on construction, then
+/// appends entries, carrying the cross-entry state (timestamp base, UUID
+/// dictionary) that delta- and dictionary-encoding need.
 pub struct Encoder<E, W> {
     sink: W,
     last_timestamp: u64,
@@ -116,6 +119,8 @@ impl<E: Op, W: Write> Encoder<E, W> {
         Ok(self.entry_index)
     }
 
+    /// Total entry bytes written so far (the segment header is not counted),
+    /// for deciding when to roll over to a new segment.
     pub fn size(&self) -> usize {
         self.size
     }

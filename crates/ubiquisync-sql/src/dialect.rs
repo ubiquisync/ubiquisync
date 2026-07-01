@@ -15,7 +15,9 @@
 /// The SQL flavor a backend speaks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SqlDialect {
+    /// SQLite (and SQLite-compatible backends like D1, Durable Objects).
     Sqlite,
+    /// PostgreSQL.
     Postgres,
 }
 
@@ -52,6 +54,8 @@ impl SqlDialect {
         }
     }
 
+    /// `CREATE TABLE` suffix that stores the table clustered by its primary key
+    /// instead of a synthetic row id: ` WITHOUT ROWID` on SQLite, empty on Postgres.
     pub fn without_rowid(&self) -> &'static str {
         match self {
             SqlDialect::Sqlite => " WITHOUT ROWID",
@@ -60,12 +64,15 @@ impl SqlDialect {
     }
 }
 
+/// Hands out positional bind placeholders in sequence (`?1`/`$1`, `?2`/`$2`, …)
+/// for the given dialect, so a query builder doesn't track indices by hand.
 pub struct PlaceholderGen {
     dialect: SqlDialect,
     next_idx: usize,
 }
 
 impl PlaceholderGen {
+    /// Start a generator for `dialect`; the first placeholder is number 1.
     pub fn new(dialect: SqlDialect) -> Self {
         Self {
             dialect,
@@ -73,6 +80,7 @@ impl PlaceholderGen {
         }
     }
 
+    /// Render the next placeholder and advance the counter.
     pub fn next_placeholder(&mut self) -> String {
         let p = self.dialect.placeholder(self.next_idx);
         self.next_idx += 1;

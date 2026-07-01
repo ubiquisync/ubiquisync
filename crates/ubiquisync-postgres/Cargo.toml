@@ -8,3 +8,6 @@ repository.workspace = true
 
 [dependencies]
 ubiquisync-sql = { workspace = true }
+
+[lints]
+workspace = true
