@@ -17,6 +17,27 @@ pub struct Reducer {
     named_tables: HashMap<TableId, TableSchema>,
 }
 
+impl Reducer {
+    pub async fn new(
+        prefix: &str,
+        tables: &[TableSchema],
+        db: &dyn Db,
+    ) -> Result<Self, TablesError> {
+        let mut named_tables = HashMap::new();
+        let mut all_tables = HashMap::new();
+        for table in tables {
+            named_tables.insert(table.id, table.clone());
+            let physical_table = PhysicalTableSchema::new_named(prefix, table, db).await?;
+            all_tables.insert(table.id, physical_table);
+        }
+        Ok(Self {
+            prefix: prefix.into(),
+            all_tables,
+            named_tables,
+        })
+    }
+}
+
 #[async_trait::async_trait(?Send)]
 impl ubiquisync_sql::reducer::Reducer for Reducer {
     type Op = Op;

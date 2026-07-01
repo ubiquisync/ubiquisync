@@ -86,38 +86,33 @@ impl Reducer {
                 DbValue::Null
             };
 
-            // get the column schema
-            let quoted_name = col_id.col_name();
-            // bind column to the INSERT INTO clause
-            insert_into_cols.push(quoted_name.clone());
-            // create positional (?3) bind param
+            // Surrogate column names are auto-generated and don't need to be quoted
+            let col_name = col_id.col_name();
+            let lww_col_name = col_id.lww_col_name();
+            insert_into_cols.push(col_name.clone());
             insert_into_value_binds.push(value_binder.bind_next(value));
-            // add the val to the list of bind values
 
-            let quoted_lww = col_id.lww_col_name();
-            // bind the lww timestamp column into the INSERT column list
-            insert_into_cols.push(quoted_lww.clone());
+            insert_into_cols.push(lww_col_name.clone());
             insert_into_value_binds.push(timestamp_placeholder.clone());
-            // add the pk val to the list of bind values
 
             let lww_clause = lww_winner_sql_with_tiebreak(
                 &quoted_table_name,
-                &quoted_name,
-                &quoted_lww,
+                &col_name,
+                &lww_col_name,
                 col_id.col_type(),
                 dialect,
             );
             set_clauses.push(format!(
-                "{quoted_name} = CASE WHEN {lww_clause} THEN EXCLUDED.{quoted_name} ELSE {quoted_table_name}.{quoted_name} END"));
+                "{col_name} = CASE WHEN {lww_clause} THEN EXCLUDED.{col_name} ELSE {quoted_table_name}.{col_name} END"));
 
-            set_clauses.push(set_lww_sql(&quoted_lww, &quoted_table_name, dialect));
+            set_clauses.push(set_lww_sql(&lww_col_name, &quoted_table_name, dialect));
 
             where_clauses.push(lww_clause);
 
             if let Some(named_table) = named_table {
-                if let Some(named_col) = named_table.value_cols.get(&col_id) {
+                if let Some(named_col) = named_table.value_cols.get(col_id) {
                     // Only add returning clauses and events when we have a named column in a named table.
-                    returning_clauses.push(format!("{quoted_lww} = {timestamp_placeholder}"));
+                    returning_clauses.push(format!("{lww_col_name} = {timestamp_placeholder}"));
 
                     changed_col_events.push(ColumnValue {
                         column_id: *col_id,
@@ -162,24 +157,43 @@ impl Reducer {
     pub(crate) fn post_upsert(
         &self,
         stmt_id: StmtId,
-        upsert_event: UpsertEvent,
+        mut upsert_event: UpsertEvent,
         batch_result: &[DbStatementResult],
     ) -> Result<Option<ChangeEvent>, TablesError> {
-        todo!()
+        let res = &batch_result[stmt_id.0];
+        if res.rows_affected == 0 {
+            return Ok(None);
+        }
+
+        if let Some(row) = res.rows.first() {
+            let changed_columns = upsert_event.changed_columns;
+
+            // Filter out the column which "won" based on a newer lww timestamp
+            let mut winning_columns = Vec::with_capacity(changed_columns.len());
+            for (idx, column) in changed_columns.into_iter().enumerate() {
+                if row.get_bool(idx)? {
+                    winning_columns.push(column);
+                }
+            }
+
+            upsert_event.changed_columns = winning_columns;
+        };
+
+        Ok(Some(ChangeEvent::Upsert(upsert_event)))
     }
 }
 
 fn lww_winner_sql_with_tiebreak(
     quoted_table_name: &str,
-    quoted_col: &str,
-    quoted_lww: &str,
+    col: &str,
+    lww_col: &str,
     col_type: ColType,
     dialect: SqlDialect,
 ) -> String {
     format!(
         "{} OR ({})",
-        lww_winner_sql(quoted_table_name, quoted_lww),
-        tiebreak_sql(quoted_table_name, quoted_col, quoted_lww, col_type, dialect)
+        lww_winner_sql(quoted_table_name, lww_col),
+        tiebreak_sql(quoted_table_name, col, lww_col, col_type, dialect)
     )
 }
 
@@ -189,8 +203,8 @@ pub(crate) fn lww_winner_sql(table_name: &str, lww_col: &str) -> String {
 
 fn tiebreak_sql(
     quoted_table_name: &str,
-    quoted_col: &str,
-    quoted_lww: &str,
+    col: &str,
+    lww_col: &str,
     col_type: ColType,
     dialect: SqlDialect,
 ) -> String {
@@ -200,9 +214,9 @@ fn tiebreak_sql(
         ""
     };
     format!(
-        "EXCLUDED.{quoted_lww} = {quoted_table_name}.{quoted_lww} \
-        AND (EXCLUDED.{quoted_col}{collate} > {quoted_table_name}.{quoted_col}{collate} \
-        OR (EXCLUDED.{quoted_col} IS NOT NULL AND {quoted_table_name}.{quoted_col} IS NULL))"
+        "EXCLUDED.{lww_col} = {quoted_table_name}.{lww_col} \
+        AND (EXCLUDED.{col}{collate} > {quoted_table_name}.{col}{collate} \
+        OR (EXCLUDED.{col} IS NOT NULL AND {quoted_table_name}.{col} IS NULL))"
     )
 }
 

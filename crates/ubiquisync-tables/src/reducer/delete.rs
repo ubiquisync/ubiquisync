@@ -53,13 +53,14 @@ impl Reducer {
         set_clauses.push(set_lww_sql(DELETED_TS_COL, &quoted_table_name, dialect));
 
         for col_id in table.cols.iter() {
-            let quoted_col = col_id.col_name();
-            let quoted_lww = col_id.lww_col_name();
+            // Surrogate column names are auto-generated and don't need to be quoted
+            let col_name = col_id.col_name();
+            let lww_col_name = col_id.lww_col_name();
             set_clauses.push(format!(
-                "{quoted_col} = CASE WHEN {quoted_lww} < {ts_placeholder} THEN NULL ELSE {quoted_col} END",
+                "{col_name} = CASE WHEN {lww_col_name} < {ts_placeholder} THEN NULL ELSE {col_name} END",
             ));
             set_clauses.push(format!(
-                "{quoted_lww} = CASE WHEN {quoted_lww} < {ts_placeholder} THEN NULL ELSE {quoted_lww} END",
+                "{lww_col_name} = CASE WHEN {lww_col_name} < {ts_placeholder} THEN NULL ELSE {lww_col_name} END",
             ))
         }
 
@@ -92,9 +93,12 @@ impl Reducer {
     pub(crate) fn post_delete(
         &self,
         stmt_id: StmtId,
-        upsert_event: DeleteEvent,
+        delete_event: DeleteEvent,
         batch_result: &[DbStatementResult],
     ) -> Result<Option<ChangeEvent>, TablesError> {
-        todo!()
+        if batch_result[stmt_id.0].rows_affected == 0 {
+            return Ok(None);
+        }
+        Ok(Some(ChangeEvent::Delete(delete_event)))
     }
 }
