@@ -55,8 +55,7 @@ impl SqlDialect {
     }
 
     /// `CREATE TABLE` suffix that stores the table clustered by its primary key
-    /// instead of a synthetic row id: ` WITHOUT ROWID` on SQLite, empty on
-    /// Postgres (which clusters by primary key by default).
+    /// instead of a synthetic row id: ` WITHOUT ROWID` on SQLite, empty on Postgres.
     pub fn without_rowid(&self) -> &'static str {
         match self {
             SqlDialect::Sqlite => " WITHOUT ROWID",

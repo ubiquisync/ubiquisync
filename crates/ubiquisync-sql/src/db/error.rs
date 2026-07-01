@@ -13,7 +13,7 @@ pub enum DbError {
     /// A column held a value of a different type than the caller requested.
     #[error("type mismatch at column {col}: expected {expected}")]
     TypeMismatch {
-        /// 0-based column index that was read.
+        /// Column index that was read.
         col: usize,
         /// The Rust type the caller asked for.
         expected: &'static str,
