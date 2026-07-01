@@ -250,17 +250,24 @@ async fn pkey_only_insert_still_emits_event(db: &dyn Db) {
 
 /// An op against a table the reducer wasn't told about is materialized under a
 /// surrogate schema, but produces no change event (there is no user-facing table
-/// to name). The data is still persisted.
+/// to name). The data is still persisted, and a later op that references a new
+/// column grows the already-created table in place.
 async fn surrogate_table_emits_no_event(db: &dyn Db) {
     let id = TableId::new(&[ColType::I64], 12);
-    let body = col(0, ColType::Text);
+    let (body, extra) = (col(0, ColType::Text), col(1, ColType::I64));
     // No named tables registered.
     let mut reducer = Reducer::new(PREFIX, &[], db).await.unwrap();
 
+    // First op creates the surrogate table with just `body`.
     let ev = apply(&mut reducer, db, 100, &upsert(id, pk1(1), &[(body, text("x"))])).await;
     expect_none(ev);
+    assert_eq!(read_col(db, id, &pk1(1), body).await, Some((tv("x"), Some(100))));
 
-    // ...but the write landed.
+    // A later op references a column the table doesn't have yet: `prepare` must
+    // ALTER it in, then the write lands alongside the original column.
+    let ev = apply(&mut reducer, db, 200, &upsert(id, pk1(1), &[(extra, int(9))])).await;
+    expect_none(ev);
+    assert_eq!(read_col(db, id, &pk1(1), extra).await, Some((iv(9), Some(200))));
     assert_eq!(read_col(db, id, &pk1(1), body).await, Some((tv("x"), Some(100))));
 }
 
