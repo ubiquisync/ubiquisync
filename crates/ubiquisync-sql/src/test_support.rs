@@ -322,7 +322,6 @@ impl LogSource<MaxOp> for MockSource {
         &self,
         peer: &Uuid,
         start_entry_idx: u64,
-        limit: usize,
     ) -> Result<Vec<(u64, DecodedEntry<MaxOp>)>, SyncError> {
         if peer != &self.peer {
             return Ok(vec![]);
@@ -333,7 +332,6 @@ impl LogSource<MaxOp> for MockSource {
             .cloned()
             .enumerate()
             .skip(start_entry_idx as usize)
-            .take(limit)
             .map(|(i, e)| (i as u64, e))
             .collect())
     }

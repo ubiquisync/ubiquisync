@@ -13,11 +13,6 @@ use crate::codec::{DecodedEntry, Op};
 use super::processor::LogProcessor;
 use super::store::LogSource;
 
-/// How many entries a single [`LogSource::read_entries`] call may return. Bounds
-/// how much a cold pull (`start_idx == 0` over a long stream) materializes at
-/// once; the sync loop keeps calling until a short read drains the stream.
-const READ_CHUNK: usize = 1024;
-
 /// The outcome of a [`sync`](PullSynchronizer::sync) pass.
 #[derive(Debug)]
 pub struct SyncResult {
@@ -58,11 +53,13 @@ impl<'a, E: Op, S: LogSource<E>> PullSynchronizer<'a, E, S> {
     /// expunged markers, and let each write advance that peer's cursor. Returns
     /// how many real entries were applied.
     ///
-    /// The stream is read in `READ_CHUNK`-sized batches so a cold pull doesn't
-    /// materialize a whole long stream at once. Each `apply_entry` /
-    /// `save_expunged_entry` advances the cursor atomically, so a mid-stream
-    /// failure leaves everything committed up to that point and re-reads from
-    /// the failing index on the next pass — no separate cursor save to lose.
+    /// Each peer's stream is pulled one source-sized batch at a time, looping
+    /// with an advancing cursor until [`read_entries`](LogSource::read_entries)
+    /// returns empty — so a cold pull doesn't materialize a whole long stream at
+    /// once. Each `apply_entry` / `save_expunged_entry` advances the cursor
+    /// atomically, so a mid-stream failure leaves everything committed up to
+    /// that point and re-reads from the failing index on the next pass — no
+    /// separate cursor save to lose.
     pub async fn sync<P: LogProcessor<E>>(&self, store: &mut P) -> Result<SyncResult, P::Error> {
         let peers = self.source.list_peers();
         let mut total_entries = 0;
@@ -76,8 +73,11 @@ impl<'a, E: Op, S: LogSource<E>> PullSynchronizer<'a, E, S> {
 
             let mut next_idx = store.get_peer_cursor(peer_id).await?;
             loop {
-                let batch = self.source.read_entries(peer_id, next_idx, READ_CHUNK)?;
-                let batch_len = batch.len();
+                let batch = self.source.read_entries(peer_id, next_idx)?;
+                // An empty batch means the peer's stream is drained.
+                if batch.is_empty() {
+                    break;
+                }
                 for (idx, e) in batch {
                     match e {
                         DecodedEntry::LogEntry(e) => {
@@ -89,11 +89,6 @@ impl<'a, E: Op, S: LogSource<E>> PullSynchronizer<'a, E, S> {
                         }
                     }
                     next_idx = idx + 1;
-                }
-                // A batch shorter than the chunk size means the stream is
-                // drained; otherwise loop to pull the next chunk.
-                if batch_len < READ_CHUNK {
-                    break;
                 }
             }
         }
@@ -165,14 +160,45 @@ mod tests {
             &self,
             peer: &Uuid,
             start_entry_idx: u64,
-            limit: usize,
         ) -> Result<Vec<(u64, DecodedEntry<TestOp>)>, SyncError> {
             let stream = self.streams.get(peer).cloned().unwrap_or_default();
             Ok(stream
                 .into_iter()
                 .enumerate()
                 .skip(start_entry_idx as usize)
-                .take(limit)
+                .map(|(i, e)| (i as u64, e))
+                .collect())
+        }
+    }
+
+    // ── Chunking source: returns at most `chunk` entries per call, so the sync
+    // loop must make several calls to drain one peer ─────────────────────────
+    struct ChunkedSource {
+        peer: Uuid,
+        stream: Vec<DecodedEntry<TestOp>>,
+        chunk: usize,
+    }
+
+    impl LogSource<TestOp> for ChunkedSource {
+        fn list_peers(&self) -> Vec<Uuid> {
+            vec![self.peer]
+        }
+
+        fn read_entries(
+            &self,
+            peer: &Uuid,
+            start_entry_idx: u64,
+        ) -> Result<Vec<(u64, DecodedEntry<TestOp>)>, SyncError> {
+            if peer != &self.peer {
+                return Ok(vec![]);
+            }
+            Ok(self
+                .stream
+                .iter()
+                .cloned()
+                .enumerate()
+                .skip(start_entry_idx as usize)
+                .take(self.chunk)
                 .map(|(i, e)| (i as u64, e))
                 .collect())
         }
@@ -457,17 +483,19 @@ mod tests {
     }
 
     #[test]
-    fn sync_drains_stream_longer_than_one_read_chunk() {
-        // A stream past READ_CHUNK forces the loop to pull multiple chunks;
-        // every entry must apply and the cursor land at the full length.
+    fn sync_drains_stream_across_multiple_source_batches() {
+        // A source that hands back only `chunk` entries per call forces the
+        // loop to make several calls; every entry must still apply, in order,
+        // and the cursor land at the full length.
         let p = peer(1);
-        let len = READ_CHUNK + 3;
+        let len = 13usize;
         let stream: Vec<_> = (0..len)
-            .map(|i| DecodedEntry::LogEntry(entry((i % 256) as u8)))
+            .map(|i| DecodedEntry::LogEntry(entry(i as u8)))
             .collect();
-        let source = MockSource {
-            peers: vec![p],
-            streams: HashMap::from([(p, stream)]),
+        let source = ChunkedSource {
+            peer: p,
+            stream,
+            chunk: 5, // 13 entries drain as 5 + 5 + 3, then an empty call
         };
         let mut store = MockProcessor::default();
 
@@ -475,6 +503,8 @@ mod tests {
 
         assert_eq!(result.entries_applied, len);
         assert_eq!(store.applied.len(), len);
+        // Applied strictly in ascending stream order across the batch boundaries.
+        assert!(store.applied.iter().map(|(i, _)| *i).eq(0..len as u64));
         assert_eq!(store.cursors[&p], len as u64);
     }
 }

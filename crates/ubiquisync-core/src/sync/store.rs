@@ -36,27 +36,25 @@ pub trait LogSource<E> {
     /// Returns the IDs of all peers whose log files are locally available.
     fn list_peers(&self) -> Vec<Uuid>;
 
-    /// Reads up to `limit` of `peer`'s entries starting at stream index
-    /// `start_entry_idx`, returning each as an `(index, entry)` pair in stream
-    /// order (expunged markers included).
+    /// Reads the next batch of `peer`'s entries at or after stream index
+    /// `start_entry_idx`, ascending (expunged markers included), returning each
+    /// as an `(index, entry)` pair. An **empty** batch means the stream is
+    /// drained at `start_entry_idx` — there is nothing more to read.
     ///
-    /// This is deliberately synchronous — a source decodes from local segment
-    /// files, so the read has no `.await` — while the apply side that consumes
-    /// the batch is async. `limit` bounds how much a single call materializes,
-    /// so a cold pull of a long stream (`start_entry_idx == 0`) is drained in
-    /// chunks rather than held in memory all at once.
+    /// The source, not the caller, sizes the batch: it returns a natural unit it
+    /// already has in hand — typically one decoded segment — so chunking falls
+    /// to the side that knows the real boundaries and can bound each read by a
+    /// quantity it controls (segment size), rather than an entry count the
+    /// caller guesses. The driver keeps calling with an advancing cursor until a
+    /// call comes back empty, so returning fewer entries than remain is fine;
+    /// only an empty result signals the end.
     ///
-    /// **A batch shorter than `limit` means "no more entries at or after
-    /// `start_entry_idx`" — the driver stops reading this peer for the current
-    /// pass.** An implementation must therefore return a *full* `limit` whenever
-    /// more entries remain; it may not short-return at an internal boundary
-    /// (e.g. a segment-file edge) with more still to come, or that tail is
-    /// skipped until the next sync pass. Returning exactly `limit` is always
-    /// safe — the driver issues one more read, which then comes back empty.
+    /// Synchronous on purpose: a source decodes from local segment files, so the
+    /// read has no `.await`, while the apply side that consumes the batch is
+    /// async.
     fn read_entries(
         &self,
         peer: &Uuid,
         start_entry_idx: u64,
-        limit: usize,
     ) -> Result<Vec<(u64, DecodedEntry<E>)>, SyncError>;
 }
