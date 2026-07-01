@@ -26,8 +26,15 @@ pub mod index_codec;
 mod naming;
 pub mod op;
 // Physical storage layer (surrogate tables, schema reconciliation). Wired into
-// the shipping build by the table reducer; `allow(dead_code)` until then.
+// the shipping build by the table reducer; `allow(dead_code)` until then. The
+// `test_support` suite exercises it in the meantime.
 #[allow(dead_code)]
 mod physical_schema;
 #[allow(dead_code)]
 mod schema;
+
+/// Backend-agnostic physical-schema suite the driver crates run against their
+/// real `Db`. Compiled for this crate's own tests and for any crate that enables
+/// the `test-support` feature (a SQL driver, in its dev-dependencies).
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;

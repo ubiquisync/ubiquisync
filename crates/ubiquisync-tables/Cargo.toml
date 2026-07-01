@@ -6,6 +6,11 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# Exposes `test_support`: a backend-agnostic physical-schema suite the driver
+# crates run against their real `Db` (see `ubiquisync-sqlite`'s dev-dependencies).
+test-support = []
+
 [dependencies]
 ubiquisync-core = { workspace = true }
 ubiquisync-sql = { workspace = true }

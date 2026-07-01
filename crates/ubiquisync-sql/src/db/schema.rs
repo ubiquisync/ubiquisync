@@ -1,13 +1,13 @@
 use crate::dialect::SqlDialect;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DbTableDescriptor {
     pub name: String,
     pub pk_cols: Vec<DbColumnDescription>,
     pub cols: Vec<DbColumnDescription>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DbColumnDescription {
     pub name: String,
     pub db_type: DbType,
@@ -21,7 +21,7 @@ pub struct DbColumnDescription {
 /// turns that into a concrete backend type name via [`sql_type`](Self::sql_type). The
 /// `Uuid` variant is kept distinct from `Blob` so a backend may later map it
 /// to a native UUID type rather than raw bytes.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DbType {
     Integer,
     Text,
@@ -38,10 +38,10 @@ pub enum DbType {
 
 impl DbType {
     /// The concrete SQL column type name for this storage class under
-    /// `dialect`. SQLite uses type affinity (`INTEGER`/`TEXT`/`BLOB`);
-    /// Postgres needs `BIGINT` (its `INTEGER` is 32-bit and would overflow an
-    /// i64) and `BYTEA` for raw bytes. UUIDs are stored as 16 raw bytes, so
-    /// they take the same type as `Blob` on both backends today.
+    /// `dialect`. SQLite uses type affinity (`INTEGER`/`TEXT`/`BLOB`) and has no
+    /// native UUID type, so a `Uuid` is stored as a raw `BLOB`. Postgres needs
+    /// `BIGINT` (its `INTEGER` is 32-bit and would overflow an i64) and `BYTEA`
+    /// for raw bytes, and maps `Uuid` to its native `UUID` type.
     pub fn sql_type(self, dialect: SqlDialect) -> &'static str {
         match (dialect, self) {
             (SqlDialect::Sqlite, DbType::Integer) => "INTEGER",
@@ -49,7 +49,8 @@ impl DbType {
             (SqlDialect::Sqlite, DbType::Blob | DbType::Uuid) => "BLOB",
             (SqlDialect::Postgres, DbType::Integer) => "BIGINT",
             (SqlDialect::Postgres, DbType::Text) => "TEXT",
-            (SqlDialect::Postgres, DbType::Blob | DbType::Uuid) => "BYTEA",
+            (SqlDialect::Postgres, DbType::Blob) => "BYTEA",
+            (SqlDialect::Postgres, DbType::Uuid) => "UUID",
             // `Other` is introspection-only — it names a column type the engine
             // doesn't model, so it has no DDL spelling and is never emitted.
             (_, DbType::Other) => {
@@ -73,10 +74,11 @@ mod tests {
 
     #[test]
     fn sql_type_maps_to_postgres_names() {
-        // i64 needs BIGINT (Postgres INTEGER is 32-bit); bytes/uuid are BYTEA.
+        // i64 needs BIGINT (Postgres INTEGER is 32-bit); raw bytes are BYTEA;
+        // UUIDs use the native UUID type.
         assert_eq!(DbType::Integer.sql_type(SqlDialect::Postgres), "BIGINT");
         assert_eq!(DbType::Text.sql_type(SqlDialect::Postgres), "TEXT");
         assert_eq!(DbType::Blob.sql_type(SqlDialect::Postgres), "BYTEA");
-        assert_eq!(DbType::Uuid.sql_type(SqlDialect::Postgres), "BYTEA");
+        assert_eq!(DbType::Uuid.sql_type(SqlDialect::Postgres), "UUID");
     }
 }

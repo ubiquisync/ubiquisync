@@ -23,11 +23,11 @@ pub(crate) struct PhysicalTableSchema {
 
 /// The timestamp of the latest upsert operation on the table.
 /// A nullable i64 column: the reducer reads it as `COALESCE(ts, 0)`.
-pub const UPSERT_TS_COL: &'static str = "__upsert_ts";
+pub const UPSERT_TS_COL: &str = "__upsert_ts";
 
 /// The timestamp of the latest delete operation on the table.
 /// A nullable i64 column: the reducer reads it as `COALESCE(ts, 0)`.
-pub const DELETED_TS_COL: &'static str = "__deleted_ts";
+pub const DELETED_TS_COL: &str = "__deleted_ts";
 
 impl PhysicalTableSchema {
     /// Initialize a physical table based on a table ID when we have no user-defined
@@ -74,6 +74,11 @@ impl PhysicalTableSchema {
 
     pub(crate) fn get_name(&self) -> &str {
         &self.name
+    }
+
+    /// The set of value-column IDs this table currently tracks.
+    pub(crate) fn col_ids(&self) -> &BTreeSet<ColumnId> {
+        &self.cols
     }
 
     fn new_from_id(prefix: &str, id: TableId) -> Self {
@@ -293,7 +298,7 @@ impl PhysicalTableSchema {
 }
 
 fn schema_mismatch<T>(id: TableId, detail: String) -> Result<T, TablesError> {
-    return Err(TablesError::SchemaError(format!("table {id:?}: {detail}")));
+    Err(TablesError::SchemaError(format!("table {id:?}: {detail}")))
 }
 
 fn validate_upsert_delete_ts_cols(

@@ -161,7 +161,7 @@ impl core::fmt::Debug for TableId {
 /// High 2 bits encode the column's wire type, making the ID self-describing
 /// for wire parsing. The lower 6 bits are an arbitrary column index within
 /// the table. All non-PK columns are implicitly nullable.
-#[bitfield(u8)]
+#[bitfield(u8, new = false)]
 #[derive(PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub struct ColumnId {
     // -- Column index (low 6 bits) --
@@ -173,6 +173,14 @@ pub struct ColumnId {
     /// Column wire type (bits 6–7).
     #[bits(2)]
     pub col_type: ColType,
+}
+
+impl ColumnId {
+    /// Build a column ID from its wire type and index. `index` uses the low 6
+    /// bits; a value that doesn't fit is truncated by the bitfield setter.
+    pub const fn new(index: u8, col_type: ColType) -> Self {
+        Self::from_bits(0).with_index(index).with_col_type(col_type)
+    }
 }
 
 #[cfg(test)]
@@ -274,7 +282,7 @@ mod tests {
     fn column_id_round_trip() {
         // Goal: a column ID survives a raw u8 round trip.
         // Given: a Text column at index 3.
-        let id = ColumnId::new().with_index(3).with_col_type(ColType::Text);
+        let id = ColumnId::new(3, ColType::Text);
 
         assert_eq!(id.index(), 3);
         assert_eq!(id.col_type(), ColType::Text);
@@ -288,7 +296,7 @@ mod tests {
     #[test]
     fn column_id_index_in_low_bits() {
         // Goal: the column index occupies the low bits unshifted.
-        let id = ColumnId::new().with_index(1).with_col_type(ColType::Bytes);
+        let id = ColumnId::new(1, ColType::Bytes);
         let raw: u8 = id.into();
         assert_eq!(raw, 1);
     }
@@ -296,12 +304,12 @@ mod tests {
     #[test]
     fn column_id_type_in_high_bits() {
         // I64: bits 6-7=col_type(2)=10, index=0
-        let id = ColumnId::new().with_index(0).with_col_type(ColType::I64);
+        let id = ColumnId::new(0, ColType::I64);
         let raw: u8 = id.into();
         assert_eq!(raw >> 6, 0b10);
 
         // Text: bits 6-7=col_type(1)=01, index=0
-        let id = ColumnId::new().with_index(0).with_col_type(ColType::Text);
+        let id = ColumnId::new(0, ColType::Text);
         let raw: u8 = id.into();
         assert_eq!(raw >> 6, 0b01);
     }
