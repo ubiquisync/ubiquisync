@@ -5,7 +5,7 @@ use crate::id::{ColumnId, TableId};
 /// TableSchema represents a named table in our schema. It will be exposed for
 /// user queries as an SQL VIEW with the provided names. Under the hood, data
 /// will be stored in a physical table with surrogate names derived from the table
-/// and colummn IDs.
+/// and column IDs.
 #[derive(Debug, Clone)]
 pub struct TableSchema {
     pub(crate) id: TableId,

@@ -8,7 +8,7 @@ use crate::{
     schema::TableSchema,
 };
 
-/// PhysicalTableSchema represents a the physical storage for a table in the database
+/// PhysicalTableSchema represents the physical storage for a table in the database
 /// using names derived from the table and column IDs.
 /// It may or may or may not have a user facing VIEW derived from a TableSchema.
 /// If the user specifically declared this table then we will have a TableSchema.
@@ -100,7 +100,7 @@ impl PhysicalTableSchema {
         Self { id, name, cols }
     }
 
-    fn new_from_db_descriptor(
+    pub(crate) fn new_from_db_descriptor(
         prefix: &str,
         db_table: DbTableDescriptor,
     ) -> Result<Self, TablesError> {
@@ -170,7 +170,8 @@ impl PhysicalTableSchema {
                         return schema_mismatch(
                             id,
                             format!(
-                                "column {id:?} db type {:?} doesn't match column type {:?}",
+                                "column {} db type {:?} doesn't match column type {:?}",
+                                col.name,
                                 col.db_type,
                                 col_id.col_type(),
                             ),
@@ -201,12 +202,17 @@ impl PhysicalTableSchema {
                         );
                     }
 
-                    // TODO check nullable
                     cols.insert(col_id);
                 } else {
                     return schema_mismatch(id, format!("missing lww column for {}", col.name));
                 }
             }
+            // Columns that aren't a recognized value column (`c0x..`) are left
+            // in place and ignored: a newer peer may have added columns this
+            // build doesn't model yet, and an old build must reconcile such a
+            // table without destroying them. A dangling `_lww` column (no value
+            // partner) falls in the same bucket. Only a *known* value column
+            // missing its lww partner (above) is a hard error.
         }
 
         Ok(Self {

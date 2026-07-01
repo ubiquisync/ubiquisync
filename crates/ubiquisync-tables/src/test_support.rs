@@ -114,6 +114,7 @@ pub async fn run_physical_schema_suite<D: Db>(db: D) {
     surrogate_table_created_bare(&db).await;
     surrogate_table_reconstructs_existing(&db).await;
     ensure_column_adds_pair_and_is_idempotent(&db).await;
+    reconciliation_rejects_malformed(db.dialect());
 }
 
 /// A few different declared schemas each produce the physical layout their
@@ -278,4 +279,68 @@ async fn ensure_column_adds_pair_and_is_idempotent(db: &dyn Db) {
     let c2 = col_id(7, ColType::Bytes);
     phys.ensure_column(db, c2).await.unwrap();
     assert_table(db, id, &[(c1, ColType::Text), (c2, ColType::Bytes)]).await;
+}
+
+/// Reconciliation rejects every way an on-disk table can fail to match the shape
+/// its ID implies. Each case starts from a valid descriptor and corrupts exactly
+/// one thing, so a check that silently stopped firing would surface here. This
+/// drives the validator directly (no `Db`), so it's dialect-pure apart from the
+/// baseline's stored types.
+fn reconciliation_rejects_malformed(dialect: SqlDialect) {
+    // Baseline: 1 UUID PK, a single Text value column.
+    let id = TableId::new(&[ColType::Uuid], 20);
+    let value = col_id(0, ColType::Text);
+    let valid = expected_descriptor(dialect, id, &[(value, ColType::Text)]);
+    let (col, lww) = (value.col_name(), value.lww_col_name());
+
+    // The untouched baseline must reconcile — otherwise the cases below prove
+    // nothing.
+    PhysicalTableSchema::new_from_db_descriptor(PREFIX, valid.clone())
+        .expect("baseline descriptor should reconcile");
+
+    fn col_mut<'a>(d: &'a mut DbTableDescriptor, name: &str) -> &'a mut DbColumnDescription {
+        d.cols
+            .iter_mut()
+            .find(|c| c.name == name)
+            .expect("column present")
+    }
+
+    macro_rules! rejects {
+        ($label:expr, |$d:ident| $body:expr) => {{
+            let mut owned = valid.clone();
+            {
+                let $d = &mut owned;
+                $body;
+            }
+            assert!(
+                PhysicalTableSchema::new_from_db_descriptor(PREFIX, owned).is_err(),
+                "{} should be rejected",
+                $label
+            );
+        }};
+    }
+
+    // Table name that doesn't decode to a TableId.
+    rejects!("unparseable table name", |d| d.name = "not_a_table".into());
+
+    // Primary-key defects.
+    rejects!("too few PK columns", |d| { d.pk_cols.pop(); });
+    rejects!("extra PK column", |d| d
+        .pk_cols
+        .push(col_desc("k1".into(), DbType::Integer, false)));
+    rejects!("PK wrong type", |d| d.pk_cols[0].db_type = DbType::Text);
+    rejects!("PK nullable", |d| d.pk_cols[0].nullable = true);
+    rejects!("PK wrong name", |d| d.pk_cols[0].name = "x0".into());
+
+    // Bookkeeping-timestamp defects.
+    rejects!("missing __upsert_ts", |d| d.cols.retain(|c| c.name != UPSERT_TS_COL));
+    rejects!("missing __deleted_ts", |d| d.cols.retain(|c| c.name != DELETED_TS_COL));
+    rejects!("__deleted_ts wrong type", |d| col_mut(d, DELETED_TS_COL).db_type = DbType::Text);
+
+    // Value / lww column defects.
+    rejects!("value column wrong type", |d| col_mut(d, &col).db_type = DbType::Integer);
+    rejects!("value column not nullable", |d| col_mut(d, &col).nullable = false);
+    rejects!("missing lww partner", |d| d.cols.retain(|c| c.name != lww));
+    rejects!("lww wrong type", |d| col_mut(d, &lww).db_type = DbType::Text);
+    rejects!("lww not nullable", |d| col_mut(d, &lww).nullable = false);
 }
