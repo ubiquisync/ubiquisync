@@ -19,12 +19,10 @@
 pub mod codec;
 /// Column types and their mapping to SQL storage classes.
 pub mod col_type;
-mod col_type;
 pub mod error;
 pub mod id;
 /// Splits ops into indexable `(tag, key, value)` parts for the SQL op-log.
 pub mod index_codec;
-mod index_codec;
 mod naming;
 pub mod op;
 mod physical_schema;
