@@ -1,3 +1,12 @@
+//! The ingestion driver that applies one log entry atomically.
+//!
+//! A `Processor` pairs a [`Reducer`](crate::reducer) with an
+//! [`HlcService`](ubiquisync_core::hlc) clock and a
+//! [`LogTracker`](crate::tracker), so that ingesting an entry advances the
+//! clock, hands the entry to the tracker, and applies the reducer's writes in a
+//! single all-or-nothing batch. [`ProcessorError`] tags a failure by which of
+//! those collaborators produced it.
+
 use ubiquisync_core::{
     hlc::{HlcError, HlcService, wall_ms},
     log_entry::LogEntry,
@@ -26,11 +35,10 @@ pub(crate) struct Processor<R: Reducer, D: Db, T> {
 
 #[allow(dead_code)]
 impl<R: Reducer, D: Db, T: LogTracker<R::Op>> Processor<R, D, T> {
-    /// Wire up a processor against `db`: open the HLC register and the tracker's
-    /// op-log (both namespaced by `prefix`), seed the in-memory clock from the
-    /// persisted state, and take ownership of `reducer`. The two schema setups
-    /// run as their own autocommit DDL — they are additive and safe to commit
-    /// before any entry is ingested.
+    /// Open a processor against `db`: set up the HLC storage and initialize the
+    /// tracker (both namespaced by `prefix`), seed the in-memory clock from
+    /// persisted state, and take ownership of `reducer`. Any setup they perform
+    /// runs before the first entry is ingested.
     pub(crate) async fn open(
         reducer: R,
         db: D,
@@ -46,20 +54,21 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>> Processor<R, D, T> {
         })
     }
 
-    /// The backend this processor writes through. For test/diagnostic reads of
-    /// the op-log and clock register the processor manages.
+    /// The backend this processor writes through — for tests and diagnostics
+    /// that read back what it has persisted.
     pub(crate) fn db(&self) -> &D {
         &self.db
     }
 
-    /// Ingest one log entry atomically: observe its HLC timestamp, record it in
-    /// the op-log, and apply the reducer's writes in one all-or-nothing batch.
+    /// Ingest one log entry atomically: advance the HLC with the entry's
+    /// timestamp, hand the entry to the tracker, and apply the reducer's writes —
+    /// all in one all-or-nothing batch that rolls back if any step fails.
     ///
-    /// Re-ingesting an applied `(client_id, client_idx)` hits the op-log PK and
-    /// surfaces as [`DbError::UniqueViolation`](crate::db::DbError::UniqueViolation)
-    /// (the batch rolls back); it is not swallowed. Callers dedup against their
-    /// known last-ingested index — we can't portably tell an op-log conflict from
-    /// a reducer's own constraint, so reducers must use idempotent upserts.
+    /// No deduplication happens here. Re-ingesting an already-applied
+    /// `(client_id, client_idx)` re-runs the tracker and reducer against it;
+    /// whether that errors or is absorbed is up to those collaborators. Callers
+    /// should dedup against their last-ingested index, and reducers should apply
+    /// idempotently UNLESS the tracker ensures only-once consistency.
     pub(crate) async fn process_one(
         &mut self,
         client_id: &Uuid,
@@ -90,17 +99,21 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>> Processor<R, D, T> {
     }
 }
 
+/// A failure while ingesting an entry, tagged by the stage that produced it.
 #[derive(Debug, thiserror::Error)]
 pub enum ProcessorError<E> {
-    // No `#[from]` here: it would generate a blanket `From<E>` that conflicts
-    // with the concrete `From<DbError>` impl below whenever a reducer chooses
-    // `Error = DbError`. Reducer errors are mapped explicitly at the call sites.
+    /// The reducer failed; `E` is its own error type.
+    // No `#[from]`: a blanket `From<E>` would clash with `From<DbError>` when a
+    // reducer sets `Error = DbError`. Mapped explicitly at the call sites.
     #[error("reducer error: {0}")]
     Reducer(E),
+    /// Advancing or persisting the HLC failed.
     #[error("hlc error: {0}")]
     Hlc(#[from] HlcError<DbError>),
+    /// The tracker failed to record the entry.
     #[error("tracker error: {0}")]
     Tracker(#[from] LogTrackerError),
+    /// A backend operation failed — e.g. the batch commit was rejected.
     #[error("db error: {0}")]
     Db(#[from] DbError),
 }
