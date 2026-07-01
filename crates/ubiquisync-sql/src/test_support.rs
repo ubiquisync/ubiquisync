@@ -405,4 +405,46 @@ pub async fn run_pull_sync_suite<D: Db>(db: D) {
         4,
         "re-sync wrote no duplicate rows"
     );
+
+    // Dedup at the `LogProcessor` method the engine actually calls: handing
+    // `apply_entry` an already-recorded index fails the op-log PK and rolls the
+    // whole batch back — the safety net if a duplicate ever reaches apply. The
+    // `y` register (index 3, value 4) must be untouched by the rolled-back apply.
+    let err = processor
+        .apply_entry(&PEER, 3, &entry(b"y", 999, 1_700_000_000_009, None))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ProcessorError::Db(DbError::UniqueViolation)),
+        "re-applying a recorded index is rejected, got {err:?}"
+    );
+    assert_eq!(
+        oplog_row_count(processor.db()).await,
+        4,
+        "rejected duplicate added no op-log row"
+    );
+
+    // Incremental resume through the real derived cursor: the peer's stream
+    // grows by two entries and a fresh pass applies only those, resuming from
+    // the persisted cursor (4) with no mock cursor anywhere in the loop.
+    let grown = MockSource {
+        peer: PEER,
+        entries: {
+            let mut e = source.entries.clone();
+            e.push(DecodedEntry::LogEntry(entry(b"x", 12, 1_700_000_000_003, None)));
+            e.push(DecodedEntry::LogEntry(entry(b"z", 1, 1_700_000_000_004, None)));
+            e
+        },
+    };
+    let result = PullSynchronizer::new(&grown, None)
+        .sync(&mut processor)
+        .await
+        .unwrap();
+    assert_eq!(result.entries_applied, 2, "only the two appended entries apply");
+    assert_eq!(
+        processor.get_peer_cursor(&PEER).await.unwrap(),
+        6,
+        "cursor resumed from 4 and advanced past the two new entries"
+    );
+    assert_eq!(oplog_row_count(processor.db()).await, 6);
 }

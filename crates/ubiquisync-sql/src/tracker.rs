@@ -2,9 +2,15 @@
 //!
 //! [`LogTracker`] is the hook the processor calls for every ingested entry,
 //! enqueued into the same batch that applies the entry. Implementations decide
-//! what to record. [`LogIndexTracker`] is the built-in one — an op-log table,
-//! keyed by `(peer_id, entry_idx)`, that dedup, revision history, and
-//! attribution read back from without replaying the reducer.
+//! what to record. [`LogIndexTracker`] is the built-in one — an op-log table
+//! keyed by `(peer_id, entry_idx)` that future readers can dedup, revision
+//! history, and attribution from without replaying the reducer.
+//!
+//! Today the only reader is [`peer_cursor`](LogTracker::peer_cursor), which just
+//! takes `MAX(entry_idx)`. Readers added later must skip the expunged-marker
+//! rows [`track_expunged`](LogTracker::track_expunged) writes (`tag` =
+//! [`TAG_EXPUNGED`], no attribution, no timestamp): they occupy a stream index
+//! but are not real entries, so counting or attributing them would be wrong.
 
 use std::marker::PhantomData;
 

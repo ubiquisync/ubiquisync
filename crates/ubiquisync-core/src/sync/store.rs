@@ -44,8 +44,15 @@ pub trait LogSource<E> {
     /// files, so the read has no `.await` — while the apply side that consumes
     /// the batch is async. `limit` bounds how much a single call materializes,
     /// so a cold pull of a long stream (`start_entry_idx == 0`) is drained in
-    /// chunks rather than held in memory all at once. A returned batch shorter
-    /// than `limit` signals the stream is exhausted.
+    /// chunks rather than held in memory all at once.
+    ///
+    /// **A batch shorter than `limit` means "no more entries at or after
+    /// `start_entry_idx`" — the driver stops reading this peer for the current
+    /// pass.** An implementation must therefore return a *full* `limit` whenever
+    /// more entries remain; it may not short-return at an internal boundary
+    /// (e.g. a segment-file edge) with more still to come, or that tail is
+    /// skipped until the next sync pass. Returning exactly `limit` is always
+    /// safe — the driver issues one more read, which then comes back empty.
     fn read_entries(
         &self,
         peer: &Uuid,
