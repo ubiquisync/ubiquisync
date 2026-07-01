@@ -117,7 +117,7 @@ mod tests {
     use crate::col_type::ColType;
 
     fn col(index: u8, ct: ColType) -> ColumnId {
-        ColumnId::new().with_index(index).with_col_type(ct)
+        ColumnId::new(index, ct)
     }
 
     // Upsert exercising a composite PK plus one column of every wire shape, and
