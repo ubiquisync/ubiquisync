@@ -1,6 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use ubiquisync_sql::db::{Db, DbColumnDescription, DbTableDescriptor, DbType};
+use ubiquisync_sql::{
+    db::{Db, DbColumnDescription, DbTableDescriptor, DbType},
+    util::quote_ident,
+};
 
 use crate::{
     error::TablesError,
@@ -17,7 +20,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub(crate) struct PhysicalTableSchema {
     pub(crate) id: TableId,
-    pub(crate) name: String,
+    pub(crate) quoted_name: String,
     pub(crate) cols: BTreeSet<ColumnId>,
 }
 
@@ -72,8 +75,8 @@ impl PhysicalTableSchema {
         }
     }
 
-    pub(crate) fn get_name(&self) -> &str {
-        &self.name
+    pub(crate) fn get_quoted_name(&self) -> &str {
+        &self.quoted_name
     }
 
     /// The set of value-column IDs this table currently tracks.
@@ -82,22 +85,26 @@ impl PhysicalTableSchema {
     }
 
     fn new_from_id(prefix: &str, id: TableId) -> Self {
-        let name = id.table_name(prefix);
+        let name = quote_ident(&id.table_name(prefix));
         Self {
             id,
-            name,
+            quoted_name: name,
             cols: Default::default(),
         }
     }
 
     fn new_from_schema(prefix: &str, schema: &TableSchema) -> Self {
         let id = schema.id;
-        let name = id.table_name(prefix);
+        let name = quote_ident(&id.table_name(prefix));
         let mut cols = BTreeSet::new();
         for (id, _) in schema.value_cols.iter() {
             cols.insert(*id);
         }
-        Self { id, name, cols }
+        Self {
+            id,
+            quoted_name: name,
+            cols,
+        }
     }
 
     pub(crate) fn new_from_db_descriptor(
@@ -217,7 +224,7 @@ impl PhysicalTableSchema {
 
         Ok(Self {
             id,
-            name: name.into(),
+            quoted_name: quote_ident(&name),
             cols,
         })
     }
@@ -252,7 +259,7 @@ impl PhysicalTableSchema {
         db.exec(
             &format!(
                 "CREATE TABLE {} ({}, PRIMARY KEY ({})){without_rowid};",
-                self.name,
+                self.quoted_name,
                 col_defs.join(", "),
                 self.id.pk_col_name_list(),
             ),
@@ -279,7 +286,7 @@ impl PhysicalTableSchema {
             &format!(
                 // TODO ensure that we don't need to specify NULL
                 "ALTER TABLE {} ADD COLUMN {} {};",
-                self.name,
+                self.quoted_name,
                 col_id.col_name(),
                 col_id.col_type().db_type().sql_type(dialect),
             ),
@@ -289,7 +296,7 @@ impl PhysicalTableSchema {
         batch.add_statement(
             &format!(
                 "ALTER TABLE {} ADD COLUMN {} {};",
-                self.name,
+                self.quoted_name,
                 col_id.lww_col_name(),
                 DbType::Integer.sql_type(dialect),
             ),

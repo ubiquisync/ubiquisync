@@ -5,7 +5,7 @@ use crate::reducer::upsert::{bind_pkey, lww_winner_sql, set_lww_sql};
 use crate::reducer::{ApplyState, Reducer};
 use crate::watch::{ChangeEvent, DeleteEvent};
 use ubiquisync_core::hlc::Timestamp;
-use ubiquisync_sql::db::{Db, DbBatch, DbValue, StmtId, ValueBinder};
+use ubiquisync_sql::db::{Db, DbBatch, DbStatementResult, DbValue, StmtId, ValueBinder};
 
 impl Reducer {
     pub(crate) async fn sync_delete_schema(
@@ -18,7 +18,7 @@ impl Reducer {
     }
 
     pub(crate) fn apply_delete(
-        &mut self,
+        &self,
         batch: &mut dyn DbBatch,
         timestamp: Timestamp,
         delete: &Delete,
@@ -26,7 +26,7 @@ impl Reducer {
         let dialect = batch.dialect();
         let table_id = delete.table_id;
         let table = self.require_table(table_id)?;
-        let quoted_table_name = table.get_name();
+        let quoted_table_name = table.get_quoted_name();
 
         // Because deletes are soft deletes, counter-intuitively we're actually building a INSERT ON CONFLICT SET statement
         let mut insert_into_cols = vec![]; // INSERT INTO (...)
@@ -44,7 +44,7 @@ impl Reducer {
 
         let pk_name_list = table_id.pk_col_name_list();
 
-        let timestamp_value = DbValue::Integer(timestamp.raw() as i64);
+        let timestamp_value = DbValue::from_u64(timestamp.raw())?;
 
         // DELETED_TS_COL binding
         insert_into_cols.push(DELETED_TS_COL.into());
@@ -87,5 +87,14 @@ impl Reducer {
             stmt_id,
             staged_event,
         })
+    }
+
+    pub(crate) fn post_delete(
+        &self,
+        stmt_id: StmtId,
+        upsert_event: DeleteEvent,
+        batch_result: &[DbStatementResult],
+    ) -> Result<Option<ChangeEvent>, TablesError> {
+        todo!()
     }
 }

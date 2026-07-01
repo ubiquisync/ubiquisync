@@ -6,7 +6,7 @@ use crate::physical_schema::{DELETED_TS_COL, UPSERT_TS_COL};
 use crate::reducer::{ApplyState, Reducer};
 use crate::watch::{ChangeEvent, ColumnValue, UpsertEvent};
 use ubiquisync_core::hlc::Timestamp;
-use ubiquisync_sql::db::{Db, DbBatch, DbValue, ValueBinder};
+use ubiquisync_sql::db::{Db, DbBatch, DbStatementResult, DbValue, StmtId, ValueBinder};
 use ubiquisync_sql::dialect::SqlDialect;
 use ubiquisync_sql::util::quote_ident;
 
@@ -38,7 +38,7 @@ impl Reducer {
         let table_id = upsert.table_id;
         let table = self.require_table(table_id)?;
         let named_table = self.named_tables.get(&table_id);
-        let quoted_table_name = table.get_name();
+        let quoted_table_name = table.get_quoted_name();
 
         let mut insert_into_cols = vec![]; // INSERT INTO (...)
         let mut insert_into_value_binds = vec![]; // VALUES (?1, ?2, ...)
@@ -58,7 +58,7 @@ impl Reducer {
         let mut set_clauses = vec![];
         let mut where_clauses = vec![];
 
-        let timestamp_value = DbValue::Integer(timestamp.raw() as i64);
+        let timestamp_value = DbValue::from_u64(timestamp.raw())?;
         let timestamp_placeholder = value_binder.bind_next(timestamp_value.clone());
 
         // UPSERT_TS_COL binding
@@ -147,7 +147,7 @@ impl Reducer {
             Some(ChangeEvent::Upsert(UpsertEvent {
                 table_id: upsert.table_id,
                 table_name: named_table.name.clone(),
-                primary_key: upsert.primary_key,
+                primary_key: upsert.primary_key.clone(),
                 changed_columns: changed_col_events,
             }))
         } else {
@@ -157,6 +157,15 @@ impl Reducer {
             stmt_id,
             staged_event,
         })
+    }
+
+    pub(crate) fn post_upsert(
+        &self,
+        stmt_id: StmtId,
+        upsert_event: UpsertEvent,
+        batch_result: &[DbStatementResult],
+    ) -> Result<Option<ChangeEvent>, TablesError> {
+        todo!()
     }
 }
 
@@ -219,13 +228,3 @@ pub(crate) fn bind_pkey(
         // TODO validate pkey value types
     }
 }
-
-// // quoted, comma-joined pk list for the ON CONFLICT statement
-// pub(crate) fn mk_pkey_name_list(table: &TableSchema) -> String {
-//     table
-//         .pk_col_names()
-//         .iter()
-//         .map(|n| quote_ident(n))
-//         .collect::<Vec<_>>()
-//         .join(", ")
-// }

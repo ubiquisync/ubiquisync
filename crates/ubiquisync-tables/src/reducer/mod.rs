@@ -1,16 +1,15 @@
-mod apply;
 mod delete;
 mod schema;
 mod upsert;
 
 use crate::error::TablesError;
-use crate::id::{ColumnId, TableId};
+use crate::id::TableId;
 use crate::op::Op;
 use crate::physical_schema::PhysicalTableSchema;
 use crate::schema::TableSchema;
 use crate::watch::ChangeEvent;
 use std::collections::HashMap;
-use ubiquisync_sql::db::{Db, DbBatch, DbError, DbStatementResult, StmtId};
+use ubiquisync_sql::db::{Db, DbBatch, DbStatementResult, StmtId};
 
 pub struct Reducer {
     prefix: String,
@@ -24,7 +23,7 @@ impl ubiquisync_sql::reducer::Reducer for Reducer {
     type Error = TablesError;
     type ReadState = ();
     type ApplyState = ApplyState;
-    type Event = ChangeEvent;
+    type Event = Option<ChangeEvent>;
 
     async fn prepare(&mut self, db: &dyn Db, op: &Op) -> Result<(), Self::Error> {
         match op {
@@ -51,12 +50,23 @@ impl ubiquisync_sql::reducer::Reducer for Reducer {
         &self,
         apply_state: Self::ApplyState,
         batch_result: &[DbStatementResult],
-    ) -> Result<ChangeEvent, Self::Error> {
-        todo!()
+    ) -> Result<Option<ChangeEvent>, Self::Error> {
+        if let Some(event) = apply_state.staged_event {
+            match event {
+                ChangeEvent::Upsert(event) => {
+                    self.post_upsert(apply_state.stmt_id, event, batch_result)
+                }
+                ChangeEvent::Delete(event) => {
+                    self.post_delete(apply_state.stmt_id, event, batch_result)
+                }
+            }
+        } else {
+            Ok(None)
+        }
     }
 }
 
-pub(crate) struct ApplyState {
+pub struct ApplyState {
     pub stmt_id: StmtId,
     pub staged_event: Option<ChangeEvent>,
 }
