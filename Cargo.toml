@@ -16,8 +16,10 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/ubiquisync/ubiquisync"
 
 # Workspace lints are opt-in and must be enabled per crate as each crate is ready.
+# Kept at `warn` so local `cargo build` isn't blocked; CI escalates via
+# `-D warnings` (clippy + `cargo doc`), so missing docs still fail the build there.
 [workspace.lints.rust]
-missing_docs = "deny"
+missing_docs = "warn"
 
 [workspace.dependencies]
 ubiquisync-core = { path = "crates/ubiquisync-core", version = "0.0.2" }

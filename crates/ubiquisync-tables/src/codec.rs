@@ -289,16 +289,16 @@ mod tests {
 
     // ── One ColumnId per col type ────────────────────────────────────────
     fn col_bytes() -> ColumnId {
-        ColumnId::new().with_index(0).with_col_type(ColType::Bytes)
+        ColumnId::new(0, ColType::Bytes)
     }
     fn col_text() -> ColumnId {
-        ColumnId::new().with_index(1).with_col_type(ColType::Text)
+        ColumnId::new(1, ColType::Text)
     }
     fn col_i64() -> ColumnId {
-        ColumnId::new().with_index(2).with_col_type(ColType::I64)
+        ColumnId::new(2, ColType::I64)
     }
     fn col_uuid() -> ColumnId {
-        ColumnId::new().with_index(3).with_col_type(ColType::Uuid)
+        ColumnId::new(3, ColType::Uuid)
     }
 
     // ── Test timestamps (HLC-style) ─────────────────────────────────────
