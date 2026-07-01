@@ -331,7 +331,7 @@ impl LogSource<MaxOp> for MockSource {
             .iter()
             .cloned()
             .enumerate()
-            .skip(start_entry_idx as usize)
+            .skip(usize::try_from(start_entry_idx).expect("cursor exceeds usize"))
             .map(|(i, e)| (i as u64, e))
             .collect())
     }

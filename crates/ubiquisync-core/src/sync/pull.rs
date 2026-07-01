@@ -2,11 +2,12 @@
 //! local [`LogProcessor`].
 //!
 //! This is the storage- and domain-agnostic core of synchronization. It reads
-//! decoded entries from a [`LogSource`], skips expunged markers, tracks each
-//! peer's cursor (the count of entries already processed, which is the index of
-//! the next entry to read), and hands real [`LogEntry`](crate::log_entry::LogEntry)
-//! values to a processor that applies them however it likes. The processor —
-//! typically backed by a materialized store — owns cursor persistence.
+//! decoded entries from a [`LogSource`] and drives them into a [`LogProcessor`]:
+//! real [`LogEntry`](crate::log_entry::LogEntry) values are applied, while
+//! expunged markers are recorded (not applied) so the cursor still advances past
+//! the gap. Each peer's cursor is the count of entries already processed — the
+//! index of the next entry to read — and the processor, typically backed by a
+//! materialized store, owns how it is tracked.
 
 use crate::codec::{DecodedEntry, Op};
 
@@ -165,7 +166,7 @@ mod tests {
             Ok(stream
                 .into_iter()
                 .enumerate()
-                .skip(start_entry_idx as usize)
+                .skip(usize::try_from(start_entry_idx).expect("cursor exceeds usize"))
                 .map(|(i, e)| (i as u64, e))
                 .collect())
         }
@@ -197,7 +198,7 @@ mod tests {
                 .iter()
                 .cloned()
                 .enumerate()
-                .skip(start_entry_idx as usize)
+                .skip(usize::try_from(start_entry_idx).expect("cursor exceeds usize"))
                 .take(self.chunk)
                 .map(|(i, e)| (i as u64, e))
                 .collect())
