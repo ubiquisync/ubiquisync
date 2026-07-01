@@ -53,6 +53,8 @@ impl IndexableOp for Op {
     }
 }
 
+/// Encode a row's identity (table id + primary key) into the op-log `key`
+/// bytes. The inverse of [`decode_index_key`].
 pub fn encode_index_key(table_id: TableId, pkey: &[Value]) -> Result<Vec<u8>, CodecError> {
     // Reuse the wire codec for the body bytes, but take them without the
     // integrity-hash trailer `finalize` would append — the op-log column
@@ -71,6 +73,8 @@ fn encode_index_value(e: &Upsert) -> Result<Vec<u8>, CodecError> {
     Ok(w.into_bytes())
 }
 
+/// Decode op-log `key` bytes back into the table id and primary key. The
+/// inverse of [`encode_index_key`]; rejects trailing bytes.
 pub fn decode_index_key(key: &[u8]) -> Result<(TableId, Vec<Value>), CodecError> {
     let mut dict = HashMap::new();
     let mut r = Reader::new(key);
@@ -82,6 +86,8 @@ pub fn decode_index_key(key: &[u8]) -> Result<(TableId, Vec<Value>), CodecError>
     Ok(decoded)
 }
 
+/// Decode op-log `value` bytes back into an upsert's column sets and nulled
+/// columns. Rejects trailing bytes.
 pub fn decode_index_value(value: &[u8]) -> Result<(Vec<ColumnSet>, Vec<ColumnId>), CodecError> {
     let mut dict = HashMap::new();
     let mut r = Reader::new(value);

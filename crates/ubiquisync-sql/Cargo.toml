@@ -6,6 +6,12 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# Exposes `test_support`: a backend-agnostic processor test suite the driver
+# crates (ubiquisync-sqlite, ubiquisync-postgres) run against their real `Db`.
+# Off by default; a driver enables it only in its `[dev-dependencies]`.
+test-support = []
+
 [dependencies]
 ubiquisync-core = { workspace = true }
 async-trait = { workspace = true }

@@ -6,9 +6,9 @@
 //! > and **will change without notice**. Do not use it in production. Breaking
 //! > changes may land on any commit.
 //!
-//! This crate implements the [`Db`](ubiquisync_sql::db::Db) backend abstraction
+//! This crate implements the [`Db`] backend abstraction
 //! over [`rusqlite`], reporting
-//! [`SqlDialect::Sqlite`](ubiquisync_sql::dialect::SqlDialect::Sqlite). The SQL
+//! [`SqlDialect::Sqlite`]. The SQL
 //! flavor itself is not implemented here — it lives in `ubiquisync-sql`; this
 //! crate only drives the connection.
 
@@ -308,29 +308,9 @@ fn map_err(err: rusqlite::Error) -> DbError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::future::Future;
-    use std::pin::pin;
-    use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-
-    /// Minimal executor for the tests: every future in this crate resolves
-    /// without ever yielding (the bodies do no real `.await`), so polling once
-    /// in a loop with a no-op waker is sufficient — no async runtime needed.
-    fn block_on<F: Future>(fut: F) -> F::Output {
-        const VTABLE: RawWakerVTable = RawWakerVTable::new(
-            |_| RawWaker::new(std::ptr::null(), &VTABLE),
-            |_| {},
-            |_| {},
-            |_| {},
-        );
-        let waker = unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) };
-        let mut cx = Context::from_waker(&waker);
-        let mut fut = pin!(fut);
-        loop {
-            if let Poll::Ready(v) = fut.as_mut().poll(&mut cx) {
-                return v;
-            }
-        }
-    }
+    // SQLite's futures resolve synchronously, so any executor drives them;
+    // `pollster` is a minimal, wakeup-correct `block_on`.
+    use pollster::block_on;
 
     fn setup() -> SqliteDb {
         let db = SqliteDb::open_in_memory().unwrap();
