@@ -21,8 +21,18 @@ pub struct ColumnSchema {
 }
 
 impl TableSchema {
-    pub fn new(id: TableId, name: String, pk_names: Vec<String, non_pk_cols: Vec<ColumnSchema>) -> self{
-        let value_cols = BTreeMap::new();
-
+    pub fn new(
+        id: TableId,
+        name: String,
+        pk_names: Vec<String>,
+        non_pk_cols: Vec<ColumnSchema>,
+    ) -> Self {
+        let value_cols = non_pk_cols.into_iter().map(|col| (col.id, col)).collect();
+        Self {
+            id,
+            name,
+            pk_names,
+            value_cols,
+        }
     }
 }
