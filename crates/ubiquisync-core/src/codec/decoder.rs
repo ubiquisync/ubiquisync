@@ -117,7 +117,7 @@ impl<E: Op, R: BufRead> Decoder<E, R> {
         }
         let e = E::decode(tag, &mut reader)?;
         let timestamp = reader.read_delta(self.last_timestamp)?;
-        let user_id = if self.server_mode {
+        let server_user_id = if self.server_mode {
             Some(reader.read_uuid()?)
         } else {
             None
@@ -126,7 +126,7 @@ impl<E: Op, R: BufRead> Decoder<E, R> {
         // Commit cross-entry state only after the integrity check passes.
         self.last_timestamp = timestamp;
         Ok(Some(DecodedEntry::LogEntry(LogEntry {
-            user_id,
+            server_user_id,
             timestamp: Timestamp::from_raw(timestamp),
             op: e,
         })))

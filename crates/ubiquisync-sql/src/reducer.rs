@@ -22,6 +22,15 @@ use crate::db::{Db, DbBatch, DbStatementResult};
 ///    batch stays a flat, declarative statement list.
 /// 3. [`post_apply`](Reducer::post_apply) runs *after* the batch commits, when
 ///    `RETURNING` rows finally exist, and turns the results into the event.
+/// # Idempotency
+///
+/// Whether a reducer must apply idempotently is not its own choice — it depends
+/// on the [`LogTracker`](crate::tracker::LogTracker) it is paired with. Behind a
+/// tracker that rejects a repeated `(peer_id, entry_idx)` (e.g.
+/// [`LogIndexTracker`](crate::tracker::LogIndexTracker)) a redundant apply rolls
+/// back, so the reducer need not be idempotent; behind one that does not reject,
+/// it must be. See the tracker's
+/// [duplicate-rejection contract](crate::tracker::LogTracker#duplicate-rejection).
 #[async_trait::async_trait(?Send)]
 pub trait Reducer {
     /// The op vocabulary this reducer materializes (e.g. the table op enum).

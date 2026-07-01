@@ -1,30 +1,35 @@
-//! The apply seam: [`LogProcessor`] is what the sync engine drives. A
-//! processor — typically a materialized store — absorbs remote entries and
-//! remembers how far it has read each peer's stream.
+//! [`LogProcessor`]: what the sync engine applies a peer's entries into. A
+//! processor — typically a materialized store — absorbs entries and remembers
+//! how far it has read each peer's stream.
+
+use async_trait::async_trait;
 
 use crate::log_entry::LogEntry;
 use crate::uuid::Uuid;
 
 use super::error::SyncError;
 
-/// A store that can absorb remote entries and remember how far it has read each
-/// peer's stream.
+/// A store the sync engine applies a peer's entries into, tracking how far it
+/// has read each peer's stream.
 ///
-/// # Crash & retry contract
+/// Both [`apply_entry`](LogProcessor::apply_entry) and
+/// [`save_expunged_entry`](LogProcessor::save_expunged_entry) advance the peer's
+/// cursor to `index + 1` atomically with the record they write, so a partial
+/// write commits nothing and the next pass re-reads from the same index.
 ///
-/// [`PullSynchronizer`](super::PullSynchronizer) applies a peer's batch entry-by-entry and saves
-/// the cursor once, *after* the batch. The cursor save and the applies are
-/// separate fallible steps with no transaction spanning them — so if a save
-/// fails, or the process dies between the last apply and the save, the next sync
-/// re-delivers entries that were already applied. Implementors must therefore
-/// guarantee **one** of:
+/// # Re-delivery
 ///
-/// - `apply_remote_entry` is idempotent in `(peer, index)` — re-applying an
-///   already-applied entry is a no-op; or
-/// - each `apply_remote_entry` + the subsequent `save_peer_cursor` are committed
-///   atomically (e.g. one DB transaction per entry, cursor advanced in lockstep).
+/// The engine can re-deliver an already-applied `(peer_id, index)`. An
+/// implementation must keep that from applying twice, in one of two ways:
 ///
-/// Without one of these, a mid-batch failure double-applies entries.
+/// - reject a repeated `(peer_id, index)` so the apply rolls back (e.g. a
+///   unique key on it), or
+/// - make the applied effect idempotent, so re-applying it is a no-op.
+///
+/// Which one holds is a property of the implementation, and a reducer's
+/// idempotency requirement follows from it: behind a rejecting store a reducer
+/// need not be idempotent; behind one that does not reject, it must be.
+#[async_trait(?Send)]
 pub trait LogProcessor<E> {
     /// The processor's own error type; must absorb [`SyncError`] so the engine
     /// can surface transport failures through it.
@@ -32,12 +37,26 @@ pub trait LogProcessor<E> {
 
     /// Returns the next-entry index for the given peer; `0` if the peer has
     /// never been seen.
-    fn get_peer_cursor(&self, peer_id: &Uuid) -> Result<u64, Self::Error>;
+    async fn get_peer_cursor(&self, peer_id: &Uuid) -> Result<u64, Self::Error>;
 
-    /// Persists the next-entry index for the given peer.
-    fn save_peer_cursor(&mut self, peer_id: &Uuid, next_entry_idx: u64) -> Result<(), Self::Error>;
+    /// Applies one entry, identified by its stream `index` within `peer_id`'s
+    /// stream, and advances the peer's cursor to `index + 1` atomically. Must
+    /// honor the idempotency/atomicity contract described on the trait.
+    async fn apply_entry(
+        &mut self,
+        peer_id: &Uuid,
+        index: u64,
+        entry: &LogEntry<E>,
+    ) -> Result<(), Self::Error>;
 
-    /// Applies one remote entry, identified by its stream index. Must honor the
-    /// idempotency/atomicity contract described on the trait.
-    fn apply_remote_entry(&mut self, index: u64, entry: &LogEntry<E>) -> Result<(), Self::Error>;
+    /// Records the expunged marker at stream `index` within `peer_id`'s stream,
+    /// advancing the peer's cursor past it without materializing anything. `hash`
+    /// names the entry that was expunged. Like [`apply_entry`](Self::apply_entry),
+    /// the cursor advance is atomic with the record.
+    async fn save_expunged_entry(
+        &mut self,
+        peer_id: &Uuid,
+        index: u64,
+        hash: &blake3::Hash,
+    ) -> Result<(), Self::Error>;
 }
