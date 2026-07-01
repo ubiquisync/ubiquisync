@@ -8,6 +8,12 @@ use crate::{
     schema::TableSchema,
 };
 
+/// PhysicalTableSchema represents a the physical storage for a table in the database
+/// using names derived from the table and column IDs.
+/// It may or may or may not have a user facing VIEW derived from a TableSchema.
+/// If the user specifically declared this table then we will have a TableSchema.
+/// If the table or some column was only referred to in updates from other peers
+/// then we will only have the table or column with surrogate names.
 #[derive(Debug, Clone)]
 pub(crate) struct PhysicalTableSchema {
     id: TableId,
@@ -15,10 +21,60 @@ pub(crate) struct PhysicalTableSchema {
     cols: BTreeSet<ColumnId>,
 }
 
-pub const DELETED_TS_COL: &'static str = "__deleted_ts";
+/// The timestamp of the latest upsert operation on the table.
+/// Only rows where __upsert_ts >= __deleted_ts are considered live.
 pub const UPSERT_TS_COL: &'static str = "__upsert_ts";
 
+/// The timestamp of the latest delete operation on the table.
+pub const DELETED_TS_COL: &'static str = "__deleted_ts";
+
 impl PhysicalTableSchema {
+    /// Initialize a physical table based on a table ID when we have no user-defined
+    /// TableSchema. If the table exists, reconstruct its schema from the database.
+    /// If the table does not exist, create it.
+    pub(crate) async fn new_surrogate(
+        prefix: &str,
+        id: TableId,
+        db: &dyn Db,
+    ) -> Result<Self, TablesError> {
+        let name = id.table_name(prefix);
+        if let Some(descriptor) = db.describe_table(&name).await? {
+            Ok(Self::new_from_db_descriptor(prefix, descriptor)?)
+        } else {
+            let res = Self::new_from_id(prefix, id);
+            res.create_table(db).await?;
+            Ok(res)
+        }
+    }
+
+    /// Initialize a physical table with a user-defined TableSchema.
+    /// If the table exists, reconstruct its shema from the database and
+    /// then add any columns declared in the schema that aren't already present.
+    /// If the table doesn't exist, create it.
+    pub(crate) async fn new_named(
+        prefix: &str,
+        schema: &TableSchema,
+        db: &dyn Db,
+    ) -> Result<Self, TablesError> {
+        let name = schema.id.table_name(prefix);
+        if let Some(descriptor) = db.describe_table(&name).await? {
+            let mut res = Self::new_from_db_descriptor(prefix, descriptor)?;
+            // Make sure all named columns are defined
+            for col_id in schema.value_cols.keys() {
+                res.ensure_column(db, *col_id).await?;
+            }
+            Ok(res)
+        } else {
+            let res = Self::new_from_schema(prefix, schema);
+            res.create_table(db).await?;
+            Ok(res)
+        }
+    }
+
+    pub(crate) fn get_name(&self) -> &str {
+        &self.name
+    }
+
     fn new_from_id(prefix: &str, id: TableId) -> Self {
         let name = id.table_name(prefix);
         Self {
@@ -26,20 +82,6 @@ impl PhysicalTableSchema {
             name,
             cols: Default::default(),
         }
-    }
-
-    pub(crate) async fn init_surrogate(
-        prefix: &str,
-        id: TableId,
-        db: &dyn Db,
-    ) -> Result<Self, TablesError> {
-        let res = Self::new_from_id(prefix, id);
-        res.create_table(db).await?;
-        Ok(res)
-    }
-
-    pub(crate) fn get_name(&self) -> &str {
-        &self.name
     }
 
     fn new_from_schema(prefix: &str, schema: &TableSchema) -> Self {
@@ -52,7 +94,10 @@ impl PhysicalTableSchema {
         Self { id, name, cols }
     }
 
-    fn reconstruct_from_db(prefix: &str, db_table: DbTableDescriptor) -> Result<Self, TablesError> {
+    fn new_from_db_descriptor(
+        prefix: &str,
+        db_table: DbTableDescriptor,
+    ) -> Result<Self, TablesError> {
         let name = &db_table.name;
         let id = if let Some(id) = TableId::parse_table_name(prefix, name) {
             id
