@@ -11,6 +11,7 @@
 
 use crate::id::{ColumnId, TableId};
 use ubiquisync_core::uuid::Uuid;
+use ubiquisync_sql::db::DbValue;
 
 /// A single state mutation against a table (compile-time schema).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,6 +58,17 @@ pub enum Value {
     Text(String),
     /// Signed 64-bit integer (zigzag varint on wire).
     I64(i64),
+}
+
+impl Value {
+    pub fn to_db(&self) -> DbValue {
+        match self {
+            Value::Bytes(bytes) => DbValue::Blob(bytes.clone()),
+            Value::Uuid(uuid) => DbValue::Uuid(*uuid),
+            Value::Text(text) => DbValue::Text(text.clone()),
+            Value::I64(i) => DbValue::Integer(*i),
+        }
+    }
 }
 
 /// Soft-deletes a table row by advancing `__deleted_ts`. LWW — a later

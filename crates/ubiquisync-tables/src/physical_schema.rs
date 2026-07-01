@@ -16,9 +16,9 @@ use crate::{
 /// then we will only have the table or column with surrogate names.
 #[derive(Debug, Clone)]
 pub(crate) struct PhysicalTableSchema {
-    id: TableId,
-    name: String,
-    cols: BTreeSet<ColumnId>,
+    pub(crate) id: TableId,
+    pub(crate) name: String,
+    pub(crate) cols: BTreeSet<ColumnId>,
 }
 
 /// The timestamp of the latest upsert operation on the table.
