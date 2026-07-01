@@ -1,11 +1,14 @@
 use crate::id::{ColumnId, TableId};
 
 impl TableId {
+    /// Surrogate SQL table name for this ID: `{prefix}__t0x{raw:04X}`.
     pub fn table_name(&self, prefix: &str) -> String {
         let raw: u16 = self.raw();
         format!("{prefix}__t0x{raw:04X}")
     }
 
+    /// Inverse of [`table_name`](Self::table_name): recovers the ID from a
+    /// table name, or `None` if it doesn't match the `{prefix}__t0x…` shape.
     pub fn parse_table_name(prefix: &str, name: &str) -> Option<Self> {
         name.strip_prefix(prefix)
             .and_then(|s| s.strip_prefix("__t0x"))
@@ -31,25 +34,32 @@ impl TableId {
 }
 
 impl ColumnId {
+    /// Surrogate SQL column name for this ID: `c0x{raw:02X}` (the byte encodes
+    /// both type and index).
     pub fn col_name(&self) -> String {
         let raw: u8 = self.into_bits();
         format!("c0x{raw:02X}")
     }
 
+    /// Name of this column's companion LWW-timestamp column: `{col_name}_lww`.
     pub fn lww_col_name(&self) -> String {
         format!("{}_lww", self.col_name())
     }
 
+    /// Inverse of [`col_name`](Self::col_name), or `None` if `name` isn't a
+    /// `c0x…` value-column name (e.g. a PK, ts, or `_lww` column).
     pub fn parse_col_name(name: &str) -> Option<Self> {
         name.strip_prefix("c0x")
             .and_then(|s| u8::from_str_radix(s, 16).ok())
             .map(ColumnId::from_bits)
     }
 
+    /// Recovers the value-column ID from its LWW column name, or `None` if
+    /// `lww_name` isn't a `c0x…_lww` name.
     pub fn parse_lww_col_name(lww_name: &str) -> Option<Self> {
         lww_name
             .strip_suffix("_lww")
-            .and_then(|s| Self::parse_col_name(s))
+            .and_then(Self::parse_col_name)
     }
 }
 

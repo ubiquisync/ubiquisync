@@ -294,9 +294,11 @@ name = "ubiquisync-tables"
 version = "0.0.2"
 dependencies = [
  "bitfield-struct",
+ "pollster",
  "thiserror",
  "ubiquisync-core",
  "ubiquisync-sql",
+ "ubiquisync-sqlite",
 ]
 
 [[package]]

@@ -25,5 +25,9 @@ pub mod id;
 pub mod index_codec;
 mod naming;
 pub mod op;
+// Physical storage layer (surrogate tables, schema reconciliation). Wired into
+// the shipping build by the table reducer; `allow(dead_code)` until then.
+#[allow(dead_code)]
 mod physical_schema;
+#[allow(dead_code)]
 mod schema;

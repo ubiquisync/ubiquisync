@@ -9,6 +9,8 @@ use crate::id::{ColumnId, TableId};
 #[derive(Debug, Clone)]
 pub struct TableSchema {
     pub(crate) id: TableId,
+    // `name`/`pk_names` name the user-facing VIEW; unread until the VIEW is
+    // built (only the physical layer, keyed by IDs, exists today).
     pub(crate) name: String,
     pub(crate) pk_names: Vec<String>,
     pub(crate) value_cols: BTreeMap<ColumnId, ColumnSchema>,
@@ -16,6 +18,7 @@ pub struct TableSchema {
 
 #[derive(Debug, Clone)]
 pub struct ColumnSchema {
+    /// The user-facing column name for the VIEW; unread until the VIEW is built.
     pub name: String,
     pub id: ColumnId,
 }
