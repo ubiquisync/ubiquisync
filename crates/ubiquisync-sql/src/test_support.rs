@@ -5,8 +5,8 @@
 //! op carries `(key, value)` and the stored value only ever moves up, via a
 //! `MAX`-guarded upsert. That is enough to exercise the whole `prepare` →
 //! `apply` → `post_apply` pipeline, the op-log tracker, and the HLC observe —
-//! and, crucially, the idempotency contract: re-ingesting a `(client_id,
-//! client_idx)` must roll the entire batch back and apply nothing.
+//! and, crucially, the idempotency contract: re-ingesting a `(peer_id,
+//! entry_idx)` must roll the entire batch back and apply nothing.
 //!
 //! [`run_max_register_suite`] is generic over `<D: Db>`, so the exact same
 //! assertions run against any backend. Today only the SQLite driver implements
@@ -18,9 +18,13 @@ use std::io::BufRead;
 
 use async_trait::async_trait;
 use ubiquisync_core::{
-    codec::{CodecError, EntryBufferReader, EntryBufferWriter, IndexableOp, Op, OpIndexEntry},
+    codec::{
+        CodecError, DecodedEntry, EntryBufferReader, EntryBufferWriter, IndexableOp, Op,
+        OpIndexEntry,
+    },
     hlc::Timestamp,
     log_entry::LogEntry,
+    sync::{LogProcessor, LogSource, PullSynchronizer, SyncError},
     uuid::Uuid,
 };
 
@@ -38,6 +42,7 @@ const TAG_MAX: u8 = 1;
 
 /// "Set this key's register to at least `value`." The only op the mock reducer
 /// understands.
+#[derive(Clone)]
 struct MaxOp {
     key: Vec<u8>,
     value: i64,
@@ -151,13 +156,13 @@ impl Reducer for MaxRegister {
 
 type MaxProcessor<D> = Processor<MaxRegister, D, LogIndexTracker<MaxOp>>;
 
-const CLIENT: Uuid = [7u8; 16];
+const PEER: Uuid = [7u8; 16];
 const USER: Uuid = [9u8; 16];
 const PREFIX: &str = "app";
 
-fn entry(key: &[u8], value: i64, millis: u64, user_id: Option<Uuid>) -> LogEntry<MaxOp> {
+fn entry(key: &[u8], value: i64, millis: u64, server_user_id: Option<Uuid>) -> LogEntry<MaxOp> {
     LogEntry {
-        user_id,
+        server_user_id,
         // A past wall component is always within the HLC skew bound.
         timestamp: Timestamp::from_parts(millis, 0),
         op: MaxOp {
@@ -175,11 +180,11 @@ async fn oplog_row_count<D: Db>(db: &D) -> i64 {
     db.query(&sql, &[]).await.unwrap()[0].get_i64(0).unwrap()
 }
 
-async fn oplog_user_id<D: Db>(db: &D, client_idx: u64) -> Option<Uuid> {
+async fn oplog_server_user_id<D: Db>(db: &D, entry_idx: u64) -> Option<Uuid> {
     let mut binder = ValueBinder::new(db.dialect());
-    let idx = binder.bind_next(DbValue::from_u64(client_idx).unwrap());
+    let idx = binder.bind_next(DbValue::from_u64(entry_idx).unwrap());
     let sql = format!(
-        "SELECT user_id FROM {} WHERE client_idx = {idx}",
+        "SELECT server_user_id FROM {} WHERE entry_idx = {idx}",
         quote_ident(&format!("{PREFIX}__oplog"))
     );
     db.query(&sql, &binder.values()).await.unwrap()[0]
@@ -209,7 +214,7 @@ pub async fn run_max_register_suite<D: Db>(db: D) {
 
     // First write seeds the register.
     let r = processor
-        .process_one(&CLIENT, 0, &entry(b"x", 5, 1_700_000_000_000, None))
+        .process_one(&PEER, 0, &entry(b"x", 5, 1_700_000_000_000, None))
         .await
         .unwrap();
     assert_eq!(r, 5, "first write sets the value");
@@ -217,7 +222,7 @@ pub async fn run_max_register_suite<D: Db>(db: D) {
     // A smaller value loses the max merge but is still a real (non-duplicate)
     // apply, so it returns the unchanged max.
     let r = processor
-        .process_one(&CLIENT, 1, &entry(b"x", 3, 1_700_000_000_001, None))
+        .process_one(&PEER, 1, &entry(b"x", 3, 1_700_000_000_001, None))
         .await
         .unwrap();
     assert_eq!(r, 5, "smaller value does not lower the register");
@@ -225,17 +230,17 @@ pub async fn run_max_register_suite<D: Db>(db: D) {
     // A larger value advances it. This entry carries a user id, so its op-log
     // row exercises the `Some(user)` binding path.
     let r = processor
-        .process_one(&CLIENT, 2, &entry(b"x", 9, 1_700_000_000_002, Some(USER)))
+        .process_one(&PEER, 2, &entry(b"x", 9, 1_700_000_000_002, Some(USER)))
         .await
         .unwrap();
     assert_eq!(r, 9, "larger value raises the register");
     assert_eq!(
-        oplog_user_id(processor.db(), 2).await,
+        oplog_server_user_id(processor.db(), 2).await,
         Some(USER),
         "attributed entry stores its user id"
     );
     assert_eq!(
-        oplog_user_id(processor.db(), 0).await,
+        oplog_server_user_id(processor.db(), 0).await,
         None,
         "unattributed entry stores NULL user id"
     );
@@ -249,12 +254,12 @@ pub async fn run_max_register_suite<D: Db>(db: D) {
         Timestamp::from_parts(1_700_000_000_002, 0).raw()
     );
 
-    // Re-ingesting (CLIENT, 0) is a duplicate. Its timestamp (…003) is *higher*
+    // Re-ingesting (PEER, 0) is a duplicate. Its timestamp (…003) is *higher*
     // than the persisted clock and its value (100) would raise the register, so
     // a missed rollback would be visible in all three of: the register, the
     // op-log row count, and the persisted clock.
     let err = processor
-        .process_one(&CLIENT, 0, &entry(b"x", 100, 1_700_000_000_003, None))
+        .process_one(&PEER, 0, &entry(b"x", 100, 1_700_000_000_003, None))
         .await
         .unwrap_err();
     assert!(
@@ -274,7 +279,7 @@ pub async fn run_max_register_suite<D: Db>(db: D) {
 
     // Prove the duplicate applied nothing at the data layer: still 9, not 100.
     let r = processor
-        .process_one(&CLIENT, 3, &entry(b"x", 1, 1_700_000_000_004, None))
+        .process_one(&PEER, 3, &entry(b"x", 1, 1_700_000_000_004, None))
         .await
         .unwrap();
     assert_eq!(r, 9, "rolled-back duplicate left the register at 9");
@@ -282,7 +287,7 @@ pub async fn run_max_register_suite<D: Db>(db: D) {
     // Replaying a byte-identical, already-applied entry (the real dedup case)
     // also surfaces the violation rather than silently re-applying.
     let err = processor
-        .process_one(&CLIENT, 1, &entry(b"x", 3, 1_700_000_000_001, None))
+        .process_one(&PEER, 1, &entry(b"x", 3, 1_700_000_000_001, None))
         .await
         .unwrap_err();
     assert!(
@@ -292,8 +297,112 @@ pub async fn run_max_register_suite<D: Db>(db: D) {
 
     // A different key is an independent register.
     let r = processor
-        .process_one(&CLIENT, 4, &entry(b"y", 7, 1_700_000_000_005, None))
+        .process_one(&PEER, 4, &entry(b"y", 7, 1_700_000_000_005, None))
         .await
         .unwrap();
     assert_eq!(r, 7, "distinct key has its own register");
+}
+
+// ── End-to-end sync harness ─────────────────────────────────────────────────
+
+/// A fixed, in-memory stream of one peer's decoded entries, standing in for a
+/// real segment store so the [`Processor`] can be driven through
+/// [`PullSynchronizer`].
+struct MockSource {
+    peer: Uuid,
+    entries: Vec<DecodedEntry<MaxOp>>,
+}
+
+impl LogSource<MaxOp> for MockSource {
+    fn list_peers(&self) -> Vec<Uuid> {
+        vec![self.peer]
+    }
+
+    fn read_entries(
+        &self,
+        peer: &Uuid,
+        start_entry_idx: u64,
+        limit: usize,
+    ) -> Result<Vec<(u64, DecodedEntry<MaxOp>)>, SyncError> {
+        if peer != &self.peer {
+            return Ok(vec![]);
+        }
+        Ok(self
+            .entries
+            .iter()
+            .cloned()
+            .enumerate()
+            .skip(start_entry_idx as usize)
+            .take(limit)
+            .map(|(i, e)| (i as u64, e))
+            .collect())
+    }
+}
+
+/// Drives a processor through [`PullSynchronizer`] end to end against `db`,
+/// exercising the [`LogProcessor`] implementation: real entries apply, expunged
+/// markers are recorded (not applied) yet still advance the cursor past the gap,
+/// the cursor is derived from what the tracker recorded rather than stored
+/// separately, and a second pass re-delivers nothing because the cursor already
+/// sits at the stream end.
+///
+/// Generic over the backend like [`run_max_register_suite`]; call it with a
+/// freshly opened, empty database.
+pub async fn run_pull_sync_suite<D: Db>(db: D) {
+    let mut processor: MaxProcessor<D> = Processor::open(MaxRegister::new("reg"), db, PREFIX)
+        .await
+        .unwrap();
+
+    // Stream: two real entries, an expunged marker at index 2, then one more
+    // real entry. The second real entry is server-attributed.
+    let source = MockSource {
+        peer: PEER,
+        entries: vec![
+            DecodedEntry::LogEntry(entry(b"x", 5, 1_700_000_000_000, None)),
+            DecodedEntry::LogEntry(entry(b"x", 9, 1_700_000_000_001, Some(USER))),
+            DecodedEntry::Expunged(blake3::hash(b"gone")),
+            DecodedEntry::LogEntry(entry(b"y", 4, 1_700_000_000_002, None)),
+        ],
+    };
+
+    // A never-seen peer starts at cursor 0.
+    assert_eq!(processor.get_peer_cursor(&PEER).await.unwrap(), 0);
+
+    let result = PullSynchronizer::new(&source, None)
+        .sync(&mut processor)
+        .await
+        .unwrap();
+    assert_eq!(
+        result.entries_applied, 3,
+        "3 real entries applied; the expunged marker is not an apply"
+    );
+    // Cursor sits one past the last stream index (3), so it advanced over the
+    // expunged gap at index 2 as well.
+    assert_eq!(
+        processor.get_peer_cursor(&PEER).await.unwrap(),
+        4,
+        "cursor advanced past every slot, expunged gap included"
+    );
+    // Four op-log rows: three entries plus the expunged marker occupying its
+    // index. Attribution landed only on the server-attested entry.
+    assert_eq!(oplog_row_count(processor.db()).await, 4);
+    assert_eq!(oplog_server_user_id(processor.db(), 1).await, Some(USER));
+    assert_eq!(
+        oplog_server_user_id(processor.db(), 2).await,
+        None,
+        "expunged marker carries no attribution"
+    );
+
+    // A second pass reads from the persisted cursor (4), finds nothing new, and
+    // applies nothing — no re-delivery, no duplicate rows.
+    let result = PullSynchronizer::new(&source, None)
+        .sync(&mut processor)
+        .await
+        .unwrap();
+    assert_eq!(result.entries_applied, 0, "second sync re-delivers nothing");
+    assert_eq!(
+        oplog_row_count(processor.db()).await,
+        4,
+        "re-sync wrote no duplicate rows"
+    );
 }

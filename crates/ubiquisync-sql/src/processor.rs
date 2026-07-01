@@ -7,9 +7,11 @@
 //! single all-or-nothing batch. [`ProcessorError`] tags a failure by which of
 //! those collaborators produced it.
 
+use async_trait::async_trait;
 use ubiquisync_core::{
     hlc::{HlcError, HlcService, wall_ms},
     log_entry::LogEntry,
+    sync::{LogProcessor, SyncError},
     uuid::Uuid,
 };
 
@@ -65,14 +67,14 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>> Processor<R, D, T> {
     /// all in one all-or-nothing batch that rolls back if any step fails.
     ///
     /// No deduplication happens here. Re-ingesting an already-applied
-    /// `(client_id, client_idx)` re-runs the tracker and reducer against it;
+    /// `(peer_id, entry_idx)` re-runs the tracker and reducer against it;
     /// whether that errors or is absorbed is up to those collaborators. Callers
     /// should dedup against their last-ingested index, and reducers should apply
     /// idempotently UNLESS the tracker ensures only-once consistency.
     pub(crate) async fn process_one(
         &mut self,
-        client_id: &Uuid,
-        client_idx: u64,
+        peer_id: &Uuid,
+        entry_idx: u64,
         entry: &LogEntry<R::Op>,
     ) -> Result<R::Event, ProcessorError<R::Error>> {
         let op = &entry.op;
@@ -85,7 +87,7 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>> Processor<R, D, T> {
         let mut batch = self.db.new_batch();
         self.hlc.observe(timestamp, wall_ms(), batch.as_mut())?;
         self.tracker
-            .track_one(client_id, client_idx, entry, batch.as_mut())?;
+            .track_one(peer_id, entry_idx, entry, batch.as_mut())?;
         let apply_state = self
             .reducer
             .apply(batch.as_mut(), timestamp, op, prepare_state)
@@ -96,6 +98,57 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>> Processor<R, D, T> {
             .post_apply(apply_state, &batch_result)
             .map_err(ProcessorError::Reducer)?;
         Ok(event)
+    }
+
+    /// Record the expunged marker at `(peer_id, entry_idx)` atomically: hand the
+    /// `hash` to the tracker and commit just that row. Unlike an applied entry
+    /// there is no reducer work and no clock to advance — the marker carries no
+    /// timestamp — so this only occupies the stream index, letting the peer's
+    /// cursor advance past the expunged gap.
+    pub(crate) async fn process_expunged(
+        &mut self,
+        peer_id: &Uuid,
+        entry_idx: u64,
+        hash: &blake3::Hash,
+    ) -> Result<(), ProcessorError<R::Error>> {
+        let mut batch = self.db.new_batch();
+        self.tracker
+            .track_expunged(peer_id, entry_idx, hash, batch.as_mut())?;
+        batch.commit().await?;
+        Ok(())
+    }
+}
+
+#[async_trait(?Send)]
+impl<R: Reducer, D: Db, T: LogTracker<R::Op>> LogProcessor<R::Op> for Processor<R, D, T> {
+    type Error = ProcessorError<R::Error>;
+
+    async fn get_peer_cursor(&self, peer_id: &Uuid) -> Result<u64, Self::Error> {
+        Ok(self.tracker.peer_cursor(&self.db, peer_id).await?)
+    }
+
+    /// Applies the entry and advances the peer's cursor atomically: the cursor
+    /// is derived from what the tracker has recorded, so the same commit that
+    /// records the entry advances it. The per-entry
+    /// [`R::Event`](Reducer::Event) is dropped here; the sync engine has no
+    /// channel for it yet.
+    async fn apply_entry(
+        &mut self,
+        peer_id: &Uuid,
+        index: u64,
+        entry: &LogEntry<R::Op>,
+    ) -> Result<(), Self::Error> {
+        self.process_one(peer_id, index, entry).await?;
+        Ok(())
+    }
+
+    async fn save_expunged_entry(
+        &mut self,
+        peer_id: &Uuid,
+        index: u64,
+        hash: &blake3::Hash,
+    ) -> Result<(), Self::Error> {
+        self.process_expunged(peer_id, index, hash).await
     }
 }
 
@@ -116,4 +169,10 @@ pub enum ProcessorError<E> {
     /// A backend operation failed — e.g. the batch commit was rejected.
     #[error("db error: {0}")]
     Db(#[from] DbError),
+    /// A [`SyncError`] from the sync engine — in practice a failed source read,
+    /// which [`PullSynchronizer`](ubiquisync_core::sync::PullSynchronizer) maps
+    /// into this processor's error type as it drives the sync. Required by
+    /// [`ubiquisync_core::sync::LogProcessor::Error`]'s `From<SyncError>` bound.
+    #[error("sync error: {0}")]
+    Sync(#[from] SyncError),
 }

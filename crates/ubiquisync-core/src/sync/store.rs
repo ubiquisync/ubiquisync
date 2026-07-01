@@ -1,10 +1,8 @@
-//! The storage seam: traits a backend implements to expose a peer's log
-//! stream to the sync engine — the read side ([`LogSource`]) and the write
-//! side ([`LogEntrySink`]). Both are generic over the op vocabulary `E` so one
+//! Storage traits a backend implements to expose a peer's log stream to the
+//! sync engine — the read side ([`LogSource`]) and the write side
+//! ([`LogEntrySink`]). Both are generic over the op vocabulary `E` so one
 //! storage layer can carry any data domain. Concrete backends (e.g. an
 //! on-disk segment store) live in companion crates.
-
-use std::ops::ControlFlow;
 
 use crate::codec::DecodedEntry;
 use crate::hlc::Timestamp;
@@ -18,13 +16,13 @@ use super::error::SyncError;
 /// Returns the peer's cursor position after the write — i.e. the number of
 /// entries now in the stream, which is the index of the next entry to write.
 pub trait LogEntrySink<E> {
-    /// Encode and append `entries` under timestamp `ts` (and `user_id` in
-    /// server mode), returning the stream's new cursor position — the entry
+    /// Encode and append `entries` under timestamp `ts` (and `server_user_id`
+    /// in server mode), returning the stream's new cursor position — the entry
     /// count after the write.
     fn write(
         &mut self,
         ts: Timestamp,
-        user_id: Option<Uuid>,
+        server_user_id: Option<Uuid>,
         entries: &[E],
     ) -> Result<u64, SyncError>;
 }
@@ -38,17 +36,20 @@ pub trait LogSource<E> {
     /// Returns the IDs of all peers whose log files are locally available.
     fn list_peers(&self) -> Vec<Uuid>;
 
-    /// Reads entries for `peer`, starting at stream index `start_entry_idx`,
-    /// feeding each `(index, entry)` pair to `consumer`. The consumer returns
-    /// [`ControlFlow::Break`] to stop early (carrying a result), or
-    /// [`ControlFlow::Continue`] to keep reading.
-    fn read_entries<F, Err>(
+    /// Reads up to `limit` of `peer`'s entries starting at stream index
+    /// `start_entry_idx`, returning each as an `(index, entry)` pair in stream
+    /// order (expunged markers included).
+    ///
+    /// This is deliberately synchronous — a source decodes from local segment
+    /// files, so the read has no `.await` — while the apply side that consumes
+    /// the batch is async. `limit` bounds how much a single call materializes,
+    /// so a cold pull of a long stream (`start_entry_idx == 0`) is drained in
+    /// chunks rather than held in memory all at once. A returned batch shorter
+    /// than `limit` signals the stream is exhausted.
+    fn read_entries(
         &self,
         peer: &Uuid,
         start_entry_idx: u64,
-        consumer: F,
-    ) -> Result<(), Err>
-    where
-        Err: From<SyncError>,
-        F: FnMut(u64, DecodedEntry<E>) -> ControlFlow<Result<(), Err>>;
+        limit: usize,
+    ) -> Result<Vec<(u64, DecodedEntry<E>)>, SyncError>;
 }

@@ -6,7 +6,7 @@ pub enum DbError {
     #[error("sql error: {0}")]
     Sql(String),
     /// A UNIQUE / PRIMARY KEY conflict. Op-log ingestion relies on this to
-    /// detect an already-ingested `(client_id, client_idx)` and skip the entry;
+    /// detect an already-ingested `(peer_id, entry_idx)` and skip the entry;
     /// each backend must map its native constraint error to this variant.
     #[error("unique constraint violation")]
     UniqueViolation,

@@ -319,7 +319,7 @@ mod tests {
         vec![
             // Upsert with Bytes PK and all 4 col types + nulls.
             LogEntry {
-                user_id: user(USER_1),
+                server_user_id: user(USER_1),
                 timestamp: Timestamp::from_raw(TS1),
                 op: Op::Upsert(Upsert {
                     table_id: table_bytes_pk(),
@@ -351,7 +351,7 @@ mod tests {
             },
             // Upsert with a composite (Text, I64) PK and no nulls.
             LogEntry {
-                user_id: user(USER_2),
+                server_user_id: user(USER_2),
                 timestamp: Timestamp::from_raw(TS2),
                 op: Op::Upsert(Upsert {
                     table_id: table_text_i64_pk(),
@@ -365,7 +365,7 @@ mod tests {
             },
             // Delete with UUID PK.
             LogEntry {
-                user_id: user(USER_1),
+                server_user_id: user(USER_1),
                 timestamp: Timestamp::from_raw(TS3),
                 op: Op::Delete(Delete {
                     table_id: table_uuid_pk(),
@@ -381,7 +381,7 @@ mod tests {
         for (i, (got, want)) in decoded.iter().zip(expected).enumerate() {
             match got {
                 DecodedEntry::LogEntry(got) => {
-                    assert_eq!(got.user_id, want.user_id, "entry {i}: user_id");
+                    assert_eq!(got.server_user_id, want.server_user_id, "entry {i}: server_user_id");
                     assert_eq!(got.timestamp, want.timestamp, "entry {i}: timestamp");
                     assert_eq!(
                         format!("{:?}", got.op),
@@ -397,7 +397,7 @@ mod tests {
     /// Goal: Verify full encode→decode round-trip in device mode.
     ///
     /// Given: entries covering Upsert (all col types + nulls), a composite
-    ///        (Text, I64) PK, and Delete, written with no user_id.
+    ///        (Text, I64) PK, and Delete, written with no server_user_id.
     /// When:  Encoded to a buffer and decoded back.
     /// Then:  All entries, timestamps, and ops match exactly.
     #[test]
@@ -408,7 +408,7 @@ mod tests {
         let mut encoder = Encoder::new(buf, TEST_MAGIC, false).unwrap();
         for entry in &entries {
             encoder
-                .encode_entry(&entry.op, entry.timestamp, entry.user_id)
+                .encode_entry(&entry.op, entry.timestamp, entry.server_user_id)
                 .unwrap();
         }
         let buf = encoder.sink_mut().get_ref().clone();
@@ -426,7 +426,7 @@ mod tests {
     ///
     /// Given: the same entries attributed to alternating users.
     /// When:  Encoded in server mode and decoded back.
-    /// Then:  All entries match including per-entry user_id attribution.
+    /// Then:  All entries match including per-entry server_user_id attribution.
     #[test]
     fn roundtrip_server_mode() {
         let entries = make_test_entries(true);
@@ -435,7 +435,7 @@ mod tests {
         let mut encoder = Encoder::new(buf, TEST_MAGIC, true).unwrap();
         for entry in &entries {
             encoder
-                .encode_entry(&entry.op, entry.timestamp, entry.user_id)
+                .encode_entry(&entry.op, entry.timestamp, entry.server_user_id)
                 .unwrap();
         }
         let buf = encoder.sink_mut().get_ref().clone();
@@ -449,7 +449,7 @@ mod tests {
 
         // Verify user attribution pattern.
         let get_user = |e: &DecodedEntry<Op>| match e {
-            DecodedEntry::LogEntry(e) => e.user_id,
+            DecodedEntry::LogEntry(e) => e.server_user_id,
             DecodedEntry::Expunged(_) => panic!("unexpected Expunged"),
         };
         assert_eq!(get_user(&decoded.entries[0]), Some(USER_1));
@@ -717,7 +717,7 @@ mod tests {
         assert_eq!(decoded.entries.len(), 1);
         match &decoded.entries[0] {
             DecodedEntry::LogEntry(e) => {
-                assert_eq!(e.user_id, Some(USER_1));
+                assert_eq!(e.server_user_id, Some(USER_1));
                 assert_eq!(e.timestamp, Timestamp::from_raw(TS1));
                 assert_eq!(format!("{:?}", e.op), format!("{:?}", good));
             }
