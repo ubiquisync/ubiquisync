@@ -27,6 +27,8 @@ impl TableSchema {
         pk_names: Vec<String>,
         non_pk_cols: Vec<ColumnSchema>,
     ) -> Self {
+        // One VIEW column name per PK slot.
+        assert_eq!(pk_names.len(), id.pk_count(), "pk_names must match PK count");
         let value_cols = non_pk_cols.into_iter().map(|col| (col.id, col)).collect();
         Self {
             id,

@@ -22,10 +22,11 @@ pub(crate) struct PhysicalTableSchema {
 }
 
 /// The timestamp of the latest upsert operation on the table.
-/// Only rows where __upsert_ts >= __deleted_ts are considered live.
+/// A nullable i64 column: the reducer reads it as `COALESCE(ts, 0)`.
 pub const UPSERT_TS_COL: &'static str = "__upsert_ts";
 
 /// The timestamp of the latest delete operation on the table.
+/// A nullable i64 column: the reducer reads it as `COALESCE(ts, 0)`.
 pub const DELETED_TS_COL: &'static str = "__deleted_ts";
 
 impl PhysicalTableSchema {
