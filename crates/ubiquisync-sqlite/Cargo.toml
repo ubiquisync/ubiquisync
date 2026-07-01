@@ -11,6 +11,8 @@ ubiquisync-sql = { workspace = true }
 async-trait = { workspace = true }
 rusqlite = { version = "0.31", features = ["bundled"] }
 
+[lints]
+workspace = true
 [dev-dependencies]
 # Pull in the backend-agnostic suites to run them against `SqliteDb`.
 ubiquisync-sql = { workspace = true, features = ["test-support"] }

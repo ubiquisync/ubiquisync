@@ -1,16 +1,27 @@
 use crate::dialect::SqlDialect;
 
+/// An existing table's shape as reported by backend introspection
+/// ([`Db::describe_table`](super::Db::describe_table)). Used by schema
+/// reconciliation to compare the live table against the declared schema.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DbTableDescriptor {
+    /// The table's name.
     pub name: String,
+    /// Primary-key columns, in declared key-position order.
     pub pk_cols: Vec<DbColumnDescription>,
+    /// The remaining (non-primary-key) columns.
     pub cols: Vec<DbColumnDescription>,
 }
 
+/// One column of an introspected table (see [`DbTableDescriptor`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DbColumnDescription {
+    /// The column's name.
     pub name: String,
+    /// The column's storage class, mapped from the backend's native type
+    /// (or [`DbType::Other`] if it falls outside the engine's vocabulary).
     pub db_type: DbType,
+    /// Whether the column permits SQL NULL.
     pub nullable: bool,
 }
 
@@ -23,9 +34,14 @@ pub struct DbColumnDescription {
 /// to a native UUID type rather than raw bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DbType {
+    /// 64-bit signed integer (`INTEGER` / `BIGINT`).
     Integer,
+    /// UTF-8 text (`TEXT`).
     Text,
+    /// Raw byte string (`BLOB` / `BYTEA`).
     Blob,
+    /// 16-byte UUID — stored as raw bytes today, but kept distinct from
+    /// [`Blob`](Self::Blob) so a backend may later use a native UUID type.
     Uuid,
     /// A column type the engine does not model (e.g. SQLite `REAL`/`NUMERIC`, a
     /// Postgres enum). Produced only by backend introspection

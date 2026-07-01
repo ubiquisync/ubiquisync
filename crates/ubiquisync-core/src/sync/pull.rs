@@ -15,8 +15,11 @@ use crate::codec::{DecodedEntry, Op};
 use super::processor::LogProcessor;
 use super::store::LogSource;
 
+/// The outcome of a [`sync`](PullSynchronizer::sync) pass.
 #[derive(Debug)]
 pub struct SyncResult {
+    /// Count of real entries applied to the processor (expunged markers
+    /// excluded).
     pub entries_applied: usize,
 }
 
@@ -37,6 +40,9 @@ pub struct PullSynchronizer<'a, E, S> {
 }
 
 impl<'a, E: Op, S: LogSource<E>> PullSynchronizer<'a, E, S> {
+    /// Create a synchronizer over `source`. `skip_id` optionally excludes one
+    /// peer from the pass — `None` at startup to include self for crash replay,
+    /// `Some(node_id)` during normal sync to skip self.
     pub fn new(source: &'a S, skip_id: Option<&'a [u8]>) -> Self {
         Self {
             source,
@@ -45,6 +51,8 @@ impl<'a, E: Op, S: LogSource<E>> PullSynchronizer<'a, E, S> {
         }
     }
 
+    /// Drain each peer's new entries into `store`, skipping expunged markers and
+    /// advancing each peer's cursor. Returns how many entries were applied.
     pub fn sync<P: LogProcessor<E>>(&self, store: &mut P) -> Result<SyncResult, P::Error> {
         let peers = self.source.list_peers();
         let mut total_entries = 0;

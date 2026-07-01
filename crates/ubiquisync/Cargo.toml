@@ -16,3 +16,6 @@ ubiquisync-core = { workspace = true }
 ubiquisync-tables = { workspace = true }
 ubiquisync-postgres = { workspace = true, optional = true }
 ubiquisync-sqlite = { workspace = true, optional = true }
+
+[lints]
+workspace = true
