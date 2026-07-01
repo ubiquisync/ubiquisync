@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use ubiquisync_sql::db::{Db, DbTableDescriptor};
+use ubiquisync_sql::db::{Db, DbColumnDescription, DbTableDescriptor, DbType};
 
 use crate::{
     error::TablesError,
@@ -71,15 +71,15 @@ impl PhysicalTableSchema {
                 format!("invalid primary key count, expected {pk_count} got {actual_pk_count}"),
             );
         }
-        for i in 0..n {
-            let db_col = db_table.pk_cols[i];
+        for i in 0..pk_count {
+            let db_col = &db_table.pk_cols[i];
             let db_type = db_col.db_type;
             let pk_type = id.pk_col_type(i);
             // Check primary key type match
             if !pk_type.accepts(db_type) {
                 return schema_mismatch(
                     id,
-                    format!("invalid primary key type at {i} expected {pk_type} got {db_type}"),
+                    format!("invalid primary key type at {i} expected {pk_type:?} got {db_type:?}"),
                 );
             }
 
@@ -89,8 +89,8 @@ impl PhysicalTableSchema {
 
             // Check primary key name match
             let col_name = &db_col.name;
-            let expected_col_name = surrogate_pk_name(i);
-            if col_name != expected_col_name {
+            let expected_col_name = id.pk_col_name(i);
+            if col_name != &expected_col_name {
                 return schema_mismatch(
                     id,
                     format!(
@@ -102,7 +102,7 @@ impl PhysicalTableSchema {
 
         // Put all other cols in a map
         let mut db_col_map = BTreeMap::new();
-        for col in db_table.cols {
+        for col in db_table.cols.iter() {
             db_col_map.insert(col.name.clone(), col.clone());
         }
 
@@ -110,38 +110,50 @@ impl PhysicalTableSchema {
         validate_upsert_delete_ts_cols(UPSERT_TS_COL, &mut db_col_map)?;
         validate_upsert_delete_ts_cols(DELETED_TS_COL, &mut db_col_map)?;
 
-        let cols = BTreeSet::new();
+        let mut cols = BTreeSet::new();
         // Extract other columns into value column/lww column pairs
         for col in db_table.cols {
-            // If we can find an lww col match for this column then we track both it and
-            // its lww column as a column pair and remove them from the map.
-            if let Some(lww_col) = db_col_map.remove(&lww_col_name(&col.name)) {
-                // TODO check lww_col type and nullable
-                if let Some(col) = db_col_map.remove(&col.name) {
-                    if let Some(col_id) = parse_surrogate_col_name(col_name) {
-                        let db_type = col.db_type;
-                        let col_type = col_id.col_type();
-                        if !col_type.accepts(db_type) {
-                            return schema_mismatch(
-                                id,
-                                table,
-                                format!(
-                                    "column {id} db type {db_type} doesn't match column type {col_type}"
-                                ),
-                            );
-                        }
-
-                        // TODO check nullable
-                        cols.insert(col_id);
-                    } else {
+            if let Some(col_id) = ColumnId::parse_col_name(&col.name) {
+                if let Some(lww_col) = db_col_map.remove(&col_id.lww_col_name()) {
+                    if !col_id.col_type().accepts(col.db_type) {
                         return schema_mismatch(
                             id,
-                            table,
-                            format!("can't parse surrogate column {col_name}"),
+                            format!(
+                                "column {id:?} db type {:?} doesn't match column type {:?}",
+                                col.db_type,
+                                col_id.col_type(),
+                            ),
                         );
                     }
+                    if !col.nullable {
+                        return schema_mismatch(
+                            id,
+                            format!("column {} is not nullable", &col.name),
+                        );
+                    }
+
+                    if lww_col.db_type != DbType::Integer {
+                        return schema_mismatch(
+                            id,
+                            format!(
+                                "lww column {} db type {:?} doesn't match {:?}",
+                                lww_col.name,
+                                lww_col.db_type,
+                                DbType::Integer,
+                            ),
+                        );
+                    }
+                    if !lww_col.nullable {
+                        return schema_mismatch(
+                            id,
+                            format!("lww column {} is not nullable", &lww_col.name),
+                        );
+                    }
+
+                    // TODO check nullable
+                    cols.insert(col_id);
                 } else {
-                    todo!("missing column match");
+                    return schema_mismatch(id, format!("missing lww column for {}", col.name));
                 }
             }
         }
@@ -153,25 +165,31 @@ impl PhysicalTableSchema {
         })
     }
 
-    async fn create_table(&self, db: &dyn Db) -> Result<(), ReducerError> {
+    async fn create_table(&self, db: &dyn Db) -> Result<(), TablesError> {
         let mut col_defs = vec![];
 
         let pk_count = self.id.pk_count();
         // TODO do we need to quote identifers since they're auto-generated??
+        let dialect = db.dialect();
         for i in 0..pk_count {
-            col_defs.push(format(
+            col_defs.push(format!(
                 "{} {} NOT NULL",
-                self.id.pk_name(i),
-                self.id.pk_col_type(i).db_type(),
+                self.id.pk_col_name(i),
+                self.id.pk_col_type(i).db_type().sql_type(dialect),
             ));
         }
 
-        col_defs.push(format!("{UPSERT_TS_COL} {}", db.lww_col_type()));
-        col_defs.push(format!("{DELETED_TS_COL} {}", db.lww_col_type()));
+        let int_type = DbType::Integer.sql_type(dialect);
+        col_defs.push(format!("{UPSERT_TS_COL} {int_type}"));
+        col_defs.push(format!("{DELETED_TS_COL} {int_type}"));
 
         for col in &self.cols {
-            col_defs.push(format("{} {}", col.name(), col.col_type().db_type()));
-            col_defs.push(format!("{} {}", col.lww_name(), DbType::Integer));
+            col_defs.push(format!(
+                "{} {}",
+                col.col_name(),
+                col.col_type().db_type().sql_type(dialect),
+            ));
+            col_defs.push(format!("{} {int_type}", col.lww_col_name(),));
         }
         let without_rowid = db.dialect().without_rowid();
         db.exec(
@@ -179,7 +197,7 @@ impl PhysicalTableSchema {
                 "CREATE TABLE {} ({}, PRIMARY KEY ({})){without_rowid};",
                 self.name,
                 col_defs.join(", "),
-                self.pk_names.join(", ")
+                self.id.pk_col_name_list(),
             ),
             &[],
         )
@@ -191,11 +209,12 @@ impl PhysicalTableSchema {
         &mut self,
         db: &dyn Db,
         col_id: ColumnId,
-    ) -> Result<(), ReducerError> {
+    ) -> Result<(), TablesError> {
         if self.cols.contains(&col_id) {
             return Ok(());
         }
 
+        let dialect = db.dialect();
         let mut batch = db.new_batch();
         // Add column
         // TODO do we need to quote the names now that they're all surrogates
@@ -204,8 +223,8 @@ impl PhysicalTableSchema {
                 // TODO ensure that we don't need to specify NULL
                 "ALTER TABLE {} ADD COLUMN {} {};",
                 self.name,
-                col_id.name(),
-                db.col_type(col_id.col_type()),
+                col_id.col_name(),
+                col_id.col_type().db_type().sql_type(dialect),
             ),
             &[],
         );
@@ -214,8 +233,8 @@ impl PhysicalTableSchema {
             &format!(
                 "ALTER TABLE {} ADD COLUMN {} {};",
                 self.name,
-                col_id.lww_name(),
-                DbType::Integer,
+                col_id.lww_col_name(),
+                DbType::Integer.sql_type(dialect),
             ),
             &[],
         );
@@ -227,22 +246,24 @@ impl PhysicalTableSchema {
     }
 }
 
-fn schema_mismatch<T>(id: TableId, detail: String) -> Result<T, ReducerError> {
-    return Err(ReducerError::Schema(format!("table {id}: {detail}")));
+fn schema_mismatch<T>(id: TableId, detail: String) -> Result<T, TablesError> {
+    return Err(TablesError::SchemaError(format!("table {id:?}: {detail}")));
 }
 
 fn validate_upsert_delete_ts_cols(
     col_name: &str,
     col_map: &mut BTreeMap<String, DbColumnDescription>,
-) -> Result<(), ReducerError> {
+) -> Result<(), TablesError> {
     // Remove the col from the column map so it doesn't get picked up as a regular column.
     if let Some(col) = col_map.remove(col_name) {
         let db_type = col.db_type;
         if db_type != DbType::Integer {
-            return schema_mismatch(id, table, format!("invalid {col_name} type {db_type}"));
+            return Err(TablesError::SchemaError(format!(
+                "invalid {col_name} type {db_type:?}"
+            )));
         }
     } else {
-        return schema_mismatch(id, table, format!("missing {col_name}"));
+        return Err(TablesError::SchemaError(format!("missing {col_name}")));
     }
     Ok(())
 }
