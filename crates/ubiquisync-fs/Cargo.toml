@@ -8,8 +8,9 @@ repository.workspace = true
 
 [dependencies]
 ubiquisync-core = { workspace = true }
-# DEFLATE/gzip for reading compressed batch packs produced by compaction.
-flate2 = "1.1.9"
+# zstd for reading compressed batch packs produced by compaction. Decoder is
+# isolated in `source.rs` so a WASM read target can later swap in `ruzstd`.
+zstd = "0.13.3"
 # base64url (no-pad) encoding of peer ids into directory names.
 base64 = "0.22.1"
 # Formats HLC timestamps into the human-sortable date suffix in segment names.

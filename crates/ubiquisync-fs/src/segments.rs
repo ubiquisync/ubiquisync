@@ -191,7 +191,7 @@ pub fn create_segment<'a, E: Op>(
 }
 
 /// Segments are sealed when they exceed this size. 1MB keeps sealed
-/// segments small for faster cloud sync and more frequent gzip. The seal
+/// segments small for faster cloud sync and more frequent compaction. The seal
 /// decision and the rename live in the batch sealing logic so the segment's
 /// file handle can be closed before the rename (required on Windows).
 pub const MAX_SEGMENT_SIZE: usize = 1024 * 1024; // 1 MB

@@ -23,8 +23,8 @@
 //!   [`MAX_SEGMENT_SIZE`](segments::MAX_SEGMENT_SIZE).
 //! - A **batch** is a directory of segments. It rolls over once it accumulates
 //!   too many segments or bytes, after which a fresh batch starts. Sealed
-//!   batches may later be compacted into a single gzipped `.gz` pack file; the
-//!   source reads both forms transparently.
+//!   batches may later be compacted into a single zstd-compressed `.zst` pack
+//!   file; the source reads both forms transparently.
 //!
 //! Entry indices are global per peer: the source presents every entry across
 //! all of a peer's segments as one contiguous, monotonically-indexed stream,

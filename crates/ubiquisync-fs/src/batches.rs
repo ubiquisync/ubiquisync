@@ -17,7 +17,7 @@ pub struct BatchInfo {
 pub struct SealedBatchInfo {
     pub end_index: u64,
     pub end_ts: String,
-    /// True if this batch is a .gz pack file; false if it's still a
+    /// True if this batch is a .zst pack file; false if it's still a
     /// (post-seal, pre-compaction) directory of segment files.
     pub compressed: bool,
 }
@@ -52,15 +52,15 @@ pub(crate) fn parse_batches(
 ) -> Vec<BatchInfo> {
     let mut batches: Vec<BatchInfo> = entries
         .filter_map(|(name, is_dir)| {
-            // Compressed batches are a single .gz pack file; active and sealed
+            // Compressed batches are a single .zst pack file; active and sealed
             // batches are directories. Strip the suffix to parse the shared
             // name body uniformly.
-            let (base, compressed) = match name.strip_suffix(".gz") {
+            let (base, compressed) = match name.strip_suffix(".zst") {
                 Some(b) => (b, true),
                 None => (name.as_str(), false),
             };
 
-            // Name shape and entry kind must agree: .gz implies file, plain
+            // Name shape and entry kind must agree: .zst implies file, plain
             // implies directory. Mismatches are almost certainly stale junk
             // (e.g. a leftover from a half-finished compaction) — drop them
             // rather than hand a caller a path they'll misuse.
@@ -254,12 +254,12 @@ mod tests {
         (sealed_batch_name(start, end, START_DATE, END_DATE), true)
     }
     /// Name of a compressed batch pack file: the sealed 4-part name plus
-    /// `.gz`. A single file (not a directory) holding the re-encoded +
-    /// gzipped batch contents. Production only ever *reads* these (the
+    /// `.zst`. A single file (not a directory) holding the re-encoded +
+    /// zstd-compressed batch contents. Production only ever *reads* these (the
     /// compaction writer that emits them isn't built yet), so the
     /// constructor lives here with the tests that exercise the read path.
     fn compressed_batch_name(start: u64, end: u64, start_date: &str, end_date: &str) -> String {
-        format!("{}-{}-{}-{}.gz", start, end, start_date, end_date)
+        format!("{}-{}-{}-{}.zst", start, end, start_date, end_date)
     }
     fn compressed(start: u64, end: u64) -> (String, bool) {
         // Compressed packs are single files → is_dir = false.
@@ -292,7 +292,7 @@ mod tests {
         assert_eq!(sealed_info.end_ts, END_DATE);
         assert!(!sealed_info.compressed);
 
-        // Compressed shares Sealed's shape but came from a .gz file.
+        // Compressed shares Sealed's shape but came from a .zst file.
         assert_eq!(batches[2].start_index, 11);
         let compressed_info = batches[2].sealed_info.as_ref().expect("sealed_info");
         assert_eq!(compressed_info.end_index, 20);
@@ -330,7 +330,7 @@ mod tests {
         // any known shape. These are treated as stale junk.
 
         let entries = vec![
-            // .gz name but it's a directory — shouldn't happen; drop so
+            // .zst name but it's a directory — shouldn't happen; drop so
             // nobody tries to read a directory as a pack file.
             (compressed_batch_name(1, 10, START_DATE, END_DATE), true),
             // Sealed dir name but it's a file — also shouldn't happen.

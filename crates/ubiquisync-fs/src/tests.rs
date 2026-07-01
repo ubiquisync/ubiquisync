@@ -7,19 +7,20 @@
 
 use std::collections::HashMap;
 use std::fs;
+use std::fs::File;
 use std::io::BufRead;
 use std::ops::ControlFlow;
 
 use tempfile::TempDir;
 use ubiquisync_core::codec::{
-    CodecError, DecodedEntry, EntryBufferReader, EntryBufferWriter, Op,
+    CodecError, DecodedEntry, Encoder, EntryBufferReader, EntryBufferWriter, Op,
 };
 use ubiquisync_core::hlc::Timestamp;
 use ubiquisync_core::log_entry::LogEntry;
 use ubiquisync_core::sync::{LogEntrySink, LogProcessor, LogSource, PullSynchronizer, SyncError};
 use ubiquisync_core::uuid::Uuid;
 
-use crate::batches::list_batches;
+use crate::batches::{list_batches, sealed_batch_name};
 use crate::peers::peer_dir;
 use crate::segments::list_segments;
 use crate::sink::FsLogSink;
@@ -537,4 +538,57 @@ fn pull_synchronizer_drains_fs_source_into_processor() {
         again.entries_applied, 0,
         "re-syncing an unchanged source applies nothing"
     );
+}
+
+// ── 9. Compressed batch pack read path ──────────────────────────────
+
+/// Goal: the source reads a zstd-compressed `.zst` batch pack the same way it
+/// reads a directory of segments — entries come back in order, indexed from
+/// the batch's start index, and the consumer's start filter still applies.
+///
+/// The compaction writer that emits packs isn't built yet, so this test hand-
+/// builds one: a whole batch is a single codec stream (header + all entries)
+/// zstd-compressed into one file named with the sealed 4-part name plus `.zst`.
+/// This is the first coverage of `source.rs`'s compressed branch end to end.
+#[test]
+fn source_reads_zstd_compressed_batch_pack() {
+    let root = temp_root();
+    let peer = peer_dir(root.path(), &NODE_A);
+    fs::create_dir_all(&peer).unwrap();
+
+    // The batch starts at index 5 (not 0) so we prove the compressed path
+    // honors `batch.start_index` rather than assuming a zero base.
+    let start_idx = 5;
+    let end_idx = 7;
+    let name = format!(
+        "{}.zst",
+        sealed_batch_name(start_idx, end_idx, "20260101000000", "20260101010000")
+    );
+    let pack_path = peer.join(name);
+
+    // Encode three entries into one codec stream, zstd-wrapped. `auto_finish`
+    // writes the zstd frame epilogue when the encoder drops.
+    let pack = File::create(&pack_path).unwrap();
+    let zstd_writer = zstd::stream::write::Encoder::new(pack, 0).unwrap().auto_finish();
+    let mut enc = Encoder::<TestOp, _>::new(zstd_writer, MAGIC, false).unwrap();
+    enc.encode_entry(&upsert(b"a"), ts(100), None).unwrap();
+    enc.encode_entry(&upsert(b"b"), ts(101), None).unwrap();
+    enc.encode_entry(&upsert(b"c"), ts(102), None).unwrap();
+    drop(enc);
+
+    let src: FsLogSource<TestOp> = FsLogSource::new(root.path(), MAGIC);
+
+    // Reading from 0 yields all three, indexed from the batch's start (5,6,7).
+    let got = collect(&src, &NODE_A, 0);
+    assert_eq!(got.iter().map(|(i, _)| *i).collect::<Vec<_>>(), vec![5, 6, 7]);
+    assert_eq!(op_payload(&got[0].1), b"a");
+    assert_eq!(op_payload(&got[1].1), b"b");
+    assert_eq!(op_payload(&got[2].1), b"c");
+
+    // The consumer's start filter applies inside the pack too: starting at 6
+    // skips the first entry and returns only 6,7.
+    let tail = collect(&src, &NODE_A, 6);
+    assert_eq!(tail.iter().map(|(i, _)| *i).collect::<Vec<_>>(), vec![6, 7]);
+    assert_eq!(op_payload(&tail[0].1), b"b");
+    assert_eq!(op_payload(&tail[1].1), b"c");
 }

@@ -8,7 +8,6 @@
 use crate::batches::{BatchInfo, list_batches};
 use crate::peers::{list_peers, peer_dir};
 use crate::segments::*;
-use flate2::read::GzDecoder;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::ops::ControlFlow;
@@ -80,15 +79,11 @@ where
                 continue;
             }
             if sealed_info.compressed {
-                // Producer-side errors (`io::Error`, `CodecError`) only
-                // satisfy `From<_> for SyncError`. We hop through
-                // `SyncError` so the outer `?` can convert via the
-                // `Err: From<SyncError>` bound.
-                let file = File::open(&batch.path).map_err(SyncError::from)?;
-                let reader = GzDecoder::new(file);
-                if let Some(decoder) =
-                    Decoder::<E, BufReader<GzDecoder<File>>>::new(BufReader::new(reader), magic)
-                        .map_err(SyncError::from)?
+                // A compressed batch is one codec stream spanning the whole
+                // batch, so it decodes as a single segment starting at the
+                // batch's start_index. `open_pack` returns `None` for an empty
+                // pack, matching the plain-segment path's handling.
+                if let Some(decoder) = open_pack(&batch.path, magic)?
                     && iterate_segment(batch.start_index, start_index, consume, decoder)?.is_break()
                 {
                     return Ok(());
@@ -109,6 +104,22 @@ where
         }
     }
     Ok(())
+}
+
+/// Open a compressed batch pack and return a codec [`Decoder`] over its
+/// decompressed bytes, or `None` if the pack holds no segment.
+///
+/// All zstd-specific wiring lives here so the rest of the reader stays
+/// compression-agnostic — a WASM read target can swap this body for pure-Rust
+/// `ruzstd` without touching `iterate_entries`. Errors hop through `SyncError`
+/// so the caller's `?` can convert them via its `Err: From<SyncError>` bound.
+fn open_pack<E: Op>(
+    path: &Path,
+    magic: &[u8],
+) -> Result<Option<Decoder<E, impl BufRead>>, SyncError> {
+    let file = File::open(path)?;
+    let reader = zstd::stream::read::Decoder::new(file)?;
+    Ok(Decoder::new(BufReader::new(reader), magic)?)
 }
 
 fn iterate_segment<E, R, F, Err>(
