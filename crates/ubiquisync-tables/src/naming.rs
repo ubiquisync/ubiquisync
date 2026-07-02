@@ -4,7 +4,7 @@ impl TableId {
     /// Surrogate SQL table name for this ID: `{prefix}__t0x{raw:04X}`.
     pub fn table_name(&self, prefix: &str) -> String {
         let raw: u16 = self.raw();
-        format!("{prefix}__t0x{raw:04X}")
+        format!("{prefix}__t0x{raw:04x}")
     }
 
     /// Inverse of [`table_name`](Self::table_name): recovers the ID from a
@@ -38,7 +38,7 @@ impl ColumnId {
     /// both type and index).
     pub fn col_name(&self) -> String {
         let raw: u8 = self.into_bits();
-        format!("c0x{raw:02X}")
+        format!("c0x{raw:02x}")
     }
 
     /// Name of this column's companion LWW-timestamp column: `{col_name}_lww`.
@@ -57,9 +57,7 @@ impl ColumnId {
     /// Recovers the value-column ID from its LWW column name, or `None` if
     /// `lww_name` isn't a `c0x…_lww` name.
     pub fn parse_lww_col_name(lww_name: &str) -> Option<Self> {
-        lww_name
-            .strip_suffix("_lww")
-            .and_then(Self::parse_col_name)
+        lww_name.strip_suffix("_lww").and_then(Self::parse_col_name)
     }
 }
 

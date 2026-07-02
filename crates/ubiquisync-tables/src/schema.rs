@@ -57,7 +57,7 @@ impl TableSchema {
         db: &dyn Db,
     ) -> Result<(), TablesError> {
         let id = self.id;
-        let surrogate_name = id.table_name(surrogate_prefix);
+        let surrogate_name = quote_ident(&id.table_name(surrogate_prefix));
         let name = &self.name;
 
         let mut select_clauses = vec![];
