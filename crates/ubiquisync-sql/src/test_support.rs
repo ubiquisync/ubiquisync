@@ -157,6 +157,7 @@ type MaxProcessor<D> = Processor<MaxRegister, D, LogIndexTracker<MaxOp>>;
 
 const PEER: Uuid = [7u8; 16];
 const USER: Uuid = [9u8; 16];
+const NODE: Uuid = [1u8; 16];
 const PREFIX: &str = "app";
 
 fn entry(key: &[u8], value: i64, millis: u64, server_user_id: Option<Uuid>) -> LogEntry<MaxOp> {
@@ -218,7 +219,7 @@ async fn clock_register<D: Db>(db: &D) -> u64 {
 ///
 /// Generic over the backend so each driver crate's tests can reuse it verbatim.
 pub async fn run_max_register_suite<D: Db>(db: D) {
-    let processor: MaxProcessor<D> = Processor::open(MaxRegister::new("reg"), db, PREFIX)
+    let processor: MaxProcessor<D> = Processor::open(MaxRegister::new("reg"), db, PREFIX, NODE)
         .await
         .unwrap();
 
@@ -311,7 +312,7 @@ pub async fn run_max_register_suite<D: Db>(db: D) {
 /// Generic over the backend like [`run_max_register_suite`]; call it with a
 /// freshly opened, empty database.
 pub async fn run_pull_sync_suite<D: Db>(db: D) {
-    let processor: MaxProcessor<D> = Processor::open(MaxRegister::new("reg"), db, PREFIX)
+    let processor: MaxProcessor<D> = Processor::open(MaxRegister::new("reg"), db, PREFIX, NODE)
         .await
         .unwrap();
 

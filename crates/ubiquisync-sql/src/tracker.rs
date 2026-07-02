@@ -57,7 +57,9 @@ pub trait LogTracker<Op>: Sized {
         &self,
         peer_id: &Uuid,
         entry_idx: u64,
-        entry: &LogEntry<Op>,
+        timestamp: Timestamp,
+        server_user_id: Option<Uuid>,
+        op: &Op,
         batch: &mut dyn DbBatch,
     ) -> Result<(), LogTrackerError>;
 
@@ -155,7 +157,9 @@ impl<Op: IndexableOp> LogTracker<Op> for LogIndexTracker<Op> {
         &self,
         peer_id: &Uuid,
         entry_idx: u64,
-        entry: &LogEntry<Op>,
+        timestamp: Timestamp,
+        server_user_id: Option<Uuid>,
+        op: &Op,
         batch: &mut dyn DbBatch,
     ) -> Result<(), LogTrackerError> {
         let mut value_binder = ValueBinder::new(batch.dialect());
@@ -165,7 +169,7 @@ impl<Op: IndexableOp> LogTracker<Op> for LogIndexTracker<Op> {
         // column. `from_u64` rejects a value past `i64::MAX` rather than wrap it
         // negative — the same checked store the rest of the crate uses.
         let entry_idx_bind = value_binder.bind_next(DbValue::from_u64(entry_idx)?);
-        let server_user_id_bind = if let Some(server_user_id) = entry.server_user_id {
+        let server_user_id_bind = if let Some(server_user_id) = server_user_id {
             value_binder.bind_next(DbValue::Uuid(server_user_id))
         } else {
             value_binder.bind_next(DbValue::Null)
@@ -173,9 +177,9 @@ impl<Op: IndexableOp> LogTracker<Op> for LogIndexTracker<Op> {
         // The packed HLC timestamp is a full-width u64; store it through the same
         // `from_u64` guard `SqlHlcStorage` uses, so a value past `i64::MAX` can't
         // wrap negative and misorder a `MAX`/`GREATEST` merge on `ts`.
-        let ts_bind = value_binder.bind_next(DbValue::from_u64(entry.timestamp.raw())?);
+        let ts_bind = value_binder.bind_next(DbValue::from_u64(timestamp.raw())?);
 
-        let index_entry = entry.op.to_index_entry()?;
+        let index_entry = op.to_index_entry()?;
         let tag_bind = value_binder.bind_next(DbValue::Integer(index_entry.tag as i64));
         let index_key_bind = value_binder.bind_next(DbValue::Blob(index_entry.key));
         let value_bind = value_binder.bind_next(DbValue::Blob(index_entry.value));
