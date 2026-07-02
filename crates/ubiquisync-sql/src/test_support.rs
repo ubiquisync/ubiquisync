@@ -131,10 +131,13 @@ impl Reducer for MaxRegister {
         let max = batch.dialect().scalar_max();
         // COALESCE the stored side: SQLite `MAX` returns NULL on a NULL arg
         // while Postgres `GREATEST` ignores NULLs, so the wrapper is what makes
-        // the merge agree across dialects (mirrors `SqlHlcStorage`).
+        // the merge agree across dialects (mirrors `SqlHlcStorage`). The stored
+        // `v` is table-qualified because a bare column inside `ON CONFLICT DO
+        // UPDATE` is ambiguous on Postgres (it exists on both the target row and
+        // `EXCLUDED`); SQLite accepts the qualified form too.
         let sql = format!(
             "INSERT INTO {tbl} (k, v) VALUES ({k}, {v}) \
-             ON CONFLICT(k) DO UPDATE SET v = {max}(COALESCE(v, 0), EXCLUDED.v) RETURNING v",
+             ON CONFLICT(k) DO UPDATE SET v = {max}(COALESCE({tbl}.v, 0), EXCLUDED.v) RETURNING v",
             tbl = self.table
         );
         Ok(batch.add_statement(&sql, &binder.values()))

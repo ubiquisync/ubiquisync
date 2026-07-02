@@ -56,11 +56,18 @@ impl Reducer {
             // Surrogate column names are auto-generated and don't need to be quoted
             let col_name = col_id.col_name();
             let lww_col_name = col_id.lww_col_name();
+            // Existing-row references (the CASE `WHEN` guard and the `ELSE`
+            // keep-current branch) are table-qualified: a bare column inside `ON
+            // CONFLICT DO UPDATE` is ambiguous on Postgres, since it lives on
+            // both the target row and `EXCLUDED`. The assignment target on the
+            // left of `=` stays bare, as SQL requires.
             set_clauses.push(format!(
-                "{col_name} = CASE WHEN {lww_col_name} < {ts_placeholder} THEN NULL ELSE {col_name} END",
+                "{col_name} = CASE WHEN {quoted_table_name}.{lww_col_name} < {ts_placeholder} \
+                 THEN NULL ELSE {quoted_table_name}.{col_name} END",
             ));
             set_clauses.push(format!(
-                "{lww_col_name} = CASE WHEN {lww_col_name} < {ts_placeholder} THEN NULL ELSE {lww_col_name} END",
+                "{lww_col_name} = CASE WHEN {quoted_table_name}.{lww_col_name} < {ts_placeholder} \
+                 THEN NULL ELSE {quoted_table_name}.{lww_col_name} END",
             ))
         }
 

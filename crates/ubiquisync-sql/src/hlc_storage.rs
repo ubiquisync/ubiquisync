@@ -85,8 +85,13 @@ fn load_sql(table: &str) -> String {
 fn persist_sql(table: &str, dialect: SqlDialect) -> String {
     let max = dialect.scalar_max();
     let p1 = dialect.placeholder(1);
+    // The existing-row `ts` is qualified with the table name (`{table}.ts`), not
+    // bare: inside `ON CONFLICT DO UPDATE`, Postgres has both the target row and
+    // the `EXCLUDED` pseudo-row in scope, so an unqualified `ts` — present in
+    // both — is rejected as ambiguous (SQLSTATE 42702). SQLite accepts the
+    // qualified form too, so one spelling works for both dialects.
     format!(
         "INSERT INTO {table} (id, ts) VALUES (1, {p1}) \
-         ON CONFLICT(id) DO UPDATE SET ts = {max}(COALESCE(ts, 0), EXCLUDED.ts)"
+         ON CONFLICT(id) DO UPDATE SET ts = {max}(COALESCE({table}.ts, 0), EXCLUDED.ts)"
     )
 }
