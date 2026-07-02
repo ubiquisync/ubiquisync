@@ -16,6 +16,7 @@ ubiquisync-core = { workspace = true }
 ubiquisync-sql = { workspace = true }
 bitfield-struct = { workspace = true }
 thiserror = { workspace = true }
+async-trait = { workspace = true }
 
 [lints]
 workspace = true

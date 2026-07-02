@@ -13,6 +13,7 @@ use std::collections::BTreeSet;
 
 use ubiquisync_sql::db::{Db, DbColumnDescription, DbTableDescriptor, DbType};
 use ubiquisync_sql::dialect::SqlDialect;
+use ubiquisync_sql::util::quote_ident;
 
 use crate::{
     col_type::ColType,
@@ -134,7 +135,7 @@ async fn named_tables_create_expected_layouts(db: &dyn Db) {
     let phys = PhysicalTableSchema::new_named(PREFIX, &schema1, db)
         .await
         .unwrap();
-    assert_eq!(phys.get_name(), id1.table_name(PREFIX));
+    assert_eq!(phys.get_quoted_name(), quote_ident(&id1.table_name(PREFIX)));
     assert_table(
         db,
         id1,
@@ -212,7 +213,7 @@ async fn surrogate_table_created_bare(db: &dyn Db) {
     let phys = PhysicalTableSchema::new_surrogate(PREFIX, id, db)
         .await
         .unwrap();
-    assert_eq!(phys.get_name(), id.table_name(PREFIX));
+    assert_eq!(phys.get_quoted_name(), quote_ident(&id.table_name(PREFIX)));
     assert!(
         phys.col_ids().is_empty(),
         "bare surrogate has no value columns"
@@ -241,7 +242,7 @@ async fn surrogate_table_reconstructs_existing(db: &dyn Db) {
     let phys = PhysicalTableSchema::new_surrogate(PREFIX, id, db)
         .await
         .unwrap();
-    assert_eq!(phys.get_name(), id.table_name(PREFIX));
+    assert_eq!(phys.get_quoted_name(), quote_ident(&id.table_name(PREFIX)));
     let want: BTreeSet<ColumnId> = [col_id(1, ColType::I64), col_id(5, ColType::Text)].into();
     assert_eq!(phys.col_ids(), &want, "reconstructed value columns");
     assert_table(
