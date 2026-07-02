@@ -1,62 +1,41 @@
-//! [`LogProcessor`]: what the sync engine applies a peer's entries into. A
-//! processor — typically a materialized store — absorbs entries and remembers
-//! how far it has read each peer's stream.
+//! [`LogProcessor`]: the write side of a replica.
 
 use async_trait::async_trait;
 
-use crate::log_entry::LogEntry;
+use crate::codec::DecodedEntry;
 use crate::uuid::Uuid;
 
 use super::error::SyncError;
 
-/// A store the sync engine applies a peer's entries into, tracking how far it
-/// has read each peer's stream.
+/// The apply target of replication: absorbs entries addressed by `(peer, index)`.
 ///
-/// Both [`apply_entry`](LogProcessor::apply_entry) and
-/// [`save_expunged_entry`](LogProcessor::save_expunged_entry) advance the peer's
-/// cursor to `index + 1` atomically with the record they write, so a partial
-/// write commits nothing and the next pass re-reads from the same index.
+/// Multi-writer — it accepts any origin, so it can relay and merge. (A file log,
+/// which writes only its own origin, is [`FileLogSink`](super::FileLogSink)
+/// instead.)
 ///
-/// # Re-delivery
+/// `apply` is idempotent per `(peer, index)`: multi-channel delivery means the
+/// same entry can arrive twice, so an already-seen index is a no-op reported as
+/// [`Applied::new`] `== false`.
 ///
-/// The engine can re-deliver an already-applied `(peer_id, index)`. An
-/// implementation must keep that from applying twice, in one of two ways:
-///
-/// - reject a repeated `(peer_id, index)` so the apply rolls back (e.g. a
-///   unique key on it), or
-/// - make the applied effect idempotent, so re-applying it is a no-op.
-///
-/// Which one holds is a property of the implementation, and a reducer's
-/// idempotency requirement follows from it: behind a rejecting store a reducer
-/// need not be idempotent; behind one that does not reject, it must be.
+/// `&self` and `?Send`: one processor is shared (`Rc<dyn LogProcessor>`) as the
+/// apply target of several sources while also read as a
+/// [`LogSource`](super::LogSource), so it mutates through interior mutability.
+/// `?Send` matches the `?Send` `Db` backend (wasm/Workers).
 #[async_trait(?Send)]
 pub trait LogProcessor<E> {
-    /// The processor's own error type; must absorb [`SyncError`] so the engine
-    /// can surface transport failures through it.
-    type Error: From<SyncError>;
-
-    /// Returns the next-entry index for the given peer; `0` if the peer has
-    /// never been seen.
-    async fn get_peer_cursor(&self, peer_id: &Uuid) -> Result<u64, Self::Error>;
-
-    /// Applies one entry, identified by its stream `index` within `peer_id`'s
-    /// stream, and advances the peer's cursor to `index + 1` atomically. Must
-    /// honor the idempotency/atomicity contract described on the trait.
-    async fn apply_entry(
-        &mut self,
-        peer_id: &Uuid,
+    /// Apply one entry at `(peer, index)`, advancing the cursor for `peer` to
+    /// `index + 1`. Idempotent (see the trait docs).
+    async fn apply(
+        &self,
+        peer: Uuid,
         index: u64,
-        entry: &LogEntry<E>,
-    ) -> Result<(), Self::Error>;
+        entry: DecodedEntry<E>,
+    ) -> Result<Applied, SyncError>;
+}
 
-    /// Records the expunged marker at stream `index` within `peer_id`'s stream,
-    /// advancing the peer's cursor past it without materializing anything. `hash`
-    /// names the entry that was expunged. Like [`apply_entry`](Self::apply_entry),
-    /// the cursor advance is atomic with the record.
-    async fn save_expunged_entry(
-        &mut self,
-        peer_id: &Uuid,
-        index: u64,
-        hash: &blake3::Hash,
-    ) -> Result<(), Self::Error>;
+/// Outcome of [`LogProcessor::apply`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Applied {
+    /// `true` if newly applied; `false` if a re-delivery that changed nothing.
+    pub new: bool,
 }

@@ -1,10 +1,10 @@
 use crate::codec::CodecError;
 
-/// The sync subsystem's umbrella error: anything that can go wrong reading or
-/// writing a peer's log ([`LogSource`](super::LogSource) /
-/// [`LogEntrySink`](super::LogEntrySink)) or driving entries into a processor
-/// ([`PullSynchronizer`](super::PullSynchronizer)). Storage backends and processors surface
-/// their own failures through this type via its `From` conversions.
+/// The sync subsystem's error: reading a log ([`LogSource`](super::LogSource)),
+/// applying entries ([`LogProcessor`](super::LogProcessor)), or writing the
+/// local log ([`FileLogSink`](super::FileLogSink)). Backends erase their own
+/// errors into [`SyncError::Backend`], so the object-safe traits share one fixed
+/// error type instead of an associated one.
 #[derive(Debug, thiserror::Error)]
 pub enum SyncError {
     /// An underlying I/O error.
@@ -31,4 +31,9 @@ pub enum SyncError {
     /// A wire-format error decoding a peer's log entries.
     #[error("codec error: {0}")]
     CodecError(#[from] CodecError),
+    /// A backend failure erased behind a boxed error, letting a concrete replica
+    /// surface its own error type through the fixed trait boundary. Not `Send`:
+    /// the traits are `?Send`, matching the `?Send` `Db` backend.
+    #[error("backend error: {0}")]
+    Backend(Box<dyn std::error::Error>),
 }
