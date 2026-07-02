@@ -123,9 +123,10 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>> Processor<R, D, T> {
         Ok(())
     }
 
-    /// Ingest one entry, locking the writer — the raw path used by tests. Errors
-    /// on a repeated `(peer_id, entry_idx)`; [`apply`](LogProcessor::apply) is the
-    /// deduped path.
+    /// Raw ingest that returns the reducer's event — no dedup gate (that is
+    /// [`apply`](LogProcessor::apply)'s job). Test-only for now; the local-write
+    /// path (`tx`) will wrap `ingest_entry` with cursor-advance and a broadcast.
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) async fn process_one(
         &self,
         peer_id: &Uuid,
