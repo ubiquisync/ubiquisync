@@ -111,12 +111,18 @@ impl Reducer {
 
             // Only add returning clauses and events for a named column of a named table.
             if let Some(named_col) = named_table.and_then(|t| t.value_cols.get(col_id)) {
-                // Report this column as changed only if it actually holds our
-                // value at our timestamp. The lww check alone is not enough: a
-                // column that loses the value-byte tiebreak still ends up with
-                // `lww == our ts` (both sides equal), so we must also confirm the
-                // stored value is the one we wrote (NULL-safe, since we may have
-                // written NULL).
+                // Report a column as changed only if it actually holds our value
+                // at our timestamp. The lww check alone would wrongly report a
+                // value-tiebreak LOSER (its lww still equals our ts), so we also
+                // confirm the stored value is the one we wrote (NULL-safe).
+                //
+                // This still over-reports one benign case: any winning write of a
+                // column's *existing* value — re-setting the same value at an
+                // equal or newer ts still wins lww and passes the check — is
+                // reported as a change, because RETURNING sees only the
+                // post-update value, not whether it differed. A spurious
+                // notification, never wrong data; and we can't skip the lww
+                // advance that LWW correctness depends on.
                 let null_safe_eq = dialect.null_safe_eq();
                 returning_clauses.push(format!(
                     "({lww_col_name} = {timestamp_placeholder} AND {col_name} {null_safe_eq} {value_placeholder})"
@@ -130,6 +136,14 @@ impl Reducer {
             }
         }
 
+        // The trailing `ts >= __deleted_ts` guard blocks the whole upsert — data
+        // and `__upsert_ts` alike — when a newer delete has tombstoned the row.
+        // Consequence: `__upsert_ts` can differ between replicas that saw the
+        // same ops in a different order (an upsert shadowed by a later delete
+        // advances it on one peer, is skipped on another). This is unobservable —
+        // `__upsert_ts` never gates column data and the live/deleted state still
+        // converges — and re-heals on the next winning upsert, so we accept it
+        // rather than complicate the statement to make `__upsert_ts` converge.
         let mut sql = format!(
             "INSERT INTO {quoted_table_name} ({}) VALUES ({}) \
             ON CONFLICT ({}) DO UPDATE SET {} WHERE ({}) \

@@ -88,6 +88,9 @@ impl Reducer {
         })
     }
 
+    /// Emit the `DeleteEvent` if and only if the statement wrote a row.
+    /// Note this can also fire events if a row that was already deleted gets deleted
+    /// again or if a row that was never seen gets deleted.
     pub(crate) fn post_delete(
         &self,
         stmt_id: StmtId,
