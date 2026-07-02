@@ -1,6 +1,15 @@
+//! The table [`Reducer`]: materializes table [ops](crate::op) into LWW SQL
+//! writes and emits [change events](crate::watch) for observers.
+//!
+//! Implements the [`ubiquisync_sql::reducer::Reducer`] three-phase contract —
+//! `prepare` reconciles schema (creating/altering surrogate tables) outside the
+//! batch, `apply` emits the conditional upsert/delete statements, and
+//! `post_apply` turns the committed batch result into a [`ChangeEvent`].
+
 mod delete;
 mod schema;
 mod upsert;
+mod validate;
 
 use crate::error::TablesError;
 use crate::id::TableId;
@@ -11,6 +20,16 @@ use crate::watch::ChangeEvent;
 use std::collections::HashMap;
 use ubiquisync_sql::db::{Db, DbBatch, DbStatementResult, StmtId};
 
+/// Applies table ops to a SQL backend, merging every column last-writer-wins.
+///
+/// `all_tables` holds the physical (surrogate-named) schema for every table the
+/// reducer has touched — the storage all ops are written to. `named_tables`
+/// holds the subset the caller declared with user-facing names: these are the
+/// application's own tables, exposed for querying as a SQL VIEW over the physical
+/// storage using the declared table/column names, and their changes surface as
+/// [`ChangeEvent`]s carrying those names. A table seen only by surrogate ID
+/// (e.g. one a newer peer defined that this build doesn't model) is still
+/// materialized and merged, but has no view and emits no events.
 pub struct Reducer {
     prefix: String,
     all_tables: HashMap<TableId, PhysicalTableSchema>,
@@ -18,6 +37,11 @@ pub struct Reducer {
 }
 
 impl Reducer {
+    /// Open a reducer with `prefix` for surrogate table names, declaring each of
+    /// `tables` as a named, user-facing table: its physical storage is
+    /// created/reconciled in `db` up front, and it is tracked so its changes
+    /// surface as events (and, in time, back a SQL VIEW under the declared
+    /// names).
     pub async fn new(
         prefix: &str,
         tables: &[TableSchema],
@@ -47,9 +71,16 @@ impl ubiquisync_sql::reducer::Reducer for Reducer {
     type Event = Option<ChangeEvent>;
 
     async fn prepare(&mut self, db: &dyn Db, op: &Op) -> Result<(), Self::Error> {
+        // Reject malformed ops before touching the schema or building any SQL.
         match op {
-            Op::Upsert(upsert) => self.sync_upsert_schema(db, upsert).await?,
-            Op::Delete(delete) => self.sync_delete_schema(db, delete).await?,
+            Op::Upsert(upsert) => {
+                validate::validate_upsert(upsert)?;
+                self.sync_upsert_schema(db, upsert).await?
+            }
+            Op::Delete(delete) => {
+                validate::validate_delete(delete)?;
+                self.sync_delete_schema(db, delete).await?
+            }
         };
         Ok(())
     }
@@ -87,7 +118,14 @@ impl ubiquisync_sql::reducer::Reducer for Reducer {
     }
 }
 
+/// Carried from [`apply`](ubiquisync_sql::reducer::Reducer::apply) to
+/// [`post_apply`](ubiquisync_sql::reducer::Reducer::post_apply): where to find
+/// this op's result in the committed batch, and the event to emit if it took
+/// effect.
 pub struct ApplyState {
+    /// The op's statement in the batch; indexes its [`DbStatementResult`].
     pub stmt_id: StmtId,
+    /// The event to emit, provisional until the batch result confirms the write
+    /// changed something. `None` for ops on unnamed (surrogate) tables.
     pub staged_event: Option<ChangeEvent>,
 }

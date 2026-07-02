@@ -50,7 +50,7 @@ impl Reducer {
         insert_into_cols.push(DELETED_TS_COL.into());
         let ts_placeholder = value_binder.bind_next(timestamp_value.clone());
         insert_into_value_binds.push(ts_placeholder.clone());
-        set_clauses.push(set_lww_sql(DELETED_TS_COL, &quoted_table_name, dialect));
+        set_clauses.push(set_lww_sql(DELETED_TS_COL, quoted_table_name, dialect));
 
         for col_id in table.cols.iter() {
             // Surrogate column names are auto-generated and don't need to be quoted
@@ -71,19 +71,17 @@ impl Reducer {
             insert_into_value_binds.join(", "),
             pk_name_list,
             set_clauses.join(", "),
-            lww_winner_sql(&quoted_table_name, DELETED_TS_COL)
+            lww_winner_sql(quoted_table_name, DELETED_TS_COL)
         );
 
         let stmt_id = batch.add_statement(&sql, &value_binder.values());
-        let staged_event = if let Some(named_table) = self.named_tables.get(&table_id) {
-            Some(ChangeEvent::Delete(DeleteEvent {
+        let staged_event = self.named_tables.get(&table_id).map(|named_table| {
+            ChangeEvent::Delete(DeleteEvent {
                 table_id,
                 primary_key: delete.primary_key.clone(),
                 table_name: named_table.name.clone(),
-            }))
-        } else {
-            None
-        };
+            })
+        });
         Ok(ApplyState {
             stmt_id,
             staged_event,

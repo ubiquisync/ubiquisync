@@ -224,7 +224,7 @@ impl PhysicalTableSchema {
 
         Ok(Self {
             id,
-            quoted_name: quote_ident(&name),
+            quoted_name: quote_ident(name),
             cols,
         })
     }

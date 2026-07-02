@@ -40,6 +40,9 @@ pub async fn run_reducer_suite<D: Db>(db: D) {
     event_reports_only_winning_columns(db).await;
     pkey_only_insert_still_emits_event(db).await;
     surrogate_table_emits_no_event(db).await;
+    explicit_null_set_merges_by_lww(db).await;
+    tiebreak_loser_is_not_reported(db).await;
+    rejects_invalid_ops(db).await;
     composite_pk_and_mixed_types(db).await;
 }
 
@@ -271,6 +274,95 @@ async fn surrogate_table_emits_no_event(db: &dyn Db) {
     assert_eq!(read_col(db, id, &pk1(1), body).await, Some((tv("x"), Some(100))));
 }
 
+/// An explicit NULL set merges by LWW like any other value: a newer null clears
+/// the column and is reported as a change carrying `None`, while an older null
+/// loses to a newer value.
+async fn explicit_null_set_merges_by_lww(db: &dyn Db) {
+    let id = TableId::new(&[ColType::I64], 14);
+    let a = col(0, ColType::Text);
+    let mut reducer = named(db, id, &[(a, "a")]).await;
+
+    // A newer null clears a prior value and reports the column as changed-to-None.
+    apply(&mut reducer, db, 100, &upsert(id, pk1(1), &[(a, text("x"))])).await;
+    let up = expect_upsert(apply(&mut reducer, db, 200, &upsert_nulls(id, pk1(1), &[a])).await);
+    assert_eq!(changed(&up), vec![("a".into(), None)]);
+    assert_eq!(read_col(db, id, &pk1(1), a).await, Some((DbValue::Null, Some(200))));
+
+    // An older null loses to a newer value and is silent.
+    apply(&mut reducer, db, 400, &upsert(id, pk1(2), &[(a, text("keep"))])).await;
+    expect_none(apply(&mut reducer, db, 300, &upsert_nulls(id, pk1(2), &[a])).await);
+    assert_eq!(read_col(db, id, &pk1(2), a).await, Some((tv("keep"), Some(400))));
+}
+
+/// A column that loses the same-timestamp value tiebreak must NOT be reported
+/// as changed, even when another column in the same op updates the row. The
+/// stored value stays the tiebreak winner, and only the genuinely-changed column
+/// appears in the event.
+async fn tiebreak_loser_is_not_reported(db: &dyn Db) {
+    let id = TableId::new(&[ColType::I64], 15);
+    let (a, b) = (col(0, ColType::Text), col(1, ColType::Text));
+    let mut reducer = named(db, id, &[(a, "a"), (b, "b")]).await;
+
+    // Seed: `a="zzz"` at ts=100, `b="old"` at ts=50 (so a later `b` will win).
+    apply(&mut reducer, db, 100, &upsert(id, pk1(1), &[(a, text("zzz"))])).await;
+    apply(&mut reducer, db, 50, &upsert(id, pk1(1), &[(b, text("old"))])).await;
+
+    // A new op at ts=100 sets `a="aaa"` (SAME ts as stored `a` → value tiebreak,
+    // and "aaa" < "zzz" so it loses) and `b="new"` (newer than 50 → wins, so the
+    // row IS updated and `a`'s lww still equals 100).
+    let ev = apply(
+        &mut reducer,
+        db,
+        100,
+        &upsert(id, pk1(1), &[(a, text("aaa")), (b, text("new"))]),
+    )
+    .await;
+
+    // Only `b` changed; `a` is unchanged despite sharing the timestamp.
+    let up = expect_upsert(ev);
+    assert_eq!(changed(&up), vec![("b".into(), Some(text("new")))]);
+    assert_eq!(read_col(db, id, &pk1(1), a).await, Some((tv("zzz"), Some(100))));
+    assert_eq!(read_col(db, id, &pk1(1), b).await, Some((tv("new"), Some(100))));
+}
+
+/// Malformed ops are rejected in `prepare` before any schema or SQL work: wrong
+/// PK arity or type, a value whose type doesn't match its column, and a column
+/// named more than once.
+async fn rejects_invalid_ops(db: &dyn Db) {
+    let id = TableId::new(&[ColType::I64], 16);
+    let a = col(0, ColType::Text);
+    let mut reducer = named(db, id, &[(a, "a")]).await;
+
+    // Wrong PK type (Text where the table declares an I64 PK).
+    expect_rejected(&mut reducer, db, &upsert(id, vec![text("x")], &[(a, text("v"))])).await;
+    // Wrong PK arity (two values for a single-column PK).
+    expect_rejected(&mut reducer, db, &upsert(id, vec![int(1), int(2)], &[(a, text("v"))])).await;
+    // Value type doesn't match the column (I64 into a Text column).
+    expect_rejected(&mut reducer, db, &upsert(id, pk1(1), &[(a, int(5))])).await;
+    // Same column set twice.
+    expect_rejected(&mut reducer, db, &upsert(id, pk1(1), &[(a, text("v")), (a, text("w"))])).await;
+    // Same column both set and nulled.
+    expect_rejected(
+        &mut reducer,
+        db,
+        &Op::Upsert(Upsert {
+            table_id: id,
+            primary_key: pk1(1),
+            sets: vec![ColumnSet {
+                column_id: a,
+                value: text("v"),
+            }],
+            nulls: vec![a],
+        }),
+    )
+    .await;
+    // Delete with a wrong-type PK.
+    expect_rejected(&mut reducer, db, &delete(id, vec![text("x")])).await;
+
+    // Sanity: a well-formed op is still accepted and applies.
+    expect_upsert(apply(&mut reducer, db, 100, &upsert(id, pk1(1), &[(a, text("ok"))])).await);
+}
+
 /// Composite primary keys and every column/PK type round-trip through bind and
 /// read-back, and still converge under LWW.
 async fn composite_pk_and_mixed_types(db: &dyn Db) {
@@ -316,6 +408,12 @@ async fn apply(reducer: &mut Reducer, db: &dyn Db, raw_ts: u64, op: &Op) -> Opti
     let state = reducer.apply(batch.as_mut(), ts, op, ()).expect("apply");
     let result = batch.commit().await.expect("commit");
     reducer.post_apply(state, &result).expect("post_apply")
+}
+
+/// Assert an op is rejected by validation in `prepare`, before any batch runs.
+async fn expect_rejected(reducer: &mut Reducer, db: &dyn Db, op: &Op) {
+    let result = reducer.prepare(db, op).await;
+    assert!(result.is_err(), "expected op to be rejected, got {result:?}");
 }
 
 /// A reducer that knows `id` as a named table with the given (column, view-name)
@@ -419,6 +517,15 @@ fn upsert(table: TableId, pk: Vec<Value>, sets: &[(ColumnId, Value)]) -> Op {
             })
             .collect(),
         nulls: vec![],
+    })
+}
+
+fn upsert_nulls(table: TableId, pk: Vec<Value>, nulls: &[ColumnId]) -> Op {
+    Op::Upsert(Upsert {
+        table_id: table,
+        primary_key: pk,
+        sets: vec![],
+        nulls: nulls.to_vec(),
     })
 }
 

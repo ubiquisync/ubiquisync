@@ -64,8 +64,8 @@ impl Reducer {
         // UPSERT_TS_COL binding
         insert_into_cols.push(UPSERT_TS_COL.into());
         insert_into_value_binds.push(timestamp_placeholder.clone());
-        set_clauses.push(set_lww_sql(UPSERT_TS_COL, &quoted_table_name, dialect));
-        where_clauses.push(lww_winner_sql(&quoted_table_name, UPSERT_TS_COL));
+        set_clauses.push(set_lww_sql(UPSERT_TS_COL, quoted_table_name, dialect));
+        where_clauses.push(lww_winner_sql(quoted_table_name, UPSERT_TS_COL));
 
         let mut all_updates: Vec<(ColumnId, Option<Value>)> = Vec::new();
         for col_update in upsert.sets.iter() {
@@ -79,7 +79,6 @@ impl Reducer {
         let mut returning_clauses = vec![];
         let mut changed_col_events = vec![];
         for (col_id, col_value) in all_updates.iter() {
-            // TODO validate value types
             let value = if let Some(col_value) = col_value {
                 col_value.to_db()
             } else {
@@ -89,14 +88,15 @@ impl Reducer {
             // Surrogate column names are auto-generated and don't need to be quoted
             let col_name = col_id.col_name();
             let lww_col_name = col_id.lww_col_name();
+            let value_placeholder = value_binder.bind_next(value);
             insert_into_cols.push(col_name.clone());
-            insert_into_value_binds.push(value_binder.bind_next(value));
+            insert_into_value_binds.push(value_placeholder.clone());
 
             insert_into_cols.push(lww_col_name.clone());
             insert_into_value_binds.push(timestamp_placeholder.clone());
 
             let lww_clause = lww_winner_sql_with_tiebreak(
-                &quoted_table_name,
+                quoted_table_name,
                 &col_name,
                 &lww_col_name,
                 col_id.col_type(),
@@ -105,21 +105,28 @@ impl Reducer {
             set_clauses.push(format!(
                 "{col_name} = CASE WHEN {lww_clause} THEN EXCLUDED.{col_name} ELSE {quoted_table_name}.{col_name} END"));
 
-            set_clauses.push(set_lww_sql(&lww_col_name, &quoted_table_name, dialect));
+            set_clauses.push(set_lww_sql(&lww_col_name, quoted_table_name, dialect));
 
             where_clauses.push(lww_clause);
 
-            if let Some(named_table) = named_table {
-                if let Some(named_col) = named_table.value_cols.get(col_id) {
-                    // Only add returning clauses and events when we have a named column in a named table.
-                    returning_clauses.push(format!("{lww_col_name} = {timestamp_placeholder}"));
+            // Only add returning clauses and events for a named column of a named table.
+            if let Some(named_col) = named_table.and_then(|t| t.value_cols.get(col_id)) {
+                // Report this column as changed only if it actually holds our
+                // value at our timestamp. The lww check alone is not enough: a
+                // column that loses the value-byte tiebreak still ends up with
+                // `lww == our ts` (both sides equal), so we must also confirm the
+                // stored value is the one we wrote (NULL-safe, since we may have
+                // written NULL).
+                let null_safe_eq = dialect.null_safe_eq();
+                returning_clauses.push(format!(
+                    "({lww_col_name} = {timestamp_placeholder} AND {col_name} {null_safe_eq} {value_placeholder})"
+                ));
 
-                    changed_col_events.push(ColumnValue {
-                        column_id: *col_id,
-                        name: named_col.name.clone(),
-                        value: col_value.clone(),
-                    })
-                }
+                changed_col_events.push(ColumnValue {
+                    column_id: *col_id,
+                    name: named_col.name.clone(),
+                    value: col_value.clone(),
+                })
             }
         }
 
@@ -138,16 +145,14 @@ impl Reducer {
         }
 
         let stmt_id = batch.add_statement(&sql, &value_binder.values());
-        let staged_event = if let Some(named_table) = named_table {
-            Some(ChangeEvent::Upsert(UpsertEvent {
+        let staged_event = named_table.map(|named_table| {
+            ChangeEvent::Upsert(UpsertEvent {
                 table_id: upsert.table_id,
                 table_name: named_table.name.clone(),
                 primary_key: upsert.primary_key.clone(),
                 changed_columns: changed_col_events,
-            }))
-        } else {
-            None
-        };
+            })
+        });
         Ok(ApplyState {
             stmt_id,
             staged_event,
@@ -232,13 +237,11 @@ pub(crate) fn bind_pkey(
     insert_into_value_binds: &mut Vec<String>,
     value_binder: &mut ValueBinder,
 ) {
-    let pk_count = table_id.pk_count();
-    for i in 0..pk_count {
-        // bind the quoted pk col name into the INSERT column list
+    // PK arity and value types are already validated
+    for (i, value) in primary_key.iter().enumerate() {
+        // bind the quoted pk col name into the INSERT column list, and a
+        // positional (?1) bind param for its value
         insert_into_cols.push(quote_ident(&table_id.pk_col_name(i)));
-        // create positional (?1) bind params for each pk val
-        insert_into_value_binds.push(value_binder.bind_next(primary_key[i].to_db()));
-        // add the pk val to the list of bind values
-        // TODO validate pkey value types
+        insert_into_value_binds.push(value_binder.bind_next(value.to_db()));
     }
 }

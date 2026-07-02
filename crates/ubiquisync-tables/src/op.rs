@@ -9,6 +9,7 @@
 //! Tables have a compile-time schema with type-encoded IDs — see
 //! [`crate::id`].
 
+use crate::col_type::ColType;
 use crate::id::{ColumnId, TableId};
 use ubiquisync_core::uuid::Uuid;
 use ubiquisync_sql::db::DbValue;
@@ -61,12 +62,26 @@ pub enum Value {
 }
 
 impl Value {
+    /// Convert to the backend [`DbValue`] bound into SQL, mapping each variant
+    /// to its storage class (`Bytes`→`Blob`, `Uuid`→`Uuid`, `Text`→`Text`,
+    /// `I64`→`Integer`).
     pub fn to_db(&self) -> DbValue {
         match self {
             Value::Bytes(bytes) => DbValue::Blob(bytes.clone()),
             Value::Uuid(uuid) => DbValue::Uuid(*uuid),
             Value::Text(text) => DbValue::Text(text.clone()),
             Value::I64(i) => DbValue::Integer(*i),
+        }
+    }
+
+    /// The [`ColType`] this value's variant represents, for checking it against
+    /// a column's or PK slot's declared type during op validation.
+    pub fn col_type(&self) -> ColType {
+        match self {
+            Value::Bytes(_) => ColType::Bytes,
+            Value::Uuid(_) => ColType::Uuid,
+            Value::Text(_) => ColType::Text,
+            Value::I64(_) => ColType::I64,
         }
     }
 }
