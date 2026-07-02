@@ -1,14 +1,14 @@
-//! Backend-agnostic end-to-end [`Processor`] suite, for the driver crates to
-//! run against their real [`Db`].
+//! Backend-agnostic end-to-end `Processor` suite, for the driver crates to
+//! run against their real `Db`.
 //!
 //! The reducer under test is a per-key **max register** (a grow-only CRDT): an
 //! op carries `(key, value)` and the stored value only ever moves up, via a
 //! `MAX`-guarded upsert. That is enough to exercise the whole `prepare` →
 //! `apply` → `post_apply` pipeline, the op-log tracker, and the HLC observe.
 //!
-//! [`run_max_register_suite`] is generic over `<D: Db>`, so the exact same
+//! `run_max_register_suite` is generic over `<D: Db>`, so the exact same
 //! assertions run against any backend. Today only the SQLite driver implements
-//! [`Db`], so there is one caller (in `ubiquisync-sqlite`'s tests); when the
+//! `Db`, so there is one caller (in `ubiquisync-sqlite`'s tests); when the
 //! Postgres driver lands, a second test that hands the suite a `PgDb` is all it
 //! takes.
 
@@ -215,7 +215,7 @@ async fn clock_register<D: Db>(db: &D) -> u64 {
 ///
 /// Exercises `process_one` directly — the raw ingest path, which errors on a
 /// duplicate `(peer, index)` rather than dropping it (dedup is the job of
-/// [`apply`](LogProcessor::apply), covered by [`run_pull_sync_suite`]).
+/// [`apply`](LogProcessor::apply), covered by `run_replica_suite`).
 ///
 /// Generic over the backend so each driver crate's tests can reuse it verbatim.
 pub async fn run_max_register_suite<D: Db>(db: D) {
@@ -309,7 +309,7 @@ pub async fn run_max_register_suite<D: Db>(db: D) {
 /// no-op, [`read_since`](LogSource::read_since) reconstructs the stream from the
 /// op-log, and [`watch_cursors`](HasCursors::watch_cursors) reports progress.
 ///
-/// Generic over the backend like [`run_max_register_suite`]; call it with a
+/// Generic over the backend like `run_max_register_suite`; call it with a
 /// freshly opened, empty database.
 pub async fn run_replica_suite<D: Db>(db: D) {
     let processor: MaxProcessor<D> = Processor::open(MaxRegister::new("reg"), db, PREFIX, NODE)

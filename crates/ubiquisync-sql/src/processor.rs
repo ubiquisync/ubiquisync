@@ -178,9 +178,9 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>> Processor<R, D, T> {
         Ok(())
     }
 
-    /// Raw ingest that returns the reducer's event — no dedup gate (that is
-    /// [`apply`](LogProcessor::apply)'s job). Test-only for now; the local-write
-    /// path (`tx`) will wrap `ingest_entry` with cursor-advance and a broadcast.
+    /// Raw ingest at a caller-given index, returning the reducer's event — no
+    /// dedup gate ([`apply`](LogProcessor::apply)'s job) and no cursor advance.
+    /// Test-only; local writes go through `exec`.
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) async fn process_one(
         &self,
