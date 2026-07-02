@@ -45,6 +45,7 @@ pub async fn run_reducer_suite<D: Db>(db: D) {
     rejects_invalid_ops(db).await;
     composite_pk_and_mixed_types(db).await;
     view_exposes_live_rows_under_declared_names(db).await;
+    rejects_duplicate_declared_tables(db).await;
 }
 
 // ── Scenarios ────────────────────────────────────────────────────────────────
@@ -442,6 +443,44 @@ async fn view_exposes_live_rows_under_declared_names(db: &dyn Db) {
     assert_eq!(
         view_row(db, "widgets", &["widget_id", "body"], 1).await,
         Some(vec![iv(1), tv("back")]),
+    );
+
+    // Tie: an upsert and a delete at the SAME timestamp leave the row visible —
+    // `upsert_ts == deleted_ts` satisfies the view's `>=` predicate, and the
+    // equal-timestamp column survives the delete's null-out.
+    apply(&mut reducer, db, 500, &upsert(id, pk1(2), &[(body, text("tie"))])).await;
+    apply(&mut reducer, db, 500, &delete(id, pk1(2))).await;
+    assert_eq!(
+        view_row(db, "widgets", &["widget_id", "body"], 2).await,
+        Some(vec![iv(2), tv("tie")]),
+        "row with upsert_ts == deleted_ts must remain visible",
+    );
+}
+
+/// `Reducer::new` rejects a set of declared tables that repeats a table `id` or
+/// a view `name`, before creating anything.
+async fn rejects_duplicate_declared_tables(db: &dyn Db) {
+    let a = TableId::new(&[ColType::I64], 18);
+    let b = TableId::new(&[ColType::I64], 19);
+
+    // Two distinct tables sharing a view name.
+    let dup_name = [
+        TableSchema::new(a, "dup".into(), vec!["id".into()], vec![]).unwrap(),
+        TableSchema::new(b, "dup".into(), vec!["id".into()], vec![]).unwrap(),
+    ];
+    assert!(
+        Reducer::new(PREFIX, &dup_name, db).await.is_err(),
+        "duplicate view name must be rejected",
+    );
+
+    // The same table id declared twice (under different names).
+    let dup_id = [
+        TableSchema::new(a, "one".into(), vec!["id".into()], vec![]).unwrap(),
+        TableSchema::new(a, "two".into(), vec!["id".into()], vec![]).unwrap(),
+    ];
+    assert!(
+        Reducer::new(PREFIX, &dup_id, db).await.is_err(),
+        "duplicate table id must be rejected",
     );
 }
 

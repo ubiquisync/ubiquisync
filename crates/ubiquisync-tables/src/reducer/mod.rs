@@ -17,7 +17,7 @@ use crate::op::Op;
 use crate::physical_schema::PhysicalTableSchema;
 use crate::schema::TableSchema;
 use crate::watch::ChangeEvent;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use ubiquisync_sql::db::{Db, DbBatch, DbStatementResult, StmtId};
 
 /// Applies table ops to a SQL backend, merging every column last-writer-wins.
@@ -42,11 +42,32 @@ impl Reducer {
     /// created/reconciled in `db` up front, a SQL VIEW exposing it under the
     /// declared names is (re)created, and it is tracked so its changes surface as
     /// events.
+    ///
+    /// Returns [`TablesError::InvalidSchema`] if two declarations share a table
+    /// `id` or a view `name`; the check runs before any table or view is
+    /// created, so a rejected call has no side effects.
     pub async fn new(
         prefix: &str,
         tables: &[TableSchema],
         db: &dyn Db,
     ) -> Result<Self, TablesError> {
+        let mut seen_ids = HashSet::new();
+        let mut seen_names = HashSet::new();
+        for table in tables {
+            if !seen_ids.insert(table.id) {
+                return Err(TablesError::InvalidSchema(format!(
+                    "duplicate table id {:?}",
+                    table.id
+                )));
+            }
+            if !seen_names.insert(table.name.as_str()) {
+                return Err(TablesError::InvalidSchema(format!(
+                    "duplicate table name {:?}",
+                    table.name
+                )));
+            }
+        }
+
         let mut named_tables = HashMap::new();
         let mut all_tables = HashMap::new();
         for table in tables {

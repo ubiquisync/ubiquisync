@@ -36,6 +36,14 @@ impl TableSchema {
         pk_names: Vec<String>,
         non_pk_cols: Vec<ColumnSchema>,
     ) -> Result<Self, TablesError> {
+        // A zero-length name quotes to `""`, which Postgres rejects as an empty
+        // delimited identifier (SQLite would accept it).
+        if name.is_empty() {
+            return Err(TablesError::InvalidSchema(
+                "table name must not be empty".into(),
+            ));
+        }
+
         // One VIEW column name per PK slot.
         if pk_names.len() != id.pk_count() {
             return Err(TablesError::InvalidSchema(format!(
@@ -45,12 +53,15 @@ impl TableSchema {
             )));
         }
 
-        // The VIEW exposes the PK names followed by the value-column names as its
-        // output columns, so every one must be distinct or `CREATE VIEW` is
-        // invalid. Compared exactly: names are emitted as quoted (hence
-        // case-sensitive) identifiers.
+        // PK + value names become the VIEW's output columns: each must be
+        // non-empty and distinct (compared exactly — emitted as quoted idents).
         let mut seen = HashSet::new();
         for col_name in pk_names.iter().chain(non_pk_cols.iter().map(|c| &c.name)) {
+            if col_name.is_empty() {
+                return Err(TablesError::InvalidSchema(format!(
+                    "table {name:?}: column name must not be empty"
+                )));
+            }
             if !seen.insert(col_name.as_str()) {
                 return Err(TablesError::InvalidSchema(format!(
                     "table {name:?}: duplicate column name {col_name:?}"
@@ -79,11 +90,9 @@ impl TableSchema {
         })
     }
 
-    /// (Re)create the user-facing VIEW over this table's surrogate physical
-    /// storage. Runs `DROP VIEW IF EXISTS` then `CREATE VIEW` so it is
-    /// idempotent — safe to call every time a [`Reducer`](crate::reducer) opens.
-    /// The view maps surrogate PK/value columns back to their declared names and
-    /// hides tombstoned rows (see [`Self::view_sql`]).
+    /// (Re)create the user-facing VIEW over this table's surrogate storage.
+    /// `DROP VIEW IF EXISTS` + `CREATE VIEW` makes it idempotent — safe to run
+    /// every time a [`Reducer`](crate::reducer) opens. See [`Self::view_sql`].
     pub(crate) async fn create_view(
         &self,
         surrogate_prefix: &str,
@@ -97,17 +106,11 @@ impl TableSchema {
         Ok(())
     }
 
-    /// Build the `(DROP VIEW, CREATE VIEW)` SQL for this table's user-facing
-    /// view. Split out from [`Self::create_view`] so the generated SQL can be
-    /// asserted without a live database.
-    ///
-    /// The view name and every user-facing column name are quoted, so arbitrary
-    /// declared names are safe. The surrogate table name is *also* quoted, to
-    /// match how the physical layer creates and references it — without the
-    /// quotes Postgres would case-fold the name and fail to find the table
-    /// (SQLite, being case-insensitive, would not). The `WHERE` clause keeps a
-    /// row visible only while its latest upsert is at least as new as its latest
-    /// delete, mirroring the reducer's live/tombstone rule.
+    /// Build the `(DROP VIEW, CREATE VIEW)` SQL, split from [`Self::create_view`]
+    /// so it can be asserted without a database. All identifiers are quoted —
+    /// including the surrogate table name, so an uppercase `prefix` isn't
+    /// case-folded away by Postgres. The `WHERE` clause hides tombstoned rows
+    /// (latest delete newer than latest upsert).
     fn view_sql(&self, surrogate_prefix: &str) -> (String, String) {
         let id = self.id;
         let surrogate_name = quote_ident(&id.table_name(surrogate_prefix));
@@ -191,6 +194,21 @@ mod tests {
         let a = ColumnId::new(0, ColType::Text);
         let err = TableSchema::new(id, "t".into(), vec!["id".into()], vec![cs("a", a), cs("b", a)])
             .unwrap_err();
+        assert!(matches!(err, TablesError::InvalidSchema(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn rejects_empty_table_name() {
+        let id = TableId::new(&[ColType::I64], 1);
+        let err = TableSchema::new(id, "".into(), vec!["id".into()], vec![]).unwrap_err();
+        assert!(matches!(err, TablesError::InvalidSchema(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn rejects_empty_column_name() {
+        let id = TableId::new(&[ColType::I64], 1);
+        let a = ColumnId::new(0, ColType::Text);
+        let err = TableSchema::new(id, "t".into(), vec!["id".into()], vec![cs("", a)]).unwrap_err();
         assert!(matches!(err, TablesError::InvalidSchema(_)), "got {err:?}");
     }
 
