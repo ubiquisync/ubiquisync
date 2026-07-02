@@ -23,7 +23,7 @@ use ubiquisync_core::{
     },
     hlc::Timestamp,
     log_entry::LogEntry,
-    sync::{CursorsEvent, HasCursors, LogProcessor, LogSource},
+    sync::{CursorsEvent, HasCursors, LogProcessor, LogSource, SyncError},
     uuid::Uuid,
 };
 
@@ -311,7 +311,7 @@ pub async fn run_max_register_suite<D: Db>(db: D) {
 ///
 /// Generic over the backend like [`run_max_register_suite`]; call it with a
 /// freshly opened, empty database.
-pub async fn run_pull_sync_suite<D: Db>(db: D) {
+pub async fn run_replica_suite<D: Db>(db: D) {
     let processor: MaxProcessor<D> = Processor::open(MaxRegister::new("reg"), db, PREFIX, NODE)
         .await
         .unwrap();
@@ -352,10 +352,12 @@ pub async fn run_pull_sync_suite<D: Db>(db: D) {
         read.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
         vec![0, 1, 2, 3]
     );
-    assert!(
-        matches!(read[2].1, DecodedEntry::Expunged(_)),
-        "index 2 round-trips as the marker"
-    );
+    match read[2].1 {
+        DecodedEntry::Expunged(h) => {
+            assert_eq!(h, blake3::hash(b"gone"), "expunged hash round-trips");
+        }
+        _ => panic!("index 2 should round-trip as the expunged marker"),
+    }
     match &read[1].1 {
         DecodedEntry::LogEntry(e) => {
             assert_eq!(e.server_user_id, Some(USER));
@@ -424,4 +426,85 @@ pub async fn run_pull_sync_suite<D: Db>(db: D) {
     );
     assert_eq!(processor.cursors().await.unwrap().get(&PEER).copied(), Some(6));
     assert_eq!(oplog_row_count(processor.db()).await, 6);
+
+    // A gap is rejected, not silently absorbed: an index beyond the next
+    // expected one errors, since the scalar cursor can't hold a hole.
+    let err = processor
+        .apply(
+            PEER,
+            8,
+            DecodedEntry::LogEntry(entry(b"x", 1, 1_700_000_000_010, None)),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            SyncError::CursorMismatch {
+                expected_idx: 6,
+                actual_idx: 8
+            }
+        ),
+        "gap rejected, got {err:?}"
+    );
+    assert_eq!(
+        oplog_row_count(processor.db()).await,
+        6,
+        "rejected gap wrote nothing"
+    );
+
+    // Two concurrent applies of the same next index: the serialized gate lets
+    // exactly one through (new), the other drops as a re-delivery.
+    let e1 = DecodedEntry::LogEntry(entry(b"x", 2, 1_700_000_000_011, None));
+    let e2 = DecodedEntry::LogEntry(entry(b"x", 3, 1_700_000_000_012, None));
+    let (a, b) = futures::join!(processor.apply(PEER, 6, e1), processor.apply(PEER, 6, e2));
+    assert!(
+        a.unwrap().new ^ b.unwrap().new,
+        "exactly one of two concurrent same-index applies is new"
+    );
+    assert_eq!(processor.cursors().await.unwrap().get(&PEER).copied(), Some(7));
+    assert_eq!(
+        oplog_row_count(processor.db()).await,
+        7,
+        "only one of the two concurrent applies committed"
+    );
+
+    // Local writes via `exec`: each mints a fresh self index under NODE and
+    // advances its cursor; the entries reconstruct from the op-log, and the
+    // reducer merges them (max register).
+    processor
+        .exec(
+            None,
+            MaxOp {
+                key: b"local".to_vec(),
+                value: 1,
+            },
+        )
+        .await
+        .unwrap();
+    processor
+        .exec(
+            None,
+            MaxOp {
+                key: b"local".to_vec(),
+                value: 5,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        processor.cursors().await.unwrap().get(&NODE).copied(),
+        Some(2),
+        "two local writes advanced self's cursor"
+    );
+    assert_eq!(
+        processor.read_since(NODE, 0).await.unwrap().len(),
+        2,
+        "both local writes reconstruct from the op-log"
+    );
+    assert_eq!(
+        register_value(processor.db(), b"local").await,
+        5,
+        "max register merged the two local writes"
+    );
 }

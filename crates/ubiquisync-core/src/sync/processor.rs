@@ -14,9 +14,11 @@ use super::error::SyncError;
 /// which writes only its own origin, is [`FileLogSink`](super::FileLogSink)
 /// instead.)
 ///
-/// `apply` is idempotent per `(peer, index)`: multi-channel delivery means the
-/// same entry can arrive twice, so an already-seen index is a no-op reported as
-/// [`Applied::new`] `== false`.
+/// Entries for a peer must be applied in contiguous ascending order — a cursor
+/// is a single high-water mark that can't hold a hole. An already-seen `index`
+/// is an idempotent no-op ([`Applied::new`] `== false`), so multi-channel
+/// redelivery is safe; an `index` beyond the next expected one is a gap and is
+/// rejected.
 ///
 /// `&self` and `?Send`: one processor is shared (`Rc<dyn LogProcessor>`) as the
 /// apply target of several sources while also read as a

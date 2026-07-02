@@ -234,7 +234,9 @@ impl<R: Reducer, D: Db, T> HasCursors for Processor<R, D, T> {
         // no apply can advance the cursor in between and be missed.
         let (tx, rx) = mpsc::unbounded();
         let _ = tx.unbounded_send(CursorsEvent::Snapshot(self.cursors.borrow().clone()));
-        self.watchers.borrow_mut().push(tx);
+        let mut watchers = self.watchers.borrow_mut();
+        watchers.retain(|w| !w.is_closed()); // drop subscribers that went away
+        watchers.push(tx);
         Box::pin(rx)
     }
 }
@@ -255,11 +257,20 @@ where
             return Ok(Applied { new: false });
         }
         let mut reducer = self.reducer.lock().await;
-        // Authoritative re-check, now serialized: a concurrent apply may have
-        // advanced past `index` between the fast path and the lock. This is the
-        // only-once gate, so the reducer need not be idempotent.
-        if index < self.cached_cursor(&peer) {
+        // Re-check under the lock and enforce contiguity: a concurrent apply may
+        // have advanced past `index`. `< cursor` is a re-delivery (drop);
+        // `> cursor` is a gap the caller must not create — the scalar cursor
+        // can't hold a hole, so reject rather than jump past the missing entries.
+        // `== cursor` is the only-once gate, so the reducer need not be idempotent.
+        let cursor = self.cached_cursor(&peer);
+        if index < cursor {
             return Ok(Applied { new: false });
+        }
+        if index > cursor {
+            return Err(SyncError::CursorMismatch {
+                expected_idx: cursor,
+                actual_idx: index,
+            });
         }
         let outcome = match entry {
             DecodedEntry::LogEntry(e) => self
