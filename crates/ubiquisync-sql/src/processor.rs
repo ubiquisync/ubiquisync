@@ -93,6 +93,7 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>> Processor<R, D, T> {
             .apply(batch.as_mut(), timestamp, op, prepare_state)
             .map_err(ProcessorError::Reducer)?;
         let batch_result = batch.commit().await?;
+        // TODO we should probably not pass the full batch result to the reducer because it only needs the results corresponding to its own statements
         let event = self
             .reducer
             .post_apply(apply_state, &batch_result)

@@ -33,8 +33,10 @@ mod physical_schema;
 #[allow(dead_code)]
 mod schema;
 
+pub mod reducer;
 /// Backend-agnostic physical-schema suite the driver crates run against their
 /// real `Db`. Compiled for this crate's own tests and for any crate that enables
 /// the `test-support` feature (a SQL driver, in its dev-dependencies).
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
+pub mod watch;

@@ -62,6 +62,16 @@ impl SqlDialect {
             SqlDialect::Postgres => "",
         }
     }
+
+    /// Null-safe equality operator: `IS` on SQLite, `IS NOT DISTINCT FROM` on
+    /// Postgres. Both are infix (`a <op> b`) and treat two NULLs as equal —
+    /// unlike `=`, which yields NULL when either side is NULL.
+    pub fn null_safe_eq(&self) -> &'static str {
+        match self {
+            SqlDialect::Sqlite => "IS",
+            SqlDialect::Postgres => "IS NOT DISTINCT FROM",
+        }
+    }
 }
 
 /// Hands out positional bind placeholders in sequence (`?1`/`$1`, `?2`/`$2`, …)
@@ -109,5 +119,11 @@ mod tests {
         // SQLite already compares bytewise; Postgres needs an explicit "C".
         assert_eq!(SqlDialect::Sqlite.text_collate(), "");
         assert_eq!(SqlDialect::Postgres.text_collate(), " COLLATE \"C\"");
+    }
+
+    #[test]
+    fn null_safe_eq_per_dialect() {
+        assert_eq!(SqlDialect::Sqlite.null_safe_eq(), "IS");
+        assert_eq!(SqlDialect::Postgres.null_safe_eq(), "IS NOT DISTINCT FROM");
     }
 }
