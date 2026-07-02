@@ -131,7 +131,8 @@ async fn named_tables_create_expected_layouts(db: &dyn Db) {
             col_schema(0, ColType::Text, "body"),
             col_schema(1, ColType::I64, "n"),
         ],
-    );
+    )
+    .unwrap();
     let phys = PhysicalTableSchema::new_named(PREFIX, &schema1, db)
         .await
         .unwrap();
@@ -153,7 +154,8 @@ async fn named_tables_create_expected_layouts(db: &dyn Db) {
         "events".into(),
         vec!["k".into(), "seq".into()],
         vec![col_schema(0, ColType::Bytes, "payload")],
-    );
+    )
+    .unwrap();
     PhysicalTableSchema::new_named(PREFIX, &schema2, db)
         .await
         .unwrap();
@@ -161,7 +163,7 @@ async fn named_tables_create_expected_layouts(db: &dyn Db) {
 
     // 3) Single I64 PK, no value columns at all.
     let id3 = TableId::new(&[ColType::I64], 3);
-    let schema3 = TableSchema::new(id3, "counters".into(), vec!["id".into()], vec![]);
+    let schema3 = TableSchema::new(id3, "counters".into(), vec!["id".into()], vec![]).unwrap();
     PhysicalTableSchema::new_named(PREFIX, &schema3, db)
         .await
         .unwrap();
@@ -178,7 +180,8 @@ async fn named_table_adds_missing_columns(db: &dyn Db) {
         "t".into(),
         vec!["id".into()],
         vec![col_schema(0, ColType::Text, "a")],
-    );
+    )
+    .unwrap();
     PhysicalTableSchema::new_named(PREFIX, &v1, db)
         .await
         .unwrap();
@@ -234,7 +237,8 @@ async fn surrogate_table_reconstructs_existing(db: &dyn Db) {
             col_schema(1, ColType::I64, "x"),
             col_schema(5, ColType::Text, "y"),
         ],
-    );
+    )
+    .unwrap();
     PhysicalTableSchema::new_named(PREFIX, &declared, db)
         .await
         .unwrap();
