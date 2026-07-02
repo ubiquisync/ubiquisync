@@ -147,7 +147,7 @@ impl Reducer {
         let mut sql = format!(
             "INSERT INTO {quoted_table_name} ({}) VALUES ({}) \
             ON CONFLICT ({}) DO UPDATE SET {} WHERE ({}) \
-            AND {timestamp_placeholder} >= COALESCE({DELETED_TS_COL},0)",
+            AND {timestamp_placeholder} >= COALESCE({quoted_table_name}.{DELETED_TS_COL},0)",
             insert_into_cols.join(", "),
             insert_into_value_binds.join(", "),
             pk_name_list,
