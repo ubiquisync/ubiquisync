@@ -18,4 +18,9 @@ pub enum TablesError {
     /// values, or a column referenced more than once.
     #[error("invalid op: {0}")]
     InvalidOp(String),
+    /// A user-declared `TableSchema` is itself invalid — e.g. the number of PK
+    /// names doesn't match the table ID's PK count, or two of its VIEW columns
+    /// share a name.
+    #[error("invalid schema: {0}")]
+    InvalidSchema(String),
 }
