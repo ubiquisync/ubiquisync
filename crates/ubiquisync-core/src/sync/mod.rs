@@ -19,7 +19,7 @@ mod processor;
 mod replica;
 mod source;
 
-pub use cursors::{CursorStream, CursorsEvent, PeerCursors};
+pub use cursors::{CursorStream, CursorsEvent, HasCursors, PeerCursors};
 pub use error::SyncError;
 pub use file_log::{FileLogPuller, FileLogReplica, FileLogSink};
 pub use processor::{Applied, LogProcessor};

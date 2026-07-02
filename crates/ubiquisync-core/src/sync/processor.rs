@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 
 use crate::codec::DecodedEntry;
+use crate::sync::cursors::HasCursors;
 use crate::uuid::Uuid;
 
 use super::error::SyncError;
@@ -22,7 +23,7 @@ use super::error::SyncError;
 /// [`LogSource`](super::LogSource), so it mutates through interior mutability.
 /// `?Send` matches the `?Send` `Db` backend (wasm/Workers).
 #[async_trait(?Send)]
-pub trait LogProcessor<E> {
+pub trait LogProcessor<E>: HasCursors {
     /// Apply one entry at `(peer, index)`, advancing the cursor for `peer` to
     /// `index + 1`. Idempotent (see the trait docs).
     async fn apply(

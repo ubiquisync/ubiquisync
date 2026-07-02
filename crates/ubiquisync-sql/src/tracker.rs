@@ -6,17 +6,20 @@
 //! keyed by `(peer_id, entry_idx)` that future readers can dedup, revision
 //! history, and attribution from without replaying the reducer.
 //!
-//! Today the only reader is [`peer_cursor`](LogTracker::peer_cursor), which just
-//! takes `MAX(entry_idx)`. Readers added later must skip the expunged-marker
+//! Readers derive from the table without replaying the reducer —
+//! [`all_cursors`](LogTracker::all_cursors) for the version vector,
+//! [`HistoryTracker::read_entries`] to reconstruct entries. The expunged-marker
 //! rows [`track_expunged`](LogTracker::track_expunged) writes (`tag` =
-//! [`TAG_EXPUNGED`], no attribution, no timestamp): they occupy a stream index
-//! but are not real entries, so counting or attributing them would be wrong.
+//! [`TAG_EXPUNGED`], no attribution, no timestamp) occupy a stream index but are
+//! not real entries, so a reader must not count or attribute them.
 
 use std::marker::PhantomData;
 
 use ubiquisync_core::{
-    codec::{CodecError, IndexableOp, TAG_EXPUNGED},
+    codec::{CodecError, DecodedEntry, IndexableOp, TAG_EXPUNGED},
+    hlc::Timestamp,
     log_entry::LogEntry,
+    sync::PeerCursors,
     uuid::Uuid,
 };
 
@@ -70,11 +73,25 @@ pub trait LogTracker<Op>: Sized {
         batch: &mut dyn DbBatch,
     ) -> Result<(), LogTrackerError>;
 
-    /// The next-entry index for `peer_id`: one past the highest `entry_idx` this
-    /// tracker has recorded for that peer (real entries and expunged markers
-    /// alike), or `0` if it has recorded none. This is the sync cursor, derived
-    /// from what has actually been tracked rather than stored separately.
-    async fn peer_cursor(&self, db: &dyn Db, peer_id: &Uuid) -> Result<u64, DbError>;
+    /// Every peer's cursor as a version vector; seeds a processor's in-memory
+    /// cursor view at open.
+    async fn all_cursors(&self, db: &dyn Db) -> Result<PeerCursors, DbError>;
+}
+
+/// A [`LogTracker`] that also reconstructs stored entries — the op-log case,
+/// which keeps full history and so can back a replication
+/// [`LogSource`](ubiquisync_core::sync::LogSource).
+#[async_trait::async_trait(?Send)]
+pub trait HistoryTracker<Op>: LogTracker<Op> {
+    /// Up to `limit` of `peer_id`'s entries at or after `from`, ascending
+    /// (expunged markers included), reconstructed from stored rows.
+    async fn read_entries(
+        &self,
+        db: &dyn Db,
+        peer_id: &Uuid,
+        from: u64,
+        limit: u64,
+    ) -> Result<Vec<(u64, DecodedEntry<Op>)>, LogTrackerError>;
 }
 
 /// Failure from [`LogTracker::track_one`]. Splitting the op into its index
@@ -173,25 +190,19 @@ impl<Op: IndexableOp> LogTracker<Op> for LogIndexTracker<Op> {
         Ok(())
     }
 
-    async fn peer_cursor(&self, db: &dyn Db, peer_id: &Uuid) -> Result<u64, DbError> {
-        let mut value_binder = ValueBinder::new(db.dialect());
-        let peer_id_bind = value_binder.bind_next(DbValue::Uuid(*peer_id));
-        // This is the *aggregate* `MAX(column)`, which is standard SQL and reads
-        // identically on both dialects — deliberately NOT
-        // [`SqlDialect::scalar_max`](crate::dialect::SqlDialect::scalar_max),
-        // whose `GREATEST` is the two-argument row max used by the merge
-        // upserts. There is no dialect divergence here, so no branch: the
-        // placeholder (via `ValueBinder`) and double-quoted identifiers are the
-        // only flavor-sensitive pieces and both are already dialect-correct.
+    async fn all_cursors(&self, db: &dyn Db) -> Result<PeerCursors, DbError> {
         let sql = format!(
-            "SELECT MAX(\"entry_idx\") FROM {} WHERE \"peer_id\" = {peer_id_bind}",
+            "SELECT \"peer_id\", MAX(\"entry_idx\") FROM {} GROUP BY \"peer_id\"",
             self.quoted_table_name
         );
-        // `MAX` over no rows is NULL — an unseen peer, cursor 0. Otherwise the
-        // next index is one past the highest recorded. Stored via `from_u64`, so
-        // the value is a non-negative `i64` that reads back cleanly as `u64`.
-        let rows = db.query(&sql, &value_binder.values()).await?;
-        Ok(rows[0].get_optional_u64(0)?.map_or(0, |max| max + 1))
+        let rows = db.query(&sql, &[]).await?;
+        let mut cursors = PeerCursors::new();
+        for row in &rows {
+            // MAX over a non-empty group is never NULL: the cursor is one past
+            // the highest recorded index for that peer.
+            cursors.insert(row.get_uuid(0)?, row.get_u64(1)? + 1);
+        }
+        Ok(cursors)
     }
 
     fn track_expunged(
@@ -220,5 +231,62 @@ impl<Op: IndexableOp> LogTracker<Op> for LogIndexTracker<Op> {
 
         batch.add_statement(&sql, &value_binder.values());
         Ok(())
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl<Op: IndexableOp> HistoryTracker<Op> for LogIndexTracker<Op> {
+    async fn read_entries(
+        &self,
+        db: &dyn Db,
+        peer_id: &Uuid,
+        from: u64,
+        limit: u64,
+    ) -> Result<Vec<(u64, DecodedEntry<Op>)>, LogTrackerError> {
+        let mut binder = ValueBinder::new(db.dialect());
+        let peer_bind = binder.bind_next(DbValue::Uuid(*peer_id));
+        let from_bind = binder.bind_next(DbValue::from_u64(from)?);
+        let limit_bind = binder.bind_next(DbValue::from_u64(limit)?);
+        let sql = format!(
+            "SELECT \"entry_idx\", \"server_user_id\", \"ts\", \"tag\", \"index_key\", \"index_value\" \
+             FROM {} WHERE \"peer_id\" = {peer_bind} AND \"entry_idx\" >= {from_bind} \
+             ORDER BY \"entry_idx\" ASC LIMIT {limit_bind}",
+            self.quoted_table_name
+        );
+        let rows = db.query(&sql, &binder.values()).await?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let idx = row.get_u64(0)?;
+            let tag = u8::try_from(row.get_i64(3)?).map_err(|_| DbError::TypeMismatch {
+                col: 3,
+                expected: "u8 tag",
+            })?;
+            let decoded = if tag == TAG_EXPUNGED {
+                // The marker stashed the expunged entry's 32-byte hash in
+                // index_value (see `track_expunged`).
+                let bytes: [u8; 32] =
+                    row.get_blob(5)?
+                        .try_into()
+                        .map_err(|_| DbError::TypeMismatch {
+                            col: 5,
+                            expected: "32-byte hash",
+                        })?;
+                DecodedEntry::Expunged(blake3::Hash::from_bytes(bytes))
+            } else {
+                let op = Op::from_index_parts(
+                    tag,
+                    row.get_optional_blob(4)?.unwrap_or_default(),
+                    row.get_optional_blob(5)?.unwrap_or_default(),
+                )?;
+                DecodedEntry::LogEntry(LogEntry {
+                    server_user_id: row.get_optional_uuid(1)?,
+                    timestamp: Timestamp::from_raw(row.get_u64(2)?),
+                    op,
+                })
+            };
+            out.push((idx, decoded));
+        }
+        Ok(out)
     }
 }

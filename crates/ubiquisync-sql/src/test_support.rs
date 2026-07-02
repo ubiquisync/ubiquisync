@@ -4,9 +4,7 @@
 //! The reducer under test is a per-key **max register** (a grow-only CRDT): an
 //! op carries `(key, value)` and the stored value only ever moves up, via a
 //! `MAX`-guarded upsert. That is enough to exercise the whole `prepare` →
-//! `apply` → `post_apply` pipeline, the op-log tracker, and the HLC observe —
-//! and, crucially, the idempotency contract: re-ingesting a `(peer_id,
-//! entry_idx)` must roll the entire batch back and apply nothing.
+//! `apply` → `post_apply` pipeline, the op-log tracker, and the HLC observe.
 //!
 //! [`run_max_register_suite`] is generic over `<D: Db>`, so the exact same
 //! assertions run against any backend. Today only the SQLite driver implements
@@ -17,6 +15,7 @@
 use std::io::BufRead;
 
 use async_trait::async_trait;
+use futures::StreamExt;
 use ubiquisync_core::{
     codec::{
         CodecError, DecodedEntry, EntryBufferReader, EntryBufferWriter, IndexableOp, Op,
@@ -24,7 +23,7 @@ use ubiquisync_core::{
     },
     hlc::Timestamp,
     log_entry::LogEntry,
-    sync::{LogProcessor, LogSource, PullSynchronizer, SyncError},
+    sync::{CursorsEvent, HasCursors, LogProcessor, LogSource},
     uuid::Uuid,
 };
 
@@ -192,6 +191,16 @@ async fn oplog_server_user_id<D: Db>(db: &D, entry_idx: u64) -> Option<Uuid> {
         .unwrap()
 }
 
+/// The current value of a max register `key`, read straight from the data table.
+async fn register_value<D: Db>(db: &D, key: &[u8]) -> i64 {
+    let mut binder = ValueBinder::new(db.dialect());
+    let k = binder.bind_next(DbValue::Blob(key.to_vec()));
+    let sql = format!("SELECT v FROM {} WHERE k = {k}", quote_ident("reg"));
+    db.query(&sql, &binder.values()).await.unwrap()[0]
+        .get_i64(0)
+        .unwrap()
+}
+
 /// The durably persisted HLC clock — the value seeded on the next `open`.
 async fn clock_register<D: Db>(db: &D) -> u64 {
     let sql = format!(
@@ -203,12 +212,13 @@ async fn clock_register<D: Db>(db: &D) -> u64 {
 
 /// Drives one processor through the max-register scenarios against `db`.
 ///
-/// Generic over the backend so each driver crate's tests can reuse it verbatim
-/// — call it with a freshly opened, empty database. Returned as a future rather
-/// than blocking internally, so each driver runs it inside its own runtime (a
-/// trivial poll for synchronous backends, a real executor for async ones).
+/// Exercises `process_one` directly — the raw ingest path, which errors on a
+/// duplicate `(peer, index)` rather than dropping it (dedup is the job of
+/// [`apply`](LogProcessor::apply), covered by [`run_pull_sync_suite`]).
+///
+/// Generic over the backend so each driver crate's tests can reuse it verbatim.
 pub async fn run_max_register_suite<D: Db>(db: D) {
-    let mut processor: MaxProcessor<D> = Processor::open(MaxRegister::new("reg"), db, PREFIX)
+    let processor: MaxProcessor<D> = Processor::open(MaxRegister::new("reg"), db, PREFIX)
         .await
         .unwrap();
 
@@ -284,17 +294,6 @@ pub async fn run_max_register_suite<D: Db>(db: D) {
         .unwrap();
     assert_eq!(r, 9, "rolled-back duplicate left the register at 9");
 
-    // Replaying a byte-identical, already-applied entry (the real dedup case)
-    // also surfaces the violation rather than silently re-applying.
-    let err = processor
-        .process_one(&PEER, 1, &entry(b"x", 3, 1_700_000_000_001, None))
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(err, ProcessorError::Db(DbError::UniqueViolation)),
-        "identical replay surfaces as a unique violation, got {err:?}"
-    );
-
     // A different key is an independent register.
     let r = processor
         .process_one(&PEER, 4, &entry(b"y", 7, 1_700_000_000_005, None))
@@ -303,86 +302,41 @@ pub async fn run_max_register_suite<D: Db>(db: D) {
     assert_eq!(r, 7, "distinct key has its own register");
 }
 
-// ── End-to-end sync harness ─────────────────────────────────────────────────
-
-/// A fixed, in-memory stream of one peer's decoded entries, standing in for a
-/// real segment store so the [`Processor`] can be driven through
-/// [`PullSynchronizer`].
-struct MockSource {
-    peer: Uuid,
-    entries: Vec<DecodedEntry<MaxOp>>,
-}
-
-impl LogSource<MaxOp> for MockSource {
-    fn list_peers(&self) -> Vec<Uuid> {
-        vec![self.peer]
-    }
-
-    fn read_entries(
-        &self,
-        peer: &Uuid,
-        start_entry_idx: u64,
-    ) -> Result<Vec<(u64, DecodedEntry<MaxOp>)>, SyncError> {
-        if peer != &self.peer {
-            return Ok(vec![]);
-        }
-        Ok(self
-            .entries
-            .iter()
-            .cloned()
-            .enumerate()
-            .skip(usize::try_from(start_entry_idx).expect("cursor exceeds usize"))
-            .map(|(i, e)| (i as u64, e))
-            .collect())
-    }
-}
-
-/// Drives a processor through [`PullSynchronizer`] end to end against `db`,
-/// exercising the [`LogProcessor`] implementation: real entries apply, expunged
-/// markers are recorded (not applied) yet still advance the cursor past the gap,
-/// the cursor is derived from what the tracker recorded rather than stored
-/// separately, and a second pass re-delivers nothing because the cursor already
-/// sits at the stream end.
+/// Drives a processor through the [`Replica`](ubiquisync_core::sync::Replica)
+/// faces against `db`: [`apply`](LogProcessor::apply) ingests real entries and
+/// expunged markers (advancing the cursor over the gap), re-delivery is a silent
+/// no-op, [`read_since`](LogSource::read_since) reconstructs the stream from the
+/// op-log, and [`watch_cursors`](HasCursors::watch_cursors) reports progress.
 ///
 /// Generic over the backend like [`run_max_register_suite`]; call it with a
 /// freshly opened, empty database.
 pub async fn run_pull_sync_suite<D: Db>(db: D) {
-    let mut processor: MaxProcessor<D> = Processor::open(MaxRegister::new("reg"), db, PREFIX)
+    let processor: MaxProcessor<D> = Processor::open(MaxRegister::new("reg"), db, PREFIX)
         .await
         .unwrap();
+
+    // A never-seen peer has no cursor yet.
+    assert!(!processor.cursors().await.unwrap().contains_key(&PEER));
 
     // Stream: two real entries, an expunged marker at index 2, then one more
-    // real entry. The second real entry is server-attributed.
-    let source = MockSource {
-        peer: PEER,
-        entries: vec![
-            DecodedEntry::LogEntry(entry(b"x", 5, 1_700_000_000_000, None)),
-            DecodedEntry::LogEntry(entry(b"x", 9, 1_700_000_000_001, Some(USER))),
-            DecodedEntry::Expunged(blake3::hash(b"gone")),
-            DecodedEntry::LogEntry(entry(b"y", 4, 1_700_000_000_002, None)),
-        ],
-    };
+    // real entry. Index 1 is server-attributed.
+    let stream = [
+        DecodedEntry::LogEntry(entry(b"x", 5, 1_700_000_000_000, None)),
+        DecodedEntry::LogEntry(entry(b"x", 9, 1_700_000_000_001, Some(USER))),
+        DecodedEntry::Expunged(blake3::hash(b"gone")),
+        DecodedEntry::LogEntry(entry(b"y", 4, 1_700_000_000_002, None)),
+    ];
+    for (idx, e) in stream.iter().cloned().enumerate() {
+        assert!(
+            processor.apply(PEER, idx as u64, e).await.unwrap().new,
+            "fresh slot {idx} applies"
+        );
+    }
 
-    // A never-seen peer starts at cursor 0.
-    assert_eq!(processor.get_peer_cursor(&PEER).await.unwrap(), 0);
-
-    let result = PullSynchronizer::new(&source, None)
-        .sync(&mut processor)
-        .await
-        .unwrap();
-    assert_eq!(
-        result.entries_applied, 3,
-        "3 real entries applied; the expunged marker is not an apply"
-    );
-    // Cursor sits one past the last stream index (3), so it advanced over the
-    // expunged gap at index 2 as well.
-    assert_eq!(
-        processor.get_peer_cursor(&PEER).await.unwrap(),
-        4,
-        "cursor advanced past every slot, expunged gap included"
-    );
-    // Four op-log rows: three entries plus the expunged marker occupying its
-    // index. Attribution landed only on the server-attested entry.
+    // Cursor sits one past the last slot (3), so it advanced over the expunged
+    // gap at index 2 as well. Four op-log rows: three entries plus the marker;
+    // attribution landed only on the server-attested entry.
+    assert_eq!(processor.cursors().await.unwrap().get(&PEER).copied(), Some(4));
     assert_eq!(oplog_row_count(processor.db()).await, 4);
     assert_eq!(oplog_server_user_id(processor.db(), 1).await, Some(USER));
     assert_eq!(
@@ -391,58 +345,82 @@ pub async fn run_pull_sync_suite<D: Db>(db: D) {
         "expunged marker carries no attribution"
     );
 
-    // A second pass reads from the persisted cursor (4), finds nothing new, and
-    // applies nothing — no re-delivery, no duplicate rows.
-    let result = PullSynchronizer::new(&source, None)
-        .sync(&mut processor)
-        .await
-        .unwrap();
-    assert_eq!(result.entries_applied, 0, "second sync re-delivers nothing");
+    // read_since reconstructs the whole stream from the op-log, marker included.
+    let read = processor.read_since(PEER, 0).await.unwrap();
     assert_eq!(
-        oplog_row_count(processor.db()).await,
-        4,
-        "re-sync wrote no duplicate rows"
+        read.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
+        vec![0, 1, 2, 3]
     );
-
-    // Dedup at the `LogProcessor` method the engine actually calls: handing
-    // `apply_entry` an already-recorded index fails the op-log PK and rolls the
-    // whole batch back — the safety net if a duplicate ever reaches apply. The
-    // `y` register (index 3, value 4) must be untouched by the rolled-back apply.
-    let err = processor
-        .apply_entry(&PEER, 3, &entry(b"y", 999, 1_700_000_000_009, None))
-        .await
-        .unwrap_err();
     assert!(
-        matches!(err, ProcessorError::Db(DbError::UniqueViolation)),
-        "re-applying a recorded index is rejected, got {err:?}"
+        matches!(read[2].1, DecodedEntry::Expunged(_)),
+        "index 2 round-trips as the marker"
     );
+    match &read[1].1 {
+        DecodedEntry::LogEntry(e) => {
+            assert_eq!(e.server_user_id, Some(USER));
+            assert_eq!(e.op.value, 9);
+            assert_eq!(e.op.key, b"x");
+        }
+        _ => panic!("index 1 should reconstruct as a real entry"),
+    }
+
+    // Idempotent re-delivery: an already-applied index is a silent no-op
+    // (new == false), not an error, and changes nothing.
+    let redelivery = processor
+        .apply(
+            PEER,
+            1,
+            DecodedEntry::LogEntry(entry(b"x", 999, 1_700_000_000_009, None)),
+        )
+        .await
+        .unwrap();
+    assert!(!redelivery.new, "re-delivered index is dropped");
     assert_eq!(
         oplog_row_count(processor.db()).await,
         4,
-        "rejected duplicate added no op-log row"
+        "dropped re-delivery added no row"
+    );
+    assert_eq!(
+        register_value(processor.db(), b"x").await,
+        9,
+        "dropped re-delivery left the register at 9, not 999"
     );
 
-    // Incremental resume through the real derived cursor: the peer's stream
-    // grows by two entries and a fresh pass applies only those, resuming from
-    // the persisted cursor (4) with no mock cursor anywhere in the loop.
-    let grown = MockSource {
-        peer: PEER,
-        entries: {
-            let mut e = source.entries.clone();
-            e.push(DecodedEntry::LogEntry(entry(b"x", 12, 1_700_000_000_003, None)));
-            e.push(DecodedEntry::LogEntry(entry(b"z", 1, 1_700_000_000_004, None)));
-            e
-        },
-    };
-    let result = PullSynchronizer::new(&grown, None)
-        .sync(&mut processor)
-        .await
-        .unwrap();
-    assert_eq!(result.entries_applied, 2, "only the two appended entries apply");
-    assert_eq!(
-        processor.get_peer_cursor(&PEER).await.unwrap(),
-        6,
-        "cursor resumed from 4 and advanced past the two new entries"
+    // watch_cursors: first event is a snapshot; a later apply broadcasts an
+    // advance delta.
+    let mut watch = processor.watch_cursors();
+    match watch.next().await {
+        Some(CursorsEvent::Snapshot(c)) => assert_eq!(c.get(&PEER).copied(), Some(4)),
+        other => panic!("expected a snapshot first, got {other:?}"),
+    }
+    assert!(
+        processor
+            .apply(
+                PEER,
+                4,
+                DecodedEntry::LogEntry(entry(b"x", 12, 1_700_000_000_003, None)),
+            )
+            .await
+            .unwrap()
+            .new
     );
+    match watch.next().await {
+        Some(CursorsEvent::Advanced(c)) => assert_eq!(c.get(&PEER).copied(), Some(5)),
+        other => panic!("expected an advance, got {other:?}"),
+    }
+
+    // Resume: the next new index applies; cursor and row count track it.
+    assert!(
+        processor
+            .apply(
+                PEER,
+                5,
+                DecodedEntry::LogEntry(entry(b"z", 1, 1_700_000_000_004, None)),
+            )
+            .await
+            .unwrap()
+            .new
+    );
+    assert_eq!(processor.cursors().await.unwrap().get(&PEER).copied(), Some(6));
     assert_eq!(oplog_row_count(processor.db()).await, 6);
 }
