@@ -77,19 +77,17 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>> Processor<R, D, T> {
         &self.db
     }
 
-    /// Ingest one entry atomically: advance the HLC, record it via the tracker,
-    /// and apply the reducer's writes — one all-or-nothing batch. No dedup here;
-    /// re-ingesting a recorded `(peer_id, entry_idx)` fails the tracker's unique
-    /// key and rolls the whole batch back. The dedup gate lives in [`apply`].
-    ///
-    /// [`apply`]: LogProcessor::apply
-    pub(crate) async fn process_one(
+    /// Ingest one entry into the open write section — caller holds the reducer
+    /// lock. Advances the HLC, records via the tracker, and applies the reducer's
+    /// writes in one all-or-nothing batch. No dedup: a repeated
+    /// `(peer_id, entry_idx)` fails the tracker's unique key and rolls back.
+    async fn ingest_entry(
         &self,
+        reducer: &mut R,
         peer_id: &Uuid,
         entry_idx: u64,
         entry: &LogEntry<R::Op>,
     ) -> Result<R::Event, ProcessorError<R::Error>> {
-        let mut reducer = self.reducer.lock().await;
         let op = &entry.op;
         let timestamp = entry.timestamp;
         let prepare_state = reducer
@@ -109,21 +107,34 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>> Processor<R, D, T> {
             .map_err(ProcessorError::Reducer)
     }
 
-    /// Record the expunged marker at `(peer_id, entry_idx)`: no clock tick, no
-    /// reducer work — just the tracker row that occupies the stream index. The
-    /// reducer lock is taken only to serialize with real applies.
-    pub(crate) async fn process_expunged(
+    /// Record the expunged marker at `(peer_id, entry_idx)` — caller holds the
+    /// reducer lock. No clock tick and no reducer work: just the tracker row that
+    /// occupies the stream index.
+    async fn ingest_expunged(
         &self,
         peer_id: &Uuid,
         entry_idx: u64,
         hash: &blake3::Hash,
     ) -> Result<(), ProcessorError<R::Error>> {
-        let _guard = self.reducer.lock().await;
         let mut batch = self.db.new_batch();
         self.tracker
             .track_expunged(peer_id, entry_idx, hash, batch.as_mut())?;
         batch.commit().await?;
         Ok(())
+    }
+
+    /// Ingest one entry, locking the writer — the raw path used by tests. Errors
+    /// on a repeated `(peer_id, entry_idx)`; [`apply`](LogProcessor::apply) is the
+    /// deduped path.
+    pub(crate) async fn process_one(
+        &self,
+        peer_id: &Uuid,
+        entry_idx: u64,
+        entry: &LogEntry<R::Op>,
+    ) -> Result<R::Event, ProcessorError<R::Error>> {
+        let mut reducer = self.reducer.lock().await;
+        self.ingest_entry(&mut reducer, peer_id, entry_idx, entry)
+            .await
     }
 }
 
@@ -182,22 +193,32 @@ where
         index: u64,
         entry: DecodedEntry<R::Op>,
     ) -> Result<Applied, SyncError> {
-        // Fast path: already have it.
+        // Fast path: drop an already-applied re-delivery without taking the lock.
+        if index < self.cached_cursor(&peer) {
+            return Ok(Applied { new: false });
+        }
+        let mut reducer = self.reducer.lock().await;
+        // Authoritative re-check, now serialized: a concurrent apply may have
+        // advanced past `index` between the fast path and the lock. This is the
+        // only-once gate, so the reducer need not be idempotent.
         if index < self.cached_cursor(&peer) {
             return Ok(Applied { new: false });
         }
         let outcome = match entry {
-            DecodedEntry::LogEntry(e) => self.process_one(&peer, index, &e).await.map(|_| ()),
-            DecodedEntry::Expunged(hash) => self.process_expunged(&peer, index, &hash).await,
+            DecodedEntry::LogEntry(e) => {
+                self.ingest_entry(&mut reducer, &peer, index, &e).await.map(|_| ())
+            }
+            DecodedEntry::Expunged(hash) => self.ingest_expunged(&peer, index, &hash).await,
         };
         match outcome {
+            // Advance under the lock, so the cursor reflects this commit before
+            // the next apply can check it.
             Ok(()) => {
                 self.advance_cursor(&peer, index + 1);
                 Ok(Applied { new: true })
             }
-            // Backstop for a re-delivery the cache didn't catch (stale cache, or
-            // two channels racing the same index): the batch rolled back, so it's
-            // an idempotent no-op, not an error.
+            // Backstop if the gate is bypassed (a direct process_one, or an
+            // unseeded cache): the batch rolled back, so it's a no-op.
             Err(ProcessorError::Db(DbError::UniqueViolation)) => Ok(Applied { new: false }),
             Err(e) => Err(SyncError::Backend(Box::new(e))),
         }
