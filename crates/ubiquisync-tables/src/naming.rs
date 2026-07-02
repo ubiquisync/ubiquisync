@@ -1,7 +1,7 @@
 use crate::id::{ColumnId, TableId};
 
 impl TableId {
-    /// Surrogate SQL table name for this ID: `{prefix}__t0x{raw:04X}`.
+    /// Surrogate SQL table name for this ID: `{prefix}__t0x{raw:04x}`.
     pub fn table_name(&self, prefix: &str) -> String {
         let raw: u16 = self.raw();
         format!("{prefix}__t0x{raw:04x}")
@@ -34,7 +34,7 @@ impl TableId {
 }
 
 impl ColumnId {
-    /// Surrogate SQL column name for this ID: `c0x{raw:02X}` (the byte encodes
+    /// Surrogate SQL column name for this ID: `c0x{raw:02x}` (the byte encodes
     /// both type and index).
     pub fn col_name(&self) -> String {
         let raw: u8 = self.into_bits();

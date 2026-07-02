@@ -39,9 +39,9 @@ pub struct Reducer {
 impl Reducer {
     /// Open a reducer with `prefix` for surrogate table names, declaring each of
     /// `tables` as a named, user-facing table: its physical storage is
-    /// created/reconciled in `db` up front, and it is tracked so its changes
-    /// surface as events (and, in time, back a SQL VIEW under the declared
-    /// names).
+    /// created/reconciled in `db` up front, a SQL VIEW exposing it under the
+    /// declared names is (re)created, and it is tracked so its changes surface as
+    /// events.
     pub async fn new(
         prefix: &str,
         tables: &[TableSchema],

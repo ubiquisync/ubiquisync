@@ -44,6 +44,7 @@ pub async fn run_reducer_suite<D: Db>(db: D) {
     tiebreak_loser_is_not_reported(db).await;
     rejects_invalid_ops(db).await;
     composite_pk_and_mixed_types(db).await;
+    view_exposes_live_rows_under_declared_names(db).await;
 }
 
 // ── Scenarios ────────────────────────────────────────────────────────────────
@@ -397,6 +398,72 @@ async fn composite_pk_and_mixed_types(db: &dyn Db) {
     assert_eq!(uuid_bytes, [7u8; 16]);
 }
 
+/// The user-facing VIEW created for a named table exposes live rows under the
+/// declared table/column names (mapping the surrogate columns back), and hides a
+/// row once a newer delete tombstones it — then shows it again after a newer
+/// upsert resurrects it. This is the one scenario that reads through the VIEW
+/// rather than the physical table.
+async fn view_exposes_live_rows_under_declared_names(db: &dyn Db) {
+    let id = TableId::new(&[ColType::I64], 17);
+    let (body, n) = (col(0, ColType::Text), col(1, ColType::I64));
+    // Declared names deliberately differ from the surrogate `k0`/`c0x..` names,
+    // so a correct mapping is observable.
+    let schema = TableSchema::new(
+        id,
+        "widgets".into(),
+        vec!["widget_id".into()],
+        vec![
+            ColumnSchema { name: "body".into(), id: body },
+            ColumnSchema { name: "n".into(), id: n },
+        ],
+    )
+    .unwrap();
+    let mut reducer = Reducer::new(PREFIX, &[schema], db).await.unwrap();
+
+    apply(&mut reducer, db, 100, &upsert(id, pk1(1), &[(body, text("hi")), (n, int(7))])).await;
+
+    // Live row is visible through the VIEW under the declared names.
+    let cols = ["widget_id", "body", "n"];
+    assert_eq!(
+        view_row(db, "widgets", &cols, 1).await,
+        Some(vec![iv(1), tv("hi"), iv(7)]),
+    );
+
+    // A newer delete tombstones the row; the VIEW's WHERE hides it.
+    apply(&mut reducer, db, 200, &delete(id, pk1(1))).await;
+    assert_eq!(
+        view_row(db, "widgets", &cols, 1).await,
+        None,
+        "tombstoned row must be hidden by the view",
+    );
+
+    // A newer upsert resurrects it; visible again.
+    apply(&mut reducer, db, 300, &upsert(id, pk1(1), &[(body, text("back"))])).await;
+    assert_eq!(
+        view_row(db, "widgets", &["widget_id", "body"], 1).await,
+        Some(vec![iv(1), tv("back")]),
+    );
+}
+
+/// Read the row with integer PK `k` from the named VIEW, selecting `cols` (the
+/// declared column names, `cols[0]` being the PK). Returns the selected values
+/// in order, or `None` if no such row is currently visible.
+async fn view_row(db: &dyn Db, view: &str, cols: &[&str], k: i64) -> Option<Vec<DbValue>> {
+    let select = cols
+        .iter()
+        .map(|c| quote_ident(c))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT {select} FROM {} WHERE {} = {}",
+        quote_ident(view),
+        quote_ident(cols[0]),
+        db.dialect().placeholder(1),
+    );
+    let rows = db.query(&sql, &[DbValue::Integer(k)]).await.unwrap();
+    rows.first().map(|r| r.values.clone())
+}
+
 // ── Driving the reducer ──────────────────────────────────────────────────────
 
 /// Run one op end to end: `prepare` (schema reconcile, outside the batch),
@@ -427,7 +494,7 @@ async fn named(db: &dyn Db, id: TableId, cols: &[(ColumnId, &str)]) -> Reducer {
             id: *c,
         })
         .collect();
-    let schema = TableSchema::new(id, "t".into(), pk_names, value_cols);
+    let schema = TableSchema::new(id, "t".into(), pk_names, value_cols).unwrap();
     Reducer::new(PREFIX, &[schema], db).await.unwrap()
 }
 
