@@ -2,7 +2,7 @@
 //! real SQLite driver. The scenarios live in `ubiquisync_sql::test_support` so
 //! every backend asserts identical behavior; this file only supplies the `Db`.
 
-use ubiquisync_sql::test_support::{run_max_register_suite, run_pull_sync_suite};
+use ubiquisync_sql::test_support::{run_max_register_suite, run_replica_suite};
 use ubiquisync_sqlite::SqliteDb;
 
 #[test]
@@ -13,6 +13,6 @@ fn max_register_suite() {
 }
 
 #[test]
-fn pull_sync_suite() {
-    pollster::block_on(run_pull_sync_suite(SqliteDb::open_in_memory().unwrap()));
+fn replica_suite() {
+    pollster::block_on(run_replica_suite(SqliteDb::open_in_memory().unwrap()));
 }

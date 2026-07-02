@@ -1,18 +1,27 @@
-//! Synchronization engine and the traits it builds on.
+//! Synchronization traits: the read/write faces of a replica and the cursors
+//! they exchange.
 //!
-//! - [`LogSource`] / [`LogEntrySink`] — the storage traits a backend implements:
-//!   the read and write sides of a peer's log stream.
-//! - [`LogProcessor`] — the apply trait: what absorbs a peer's entries and
-//!   tracks per-peer cursors.
-//! - [`PullSynchronizer`] — the engine that drives a source into a processor.
-//! - [`SyncError`] — the umbrella error shared across these traits.
+//! - [`LogProcessor`] — write side: `apply` an entry at `(peer, index)`.
+//!   Multi-writer, idempotent.
+//! - [`LogSource`] — read side: `read_since` to pull, `cursors` /
+//!   `watch_cursors` to publish progress.
+//!
+//! A store that is both is a [`Replica`] (the SQL oplog). A file log reads any
+//! origin but writes only its own ([`FileLogSink`]), so it's a
+//! [`FileLogReplica`] — the type-level form of "only the originating device
+//! writes its own log". Both faces speak [`PeerCursors`], a per-origin version
+//! vector. The convergence drivers that consume these traits come later.
 
+mod cursors;
 mod error;
+mod file_log;
 mod processor;
-mod pull;
-mod store;
+mod replica;
+mod source;
 
+pub use cursors::{CursorStream, CursorsEvent, HasCursors, PeerCursors};
 pub use error::SyncError;
-pub use processor::LogProcessor;
-pub use pull::{PullSynchronizer, SyncResult};
-pub use store::{LogEntrySink, LogSource};
+pub use file_log::{FileLogPuller, FileLogReplica, FileLogSink};
+pub use processor::{Applied, LogProcessor};
+pub use replica::Replica;
+pub use source::LogSource;
