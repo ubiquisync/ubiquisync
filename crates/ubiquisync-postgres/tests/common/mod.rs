@@ -12,10 +12,6 @@ use ubiquisync_postgres::PostgresDb;
 /// The database created inside the fresh server for the suite to use.
 const TEST_DB: &str = "ubiquisync_test";
 
-/// Reader-pool size for tests — a couple of connections is enough to exercise
-/// the concurrent read path without straining the embedded server.
-const READ_POOL_SIZE: usize = 4;
-
 /// Boot an embedded PostgreSQL, create an empty database, and connect to it.
 ///
 /// Returns the running server alongside the connected [`PostgresDb`]. **Keep the
@@ -34,7 +30,7 @@ pub async fn fresh_db() -> (PostgreSQL, PostgresDb) {
         .expect("embedded postgres: create database");
 
     let url = postgres.settings().url(TEST_DB);
-    let db = PostgresDb::connect_single(&url, READ_POOL_SIZE)
+    let db = PostgresDb::connect(&url)
         .await
         .expect("connect to embedded postgres");
     (postgres, db)

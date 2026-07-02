@@ -61,34 +61,18 @@ pub struct PostgresDb {
 }
 
 impl PostgresDb {
-    /// Connect with separate write and read endpoints, over unencrypted
-    /// connections.
+    /// Connect to the database at `url` over an unencrypted connection.
     ///
-    /// `write_url` backs the single writer; `read_url` backs a [`Pool`] of
-    /// `read_pool_size` reader connections. It should be a read-only *role* on
-    /// the same database as `write_url` — not a separate read replica, since
-    /// startup reads back rows it just wrote, which a lagging replica could miss.
-    /// Reader connections are *additionally* forced read-only at the session
-    /// level, so a write attempted on one is rejected (SQLSTATE `25006`)
-    /// regardless of the role's grants.
+    /// The one endpoint backs both the single writer and the reader pool. Reader
+    /// connections are forced read-only at the session level, so a write on the
+    /// read path is rejected (SQLSTATE `25006`) rather than silently applied. The
+    /// pool is sized automatically (deadpool's default, `4 ×` the CPU count).
     ///
-    /// TLS is not wired up yet; both endpoints use `NoTls`.
-    pub async fn connect(
-        write_url: &str,
-        read_url: &str,
-        read_pool_size: usize,
-    ) -> Result<Self, DbError> {
-        let writer = connect_writer(write_url).await?;
-        let reader = build_read_pool(read_url, read_pool_size)?;
+    /// TLS is not wired up yet; `NoTls` is used.
+    pub async fn connect(url: &str) -> Result<Self, DbError> {
+        let writer = connect_writer(url).await?;
+        let reader = build_read_pool(url)?;
         Ok(Self { writer, reader })
-    }
-
-    /// Connect using one endpoint for both the writer and the reader pool — a
-    /// convenience over [`connect`](Self::connect) for a single database with no
-    /// separate read-only role or replica. The reader pool is still forced
-    /// read-only at the session level.
-    pub async fn connect_single(url: &str, read_pool_size: usize) -> Result<Self, DbError> {
-        Self::connect(url, url, read_pool_size).await
     }
 }
 
@@ -112,7 +96,7 @@ async fn connect_writer(url: &str) -> Result<Arc<Mutex<Client>>, DbError> {
 /// a runtime `SET`, so it is applied the moment each connection is born and
 /// survives pool recycling. [`RecyclingMethod::Fast`] avoids a `RESET` that
 /// would otherwise clear it.
-fn build_read_pool(url: &str, size: usize) -> Result<Pool, DbError> {
+fn build_read_pool(url: &str) -> Result<Pool, DbError> {
     let mut config: Config = url.parse().map_err(|e: tokio_postgres::Error| map_err(e))?;
     // Force read-only via a startup option. `Config::options` replaces rather
     // than appends, so preserve any options the caller already set in the URL
@@ -133,8 +117,9 @@ fn build_read_pool(url: &str, size: usize) -> Result<Pool, DbError> {
             recycling_method: RecyclingMethod::Fast,
         },
     );
+    // No `max_size`: deadpool defaults it to `4 × cpu_count`, a reasonable
+    // automatic size for the read pool.
     Pool::builder(manager)
-        .max_size(size)
         .build()
         .map_err(|e| DbError::Sql(format!("failed to build read pool: {e}")))
 }
