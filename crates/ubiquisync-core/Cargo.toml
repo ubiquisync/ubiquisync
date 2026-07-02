@@ -7,8 +7,12 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+async-trait = { workspace = true }
 blake3 = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+pollster = { workspace = true }
 
 [lints]
 workspace = true

@@ -2,13 +2,12 @@
 //! local [`LogProcessor`].
 //!
 //! This is the storage- and domain-agnostic core of synchronization. It reads
-//! decoded entries from a [`LogSource`], skips expunged markers, tracks each
-//! peer's cursor (the count of entries already processed, which is the index of
-//! the next entry to read), and hands real [`LogEntry`](crate::log_entry::LogEntry)
-//! values to a processor that applies them however it likes. The processor —
-//! typically backed by a materialized store — owns cursor persistence.
-
-use std::ops::ControlFlow;
+//! decoded entries from a [`LogSource`] and drives them into a [`LogProcessor`]:
+//! real [`LogEntry`](crate::log_entry::LogEntry) values are applied, while
+//! expunged markers are recorded (not applied) so the cursor still advances past
+//! the gap. Each peer's cursor is the count of entries already processed — the
+//! index of the next entry to read — and the processor, typically backed by a
+//! materialized store, owns how it is tracked.
 
 use crate::codec::{DecodedEntry, Op};
 
@@ -51,9 +50,18 @@ impl<'a, E: Op, S: LogSource<E>> PullSynchronizer<'a, E, S> {
         }
     }
 
-    /// Drain each peer's new entries into `store`, skipping expunged markers and
-    /// advancing each peer's cursor. Returns how many entries were applied.
-    pub fn sync<P: LogProcessor<E>>(&self, store: &mut P) -> Result<SyncResult, P::Error> {
+    /// Drain each peer's new entries into `store`: apply real entries, record
+    /// expunged markers, and let each write advance that peer's cursor. Returns
+    /// how many real entries were applied.
+    ///
+    /// Each peer's stream is pulled one source-sized batch at a time, looping
+    /// with an advancing cursor until [`read_entries`](LogSource::read_entries)
+    /// returns empty — so a cold pull doesn't materialize a whole long stream at
+    /// once. Each `apply_entry` / `save_expunged_entry` advances the cursor
+    /// atomically, so a mid-stream failure leaves everything committed up to
+    /// that point and re-reads from the failing index on the next pass — no
+    /// separate cursor save to lose.
+    pub async fn sync<P: LogProcessor<E>>(&self, store: &mut P) -> Result<SyncResult, P::Error> {
         let peers = self.source.list_peers();
         let mut total_entries = 0;
 
@@ -64,29 +72,25 @@ impl<'a, E: Op, S: LogSource<E>> PullSynchronizer<'a, E, S> {
                 continue;
             }
 
-            let start_idx = store.get_peer_cursor(peer_id)?;
-            let mut next_entry_index = start_idx;
-            self.source.read_entries(peer_id, start_idx, |idx, e| {
-                match e {
-                    DecodedEntry::LogEntry(e) => match store.apply_remote_entry(idx, &e) {
-                        Ok(()) => {
+            let mut next_idx = store.get_peer_cursor(peer_id).await?;
+            loop {
+                let batch = self.source.read_entries(peer_id, next_idx)?;
+                // An empty batch means the peer's stream is drained.
+                if batch.is_empty() {
+                    break;
+                }
+                for (idx, e) in batch {
+                    match e {
+                        DecodedEntry::LogEntry(e) => {
+                            store.apply_entry(peer_id, idx, &e).await?;
                             total_entries += 1;
                         }
-                        Err(err) => {
-                            return ControlFlow::Break(Err(err));
+                        DecodedEntry::Expunged(hash) => {
+                            store.save_expunged_entry(peer_id, idx, &hash).await?;
                         }
-                    },
-                    DecodedEntry::Expunged(_) => {}
-                };
-                next_entry_index = idx + 1;
-                ControlFlow::Continue(())
-            })?;
-            // Only persist when the stream actually yielded something past the
-            // cursor — skip the write for a peer with no new entries. Note this
-            // advances past expunged markers too: they bump next_entry_index
-            // without being applied, so the gap isn't re-read next sync.
-            if next_entry_index > start_idx {
-                store.save_peer_cursor(peer_id, next_entry_index)?;
+                    }
+                    next_idx = idx + 1;
+                }
             }
         }
 
@@ -100,7 +104,9 @@ impl<'a, E: Op, S: LogSource<E>> PullSynchronizer<'a, E, S> {
 mod tests {
     use std::collections::HashMap;
     use std::io::BufRead;
-    use std::ops::ControlFlow;
+
+    use async_trait::async_trait;
+    use pollster::block_on;
 
     use super::*;
     use crate::codec::{CodecError, EntryBufferReader, EntryBufferWriter};
@@ -134,7 +140,7 @@ mod tests {
 
     fn entry(payload: u8) -> LogEntry<TestOp> {
         LogEntry {
-            user_id: None,
+            server_user_id: None,
             timestamp: Timestamp::from_raw(payload as u64),
             op: TestOp(payload),
         }
@@ -151,58 +157,75 @@ mod tests {
             self.peers.clone()
         }
 
-        fn read_entries<F, Err>(
+        fn read_entries(
             &self,
             peer: &Uuid,
             start_entry_idx: u64,
-            mut consumer: F,
-        ) -> Result<(), Err>
-        where
-            Err: From<SyncError>,
-            F: FnMut(u64, DecodedEntry<TestOp>) -> ControlFlow<Result<(), Err>>,
-        {
+        ) -> Result<Vec<(u64, DecodedEntry<TestOp>)>, SyncError> {
             let stream = self.streams.get(peer).cloned().unwrap_or_default();
-            for (i, e) in stream.into_iter().enumerate().skip(start_entry_idx as usize) {
-                if let ControlFlow::Break(res) = consumer(i as u64, e) {
-                    return res;
-                }
-            }
-            Ok(())
+            Ok(stream
+                .into_iter()
+                .enumerate()
+                .skip(usize::try_from(start_entry_idx).expect("cursor exceeds usize"))
+                .map(|(i, e)| (i as u64, e))
+                .collect())
         }
     }
 
-    // ── Mock processor: records applied entries and peer cursors ─────────
+    // ── Chunking source: returns at most `chunk` entries per call, so the sync
+    // loop must make several calls to drain one peer ─────────────────────────
+    struct ChunkedSource {
+        peer: Uuid,
+        stream: Vec<DecodedEntry<TestOp>>,
+        chunk: usize,
+    }
+
+    impl LogSource<TestOp> for ChunkedSource {
+        fn list_peers(&self) -> Vec<Uuid> {
+            vec![self.peer]
+        }
+
+        fn read_entries(
+            &self,
+            peer: &Uuid,
+            start_entry_idx: u64,
+        ) -> Result<Vec<(u64, DecodedEntry<TestOp>)>, SyncError> {
+            if peer != &self.peer {
+                return Ok(vec![]);
+            }
+            Ok(self
+                .stream
+                .iter()
+                .cloned()
+                .enumerate()
+                .skip(usize::try_from(start_entry_idx).expect("cursor exceeds usize"))
+                .take(self.chunk)
+                .map(|(i, e)| (i as u64, e))
+                .collect())
+        }
+    }
+
+    // ── Mock processor: records applied entries, expunged markers, and the
+    // per-peer cursor each write advances ────────────────────────────────
     #[derive(Default)]
     struct MockProcessor {
         applied: Vec<(u64, LogEntry<TestOp>)>,
+        expunged: Vec<(u64, blake3::Hash)>,
         cursors: HashMap<Uuid, u64>,
         fail_at: Option<u64>,
-        fail_save: bool,
-        save_calls: usize,
     }
 
+    #[async_trait(?Send)]
     impl LogProcessor<TestOp> for MockProcessor {
         type Error = SyncError;
 
-        fn get_peer_cursor(&self, peer_id: &Uuid) -> Result<u64, Self::Error> {
+        async fn get_peer_cursor(&self, peer_id: &Uuid) -> Result<u64, Self::Error> {
             Ok(self.cursors.get(peer_id).copied().unwrap_or(0))
         }
 
-        fn save_peer_cursor(
+        async fn apply_entry(
             &mut self,
             peer_id: &Uuid,
-            next_entry_idx: u64,
-        ) -> Result<(), Self::Error> {
-            self.save_calls += 1;
-            if self.fail_save {
-                return Err(SyncError::EncodingError("save failed".into()));
-            }
-            self.cursors.insert(*peer_id, next_entry_idx);
-            Ok(())
-        }
-
-        fn apply_remote_entry(
-            &mut self,
             index: u64,
             entry: &LogEntry<TestOp>,
         ) -> Result<(), Self::Error> {
@@ -210,6 +233,18 @@ mod tests {
                 return Err(SyncError::EncodingError("boom".into()));
             }
             self.applied.push((index, entry.clone()));
+            self.cursors.insert(*peer_id, index + 1);
+            Ok(())
+        }
+
+        async fn save_expunged_entry(
+            &mut self,
+            peer_id: &Uuid,
+            index: u64,
+            hash: &blake3::Hash,
+        ) -> Result<(), Self::Error> {
+            self.expunged.push((index, *hash));
+            self.cursors.insert(*peer_id, index + 1);
             Ok(())
         }
     }
@@ -235,7 +270,7 @@ mod tests {
         };
         let mut store = MockProcessor::default();
 
-        let result = PullSynchronizer::new(&source, None).sync(&mut store).unwrap();
+        let result = block_on(PullSynchronizer::new(&source, None).sync(&mut store)).unwrap();
 
         assert_eq!(result.entries_applied, 2);
         assert_eq!(store.applied.len(), 2);
@@ -260,7 +295,7 @@ mod tests {
         let mut store = MockProcessor::default();
         store.cursors.insert(p, 1);
 
-        let result = PullSynchronizer::new(&source, None).sync(&mut store).unwrap();
+        let result = block_on(PullSynchronizer::new(&source, None).sync(&mut store)).unwrap();
 
         assert_eq!(result.entries_applied, 2);
         assert_eq!(store.applied[0].0, 1);
@@ -285,10 +320,11 @@ mod tests {
         };
         let mut store = MockProcessor::default();
 
-        let result = PullSynchronizer::new(&source, None).sync(&mut store).unwrap();
+        let result = block_on(PullSynchronizer::new(&source, None).sync(&mut store)).unwrap();
 
         assert_eq!(result.entries_applied, 2);
         assert_eq!(store.applied.len(), 2);
+        assert_eq!(store.expunged.len(), 1, "the marker was recorded, not applied");
         // Cursor sits past the third entry (index 2 + 1), gap included.
         assert_eq!(store.cursors[&p], 3);
     }
@@ -308,7 +344,7 @@ mod tests {
         let mut store = MockProcessor::default();
 
         let skip = me.to_vec();
-        let result = PullSynchronizer::new(&source, Some(&skip)).sync(&mut store).unwrap();
+        let result = block_on(PullSynchronizer::new(&source, Some(&skip)).sync(&mut store)).unwrap();
 
         assert_eq!(result.entries_applied, 1);
         assert_eq!(store.applied[0].1.op, TestOp(20));
@@ -317,9 +353,10 @@ mod tests {
     }
 
     #[test]
-    fn sync_stops_and_skips_cursor_save_on_apply_error() {
-        // A processor error mid-stream aborts the whole sync; because the
-        // failing entry was never applied, the cursor must not be saved.
+    fn sync_stops_and_leaves_cursor_unadvanced_on_apply_error() {
+        // A processor error on the first entry aborts the sync; because the
+        // failing entry was never applied, its atomic cursor advance never
+        // happened either, so the peer has no recorded cursor.
         let p = peer(1);
         let source = MockSource {
             peers: vec![p],
@@ -336,7 +373,7 @@ mod tests {
             ..Default::default()
         };
 
-        let err = PullSynchronizer::new(&source, None).sync(&mut store).unwrap_err();
+        let err = block_on(PullSynchronizer::new(&source, None).sync(&mut store)).unwrap_err();
 
         assert!(matches!(err, SyncError::EncodingError(_)));
         assert!(store.applied.is_empty());
@@ -360,7 +397,7 @@ mod tests {
         };
         let mut store = MockProcessor::default();
 
-        let result = PullSynchronizer::new(&source, None).sync(&mut store).unwrap();
+        let result = block_on(PullSynchronizer::new(&source, None).sync(&mut store)).unwrap();
 
         assert_eq!(result.entries_applied, 0);
         assert!(store.applied.is_empty());
@@ -368,9 +405,9 @@ mod tests {
     }
 
     #[test]
-    fn sync_does_not_save_cursor_when_no_new_entries() {
-        // A peer already fully drained (cursor at end, nothing new) must not
-        // trigger a redundant cursor write.
+    fn sync_does_no_writes_when_no_new_entries() {
+        // A peer already fully drained (cursor at end, nothing new) does no
+        // work: nothing applied, and its cursor is untouched.
         let p = peer(1);
         let source = MockSource {
             peers: vec![p],
@@ -379,10 +416,12 @@ mod tests {
         let mut store = MockProcessor::default();
         store.cursors.insert(p, 1); // already past the only entry
 
-        let result = PullSynchronizer::new(&source, None).sync(&mut store).unwrap();
+        let result = block_on(PullSynchronizer::new(&source, None).sync(&mut store)).unwrap();
 
         assert_eq!(result.entries_applied, 0);
-        assert_eq!(store.save_calls, 0, "no save for a peer with nothing new");
+        assert!(store.applied.is_empty());
+        assert!(store.expunged.is_empty());
+        assert_eq!(store.cursors[&p], 1, "cursor unchanged for a drained peer");
     }
 
     #[test]
@@ -406,7 +445,7 @@ mod tests {
         };
         let mut store = MockProcessor::default();
 
-        let result = PullSynchronizer::new(&source, None).sync(&mut store).unwrap();
+        let result = block_on(PullSynchronizer::new(&source, None).sync(&mut store)).unwrap();
 
         assert_eq!(result.entries_applied, 3);
         assert_eq!(store.cursors[&p1], 1);
@@ -414,11 +453,11 @@ mod tests {
     }
 
     #[test]
-    fn cursor_save_failure_surfaces_after_entries_applied() {
-        // Documents the crash/retry contract: entries apply, then the cursor
-        // save fails — the error propagates and the cursor was NOT recorded, so
-        // a re-sync would re-deliver the already-applied entries. Correctness
-        // then rests on apply_remote_entry being idempotent (see LogProcessor).
+    fn sync_commits_entries_before_a_mid_stream_failure() {
+        // Each apply advances the cursor atomically, so a failure partway
+        // through leaves everything before it committed — cursor included — and
+        // the next pass resumes at the failing index. Here entry 0 applies (and
+        // advances the cursor to 1), then entry 1 fails.
         let p = peer(1);
         let source = MockSource {
             peers: vec![p],
@@ -427,18 +466,46 @@ mod tests {
                 vec![
                     DecodedEntry::LogEntry(entry(10)),
                     DecodedEntry::LogEntry(entry(20)),
+                    DecodedEntry::LogEntry(entry(30)),
                 ],
             )]),
         };
         let mut store = MockProcessor {
-            fail_save: true,
+            fail_at: Some(1),
             ..Default::default()
         };
 
-        let err = PullSynchronizer::new(&source, None).sync(&mut store).unwrap_err();
+        let err = block_on(PullSynchronizer::new(&source, None).sync(&mut store)).unwrap_err();
 
         assert!(matches!(err, SyncError::EncodingError(_)));
-        assert_eq!(store.applied.len(), 2, "entries were applied before the save");
-        assert!(!store.cursors.contains_key(&p), "cursor not durably advanced");
+        assert_eq!(store.applied.len(), 1, "only entry 0 applied");
+        assert_eq!(store.applied[0].0, 0);
+        assert_eq!(store.cursors[&p], 1, "cursor advanced past the committed entry");
+    }
+
+    #[test]
+    fn sync_drains_stream_across_multiple_source_batches() {
+        // A source that hands back only `chunk` entries per call forces the
+        // loop to make several calls; every entry must still apply, in order,
+        // and the cursor land at the full length.
+        let p = peer(1);
+        let len = 13usize;
+        let stream: Vec<_> = (0..len)
+            .map(|i| DecodedEntry::LogEntry(entry(i as u8)))
+            .collect();
+        let source = ChunkedSource {
+            peer: p,
+            stream,
+            chunk: 5, // 13 entries drain as 5 + 5 + 3, then an empty call
+        };
+        let mut store = MockProcessor::default();
+
+        let result = block_on(PullSynchronizer::new(&source, None).sync(&mut store)).unwrap();
+
+        assert_eq!(result.entries_applied, len);
+        assert_eq!(store.applied.len(), len);
+        // Applied strictly in ascending stream order across the batch boundaries.
+        assert!(store.applied.iter().map(|(i, _)| *i).eq(0..len as u64));
+        assert_eq!(store.cursors[&p], len as u64);
     }
 }

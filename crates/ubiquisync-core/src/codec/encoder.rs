@@ -80,10 +80,10 @@ impl<E: Op, W: Write> Encoder<E, W> {
         &mut self,
         op: &E,
         timestamp: Timestamp,
-        user_id: Option<Uuid>,
+        server_user_id: Option<Uuid>,
     ) -> Result<usize, CodecError> {
         let dict_len_before = self.uuids.len();
-        let result = self.try_encode_entry(op, timestamp, user_id);
+        let result = self.try_encode_entry(op, timestamp, server_user_id);
         if result.is_err() {
             // Roll back UUID definitions registered before the failure. IDs are
             // handed out sequentially from 1, so any id past the pre-call count
@@ -97,16 +97,16 @@ impl<E: Op, W: Write> Encoder<E, W> {
         &mut self,
         op: &E,
         timestamp: Timestamp,
-        user_id: Option<Uuid>,
+        server_user_id: Option<Uuid>,
     ) -> Result<usize, CodecError> {
         let mut writer = EntryBufferWriter::new(&mut self.uuids);
-        // Order must match decoder: op (tag + body) → timestamp → user_id
+        // Order must match decoder: op (tag + body) → timestamp → server_user_id
         op.encode(&mut writer)?;
         let raw_timestamp = timestamp.raw();
         writer.write_delta(raw_timestamp, self.last_timestamp)?;
         if self.server_mode {
-            match user_id {
-                Some(user_id) => writer.write_uuid(&user_id),
+            match server_user_id {
+                Some(server_user_id) => writer.write_uuid(&server_user_id),
                 None => return Err(CodecError::MissingUserId),
             }
         }
