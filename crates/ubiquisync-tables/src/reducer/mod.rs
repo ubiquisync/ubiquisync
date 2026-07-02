@@ -53,6 +53,7 @@ impl Reducer {
             named_tables.insert(table.id, table.clone());
             let physical_table = PhysicalTableSchema::new_named(prefix, table, db).await?;
             all_tables.insert(table.id, physical_table);
+            table.create_view(prefix, db).await?;
         }
         Ok(Self {
             prefix: prefix.into(),

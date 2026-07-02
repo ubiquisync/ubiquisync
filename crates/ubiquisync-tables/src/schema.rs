@@ -73,7 +73,7 @@ impl TableSchema {
             select_clauses.push(format!("{surrogate_name} AS {real_name}"));
         }
 
-        // TODO should we have separate ways of prefixing both the surrogate tables and the view names?
+        // TODO in a future PR we should have separate ways of prefixing both the surrogate tables and the view names
         let quoted_name = quote_ident(&name);
 
         let mut batch = db.new_batch();
