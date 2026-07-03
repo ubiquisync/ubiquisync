@@ -197,13 +197,13 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>> Processor<R, D, T> {
 #[allow(dead_code)]
 impl<R: Reducer, D: Db, T> Processor<R, D, T> {
     fn cached_cursor(&self, peer: &Uuid) -> u64 {
-        self.cursors.lock().unwrap().get(peer).copied().unwrap_or(0)
+        lock(&self.cursors).get(peer).copied().unwrap_or(0)
     }
 
     /// Raise `peer`'s cached cursor and broadcast the advance to watchers.
     fn advance_cursor(&self, peer: &Uuid, next: u64) {
         let advanced = {
-            let mut cursors = self.cursors.lock().unwrap();
+            let mut cursors = lock(&self.cursors);
             let slot = cursors.entry(*peer).or_insert(0);
             if next > *slot {
                 *slot = next;
@@ -215,7 +215,7 @@ impl<R: Reducer, D: Db, T> Processor<R, D, T> {
         if advanced {
             let mut delta = PeerCursors::new();
             delta.insert(*peer, next);
-            self.watchers.lock().unwrap().retain(|tx| {
+            lock(&self.watchers).retain(|tx| {
                 tx.unbounded_send(CursorsEvent::Advanced(delta.clone()))
                     .is_ok()
             });
@@ -223,18 +223,25 @@ impl<R: Reducer, D: Db, T> Processor<R, D, T> {
     }
 }
 
+/// Lock a sync mutex, recovering the guard if a prior holder panicked: the
+/// protected cursor/watcher state can't be left corrupt by a panic, so this
+/// beats propagating a poison to every subsystem sharing the processor.
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[async_trait]
 impl<R: Reducer, D: Db, T: Send + Sync> HasCursors for Processor<R, D, T> {
     async fn cursors(&self) -> Result<PeerCursors, SyncError> {
-        Ok(self.cursors.lock().unwrap().clone())
+        Ok(lock(&self.cursors).clone())
     }
 
     fn watch_cursors(&self) -> CursorStream {
         // Synchronous: registration and the snapshot happen without an await, so
         // no apply can advance the cursor in between and be missed.
         let (tx, rx) = mpsc::unbounded();
-        let _ = tx.unbounded_send(CursorsEvent::Snapshot(self.cursors.lock().unwrap().clone()));
-        let mut watchers = self.watchers.lock().unwrap();
+        let _ = tx.unbounded_send(CursorsEvent::Snapshot(lock(&self.cursors).clone()));
+        let mut watchers = lock(&self.watchers);
         watchers.retain(|w| !w.is_closed()); // drop subscribers that went away
         watchers.push(tx);
         Box::pin(rx)
