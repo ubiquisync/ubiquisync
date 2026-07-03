@@ -22,7 +22,8 @@ pub trait RoutableEvent: Clone {
     /// The routing key subscribers select — the granularity of a subscription.
     type Target: Eq + Hash + Clone;
 
-    /// The targets this event fans out to.
+    /// The targets this event fans out to. Treated as a set: yielding the same
+    /// target twice delivers the event to that target's subscribers twice.
     fn targets(&self) -> impl Iterator<Item = Self::Target>;
 }
 
@@ -187,9 +188,10 @@ impl<T: RoutableEvent> Drop for Subscription<T> {
     }
 }
 
-/// Lock, recovering from a poisoned guard: the map can't be left inconsistent by
-/// a panic (the critical sections only clone-and-send), so recovering beats
-/// propagating poison to every publisher and subscriber.
+/// Lock, recovering from a poisoned guard. A panic mid-critical-section (e.g. a
+/// subscriber's `Clone` panicking during fan-out) can leave the map partially
+/// updated but always a valid `HashMap`, so recovering the guard beats poisoning
+/// every publisher and subscriber.
 fn lock<G>(m: &Mutex<G>) -> MutexGuard<'_, G> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }

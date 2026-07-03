@@ -22,7 +22,7 @@ use ubiquisync_core::{
         CodecError, DecodedEntry, EntryBufferReader, EntryBufferWriter, IndexableOp, Op,
         OpIndexEntry,
     },
-    event::{EventHandler, NoopHandler, Publisher},
+    event::{EventHandler, Publisher},
     hlc::Timestamp,
     log_entry::LogEntry,
     sync::{CursorsEvent, HasCursors, LogProcessor, LogSource, SyncError},
@@ -173,6 +173,11 @@ impl Captured {
     fn last(&self) -> i64 {
         *self.0.lock().unwrap().last().expect("an event was published")
     }
+
+    /// How many events have been published so far.
+    fn count(&self) -> usize {
+        self.0.lock().unwrap().len()
+    }
 }
 
 /// [`EventHandler`] wrapping [`Captured`] so the suite reads what the reducer
@@ -182,6 +187,10 @@ struct CaptureHandler(Captured);
 impl CaptureHandler {
     fn last(&self) -> i64 {
         self.0.last()
+    }
+
+    fn count(&self) -> usize {
+        self.0.count()
     }
 }
 
@@ -267,7 +276,7 @@ pub async fn run_max_register_suite<D: Db>(db: D) {
         .process_one(&PEER, 0, &entry(b"x", 5, 1_700_000_000_000, None))
         .await
         .unwrap();
-    assert_eq!(processor.event_handler().last(),5, "first write sets the value");
+    assert_eq!(processor.event_handler().last(), 5, "first write sets the value");
 
     // A smaller value loses the max merge but is still a real (non-duplicate)
     // apply, so it returns the unchanged max.
@@ -275,7 +284,7 @@ pub async fn run_max_register_suite<D: Db>(db: D) {
         .process_one(&PEER, 1, &entry(b"x", 3, 1_700_000_000_001, None))
         .await
         .unwrap();
-    assert_eq!(processor.event_handler().last(),5, "smaller value does not lower the register");
+    assert_eq!(processor.event_handler().last(), 5, "smaller value does not lower the register");
 
     // A larger value advances it. This entry carries a user id, so its op-log
     // row exercises the `Some(user)` binding path.
@@ -283,7 +292,7 @@ pub async fn run_max_register_suite<D: Db>(db: D) {
         .process_one(&PEER, 2, &entry(b"x", 9, 1_700_000_000_002, Some(USER)))
         .await
         .unwrap();
-    assert_eq!(processor.event_handler().last(),9, "larger value raises the register");
+    assert_eq!(processor.event_handler().last(), 9, "larger value raises the register");
     assert_eq!(
         oplog_server_user_id(processor.db(), 2).await,
         Some(USER),
@@ -332,14 +341,14 @@ pub async fn run_max_register_suite<D: Db>(db: D) {
         .process_one(&PEER, 3, &entry(b"x", 1, 1_700_000_000_004, None))
         .await
         .unwrap();
-    assert_eq!(processor.event_handler().last(),9, "rolled-back duplicate left the register at 9");
+    assert_eq!(processor.event_handler().last(), 9, "rolled-back duplicate left the register at 9");
 
     // A different key is an independent register.
     processor
         .process_one(&PEER, 4, &entry(b"y", 7, 1_700_000_000_005, None))
         .await
         .unwrap();
-    assert_eq!(processor.event_handler().last(),7, "distinct key has its own register");
+    assert_eq!(processor.event_handler().last(), 7, "distinct key has its own register");
 }
 
 /// Drives a processor through the [`Replica`](ubiquisync_core::sync::Replica)
@@ -351,7 +360,7 @@ pub async fn run_max_register_suite<D: Db>(db: D) {
 /// Generic over the backend like `run_max_register_suite`; call it with a
 /// freshly opened, empty database.
 pub async fn run_replica_suite<D: Db>(db: D) {
-    let processor: MaxProcessor<D, NoopHandler> = Processor::open(MaxRegister::new("reg"), db, PREFIX, NODE)
+    let processor: MaxProcessor<D, CaptureHandler> = Processor::open(MaxRegister::new("reg"), db, PREFIX, NODE)
         .await
         .unwrap();
 
@@ -372,6 +381,20 @@ pub async fn run_replica_suite<D: Db>(db: D) {
             "fresh slot {idx} applies"
         );
     }
+
+    // Emit wiring on the remote path: the three real LogEntry applies each
+    // published their merged register value ([5, 9, 4]); the expunged marker at
+    // index 2 published nothing.
+    assert_eq!(
+        processor.event_handler().count(),
+        3,
+        "expunged apply emits no event"
+    );
+    assert_eq!(
+        processor.event_handler().last(),
+        4,
+        "the last applied LogEntry emitted its value"
+    );
 
     // Cursor sits one past the last slot (3), so it advanced over the expunged
     // gap at index 2 as well. Four op-log rows: three entries plus the marker;
@@ -426,6 +449,11 @@ pub async fn run_replica_suite<D: Db>(db: D) {
         register_value(processor.db(), b"x").await,
         9,
         "dropped re-delivery left the register at 9, not 999"
+    );
+    assert_eq!(
+        processor.event_handler().count(),
+        3,
+        "dropped re-delivery emits no event"
     );
 
     // watch_cursors: first event is a snapshot; a later apply broadcasts an
