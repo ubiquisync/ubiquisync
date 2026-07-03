@@ -12,11 +12,11 @@
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use futures::channel::mpsc;
 use futures::lock::Mutex as AsyncMutex;
+use futures::{Stream, StreamExt, channel::mpsc};
 use ubiquisync_core::{
     codec::DecodedEntry,
-    event::{EventHandler, Publisher},
+    event::{EventBus, EventHandler, Publisher, RoutableEvent},
     hlc::{HlcError, HlcService, Timestamp, wall_ms},
     log_entry::LogEntry,
     sync::{
@@ -277,8 +277,8 @@ where
 }
 
 #[async_trait]
-impl<R: Reducer, D: Db, T: LogTracker<R::Op>, E: EventHandler<R::Event> + Send + Sync> LogProcessor<R::Op>
-    for Processor<R, D, T, E>
+impl<R: Reducer, D: Db, T: LogTracker<R::Op>, E: EventHandler<R::Event> + Send + Sync>
+    LogProcessor<R::Op> for Processor<R, D, T, E>
 where
     R::Error: std::error::Error + Send + Sync + 'static,
     E::Publish: Send + Sync,
@@ -312,9 +312,10 @@ where
         // `ingest_entry_or_local` advances the cursor after its commit; the
         // expunged path does no reducer work, so it advances here instead.
         let outcome: Result<Option<R::Event>, ProcessorError<R::Error>> = match entry {
-            DecodedEntry::LogEntry(e) => {
-                self.ingest_entry(&mut reducer, &peer, index, &e).await.map(Some)
-            }
+            DecodedEntry::LogEntry(e) => self
+                .ingest_entry(&mut reducer, &peer, index, &e)
+                .await
+                .map(Some),
             DecodedEntry::Expunged(hash) => {
                 let outcome = self.ingest_expunged(&peer, index, &hash).await;
                 if outcome.is_ok() {
@@ -341,8 +342,8 @@ where
 }
 
 #[async_trait]
-impl<R: Reducer, D: Db, T: HistoryTracker<R::Op>, E: EventHandler<R::Event> + Send + Sync> LogSource<R::Op>
-    for Processor<R, D, T, E>
+impl<R: Reducer, D: Db, T: HistoryTracker<R::Op>, E: EventHandler<R::Event> + Send + Sync>
+    LogSource<R::Op> for Processor<R, D, T, E>
 where
     R::Error: std::error::Error + Send + Sync + 'static,
     E::Publish: Send + Sync,
@@ -360,6 +361,48 @@ where
             .map_err(|e| SyncError::Backend(Box::new(e)))
     }
 }
+
+#[async_trait]
+impl<Op, Event: RoutableEvent, R: Reducer, D: Db, T: LogTracker<R::Op>>
+    ubiquisync_core::store::Store<Op, ProcessorError<BoxError>, Event>
+    for Processor<R, D, T, EventBus<R::Event>>
+where
+    Op: Into<R::Op> + Send + 'static,
+    Event: TryFrom<R::Event>,
+    R::Event: RoutableEvent,
+    R::Error: std::error::Error + Send + Sync + 'static,
+    Event::Target: Into<<<R as Reducer>::Event as RoutableEvent>::Target>,
+    <<R as Reducer>::Event as RoutableEvent>::Target: Send + Sync + Unpin,
+{
+    async fn exec(
+        &self,
+        server_user_id: Option<Uuid>,
+        op: Op,
+    ) -> Result<(), ProcessorError<BoxError>> {
+        // Inherent `Processor::exec` (shadows this trait method), then erase the
+        // reducer error behind `BoxError` so the Store surface is one uniform type
+        // across reducers while keeping the `ProcessorError` variants matchable.
+        Processor::exec(self, server_user_id, op.into())
+            .await
+            .map_err(|e| match e {
+                ProcessorError::Reducer(r) => ProcessorError::Reducer(Box::new(r) as BoxError),
+                ProcessorError::Hlc(x) => ProcessorError::Hlc(x),
+                ProcessorError::Tracker(x) => ProcessorError::Tracker(x),
+                ProcessorError::Db(x) => ProcessorError::Db(x),
+                ProcessorError::Sync(x) => ProcessorError::Sync(x),
+            })
+    }
+
+    fn watch(&self, target: Event::Target) -> impl Stream<Item = Event> {
+        self.event_handler()
+            .subscribe(target.into())
+            .filter_map(|e| futures::future::ready(Event::try_from(e).ok()))
+    }
+}
+
+/// A reducer error erased to a trait object — the uniform reducer-error type the
+/// [`Store`](ubiquisync_core::store::Store) surface exposes across reducers.
+pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 /// A failure while ingesting an entry, tagged by the stage that produced it.
 #[derive(Debug, thiserror::Error)]

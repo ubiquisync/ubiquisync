@@ -20,5 +20,6 @@ pub mod codec;
 pub mod event;
 pub mod hlc;
 pub mod log_entry;
+pub mod store;
 pub mod sync;
 pub mod uuid;

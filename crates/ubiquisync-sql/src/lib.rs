@@ -26,6 +26,7 @@ pub mod dialect;
 pub mod hlc_storage;
 pub mod processor;
 pub mod reducer;
+pub mod store;
 pub mod tracker;
 pub mod util;
 
