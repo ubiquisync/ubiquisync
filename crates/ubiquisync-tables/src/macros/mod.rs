@@ -1,6 +1,6 @@
 //! Declarative macros for building table [`schema`](crate::schema)s.
 //!
-//! [`define_schema!`] expands a compact table DSL into a `schemas()` function
+//! [`define_tables!`] expands a compact table DSL into a `tables()` function
 //! that returns the [`TableSchema`](crate::schema::TableSchema) values a caller
 //! hands to [`Reducer::new`](crate::reducer::Reducer::new). Because the schema's
 //! PK names and its table ID both come from the single `pk: (...)` list, the
@@ -37,7 +37,8 @@ macro_rules! __col_type {
 /// The module name is the user-facing VIEW name; the PK and column idents are
 /// the VIEW's column names. Types are keywords: `Bytes`, `Text`, `I64`, `Uuid`.
 ///
-/// Usually invoked through [`define_schema!`] rather than directly.
+/// Usually invoked through [`define_tables!`](crate::define_tables) rather than
+/// directly.
 #[macro_export]
 macro_rules! define_table {
     (
@@ -46,7 +47,7 @@ macro_rules! define_table {
         { $( ($col_idx:expr, $col_name:ident, $col_type:ident) ),* $(,)? }
     ) => {
         pub mod $mod {
-            /// Build this table's [`TableSchema`]. Fallible only via
+            /// Build this table's `TableSchema`. Fallible only via
             /// `TableSchema::new` (e.g. a duplicate column name); the PK-count
             /// check can't fire — the ID and PK names share one declaration.
             pub fn table() -> Result<
@@ -76,7 +77,7 @@ macro_rules! define_table {
     };
 }
 
-/// Define a set of table schemas and a `schemas()` collector to hand to
+/// Define a set of table schemas and a `tables()` collector to hand to
 /// `Reducer::new`.
 ///
 /// Each entry is `name: index ( pk: (col type, ...), { (idx, col, type), ... } )`.
@@ -159,7 +160,7 @@ mod tests {
     #[test]
     fn single_pk_table_shape() {
         // Goal: PK name/type and value columns come straight from the DSL.
-        let s = notes::schema().unwrap();
+        let s = notes::table().unwrap();
         assert_eq!(s.pk_names, ["id"]);
         assert_eq!(s.id.pk_count(), 1);
         assert_eq!(s.id.pk_col_type(0), ColType::Uuid);
@@ -171,7 +172,7 @@ mod tests {
     #[test]
     fn composite_pk_table_shape() {
         // Goal: multi-column PKs keep declaration order for both name and type.
-        let s = events::schema().unwrap();
+        let s = events::table().unwrap();
         assert_eq!(s.pk_names, ["k", "seq"]);
         assert_eq!(s.id.pk_count(), 2);
         assert_eq!(s.id.pk_col_type(0), ColType::Text);
@@ -181,7 +182,7 @@ mod tests {
     #[test]
     fn table_with_no_value_columns() {
         // Goal: an empty `{}` value-column list is valid — a key-only table.
-        let s = counters::schema().unwrap();
+        let s = counters::table().unwrap();
         assert_eq!(s.pk_names, ["id"]);
         assert!(s.value_cols.is_empty());
     }
