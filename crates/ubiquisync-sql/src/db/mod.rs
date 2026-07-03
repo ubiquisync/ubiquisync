@@ -15,6 +15,13 @@ use async_trait::async_trait;
 use crate::dialect::SqlDialect;
 
 /// A SQL backend: reads, one-off writes/DDL, and a factory for atomic batches.
+//
+// TODO(wasm): a Cloudflare D1 / Durable-Objects backend has `!Send` JS-Promise
+// futures; when it lands it must satisfy this `Send + Sync` bound internally
+// (wrap its handle/futures in `send_wrapper::SendWrapper`, sound on the
+// single-threaded Workers isolate) rather than relaxing the trait for every
+// target. Alternatively we can make the Send + Sync requirement conditional on
+// the build target. Deferred until that backend is built.
 #[async_trait]
 pub trait Db: Send + Sync {
     /// The SQL dialect this backend speaks (placeholder syntax, upsert verbs,

@@ -237,11 +237,14 @@ impl<R: Reducer, D: Db, T: Send + Sync> HasCursors for Processor<R, D, T> {
     }
 
     fn watch_cursors(&self) -> CursorStream {
-        // Synchronous: registration and the snapshot happen without an await, so
-        // no apply can advance the cursor in between and be missed.
         let (tx, rx) = mpsc::unbounded();
-        let _ = tx.unbounded_send(CursorsEvent::Snapshot(lock(&self.cursors).clone()));
+        // Hold both locks across snapshot + registration (cursors before
+        // watchers, the order advance_cursor also acquires them) so a concurrent
+        // advance can't slip its mutation and broadcast between the two and leave
+        // this subscriber stale. Neither section awaits.
+        let cursors = lock(&self.cursors);
         let mut watchers = lock(&self.watchers);
+        let _ = tx.unbounded_send(CursorsEvent::Snapshot(cursors.clone()));
         watchers.retain(|w| !w.is_closed()); // drop subscribers that went away
         watchers.push(tx);
         Box::pin(rx)
