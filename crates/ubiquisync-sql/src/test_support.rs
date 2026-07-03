@@ -13,6 +13,7 @@
 //! takes.
 
 use std::io::BufRead;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -21,6 +22,7 @@ use ubiquisync_core::{
         CodecError, DecodedEntry, EntryBufferReader, EntryBufferWriter, IndexableOp, Op,
         OpIndexEntry,
     },
+    event::{EventHandler, Publisher},
     hlc::Timestamp,
     log_entry::LogEntry,
     sync::{CursorsEvent, HasCursors, LogProcessor, LogSource, SyncError},
@@ -153,7 +155,52 @@ impl Reducer for MaxRegister {
 
 // ── Harness ─────────────────────────────────────────────────────────────────
 
-type MaxProcessor<D> = Processor<MaxRegister, D, LogIndexTracker<MaxOp>>;
+type MaxProcessor<D, E> = Processor<MaxRegister, D, LogIndexTracker<MaxOp>, E>;
+
+/// Test publisher recording the events the reducer emits (the merged register
+/// value), so the suite can observe them now that ingest returns `()`.
+#[derive(Clone, Default)]
+struct Captured(Arc<Mutex<Vec<i64>>>);
+
+impl Publisher<i64> for Captured {
+    fn publish(&self, event: i64) {
+        self.0.lock().unwrap().push(event);
+    }
+}
+
+impl Captured {
+    /// The most recently published value.
+    fn last(&self) -> i64 {
+        *self.0.lock().unwrap().last().expect("an event was published")
+    }
+
+    /// How many events have been published so far.
+    fn count(&self) -> usize {
+        self.0.lock().unwrap().len()
+    }
+}
+
+/// [`EventHandler`] wrapping [`Captured`] so the suite reads what the reducer
+/// emitted via `processor.event_handler()`.
+struct CaptureHandler(Captured);
+
+impl CaptureHandler {
+    fn last(&self) -> i64 {
+        self.0.last()
+    }
+
+    fn count(&self) -> usize {
+        self.0.count()
+    }
+}
+
+impl EventHandler<i64> for CaptureHandler {
+    type Publish = Captured;
+    fn init() -> (Self::Publish, Self) {
+        let captured = Captured::default();
+        (captured.clone(), CaptureHandler(captured))
+    }
+}
 
 const PEER: Uuid = [7u8; 16];
 const USER: Uuid = [9u8; 16];
@@ -219,32 +266,33 @@ async fn clock_register<D: Db>(db: &D) -> u64 {
 ///
 /// Generic over the backend so each driver crate's tests can reuse it verbatim.
 pub async fn run_max_register_suite<D: Db>(db: D) {
-    let processor: MaxProcessor<D> = Processor::open(MaxRegister::new("reg"), db, PREFIX, NODE)
-        .await
-        .unwrap();
+    let processor: MaxProcessor<D, CaptureHandler> =
+        Processor::open(MaxRegister::new("reg"), db, PREFIX, NODE)
+            .await
+            .unwrap();
 
     // First write seeds the register.
-    let r = processor
+    processor
         .process_one(&PEER, 0, &entry(b"x", 5, 1_700_000_000_000, None))
         .await
         .unwrap();
-    assert_eq!(r, 5, "first write sets the value");
+    assert_eq!(processor.event_handler().last(), 5, "first write sets the value");
 
     // A smaller value loses the max merge but is still a real (non-duplicate)
     // apply, so it returns the unchanged max.
-    let r = processor
+    processor
         .process_one(&PEER, 1, &entry(b"x", 3, 1_700_000_000_001, None))
         .await
         .unwrap();
-    assert_eq!(r, 5, "smaller value does not lower the register");
+    assert_eq!(processor.event_handler().last(), 5, "smaller value does not lower the register");
 
     // A larger value advances it. This entry carries a user id, so its op-log
     // row exercises the `Some(user)` binding path.
-    let r = processor
+    processor
         .process_one(&PEER, 2, &entry(b"x", 9, 1_700_000_000_002, Some(USER)))
         .await
         .unwrap();
-    assert_eq!(r, 9, "larger value raises the register");
+    assert_eq!(processor.event_handler().last(), 9, "larger value raises the register");
     assert_eq!(
         oplog_server_user_id(processor.db(), 2).await,
         Some(USER),
@@ -289,18 +337,18 @@ pub async fn run_max_register_suite<D: Db>(db: D) {
     );
 
     // Prove the duplicate applied nothing at the data layer: still 9, not 100.
-    let r = processor
+    processor
         .process_one(&PEER, 3, &entry(b"x", 1, 1_700_000_000_004, None))
         .await
         .unwrap();
-    assert_eq!(r, 9, "rolled-back duplicate left the register at 9");
+    assert_eq!(processor.event_handler().last(), 9, "rolled-back duplicate left the register at 9");
 
     // A different key is an independent register.
-    let r = processor
+    processor
         .process_one(&PEER, 4, &entry(b"y", 7, 1_700_000_000_005, None))
         .await
         .unwrap();
-    assert_eq!(r, 7, "distinct key has its own register");
+    assert_eq!(processor.event_handler().last(), 7, "distinct key has its own register");
 }
 
 /// Drives a processor through the [`Replica`](ubiquisync_core::sync::Replica)
@@ -312,7 +360,7 @@ pub async fn run_max_register_suite<D: Db>(db: D) {
 /// Generic over the backend like `run_max_register_suite`; call it with a
 /// freshly opened, empty database.
 pub async fn run_replica_suite<D: Db>(db: D) {
-    let processor: MaxProcessor<D> = Processor::open(MaxRegister::new("reg"), db, PREFIX, NODE)
+    let processor: MaxProcessor<D, CaptureHandler> = Processor::open(MaxRegister::new("reg"), db, PREFIX, NODE)
         .await
         .unwrap();
 
@@ -333,6 +381,20 @@ pub async fn run_replica_suite<D: Db>(db: D) {
             "fresh slot {idx} applies"
         );
     }
+
+    // Emit wiring on the remote path: the three real LogEntry applies each
+    // published their merged register value ([5, 9, 4]); the expunged marker at
+    // index 2 published nothing.
+    assert_eq!(
+        processor.event_handler().count(),
+        3,
+        "expunged apply emits no event"
+    );
+    assert_eq!(
+        processor.event_handler().last(),
+        4,
+        "the last applied LogEntry emitted its value"
+    );
 
     // Cursor sits one past the last slot (3), so it advanced over the expunged
     // gap at index 2 as well. Four op-log rows: three entries plus the marker;
@@ -387,6 +449,11 @@ pub async fn run_replica_suite<D: Db>(db: D) {
         register_value(processor.db(), b"x").await,
         9,
         "dropped re-delivery left the register at 9, not 999"
+    );
+    assert_eq!(
+        processor.event_handler().count(),
+        3,
+        "dropped re-delivery emits no event"
     );
 
     // watch_cursors: first event is a snapshot; a later apply broadcasts an

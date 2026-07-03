@@ -367,6 +367,8 @@ version = "0.0.2"
 dependencies = [
  "async-trait",
  "blake3",
+ "futures",
+ "futures-channel",
  "futures-core",
  "pollster",
  "thiserror",
