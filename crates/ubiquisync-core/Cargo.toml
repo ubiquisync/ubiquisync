@@ -9,10 +9,12 @@ repository.workspace = true
 [dependencies]
 async-trait = { workspace = true }
 blake3 = { workspace = true }
+futures-channel = { workspace = true }
 futures-core = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+futures = { workspace = true }
 pollster = { workspace = true }
 
 [lints]

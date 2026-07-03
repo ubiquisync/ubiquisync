@@ -17,6 +17,7 @@
 //! facade crate rather than this crate directly.
 
 pub mod codec;
+pub mod event;
 pub mod hlc;
 pub mod log_entry;
 pub mod sync;
