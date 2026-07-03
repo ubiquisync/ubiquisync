@@ -11,8 +11,8 @@ use ubiquisync_tables::reducer::Reducer;
 // Declared at module scope, the way a real consumer would — a single-PK table
 // and a composite-PK table, covering every column-type keyword.
 ubiquisync_tables::define_tables! {
-    notes:  1 ( pk: (id Uuid),         { (0, body, Text), (1, n, I64) } ),
-    events: 2 ( pk: (k Text, seq I64), { (0, payload, Bytes) } ),
+    1 notes  (id Uuid)         => { (0 body Text), (1 n I64) },
+    2 events (k Text, seq I64) => { (0 payload Bytes) },
 }
 
 #[test]
@@ -26,9 +26,9 @@ fn generated_schemas_build_reducer_and_expose_views() {
             .await
             .expect("reducer accepts macro-generated schemas");
 
-        // Selecting each declared column name from each VIEW proves the whole
-        // chain wired up: the generated column IDs aliased back to the names
-        // from the DSL. Empty result is expected — no rows written yet.
+        // Each VIEW exists and exposes the declared column names (the alias
+        // wiring baked into the CREATE VIEW). No rows written, so this checks
+        // the schema surface, not value round-tripping.
         let rows = db
             .query(r#"SELECT "id", "body", "n" FROM "notes""#, &[])
             .await

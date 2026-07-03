@@ -31,10 +31,10 @@ macro_rules! __col_type {
     };
 }
 
-/// Define one table's schema constructor inside a module named `$mod`.
+/// Define one table's schema constructor: `index name (key type, ...) => { (idx col type) ... }`.
 ///
-/// Generates `pub mod $mod { pub fn table() -> Result<TableSchema, TablesError> }`.
-/// The module name is the user-facing VIEW name; the PK and column idents are
+/// Generates `pub mod name { pub fn table() -> Result<TableSchema, TablesError> }`.
+/// The table `name` is the user-facing VIEW name; the key and column idents are
 /// the VIEW's column names. Types are keywords: `Bytes`, `Text`, `I64`, `Uuid`.
 ///
 /// Usually invoked through [`define_tables!`](crate::define_tables) rather than
@@ -42,9 +42,9 @@ macro_rules! __col_type {
 #[macro_export]
 macro_rules! define_table {
     (
-        $mod:ident, $index:expr,
-        pk: ( $($pk_name:ident $pk_type:ident),+ $(,)? ),
-        { $( ($col_idx:expr, $col_name:ident, $col_type:ident) ),* $(,)? }
+        $index:literal $mod:ident
+        ( $($pk_name:ident $pk_type:ident),+ $(,)? )
+        => { $( ($col_idx:literal $col_name:ident $col_type:ident) ),* $(,)? }
     ) => {
         #[doc = concat!("Schema for the `", stringify!($mod), "` table.")]
         pub mod $mod {
@@ -97,31 +97,32 @@ macro_rules! define_table {
 /// Define a set of table schemas and a `tables()` collector to hand to
 /// `Reducer::new`.
 ///
-/// Each entry is `name: index ( pk: (col type, ...), { (idx, col, type), ... } )`.
-/// The module `name` becomes the VIEW name; `index` is the table's slot within
-/// its PK shape (see [`TableId`](crate::id::TableId)). Column and PK types are
-/// the keywords `Bytes`, `Text`, `I64`, `Uuid`.
+/// Each entry is `index name (key type, ...) => { (idx col type) ... }`: the row's
+/// primary key maps to its columns, mirroring the LWW model. `name` becomes the
+/// VIEW name; `index` is the table's slot within its PK shape (see
+/// [`TableId`](crate::id::TableId)). Column and key types are the keywords
+/// `Bytes`, `Text`, `I64`, `Uuid`.
 ///
 /// ```ignore
 /// ubiquisync_tables::define_tables! {
-///     notes:  1 ( pk: (id Uuid),         { (0, body, Text), (1, n, I64) } ),
-///     events: 2 ( pk: (k Text, seq I64), { (0, payload, Bytes) } ),
+///     1 notes  (id Uuid)         => { (0 body Text), (1 n I64) },
+///     2 events (k Text, seq I64) => { (0 payload Bytes) },
 /// }
 /// let reducer = Reducer::new("app", &tables()?, &db).await?;
 /// ```
 #[macro_export]
 macro_rules! define_tables {
     (
-        $( $mod:ident : $index:literal (
-            pk: ( $($pk_name:ident $pk_type:ident),+ $(,)? ),
-            { $( ($col_idx:literal, $col_name:ident, $col_type:ident) ),* $(,)? }
-        ) ),+ $(,)?
+        $( $index:literal $mod:ident
+            ( $($pk_name:ident $pk_type:ident),+ $(,)? )
+            => { $( ($col_idx:literal $col_name:ident $col_type:ident) ),* $(,)? }
+        ),+ $(,)?
     ) => {
         $(
             $crate::define_table!(
-                $mod, $index,
-                pk: ( $($pk_name $pk_type),+ ),
-                { $( ($col_idx, $col_name, $col_type) ),* }
+                $index $mod
+                ( $($pk_name $pk_type),+ )
+                => { $( ($col_idx $col_name $col_type) ),* }
             );
         )+
 
@@ -143,25 +144,16 @@ mod tests {
     // A representative schema: a single-PK table and a composite-PK table,
     // exercising every column-type keyword and an empty value-column list.
     define_tables! {
-        notes: 1 (
-            pk: (id Uuid),
-            {
-                (0, body, Text),
-                (1, n, I64),
-                (2, blob, Bytes),
-                (3, author, Uuid),
-            }
-        ),
-        events: 2 (
-            pk: (k Text, seq I64),
-            {
-                (0, payload, Bytes),
-            }
-        ),
-        counters: 3 (
-            pk: (id I64),
-            {}
-        ),
+        1 notes (id Uuid) => {
+            (0 body Text),
+            (1 n I64),
+            (2 blob Bytes),
+            (3 author Uuid),
+        },
+        2 events (k Text, seq I64) => {
+            (0 payload Bytes),
+        },
+        3 counters (id I64) => {},
     }
 
     #[test]
