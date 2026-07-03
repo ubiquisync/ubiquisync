@@ -49,30 +49,43 @@ macro_rules! define_table {
         #[doc = concat!("Schema for the `", stringify!($mod), "` table.")]
         pub mod $mod {
             /// Build this table's `TableSchema`. The returned `Result` surfaces
-            /// `TableSchema::new` validation errors (e.g. a duplicate column
-            /// name); the PK-count check can't fire, since the ID and PK names
-            /// share one declaration. An `index` too large for the PK count, or
-            /// more than four PK columns, instead panics at `TableId::new` —
-            /// those are static declaration errors, not runtime failures.
+            /// only `TableSchema::new` validation errors (e.g. a duplicate
+            /// column name); the PK-count check can't fire, since the ID and PK
+            /// names share one declaration. A table `index` too large for its PK
+            /// count, more than four PK columns, or a column index `>= 64` are
+            /// rejected at compile time (const evaluation) — never at runtime.
             pub fn table() -> ::core::result::Result<
                 $crate::schema::TableSchema,
                 $crate::error::TablesError,
             > {
-                let id = $crate::id::TableId::new(
+                // `const` so `TableId::new`'s shape/index asserts run at compile
+                // time: an out-of-range index or >4 PK columns is a build error,
+                // not a runtime panic.
+                const ID: $crate::id::TableId = $crate::id::TableId::new(
                     &[ $( $crate::__col_type!($pk_type) ),+ ],
                     $index,
                 );
                 $crate::schema::TableSchema::new(
-                    id,
+                    ID,
                     stringify!($mod).into(),
                     ::std::vec![ $( stringify!($pk_name).into() ),+ ],
                     ::std::vec![ $(
                         $crate::schema::ColumnSchema {
                             name: stringify!($col_name).into(),
-                            id: $crate::id::ColumnId::new(
-                                $col_idx,
-                                $crate::__col_type!($col_type),
-                            ),
+                            id: {
+                                // `ColumnId`'s index is a 6-bit field, and
+                                // `ColumnId::new` truncates rather than checking;
+                                // reject an out-of-range index at compile time so
+                                // it can't silently collide with another column.
+                                const _: () = ::core::assert!(
+                                    $col_idx < 64,
+                                    "column index must be < 64 (ColumnId uses a 6-bit index field)",
+                                );
+                                $crate::id::ColumnId::new(
+                                    $col_idx,
+                                    $crate::__col_type!($col_type),
+                                )
+                            },
                         }
                     ),* ],
                 )
@@ -94,7 +107,7 @@ macro_rules! define_table {
 ///     notes:  1 ( pk: (id Uuid),         { (0, body, Text), (1, n, I64) } ),
 ///     events: 2 ( pk: (k Text, seq I64), { (0, payload, Bytes) } ),
 /// }
-/// let reducer = Reducer::new("app", &tables()?, db).await?;
+/// let reducer = Reducer::new("app", &tables()?, &db).await?;
 /// ```
 #[macro_export]
 macro_rules! define_tables {
