@@ -1,7 +1,7 @@
 //! In-process fan-out of change events to subscribers, keyed by target.
 //!
-//! [`event_bus`] returns a [`Publish`]/[`EventBus`] pair sharing one
-//! mutex-guarded map: the producer holds `Publish` and emits events; subscribers
+//! [`event_bus`] returns an [`EventBusPublisher`]/[`EventBus`] pair sharing one
+//! mutex-guarded map: the producer holds the publisher and emits events; subscribers
 //! hold `EventBus` and [`subscribe`](EventBus::subscribe) to a
 //! [`RoutableEvent::Target`], receiving a [`Subscription`] (a [`Stream`]) of the
 //! events routed there. Targets left with no subscribers are removed eagerly, so
@@ -18,12 +18,29 @@ use futures_channel::mpsc;
 use futures_core::Stream;
 
 /// An event that knows the set of targets it should be delivered to.
-pub trait RoutableEvent {
+pub trait RoutableEvent: Clone {
     /// The routing key subscribers select — the granularity of a subscription.
     type Target: Eq + Hash + Clone;
 
     /// The targets this event fans out to.
     fn targets(&self) -> impl Iterator<Item = Self::Target>;
+}
+
+/// A sink events are published into. The write end of an [`event_bus`] is one;
+/// a producer holds `dyn Publisher`/`impl Publisher` so the bus — or a no-op —
+/// can be swapped behind it. `Send + Sync` is required by the sharer (e.g. a
+/// cross-thread producer), not here.
+pub trait Publisher<E> {
+    /// Deliver `event` to whatever this publisher feeds.
+    fn publish(&self, event: E);
+}
+
+/// A [`Publisher`] that discards every event — for producers with nothing
+/// listening (a headless replica) or that opt out of change events.
+pub struct NoopPublisher;
+
+impl<E> Publisher<E> for NoopPublisher {
+    fn publish(&self, _event: E) {}
 }
 
 /// Per-subscriber channel depth. A subscriber this far behind is dropped.
@@ -37,8 +54,8 @@ struct Inner<T: RoutableEvent> {
     next_id: u64,
 }
 
-/// The write end: emits events into the bus. Held privately by the producer.
-pub struct Publish<T: RoutableEvent> {
+/// The write end: emits events into the bus. Held by the producer.
+pub struct EventBusPublisher<T: RoutableEvent> {
     inner: Arc<Mutex<Inner<T>>>,
 }
 
@@ -56,22 +73,28 @@ impl<T: RoutableEvent> Clone for EventBus<T> {
 }
 
 /// Create an event bus, returning its `(write, read)` handles.
-pub fn event_bus<T: RoutableEvent>() -> (Publish<T>, EventBus<T>) {
+pub fn event_bus<T: RoutableEvent>() -> (EventBusPublisher<T>, EventBus<T>) {
     let inner = Arc::new(Mutex::new(Inner {
         targets: HashMap::new(),
         next_id: 0,
     }));
-    (Publish { inner: Arc::clone(&inner) }, EventBus { inner })
+    (
+        EventBusPublisher {
+            inner: Arc::clone(&inner),
+        },
+        EventBus { inner },
+    )
 }
 
-impl<T: RoutableEvent + Clone> Publish<T> {
+impl<T: RoutableEvent> Publisher<T> for EventBusPublisher<T> {
     /// Deliver `event` to every subscriber of each of its targets, pruning any
     /// whose channel is full or gone and dropping targets left with none.
-    pub fn publish(&self, event: T) {
+    fn publish(&self, event: T) {
         let mut inner = lock(&self.inner);
         for target in event.targets() {
             if let Entry::Occupied(mut e) = inner.targets.entry(target) {
-                e.get_mut().retain(|_, tx| tx.try_send(event.clone()).is_ok());
+                e.get_mut()
+                    .retain(|_, tx| tx.try_send(event.clone()).is_ok());
                 if e.get().is_empty() {
                     e.remove();
                 }
@@ -87,7 +110,11 @@ impl<T: RoutableEvent> EventBus<T> {
         let mut inner = lock(&self.inner);
         let id = inner.next_id;
         inner.next_id += 1;
-        inner.targets.entry(target.clone()).or_default().insert(id, tx);
+        inner
+            .targets
+            .entry(target.clone())
+            .or_default()
+            .insert(id, tx);
         Subscription {
             inner: Arc::clone(&self.inner),
             target,

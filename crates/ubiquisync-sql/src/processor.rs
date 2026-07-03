@@ -16,6 +16,7 @@ use futures::channel::mpsc;
 use futures::lock::Mutex as AsyncMutex;
 use ubiquisync_core::{
     codec::DecodedEntry,
+    event::Publisher,
     hlc::{HlcError, HlcService, Timestamp, wall_ms},
     log_entry::LogEntry,
     sync::{
@@ -36,7 +37,7 @@ use crate::{
 // because the only caller today is the in-crate `test_support` harness, so a
 // plain build sees it as unused.
 #[allow(dead_code)]
-pub(crate) struct Processor<R: Reducer, D: Db, T> {
+pub(crate) struct Processor<R: Reducer, D: Db, T, P: Publisher<R::Event>> {
     self_id: Uuid,
     // Behind an async mutex: it hands out `&mut` for the reducer's `prepare`, and
     // holding it across an apply serializes writes (single-writer log store).
@@ -48,10 +49,11 @@ pub(crate) struct Processor<R: Reducer, D: Db, T> {
     // the idempotent-drop fast path and the `watch_cursors` broadcast.
     cursors: Mutex<PeerCursors>,
     watchers: Mutex<Vec<mpsc::UnboundedSender<CursorsEvent>>>,
+    event_publish: P,
 }
 
 #[allow(dead_code)]
-impl<R: Reducer, D: Db, T: LogTracker<R::Op>> Processor<R, D, T> {
+impl<R: Reducer, D: Db, T: LogTracker<R::Op>, P: Publisher<R::Event>> Processor<R, D, T, P> {
     /// Open a processor against `db`: set up HLC storage and the tracker (both
     /// namespaced by `prefix`), seed the clock and cursor view from persisted
     /// state, and take ownership of `reducer`.
@@ -60,6 +62,7 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>> Processor<R, D, T> {
         db: D,
         prefix: &str,
         self_id: Uuid,
+        event_publish: P,
     ) -> Result<Self, ProcessorError<R::Error>> {
         let hlc = HlcService::open(SqlHlcStorage::open(&db, prefix).await?)?;
         let tracker = T::init(&db, prefix).await?;
@@ -70,6 +73,7 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>> Processor<R, D, T> {
             db,
             hlc,
             tracker,
+            event_publish,
             cursors: Mutex::new(cursors),
             watchers: Mutex::new(Vec::new()),
         })
@@ -112,18 +116,17 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>> Processor<R, D, T> {
         peer_id: &Uuid,
         entry_idx: u64,
         entry: &LogEntry<R::Op>,
-    ) -> Result<R::Event, ProcessorError<R::Error>> {
-        let res = self
-            .ingest_entry_or_local(
-                reducer,
-                peer_id,
-                entry_idx,
-                Some(entry.timestamp),
-                entry.server_user_id,
-                &entry.op,
-            )
-            .await?;
-        Ok(res)
+    ) -> Result<(), ProcessorError<R::Error>> {
+        self.ingest_entry_or_local(
+            reducer,
+            peer_id,
+            entry_idx,
+            Some(entry.timestamp),
+            entry.server_user_id,
+            &entry.op,
+        )
+        .await?;
+        Ok(())
     }
 
     async fn ingest_entry_or_local(
@@ -134,7 +137,7 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>> Processor<R, D, T> {
         timestamp: Option<Timestamp>,
         server_user_id: Option<Uuid>,
         op: &R::Op,
-    ) -> Result<R::Event, ProcessorError<R::Error>> {
+    ) -> Result<(), ProcessorError<R::Error>> {
         let prepare_state = reducer
             .prepare(&self.db, op)
             .await
@@ -158,9 +161,11 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>> Processor<R, D, T> {
             .apply(batch.as_mut(), timestamp, op, prepare_state)
             .map_err(ProcessorError::Reducer)?;
         let batch_result = batch.commit().await?;
-        reducer
+        let event = reducer
             .post_apply(apply_state, &batch_result)
-            .map_err(ProcessorError::Reducer)
+            .map_err(ProcessorError::Reducer)?;
+        self.event_publish.publish(event);
+        Ok(())
     }
     /// Record the expunged marker at `(peer_id, entry_idx)` — caller holds the
     /// reducer lock. No clock tick and no reducer work: just the tracker row that
@@ -187,7 +192,7 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>> Processor<R, D, T> {
         peer_id: &Uuid,
         entry_idx: u64,
         entry: &LogEntry<R::Op>,
-    ) -> Result<R::Event, ProcessorError<R::Error>> {
+    ) -> Result<(), ProcessorError<R::Error>> {
         let mut reducer = self.reducer.lock().await;
         self.ingest_entry(&mut reducer, peer_id, entry_idx, entry)
             .await
@@ -195,7 +200,7 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>> Processor<R, D, T> {
 }
 
 #[allow(dead_code)]
-impl<R: Reducer, D: Db, T> Processor<R, D, T> {
+impl<R: Reducer, D: Db, T, P: Publisher<R::Event>> Processor<R, D, T, P> {
     fn cached_cursor(&self, peer: &Uuid) -> u64 {
         lock(&self.cursors).get(peer).copied().unwrap_or(0)
     }
@@ -231,7 +236,9 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 #[async_trait]
-impl<R: Reducer, D: Db, T: Send + Sync> HasCursors for Processor<R, D, T> {
+impl<R: Reducer, D: Db, T: Send + Sync, P: Publisher<R::Event> + Send + Sync> HasCursors
+    for Processor<R, D, T, P>
+{
     async fn cursors(&self) -> Result<PeerCursors, SyncError> {
         Ok(lock(&self.cursors).clone())
     }
@@ -252,7 +259,8 @@ impl<R: Reducer, D: Db, T: Send + Sync> HasCursors for Processor<R, D, T> {
 }
 
 #[async_trait]
-impl<R: Reducer, D: Db, T: LogTracker<R::Op>> LogProcessor<R::Op> for Processor<R, D, T>
+impl<R: Reducer, D: Db, T: LogTracker<R::Op>, P: Publisher<R::Event> + Send + Sync> LogProcessor<R::Op>
+    for Processor<R, D, T, P>
 where
     R::Error: std::error::Error + Send + Sync + 'static,
 {
@@ -305,7 +313,8 @@ where
 }
 
 #[async_trait]
-impl<R: Reducer, D: Db, T: HistoryTracker<R::Op>> LogSource<R::Op> for Processor<R, D, T>
+impl<R: Reducer, D: Db, T: HistoryTracker<R::Op>, P: Publisher<R::Event> + Send + Sync> LogSource<R::Op>
+    for Processor<R, D, T, P>
 where
     R::Error: std::error::Error + Send + Sync + 'static,
 {

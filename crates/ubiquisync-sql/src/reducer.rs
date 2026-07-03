@@ -45,7 +45,7 @@ pub trait Reducer: Send {
     /// statements plus any op-derived data needed to build the event.
     type ApplyState: Send;
     /// The change event produced for an applied op, for downstream observers.
-    type Event: Send;
+    type Event: Send + Clone;
     /// Error surfaced from any phase.
     type Error;
 
