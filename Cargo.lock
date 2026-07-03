@@ -290,6 +290,7 @@ dependencies = [
  "pollster",
  "rusqlite",
  "ubiquisync-sql",
+ "ubiquisync-sqlite",
  "ubiquisync-tables",
 ]
 

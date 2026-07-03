@@ -11,9 +11,27 @@
 //! [`SqlDialect::Sqlite`]. The SQL
 //! flavor itself is not implemented here — it lives in `ubiquisync-sql`; this
 //! crate only drives the connection.
+//!
+//! # Single writer, one reader
+//!
+//! [`SqliteDb`] splits its work across two connections to the same database:
+//!
+//! * **Writer** — one connection ([`exec`](Db::exec), batches, and schema
+//!   introspection), opened in WAL mode. SQLite has a single write slot anyway,
+//!   so serializing writes behind its mutex matches the engine.
+//! * **Reader** — one connection ([`query`](Db::query)) pinned read-only with
+//!   `PRAGMA query_only`, so a write that reaches the read path is rejected by
+//!   the engine (`SQLITE_READONLY`) rather than silently applied. On a file
+//!   database (WAL) its reads also see a consistent committed snapshot without
+//!   blocking, or being blocked by, the writer — the isolation Postgres gets from
+//!   MVCC. In-memory databases have no WAL, so there the reader still gets
+//!   read-only enforcement but not snapshot isolation.
 
 use std::path::Path;
+#[cfg(any(test, feature = "test-support"))]
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use rusqlite::types::{ToSqlOutput, ValueRef};
@@ -25,46 +43,114 @@ use ubiquisync_sql::db::{
 };
 use ubiquisync_sql::dialect::SqlDialect;
 
-/// A [`Db`] backed by a rusqlite [`Connection`].
+/// A [`Db`] backed by a writer connection and a read-only reader connection to
+/// the same database. See the [module docs](crate) for the split.
 ///
-/// The connection is wrapped in an [`Arc<Mutex<_>>`] so that batches handed out
-/// by [`new_batch`](Db::new_batch) can run against the same database. SQLite has
-/// a single write slot anyway, so serializing access behind one mutex matches
-/// the engine and costs nothing in contention we wouldn't already pay.
+/// Both connections are wrapped in an [`Arc<Mutex<_>>`]. The `writer` takes
+/// [`exec`](Db::exec), batches handed out by [`new_batch`](Db::new_batch), and
+/// schema introspection; its mutex serializes writes to match SQLite's single
+/// write slot. The `reader` takes [`query`](Db::query) and is pinned read-only
+/// (`PRAGMA query_only`), so a stray write on the read path is rejected rather
+/// than silently applied.
 #[derive(Clone)]
 pub struct SqliteDb {
-    conn: Arc<Mutex<Connection>>,
+    writer: Arc<Mutex<Connection>>,
+    reader: Arc<Mutex<Connection>>,
 }
 
+/// Distinguishes the shared in-memory databases handed out by
+/// [`SqliteDb::open_in_memory`], so each call gets its own private database that
+/// its writer and reader still share.
+#[cfg(any(test, feature = "test-support"))]
+static MEM_DB_SEQ: AtomicU64 = AtomicU64::new(0);
+
 impl SqliteDb {
-    /// Open (creating if needed) a database file at `path`.
+    /// Open (creating if needed) a database file at `path`, in WAL mode, with a
+    /// separate read-only reader connection.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, DbError> {
-        let conn = Connection::open(path).map_err(map_err)?;
-        Ok(Self::from_connection(conn))
+        let path = path.as_ref();
+        let writer = Connection::open(path).map_err(map_err)?;
+        configure_writer(&writer)?;
+        // The reader opens the same file read-write at the OS level but is pinned
+        // `query_only`. A plain `SQLITE_OPEN_READ_ONLY` handle can't touch the
+        // `-wal`/`-shm` files a WAL reader needs, whereas `query_only` rejects SQL
+        // writes while still participating in WAL.
+        let reader = Connection::open(path).map_err(map_err)?;
+        configure_reader(&reader)?;
+        Ok(Self::from_parts(writer, reader))
     }
 
-    /// Open a fresh, private in-memory database. Useful for tests.
+    /// Open a fresh, private in-memory database with the same writer/reader
+    /// split. **Test-only** — gated behind the `test-support` feature.
+    ///
+    /// This is pointless outside tests: an in-memory database can't use WAL, so
+    /// the reader gets read-only enforcement but *not* the snapshot isolation
+    /// that motivates the split for a real file database. It exists only so the
+    /// suites can run without touching the filesystem.
+    ///
+    /// The database is a uniquely-named shared-cache in-memory database, so the
+    /// writer and reader connections address the *same* data — a bare `:memory:`
+    /// is private per connection, so the reader would see an empty database. It
+    /// lives as long as this [`SqliteDb`] keeps either connection open.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn open_in_memory() -> Result<Self, DbError> {
-        let conn = Connection::open_in_memory().map_err(map_err)?;
-        Ok(Self::from_connection(conn))
+        let seq = MEM_DB_SEQ.fetch_add(1, Ordering::Relaxed);
+        // `Connection::open` parses `file:` URIs because rusqlite enables
+        // `SQLITE_OPEN_URI` by default; `cache=shared` is what lets the two
+        // connections attach to the same in-memory database.
+        let uri = format!("file:ubq-mem-{seq}?mode=memory&cache=shared");
+        let writer = Connection::open(&uri).map_err(map_err)?;
+        configure_writer(&writer)?;
+        let reader = Connection::open(&uri).map_err(map_err)?;
+        configure_reader(&reader)?;
+        Ok(Self::from_parts(writer, reader))
     }
 
-    /// Wrap an already-open [`Connection`].
-    pub fn from_connection(conn: Connection) -> Self {
+    /// Wrap an already-open writer/reader connection pair.
+    fn from_parts(writer: Connection, reader: Connection) -> Self {
         Self {
-            conn: Arc::new(Mutex::new(conn)),
+            writer: Arc::new(Mutex::new(writer)),
+            reader: Arc::new(Mutex::new(reader)),
         }
     }
+}
 
-    /// Acquire the connection, mapping a poisoned mutex to a [`DbError`] rather
-    /// than panicking. A poison means a prior caller panicked mid-statement, so
-    /// the connection may be mid-transaction; we surface that as an error and
-    /// let the caller decide, instead of crashing the whole process.
-    fn lock(&self) -> Result<MutexGuard<'_, Connection>, DbError> {
-        self.conn
-            .lock()
-            .map_err(|_| DbError::Sql("sqlite connection mutex poisoned".to_string()))
-    }
+/// Acquire a connection, mapping a poisoned mutex to a [`DbError`] rather than
+/// panicking. A poison means a prior caller panicked mid-statement, so the
+/// connection may be mid-transaction; we surface that as an error and let the
+/// caller decide, instead of crashing the whole process.
+fn lock(conn: &Arc<Mutex<Connection>>) -> Result<MutexGuard<'_, Connection>, DbError> {
+    conn.lock()
+        .map_err(|_| DbError::Sql("sqlite connection mutex poisoned".to_string()))
+}
+
+/// Put the writer connection in WAL mode and give it a short busy timeout.
+///
+/// WAL is a persistent, file-level property set once at open; it is what makes
+/// the reader's snapshot reads non-blocking for the life of a file database. On
+/// an in-memory database `journal_mode=WAL` is silently a no-op (memory
+/// databases keep their in-memory journal). The busy timeout smooths over
+/// transient `SQLITE_BUSY` from checkpoint contention on files.
+fn configure_writer(conn: &Connection) -> Result<(), DbError> {
+    // `journal_mode` reports the resulting mode as a row, so read it rather than
+    // using `pragma_update` (which is for pragmas that return nothing).
+    conn.query_row("PRAGMA journal_mode = WAL", [], |_| Ok(()))
+        .map_err(map_err)?;
+    conn.busy_timeout(Duration::from_secs(5)).map_err(map_err)?;
+    Ok(())
+}
+
+/// Pin the reader connection read-only at the session level.
+///
+/// `query_only` makes the engine reject any INSERT/UPDATE/DELETE/DDL with
+/// `SQLITE_READONLY`, so a write mistakenly routed through [`Db::query`] fails
+/// loudly instead of landing. It is the SQLite analogue of Postgres's
+/// `default_transaction_read_only`, and unlike opening the file
+/// `SQLITE_OPEN_READ_ONLY` it stays compatible with WAL.
+fn configure_reader(conn: &Connection) -> Result<(), DbError> {
+    conn.pragma_update(None, "query_only", true).map_err(map_err)?;
+    conn.busy_timeout(Duration::from_secs(5)).map_err(map_err)?;
+    Ok(())
 }
 
 #[async_trait(?Send)]
@@ -74,7 +160,10 @@ impl Db for SqliteDb {
     }
 
     async fn describe_table(&self, name: &str) -> Result<Option<DbTableDescriptor>, DbError> {
-        let conn = self.lock()?;
+        // Introspection runs on the writer, not the reader: it gates schema
+        // reconciliation immediately before DDL, so it must see the writer's own
+        // just-committed state.
+        let conn = lock(&self.writer)?;
 
         // `pragma_table_info` is a table-valued function, so the table name can
         // be bound as a parameter (a bare `PRAGMA table_info(...)` cannot). It
@@ -127,28 +216,31 @@ impl Db for SqliteDb {
     }
 
     async fn exec(&self, sql: &str, params: &[DbValue]) -> Result<usize, DbError> {
-        let conn = self.lock()?;
+        let conn = lock(&self.writer)?;
         let result = run_statement(&conn, sql, params)?;
         Ok(result.rows_affected)
     }
 
     async fn query(&self, sql: &str, params: &[DbValue]) -> Result<Vec<DbRow>, DbError> {
-        let conn = self.lock()?;
+        // Reads run on the read-only reader connection, so a write here is
+        // rejected by `query_only` and, on a file (WAL), reads never wait on the
+        // writer's lock.
+        let conn = lock(&self.reader)?;
         let result = run_statement(&conn, sql, params)?;
         Ok(result.rows)
     }
 
     fn new_batch(&self) -> Box<dyn DbBatch> {
         Box::new(SqliteBatch {
-            conn: Arc::clone(&self.conn),
+            writer: Arc::clone(&self.writer),
             statements: Vec::new(),
         })
     }
 }
 
-/// An atomic batch of writes against a [`SqliteDb`].
+/// An atomic batch of writes against a [`SqliteDb`], run on the writer.
 struct SqliteBatch {
-    conn: Arc<Mutex<Connection>>,
+    writer: Arc<Mutex<Connection>>,
     statements: Vec<(String, Vec<DbValue>)>,
 }
 
@@ -165,10 +257,7 @@ impl DbBatch for SqliteBatch {
     }
 
     async fn commit(self: Box<Self>) -> Result<Vec<DbStatementResult>, DbError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|_| DbError::Sql("sqlite connection mutex poisoned".to_string()))?;
+        let conn = lock(&self.writer)?;
 
         // A real interactive transaction: compute is colocated with the data,
         // so we open BEGIN/COMMIT directly. Any error returns early and drops

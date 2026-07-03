@@ -11,9 +11,19 @@ ubiquisync-sql = { workspace = true }
 async-trait = { workspace = true }
 rusqlite = { version = "0.31", features = ["bundled"] }
 
+[features]
+# Exposes the in-memory test constructor (`SqliteDb::open_in_memory`). It's
+# pointless in production — an in-memory database can't use WAL, so the reader
+# gets no snapshot isolation — so it's kept off the default public surface and
+# enabled only for this crate's own tests (via the self dev-dependency below).
+test-support = []
+
 [lints]
 workspace = true
 [dev-dependencies]
+# Depend on ourselves with `test-support` on, so the integration test targets
+# (external crates) can reach `open_in_memory`, which is gated behind it.
+ubiquisync-sqlite = { path = ".", features = ["test-support"] }
 # Pull in the backend-agnostic suites to run them against `SqliteDb`.
 ubiquisync-sql = { workspace = true, features = ["test-support"] }
 ubiquisync-tables = { workspace = true, features = ["test-support"] }
