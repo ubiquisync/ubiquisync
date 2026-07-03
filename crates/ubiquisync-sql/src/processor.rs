@@ -16,7 +16,7 @@ use futures::channel::mpsc;
 use futures::lock::Mutex as AsyncMutex;
 use ubiquisync_core::{
     codec::DecodedEntry,
-    event::Publisher,
+    event::{EventHandler, Publisher},
     hlc::{HlcError, HlcService, Timestamp, wall_ms},
     log_entry::LogEntry,
     sync::{
@@ -37,7 +37,7 @@ use crate::{
 // because the only caller today is the in-crate `test_support` harness, so a
 // plain build sees it as unused.
 #[allow(dead_code)]
-pub(crate) struct Processor<R: Reducer, D: Db, T, P: Publisher<R::Event>> {
+pub(crate) struct Processor<R: Reducer, D: Db, T, E: EventHandler<R::Event>> {
     self_id: Uuid,
     // Behind an async mutex: it hands out `&mut` for the reducer's `prepare`, and
     // holding it across an apply serializes writes (single-writer log store).
@@ -49,11 +49,12 @@ pub(crate) struct Processor<R: Reducer, D: Db, T, P: Publisher<R::Event>> {
     // the idempotent-drop fast path and the `watch_cursors` broadcast.
     cursors: Mutex<PeerCursors>,
     watchers: Mutex<Vec<mpsc::UnboundedSender<CursorsEvent>>>,
-    event_publish: P,
+    event_publish: E::Publish,
+    event_handler: E,
 }
 
 #[allow(dead_code)]
-impl<R: Reducer, D: Db, T: LogTracker<R::Op>, P: Publisher<R::Event>> Processor<R, D, T, P> {
+impl<R: Reducer, D: Db, T: LogTracker<R::Op>, E: EventHandler<R::Event>> Processor<R, D, T, E> {
     /// Open a processor against `db`: set up HLC storage and the tracker (both
     /// namespaced by `prefix`), seed the clock and cursor view from persisted
     /// state, and take ownership of `reducer`.
@@ -62,11 +63,11 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>, P: Publisher<R::Event>> Processor<
         db: D,
         prefix: &str,
         self_id: Uuid,
-        event_publish: P,
     ) -> Result<Self, ProcessorError<R::Error>> {
         let hlc = HlcService::open(SqlHlcStorage::open(&db, prefix).await?)?;
         let tracker = T::init(&db, prefix).await?;
         let cursors = tracker.all_cursors(&db).await?;
+        let (event_publish, event_handler) = E::init();
         Ok(Self {
             reducer: AsyncMutex::new(reducer),
             self_id,
@@ -74,6 +75,7 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>, P: Publisher<R::Event>> Processor<
             hlc,
             tracker,
             event_publish,
+            event_handler,
             cursors: Mutex::new(cursors),
             watchers: Mutex::new(Vec::new()),
         })
@@ -97,8 +99,12 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>, P: Publisher<R::Event>> Processor<
             &op,
         )
         .await?;
-        self.advance_cursor(&self.self_id, entry_idx + 1);
         Ok(())
+    }
+
+    /// The handler this processor emits into — subscribe off it.
+    pub fn event_handler(&self) -> &E {
+        &self.event_handler
     }
 
     /// The backend this processor writes through — for tests and diagnostics.
@@ -164,6 +170,10 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>, P: Publisher<R::Event>> Processor<
         let event = reducer
             .post_apply(apply_state, &batch_result)
             .map_err(ProcessorError::Reducer)?;
+        // Advance under the reducer lock, so the cursor reflects this commit
+        // before the next apply checks it, then emit — an event means the write
+        // is committed *and* the version vector already accounts for it.
+        self.advance_cursor(peer_id, entry_idx + 1);
         self.event_publish.publish(event);
         Ok(())
     }
@@ -183,9 +193,9 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>, P: Publisher<R::Event>> Processor<
         Ok(())
     }
 
-    /// Raw ingest at a caller-given index, returning the reducer's event — no
-    /// dedup gate ([`apply`](LogProcessor::apply)'s job) and no cursor advance.
-    /// Test-only; local writes go through `exec`.
+    /// Raw ingest at a caller-given index — no dedup gate
+    /// ([`apply`](LogProcessor::apply)'s job). Advances the cursor like any
+    /// ingest. Test-only; local writes go through `exec`.
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) async fn process_one(
         &self,
@@ -200,7 +210,7 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>, P: Publisher<R::Event>> Processor<
 }
 
 #[allow(dead_code)]
-impl<R: Reducer, D: Db, T, P: Publisher<R::Event>> Processor<R, D, T, P> {
+impl<R: Reducer, D: Db, T, E: EventHandler<R::Event>> Processor<R, D, T, E> {
     fn cached_cursor(&self, peer: &Uuid) -> u64 {
         lock(&self.cursors).get(peer).copied().unwrap_or(0)
     }
@@ -236,8 +246,10 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 #[async_trait]
-impl<R: Reducer, D: Db, T: Send + Sync, P: Publisher<R::Event> + Send + Sync> HasCursors
-    for Processor<R, D, T, P>
+impl<R: Reducer, D: Db, T: Send + Sync, E: EventHandler<R::Event> + Send + Sync> HasCursors
+    for Processor<R, D, T, E>
+where
+    E::Publish: Send + Sync,
 {
     async fn cursors(&self) -> Result<PeerCursors, SyncError> {
         Ok(lock(&self.cursors).clone())
@@ -259,10 +271,11 @@ impl<R: Reducer, D: Db, T: Send + Sync, P: Publisher<R::Event> + Send + Sync> Ha
 }
 
 #[async_trait]
-impl<R: Reducer, D: Db, T: LogTracker<R::Op>, P: Publisher<R::Event> + Send + Sync> LogProcessor<R::Op>
-    for Processor<R, D, T, P>
+impl<R: Reducer, D: Db, T: LogTracker<R::Op>, E: EventHandler<R::Event> + Send + Sync> LogProcessor<R::Op>
+    for Processor<R, D, T, E>
 where
     R::Error: std::error::Error + Send + Sync + 'static,
+    E::Publish: Send + Sync,
 {
     async fn apply(
         &self,
@@ -290,20 +303,23 @@ where
                 actual_idx: index,
             });
         }
+        // `ingest_entry_or_local` advances the cursor after its commit; the
+        // expunged path does no reducer work, so it advances here instead.
         let outcome = match entry {
             DecodedEntry::LogEntry(e) => self
                 .ingest_entry(&mut reducer, &peer, index, &e)
                 .await
                 .map(|_| ()),
-            DecodedEntry::Expunged(hash) => self.ingest_expunged(&peer, index, &hash).await,
+            DecodedEntry::Expunged(hash) => {
+                let outcome = self.ingest_expunged(&peer, index, &hash).await;
+                if outcome.is_ok() {
+                    self.advance_cursor(&peer, index + 1);
+                }
+                outcome
+            }
         };
         match outcome {
-            // Advance under the lock, so the cursor reflects this commit before
-            // the next apply can check it.
-            Ok(()) => {
-                self.advance_cursor(&peer, index + 1);
-                Ok(Applied { new: true })
-            }
+            Ok(()) => Ok(Applied { new: true }),
             // Backstop if the gate is bypassed (a direct process_one, or an
             // unseeded cache): the batch rolled back, so it's a no-op.
             Err(ProcessorError::Db(DbError::UniqueViolation)) => Ok(Applied { new: false }),
@@ -313,10 +329,11 @@ where
 }
 
 #[async_trait]
-impl<R: Reducer, D: Db, T: HistoryTracker<R::Op>, P: Publisher<R::Event> + Send + Sync> LogSource<R::Op>
-    for Processor<R, D, T, P>
+impl<R: Reducer, D: Db, T: HistoryTracker<R::Op>, E: EventHandler<R::Event> + Send + Sync> LogSource<R::Op>
+    for Processor<R, D, T, E>
 where
     R::Error: std::error::Error + Send + Sync + 'static,
+    E::Publish: Send + Sync,
 {
     async fn read_since(
         &self,

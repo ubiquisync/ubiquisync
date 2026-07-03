@@ -43,6 +43,30 @@ impl<E> Publisher<E> for NoopPublisher {
     fn publish(&self, _event: E) {}
 }
 
+/// Constructs the read side of an event stream, paired with its [`Publisher`]
+/// write end. A producer holds `impl EventHandler` so it can both emit (through
+/// `Publish`) and hand out subscriptions (through the handler itself), with no
+/// bound on the event type. `Send + Sync` is required by the sharer (a
+/// cross-thread producer), not here.
+pub trait EventHandler<E> {
+    /// The write end paired with this handler.
+    type Publish: Publisher<E>;
+
+    /// Build a fresh `(publisher, handler)` sharing one stream.
+    fn init() -> (Self::Publish, Self);
+}
+
+/// An [`EventHandler`] that discards events — pairs [`NoopPublisher`] with itself
+/// for a producer with nothing listening.
+pub struct NoopHandler;
+
+impl<E> EventHandler<E> for NoopHandler {
+    type Publish = NoopPublisher;
+    fn init() -> (Self::Publish, Self) {
+        (NoopPublisher, NoopHandler)
+    }
+}
+
 /// Per-subscriber channel depth. A subscriber this far behind is dropped.
 const SUBSCRIBER_BUFFER: usize = 256;
 
@@ -84,6 +108,13 @@ pub fn event_bus<T: RoutableEvent>() -> (EventBusPublisher<T>, EventBus<T>) {
         },
         EventBus { inner },
     )
+}
+
+impl<T: RoutableEvent> EventHandler<T> for EventBus<T> {
+    type Publish = EventBusPublisher<T>;
+    fn init() -> (Self::Publish, Self) {
+        event_bus()
+    }
 }
 
 impl<T: RoutableEvent> Publisher<T> for EventBusPublisher<T> {
