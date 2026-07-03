@@ -44,8 +44,8 @@ use crate::{
 /// is paired with need not be idempotent. If it does not, the reducer must be.
 /// Nothing yet enforces that pairing at the type level (a future marker on the
 /// reducer could); today it is a contract the wiring must honor.
-#[async_trait::async_trait(?Send)]
-pub trait LogTracker<Op>: Sized {
+#[async_trait::async_trait]
+pub trait LogTracker<Op>: Sized + Send + Sync {
     /// Initialize this tracker's backing state, namespaced by `prefix`, and
     /// return an instance bound to it.
     async fn init(db: &dyn Db, prefix: &str) -> Result<Self, DbError>;
@@ -83,7 +83,7 @@ pub trait LogTracker<Op>: Sized {
 /// A [`LogTracker`] that also reconstructs stored entries — the op-log case,
 /// which keeps full history and so can back a replication
 /// [`LogSource`](ubiquisync_core::sync::LogSource).
-#[async_trait::async_trait(?Send)]
+#[async_trait::async_trait]
 pub trait HistoryTracker<Op>: LogTracker<Op> {
     /// Up to `limit` of `peer_id`'s entries at or after `from`, ascending
     /// (expunged markers included), reconstructed from stored rows.
@@ -125,8 +125,8 @@ pub struct LogIndexTracker<Op> {
     _phantom: PhantomData<Op>,
 }
 
-#[async_trait::async_trait(?Send)]
-impl<Op: IndexableOp> LogTracker<Op> for LogIndexTracker<Op> {
+#[async_trait::async_trait]
+impl<Op: IndexableOp + Send + Sync> LogTracker<Op> for LogIndexTracker<Op> {
     async fn init(db: &dyn Db, prefix: &str) -> Result<Self, DbError> {
         let quoted_table_name = quote_ident(&format!("{prefix}__oplog"));
         let dialect = db.dialect();
@@ -238,8 +238,8 @@ impl<Op: IndexableOp> LogTracker<Op> for LogIndexTracker<Op> {
     }
 }
 
-#[async_trait::async_trait(?Send)]
-impl<Op: IndexableOp> HistoryTracker<Op> for LogIndexTracker<Op> {
+#[async_trait::async_trait]
+impl<Op: IndexableOp + Send + Sync> HistoryTracker<Op> for LogIndexTracker<Op> {
     async fn read_entries(
         &self,
         db: &dyn Db,

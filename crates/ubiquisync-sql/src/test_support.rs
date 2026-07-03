@@ -96,7 +96,7 @@ impl MaxRegister {
     }
 }
 
-#[async_trait(?Send)]
+#[async_trait]
 impl Reducer for MaxRegister {
     type Op = MaxOp;
     type ReadState = ();

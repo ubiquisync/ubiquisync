@@ -84,7 +84,7 @@ impl Reducer {
     }
 }
 
-#[async_trait::async_trait(?Send)]
+#[async_trait::async_trait]
 impl ubiquisync_sql::reducer::Reducer for Reducer {
     type Op = Op;
     type Error = TablesError;

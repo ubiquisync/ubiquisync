@@ -67,7 +67,7 @@ impl SqliteDb {
     }
 }
 
-#[async_trait(?Send)]
+#[async_trait]
 impl Db for SqliteDb {
     fn dialect(&self) -> SqlDialect {
         SqlDialect::Sqlite
@@ -152,7 +152,7 @@ struct SqliteBatch {
     statements: Vec<(String, Vec<DbValue>)>,
 }
 
-#[async_trait(?Send)]
+#[async_trait]
 impl DbBatch for SqliteBatch {
     fn dialect(&self) -> SqlDialect {
         SqlDialect::Sqlite

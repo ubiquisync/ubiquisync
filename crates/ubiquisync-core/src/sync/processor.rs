@@ -20,11 +20,10 @@ use super::error::SyncError;
 /// redelivery is safe; an `index` beyond the next expected one is a gap and is
 /// rejected.
 ///
-/// `&self` and `?Send`: one processor is shared (`Rc<dyn LogProcessor>`) as the
-/// apply target of several sources while also read as a
-/// [`LogSource`](super::LogSource), so it mutates through interior mutability.
-/// `?Send` matches the `?Send` `Db` backend (wasm/Workers).
-#[async_trait(?Send)]
+/// `&self`: one processor is shared (`Arc<dyn LogProcessor>`) as the apply target
+/// of several sources while also read as a [`LogSource`](super::LogSource), so it
+/// mutates through interior mutability.
+#[async_trait]
 pub trait LogProcessor<E>: HasCursors {
     /// Apply one entry at `(peer, index)`, advancing the cursor for `peer` to
     /// `index + 1`. Idempotent (see the trait docs).

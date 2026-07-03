@@ -31,10 +31,10 @@ use crate::db::{Db, DbBatch, DbStatementResult};
 /// back, so the reducer need not be idempotent; behind one that does not reject,
 /// it must be. See the tracker's
 /// [duplicate-rejection contract](crate::tracker::LogTracker#duplicate-rejection).
-#[async_trait::async_trait(?Send)]
-pub trait Reducer {
+#[async_trait::async_trait]
+pub trait Reducer: Send {
     /// The op vocabulary this reducer materializes (e.g. the table op enum).
-    type Op;
+    type Op: Send + Sync;
     /// Data read in [`prepare`](Reducer::prepare) and consumed by
     /// [`apply`](Reducer::apply): e.g. a card's prior FSRS state, or its full
     /// review history when an out-of-order op forces a recompute. `()` when
@@ -43,9 +43,9 @@ pub trait Reducer {
     /// Carried from [`apply`](Reducer::apply) to
     /// [`post_apply`](Reducer::post_apply): the `StmtId`s of the emitted
     /// statements plus any op-derived data needed to build the event.
-    type ApplyState;
+    type ApplyState: Send;
     /// The change event produced for an applied op, for downstream observers.
-    type Event;
+    type Event: Send;
     /// Error surfaced from any phase.
     type Error;
 
