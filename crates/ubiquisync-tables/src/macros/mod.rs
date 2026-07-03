@@ -33,7 +33,7 @@ macro_rules! __col_type {
 
 /// Define one table's schema constructor inside a module named `$mod`.
 ///
-/// Generates `pub mod $mod { pub fn schema() -> Result<TableSchema, TablesError> }`.
+/// Generates `pub mod $mod { pub fn table() -> Result<TableSchema, TablesError> }`.
 /// The module name is the user-facing VIEW name; the PK and column idents are
 /// the VIEW's column names. Types are keywords: `Bytes`, `Text`, `I64`, `Uuid`.
 ///
@@ -46,11 +46,15 @@ macro_rules! define_table {
         pk: ( $($pk_name:ident $pk_type:ident),+ $(,)? ),
         { $( ($col_idx:expr, $col_name:ident, $col_type:ident) ),* $(,)? }
     ) => {
+        #[doc = concat!("Schema for the `", stringify!($mod), "` table.")]
         pub mod $mod {
-            /// Build this table's `TableSchema`. Fallible only via
-            /// `TableSchema::new` (e.g. a duplicate column name); the PK-count
-            /// check can't fire — the ID and PK names share one declaration.
-            pub fn table() -> Result<
+            /// Build this table's `TableSchema`. The returned `Result` surfaces
+            /// `TableSchema::new` validation errors (e.g. a duplicate column
+            /// name); the PK-count check can't fire, since the ID and PK names
+            /// share one declaration. An `index` too large for the PK count, or
+            /// more than four PK columns, instead panics at `TableId::new` —
+            /// those are static declaration errors, not runtime failures.
+            pub fn table() -> ::core::result::Result<
                 $crate::schema::TableSchema,
                 $crate::error::TablesError,
             > {
@@ -61,8 +65,8 @@ macro_rules! define_table {
                 $crate::schema::TableSchema::new(
                     id,
                     stringify!($mod).into(),
-                    vec![ $( stringify!($pk_name).into() ),+ ],
-                    vec![ $(
+                    ::std::vec![ $( stringify!($pk_name).into() ),+ ],
+                    ::std::vec![ $(
                         $crate::schema::ColumnSchema {
                             name: stringify!($col_name).into(),
                             id: $crate::id::ColumnId::new(
@@ -110,11 +114,11 @@ macro_rules! define_tables {
 
         /// All declared table schemas, in declaration order — pass to
         /// `Reducer::new`.
-        pub fn tables() -> Result<
-            Vec<$crate::schema::TableSchema>,
+        pub fn tables() -> ::core::result::Result<
+            ::std::vec::Vec<$crate::schema::TableSchema>,
             $crate::error::TablesError,
         > {
-            Ok(vec![ $( $mod::table()? ),+ ])
+            ::core::result::Result::Ok(::std::vec![ $( $mod::table()? ),+ ])
         }
     };
 }
