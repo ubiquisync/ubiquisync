@@ -53,8 +53,8 @@ pub struct DbStatementResult {
 /// *do* offer a real interactive transaction because compute is colocated with
 /// the data — rusqlite `BEGIN/COMMIT`, Durable Object `transactionSync`. One
 /// batch abstraction therefore runs identically everywhere.
-#[async_trait(?Send)]
-pub trait DbBatch {
+#[async_trait]
+pub trait DbBatch: Send {
     /// The SQL dialect this batch speaks. Available here because callers build
     /// statements while holding only the batch.
     fn dialect(&self) -> SqlDialect;

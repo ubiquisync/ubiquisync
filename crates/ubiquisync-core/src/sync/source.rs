@@ -14,9 +14,8 @@ use super::error::SyncError;
 /// A driver diffs a peer's cursors against its own and pulls only the gap.
 /// Keeping the cheap cursor digest separate from the payload avoids a thundering
 /// herd — many holders advertise "I have X" for almost nothing, and the receiver
-/// fetches X once. `?Send` and object-safe, like
-/// [`LogProcessor`](super::LogProcessor).
-#[async_trait(?Send)]
+/// fetches X once. Object-safe, like [`LogProcessor`](super::LogProcessor).
+#[async_trait]
 pub trait LogSource<E>: HasCursors {
     /// A bounded batch of `peer`'s entries at or after `from`, ascending
     /// (expunged markers included). Empty means drained at `from`; the caller

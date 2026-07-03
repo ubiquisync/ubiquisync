@@ -9,11 +9,11 @@
 //! tracker keeps full history ([`HistoryTracker`]) it also implements
 //! [`LogSource`], and so is a `Replica`.
 
-use std::cell::RefCell;
+use std::sync::Mutex;
 
 use async_trait::async_trait;
 use futures::channel::mpsc;
-use futures::lock::Mutex;
+use futures::lock::Mutex as AsyncMutex;
 use ubiquisync_core::{
     codec::DecodedEntry,
     hlc::{HlcError, HlcService, Timestamp, wall_ms},
@@ -40,14 +40,14 @@ pub(crate) struct Processor<R: Reducer, D: Db, T> {
     self_id: Uuid,
     // Behind an async mutex: it hands out `&mut` for the reducer's `prepare`, and
     // holding it across an apply serializes writes (single-writer log store).
-    reducer: Mutex<R>,
+    reducer: AsyncMutex<R>,
     db: D,
     hlc: HlcService<SqlHlcStorage>,
     tracker: T,
     // In-memory version vector, seeded at open and advanced on each apply. Backs
     // the idempotent-drop fast path and the `watch_cursors` broadcast.
-    cursors: RefCell<PeerCursors>,
-    watchers: RefCell<Vec<mpsc::UnboundedSender<CursorsEvent>>>,
+    cursors: Mutex<PeerCursors>,
+    watchers: Mutex<Vec<mpsc::UnboundedSender<CursorsEvent>>>,
 }
 
 #[allow(dead_code)]
@@ -65,13 +65,13 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>> Processor<R, D, T> {
         let tracker = T::init(&db, prefix).await?;
         let cursors = tracker.all_cursors(&db).await?;
         Ok(Self {
-            reducer: Mutex::new(reducer),
+            reducer: AsyncMutex::new(reducer),
             self_id,
             db,
             hlc,
             tracker,
-            cursors: RefCell::new(cursors),
-            watchers: RefCell::new(Vec::new()),
+            cursors: Mutex::new(cursors),
+            watchers: Mutex::new(Vec::new()),
         })
     }
 
@@ -197,13 +197,13 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>> Processor<R, D, T> {
 #[allow(dead_code)]
 impl<R: Reducer, D: Db, T> Processor<R, D, T> {
     fn cached_cursor(&self, peer: &Uuid) -> u64 {
-        self.cursors.borrow().get(peer).copied().unwrap_or(0)
+        lock(&self.cursors).get(peer).copied().unwrap_or(0)
     }
 
     /// Raise `peer`'s cached cursor and broadcast the advance to watchers.
     fn advance_cursor(&self, peer: &Uuid, next: u64) {
         let advanced = {
-            let mut cursors = self.cursors.borrow_mut();
+            let mut cursors = lock(&self.cursors);
             let slot = cursors.entry(*peer).or_insert(0);
             if next > *slot {
                 *slot = next;
@@ -215,7 +215,7 @@ impl<R: Reducer, D: Db, T> Processor<R, D, T> {
         if advanced {
             let mut delta = PeerCursors::new();
             delta.insert(*peer, next);
-            self.watchers.borrow_mut().retain(|tx| {
+            lock(&self.watchers).retain(|tx| {
                 tx.unbounded_send(CursorsEvent::Advanced(delta.clone()))
                     .is_ok()
             });
@@ -223,28 +223,38 @@ impl<R: Reducer, D: Db, T> Processor<R, D, T> {
     }
 }
 
-#[async_trait(?Send)]
-impl<R: Reducer, D: Db, T> HasCursors for Processor<R, D, T> {
+/// Lock a sync mutex, recovering the guard if a prior holder panicked: the
+/// protected cursor/watcher state can't be left corrupt by a panic, so this
+/// beats propagating a poison to every subsystem sharing the processor.
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[async_trait]
+impl<R: Reducer, D: Db, T: Send + Sync> HasCursors for Processor<R, D, T> {
     async fn cursors(&self) -> Result<PeerCursors, SyncError> {
-        Ok(self.cursors.borrow().clone())
+        Ok(lock(&self.cursors).clone())
     }
 
     fn watch_cursors(&self) -> CursorStream {
-        // Synchronous: registration and the snapshot happen without an await, so
-        // no apply can advance the cursor in between and be missed.
         let (tx, rx) = mpsc::unbounded();
-        let _ = tx.unbounded_send(CursorsEvent::Snapshot(self.cursors.borrow().clone()));
-        let mut watchers = self.watchers.borrow_mut();
+        // Hold both locks across snapshot + registration (cursors before
+        // watchers, the order advance_cursor also acquires them) so a concurrent
+        // advance can't slip its mutation and broadcast between the two and leave
+        // this subscriber stale. Neither section awaits.
+        let cursors = lock(&self.cursors);
+        let mut watchers = lock(&self.watchers);
+        let _ = tx.unbounded_send(CursorsEvent::Snapshot(cursors.clone()));
         watchers.retain(|w| !w.is_closed()); // drop subscribers that went away
         watchers.push(tx);
         Box::pin(rx)
     }
 }
 
-#[async_trait(?Send)]
+#[async_trait]
 impl<R: Reducer, D: Db, T: LogTracker<R::Op>> LogProcessor<R::Op> for Processor<R, D, T>
 where
-    R::Error: std::error::Error + 'static,
+    R::Error: std::error::Error + Send + Sync + 'static,
 {
     async fn apply(
         &self,
@@ -294,10 +304,10 @@ where
     }
 }
 
-#[async_trait(?Send)]
+#[async_trait]
 impl<R: Reducer, D: Db, T: HistoryTracker<R::Op>> LogSource<R::Op> for Processor<R, D, T>
 where
-    R::Error: std::error::Error + 'static,
+    R::Error: std::error::Error + Send + Sync + 'static,
 {
     async fn read_since(
         &self,

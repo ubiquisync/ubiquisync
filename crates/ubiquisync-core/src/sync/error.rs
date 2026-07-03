@@ -32,8 +32,7 @@ pub enum SyncError {
     #[error("codec error: {0}")]
     CodecError(#[from] CodecError),
     /// A backend failure erased behind a boxed error, letting a concrete replica
-    /// surface its own error type through the fixed trait boundary. Not `Send`:
-    /// the traits are `?Send`, matching the `?Send` `Db` backend.
+    /// surface its own error type through the fixed trait boundary.
     #[error("backend error: {0}")]
-    Backend(Box<dyn std::error::Error>),
+    Backend(Box<dyn std::error::Error + Send + Sync>),
 }

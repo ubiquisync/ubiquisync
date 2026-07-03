@@ -32,14 +32,14 @@ pub enum CursorsEvent {
     Advanced(PeerCursors),
 }
 
-/// Stream from [`watch_cursors`](HasCursors::watch_cursors). Boxed and `?Send`
-/// to keep [`HasCursors`] object-safe; ending means the watch closed.
-pub type CursorStream = Pin<Box<dyn Stream<Item = CursorsEvent>>>;
+/// Stream from [`watch_cursors`](HasCursors::watch_cursors); ending means the
+/// watch closed.
+pub type CursorStream = Pin<Box<dyn Stream<Item = CursorsEvent> + Send>>;
 
 /// Snapshot or watch a replica's cursor vector — the shared base of
 /// [`LogProcessor`](super::LogProcessor) and [`LogSource`](super::LogSource).
-#[async_trait(?Send)]
-pub trait HasCursors {
+#[async_trait]
+pub trait HasCursors: Send + Sync {
     /// Snapshot of the current cursor vector.
     async fn cursors(&self) -> Result<PeerCursors, SyncError>;
 
