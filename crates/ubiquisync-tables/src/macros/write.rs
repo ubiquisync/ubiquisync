@@ -3,8 +3,9 @@
 //!
 //! The write vocabulary is deliberately just upsert + delete (the conflict-free
 //! merge primitives) — these builders only *construct* an `Op`; callers apply it
-//! with `Store::exec`. Column setters take `Option<T>`: `Some(v)` writes the
-//! value, `None` writes SQL NULL; columns left unset merge last-writer-wins.
+//! with `Store::exec`. Each value column gets two setters: `<col>(value)` writes
+//! the value and `<col>_null()` writes SQL NULL; columns left unset merge
+//! last-writer-wins.
 //!
 //! Invoked by [`define_table!`](crate::define_table); not called directly.
 
@@ -29,9 +30,9 @@ macro_rules! __define_table_write {
             }
         }
 
-        /// Accumulates column writes for an [`upsert`]. Each setter takes an
-        /// `Option`: `Some` writes the value, `None` writes SQL NULL. Columns
-        /// never set are left to merge last-writer-wins.
+        /// Accumulates column writes for an [`upsert`]. Each value column has a
+        /// `<col>(value)` setter and a `<col>_null()` setter; columns never set
+        /// are left to merge last-writer-wins.
         #[allow(dead_code, missing_docs)]
         pub struct UpsertBuilder {
             primary_key: ::std::vec::Vec<$crate::op::Value>,

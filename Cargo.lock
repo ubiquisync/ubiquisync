@@ -435,7 +435,7 @@ dependencies = [
 
 [[package]]
 name = "ubiquisync"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "ubiquisync-core",
  "ubiquisync-postgres",
@@ -445,7 +445,7 @@ dependencies = [
 
 [[package]]
 name = "ubiquisync-core"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "async-trait",
  "blake3",
@@ -458,14 +458,14 @@ dependencies = [
 
 [[package]]
 name = "ubiquisync-postgres"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "ubiquisync-sql",
 ]
 
 [[package]]
 name = "ubiquisync-sql"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "async-trait",
  "blake3",
@@ -476,7 +476,7 @@ dependencies = [
 
 [[package]]
 name = "ubiquisync-sqlite"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "async-trait",
  "pollster",
@@ -487,7 +487,7 @@ dependencies = [
 
 [[package]]
 name = "ubiquisync-tables"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "async-trait",
  "bitfield-struct",
