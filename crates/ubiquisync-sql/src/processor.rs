@@ -12,11 +12,11 @@
 use std::sync::Mutex;
 
 use async_trait::async_trait;
+use futures::channel::mpsc;
 use futures::lock::Mutex as AsyncMutex;
-use futures::{Stream, StreamExt, channel::mpsc};
 use ubiquisync_core::{
     codec::DecodedEntry,
-    event::{EventBus, EventHandler, Publisher, RoutableEvent},
+    event::{EventBus, EventHandler, Publisher, RoutableEvent, Subscription},
     hlc::{HlcError, HlcService, Timestamp, wall_ms},
     log_entry::LogEntry,
     sync::{
@@ -27,9 +27,10 @@ use ubiquisync_core::{
 };
 
 use crate::{
-    db::{Db, DbError},
+    db::{Db, DbError, DbRow, DbValue},
     hlc_storage::SqlHlcStorage,
     reducer::Reducer,
+    store::SqlStore,
     tracker::{HistoryTracker, LogTracker, LogTrackerError},
 };
 
@@ -362,27 +363,27 @@ where
     }
 }
 
+// The engine implements `Store` over its *own* op/event types — no projection.
+// A domain wrapper (e.g. a `-tables` store) layers `Into`/`TryFrom` on top to
+// expose an app slice; that stays out of here.
 #[async_trait]
-impl<Op, Event: RoutableEvent, R: Reducer, D: Db, T: LogTracker<R::Op>>
-    ubiquisync_core::store::Store<Op, ProcessorError<BoxError>, Event>
+impl<R: Reducer, D: Db, T: LogTracker<R::Op>>
+    ubiquisync_core::store::Store<R::Op, ProcessorError<BoxError>, R::Event>
     for Processor<R, D, T, EventBus<R::Event>>
 where
-    Op: Into<R::Op> + Send + 'static,
-    Event: TryFrom<R::Event>,
     R::Event: RoutableEvent,
     R::Error: std::error::Error + Send + Sync + 'static,
-    Event::Target: Into<<<R as Reducer>::Event as RoutableEvent>::Target>,
-    <<R as Reducer>::Event as RoutableEvent>::Target: Send + Sync + Unpin,
+    <R::Event as RoutableEvent>::Target: Send + Sync,
 {
     async fn exec(
         &self,
         server_user_id: Option<Uuid>,
-        op: Op,
+        op: R::Op,
     ) -> Result<(), ProcessorError<BoxError>> {
         // Inherent `Processor::exec` (shadows this trait method), then erase the
         // reducer error behind `BoxError` so the Store surface is one uniform type
         // across reducers while keeping the `ProcessorError` variants matchable.
-        Processor::exec(self, server_user_id, op.into())
+        Processor::exec(self, server_user_id, op)
             .await
             .map_err(|e| match e {
                 ProcessorError::Reducer(r) => ProcessorError::Reducer(Box::new(r) as BoxError),
@@ -393,10 +394,21 @@ where
             })
     }
 
-    fn watch(&self, target: Event::Target) -> impl Stream<Item = Event> {
-        self.event_handler()
-            .subscribe(target.into())
-            .filter_map(|e| futures::future::ready(Event::try_from(e).ok()))
+    fn watch(&self, target: <R::Event as RoutableEvent>::Target) -> Subscription<R::Event> {
+        self.event_handler().subscribe(target)
+    }
+}
+
+#[async_trait]
+impl<R: Reducer, D: Db, T: LogTracker<R::Op>> SqlStore<R::Op, R::Event>
+    for Processor<R, D, T, EventBus<R::Event>>
+where
+    R::Event: RoutableEvent,
+    R::Error: std::error::Error + Send + Sync + 'static,
+    <R::Event as RoutableEvent>::Target: Send + Sync,
+{
+    async fn query(&self, sql: &str, params: &[DbValue]) -> Result<Vec<DbRow>, DbError> {
+        self.db().query(sql, params).await
     }
 }
 
