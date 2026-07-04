@@ -479,10 +479,8 @@ name = "ubiquisync-sqlite"
 version = "0.0.2"
 dependencies = [
  "async-trait",
- "futures",
  "pollster",
  "rusqlite",
- "ubiquisync-core",
  "ubiquisync-sql",
  "ubiquisync-tables",
 ]

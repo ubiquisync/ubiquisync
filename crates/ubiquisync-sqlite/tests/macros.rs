@@ -1,44 +1,13 @@
-//! End-to-end check that `define_tables!` produces schemas the table
-//! [`Reducer`] actually accepts: the generated `TableId`/`ColumnId`s must
-//! materialize into physical storage and a user-facing VIEW under the declared
-//! names. The macro's own unit tests only assert the in-memory `TableSchema`
-//! shape; this closes the loop against a real `Db`.
+//! Runs the backend-agnostic table-macro suite from `ubiquisync-tables` against
+//! the real SQLite driver. The scenarios live in `ubiquisync_tables::test_support`
+//! so every backend asserts identical behavior; this file only supplies the `Db`.
 
-use ubiquisync_sql::db::Db;
 use ubiquisync_sqlite::SqliteDb;
-use ubiquisync_tables::reducer::Reducer;
-
-// Declared at module scope, the way a real consumer would — a single-PK table
-// and a composite-PK table, covering every column-type keyword.
-ubiquisync_tables::define_tables! {
-    1 notes  (id Uuid)         => { (0 body Text), (1 n I64) },
-    2 events (k Text, seq I64) => { (0 payload Bytes) },
-}
+use ubiquisync_tables::test_support::run_macros_suite;
 
 #[test]
-fn generated_schemas_build_reducer_and_expose_views() {
-    pollster::block_on(async {
-        let db = SqliteDb::open_in_memory().unwrap();
-
-        // The generated schemas must be accepted by the reducer, which creates
-        // each table's physical storage and its user-facing VIEW up front.
-        let _reducer = Reducer::new("app", &tables().unwrap(), &db)
-            .await
-            .expect("reducer accepts macro-generated schemas");
-
-        // Each VIEW exists and exposes the declared column names (the alias
-        // wiring baked into the CREATE VIEW). No rows written, so this checks
-        // the schema surface, not value round-tripping.
-        let rows = db
-            .query(r#"SELECT "id", "body", "n" FROM "notes""#, &[])
-            .await
-            .expect("notes view is queryable under its declared column names");
-        assert!(rows.is_empty());
-
-        let rows = db
-            .query(r#"SELECT "k", "seq", "payload" FROM "events""#, &[])
-            .await
-            .expect("events view is queryable under its declared column names");
-        assert!(rows.is_empty());
-    });
+fn macros_suite() {
+    // SQLite's futures are synchronous, so any executor drives the suite to
+    // completion; `pollster` is a minimal, wakeup-correct `block_on`.
+    pollster::block_on(run_macros_suite(SqliteDb::open_in_memory().unwrap()));
 }

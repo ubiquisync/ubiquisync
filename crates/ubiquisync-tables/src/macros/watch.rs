@@ -49,6 +49,9 @@ macro_rules! __define_table_watch {
             // next table's `Event` in turn.
             type Error = $crate::watch::ChangeEvent;
 
+            // `unused_*`: a key-only table (no value columns) never mutates
+            // `upsert` and never binds `cv`.
+            #[allow(unused_mut, unused_variables)]
             fn try_from(
                 event: $crate::watch::ChangeEvent,
             ) -> ::core::result::Result<Self, $crate::watch::ChangeEvent> {
