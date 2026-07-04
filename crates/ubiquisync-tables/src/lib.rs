@@ -23,6 +23,8 @@ pub mod error;
 pub mod id;
 /// Splits ops into indexable `(tag, key, value)` parts for the SQL op-log.
 pub mod index_codec;
+/// Declarative macros for building [`schema`] values from a compact table DSL.
+pub mod macros;
 mod naming;
 pub mod op;
 // Physical storage layer (surrogate tables, schema reconciliation). Wired into
@@ -30,8 +32,9 @@ pub mod op;
 // `test_support` suite exercises it in the meantime.
 #[allow(dead_code)]
 mod physical_schema;
-#[allow(dead_code)]
-mod schema;
+/// User-declared table schemas ([`TableSchema`](schema::TableSchema)): the
+/// user-facing name and columns exposed as a SQL VIEW over surrogate storage.
+pub mod schema;
 
 pub mod reducer;
 /// Backend-agnostic physical-schema suite the driver crates run against their
