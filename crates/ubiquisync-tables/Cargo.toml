@@ -17,6 +17,11 @@ ubiquisync-sql = { workspace = true }
 bitfield-struct = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
+sea-query = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+pollster = { workspace = true }
 
 [lints]
 workspace = true

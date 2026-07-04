@@ -35,3 +35,5 @@ futures-channel = "0.3.32"
 futures-core = "0.3.32"
 pollster = "0.4.0"
 thiserror = "2.0.18"
+sea-query = { version = "1.0.1", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "with-uuid"] }
+uuid = { version = "1.23.4", default-features = false }

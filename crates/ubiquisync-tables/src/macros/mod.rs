@@ -7,10 +7,20 @@
 //! count can never disagree — the one `TableSchema::new` error the macro cannot
 //! hit by construction.
 //!
-//! This is intentionally schema-only for now. The source `def` module also
-//! generated a typed update/query/event/store API per table; those layers
-//! depend on store plumbing that isn't ported yet and will grow here (likely as
-//! sibling helper-macro modules) once it lands.
+//! Alongside the schema, [`define_table!`] emits a typed **query** surface per
+//! table (a [`sea_query`](crate::macros::support::sea_query) column enum plus a
+//! `Row` and `get`/`all` readers) — see the sibling `query` helper-macro module.
+//! The typed update/delete and event-watch layers from the source `def` module
+//! will land as further sibling modules.
+
+// Sibling helper-macro module expanded by `define_table!`. `#[macro_export]`
+// hoists its macros to the crate root, so this just needs to be compiled.
+mod query;
+
+/// Runtime glue and re-exports the generated code expands against. `pub` (but
+/// hidden) so `$crate::macros::support::…` resolves in downstream crates.
+#[doc(hidden)]
+pub mod support;
 
 /// Internal: map a column-type keyword (`Bytes`/`Text`/`I64`/`Uuid`) to a
 /// [`ColType`](crate::col_type::ColType). Shared by PK and value columns.
@@ -90,6 +100,14 @@ macro_rules! define_table {
                     ),* ],
                 )
             }
+
+            // Typed query surface (Col iden enum, Row, get/all) over this
+            // table's VIEW. See the `macros::query` module.
+            $crate::__define_table_query!(
+                $mod,
+                ( $($pk_name $pk_type),+ ),
+                { $( $col_name $col_type ),* }
+            );
         }
     };
 }
