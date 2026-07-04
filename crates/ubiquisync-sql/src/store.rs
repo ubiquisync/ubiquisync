@@ -9,8 +9,10 @@ use crate::{
 
 /// A [`Store`](ubiquisync_core::store::Store) backed by SQL, adding ad-hoc reads.
 ///
-/// The error is always the SQL engine's [`ProcessorError<BoxError>`], so it's
-/// pinned in the supertrait bound rather than left as a parameter.
+/// The inherited [`Store`](ubiquisync_core::store::Store) surface (`exec`) always
+/// errors as the SQL engine's [`ProcessorError<BoxError>`], so it's pinned in the
+/// supertrait bound rather than left as a parameter. [`query`](SqlStore::query)
+/// reports its own [`DbError`] instead.
 #[async_trait::async_trait]
 pub trait SqlStore<Op, Event: RoutableEvent>:
     ubiquisync_core::store::Store<Op, ProcessorError<BoxError>, Event>
