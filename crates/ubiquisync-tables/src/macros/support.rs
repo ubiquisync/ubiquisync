@@ -14,7 +14,7 @@ pub use sea_query;
 pub use uuid;
 
 pub use futures::Stream;
-pub use paste;
+pub use pastey;
 pub use ubiquisync_core::event::RoutableEvent;
 pub use ubiquisync_core::uuid::Uuid as CoreUuid;
 pub use ubiquisync_sql::db::{DbError, DbRow, DbValue};
@@ -46,28 +46,50 @@ pub fn push_col(
     }
 }
 
-/// Map a sea-query bind [`Value`] to our [`DbValue`]. Only the variants the table
-/// column types can produce are handled; any other variant is a codegen bug, not
-/// a runtime input, so it panics.
-pub fn value_to_db(value: Value) -> DbValue {
-    match value {
-        Value::BigInt(Some(i)) => DbValue::Integer(i),
+/// Map a sea-query bind [`Value`] to our [`DbValue`]. The `get`/`get_all` readers
+/// only feed macro-controlled binds, but `query` hands callers the full
+/// [`Expr`](sea_query::Expr) surface, so any scalar can arrive here. Booleans,
+/// every signed/unsigned integer width (`LIMIT`/`OFFSET` bind unsigned), chars,
+/// strings, bytes, and UUIDs map cleanly; a float or any exotic type has no
+/// `DbValue` (our columns are only `Bytes`/`Uuid`/`Text`/`I64`), so it's a caller
+/// type error reported as [`DbError`] — never a panic.
+pub fn value_to_db(value: Value) -> Result<DbValue, DbError> {
+    let db = match value {
+        Value::Bool(Some(b)) => DbValue::Integer(b as i64),
+        Value::TinyInt(Some(i)) => DbValue::Integer(i as i64),
+        Value::SmallInt(Some(i)) => DbValue::Integer(i as i64),
         Value::Int(Some(i)) => DbValue::Integer(i as i64),
+        Value::BigInt(Some(i)) => DbValue::Integer(i),
+        Value::TinyUnsigned(Some(u)) => DbValue::Integer(u as i64),
+        Value::SmallUnsigned(Some(u)) => DbValue::Integer(u as i64),
+        Value::Unsigned(Some(u)) => DbValue::Integer(u as i64),
+        Value::BigUnsigned(Some(u)) => {
+            DbValue::Integer(i64::try_from(u).map_err(|_| DbError::IntegerOutOfRange(u as i128))?)
+        }
+        Value::Char(Some(c)) => DbValue::Text(c.to_string()),
         Value::String(Some(s)) => DbValue::Text(s),
         Value::Bytes(Some(b)) => DbValue::Blob(b),
         Value::Uuid(Some(u)) => DbValue::Uuid(u.into_bytes()),
-        // `LIMIT`/`OFFSET` bind as unsigned; they stay well within `i64`.
-        Value::BigUnsigned(Some(u)) => DbValue::Integer(u as i64),
-        Value::Unsigned(Some(u)) => DbValue::Integer(u as i64),
-        Value::BigInt(None)
+        Value::Bool(None)
+        | Value::TinyInt(None)
+        | Value::SmallInt(None)
         | Value::Int(None)
-        | Value::BigUnsigned(None)
+        | Value::BigInt(None)
+        | Value::TinyUnsigned(None)
+        | Value::SmallUnsigned(None)
         | Value::Unsigned(None)
+        | Value::BigUnsigned(None)
+        | Value::Char(None)
         | Value::String(None)
         | Value::Bytes(None)
         | Value::Uuid(None) => DbValue::Null,
-        other => panic!("ubiquisync-tables: unsupported bind value: {other:?}"),
-    }
+        other => {
+            return Err(DbError::Sql(format!(
+                "unsupported value bound into query: {other:?}"
+            )));
+        }
+    };
+    Ok(db)
 }
 
 /// Project a raw [`ChangeEvent`] subscription into a stream of a table's typed
@@ -83,10 +105,17 @@ where
 /// [`SqlStore::query`](ubiquisync_sql::store::SqlStore::query). The dialect fixes
 /// placeholder style (`?` vs `$1`) and
 /// identifier quoting.
-pub fn build_select(stmt: &SelectStatement, dialect: SqlDialect) -> (String, Vec<DbValue>) {
+pub fn build_select(
+    stmt: &SelectStatement,
+    dialect: SqlDialect,
+) -> Result<(String, Vec<DbValue>), DbError> {
     let (sql, values) = match dialect {
         SqlDialect::Sqlite => stmt.build_any(&SqliteQueryBuilder),
         SqlDialect::Postgres => stmt.build_any(&PostgresQueryBuilder),
     };
-    (sql, values.into_iter().map(value_to_db).collect())
+    let params = values
+        .into_iter()
+        .map(value_to_db)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((sql, params))
 }

@@ -90,7 +90,7 @@ macro_rules! __w_setter {
             self
         }
 
-        $crate::macros::support::paste::paste! {
+        $crate::macros::support::pastey::paste! {
             #[doc = concat!("Set `", stringify!($name), "` to SQL NULL.")]
             pub fn [< $name _null >](mut self) -> Self {
                 $crate::macros::support::push_col(

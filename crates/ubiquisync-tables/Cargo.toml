@@ -18,7 +18,7 @@ bitfield-struct = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
-paste = { workspace = true }
+pastey = { workspace = true }
 sea-query = { workspace = true }
 uuid = { workspace = true }
 

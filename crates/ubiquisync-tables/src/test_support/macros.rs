@@ -44,6 +44,7 @@ pub async fn run_macros_suite<D: Db>(db: D) {
     delete_hides_the_row(s).await;
     get_all_returns_live_rows_only(s).await;
     query_filters_orders_and_limits(s).await;
+    query_rejects_an_unbindable_filter_value(s).await;
     composite_pk_upsert_get_and_delete(s).await;
     watch_delivers_typed_upsert_event(s).await;
     watch_reports_a_null_write_as_set_null(s).await;
@@ -144,6 +145,16 @@ async fn query_filters_orders_and_limits(s: &impl SqlStore<Op, ChangeEvent>) {
 
     let seqs: Vec<_> = rows.iter().map(|r| r.seq).collect();
     assert_eq!(seqs, vec![4, 3]);
+}
+
+async fn query_rejects_an_unbindable_filter_value(s: &impl SqlStore<Op, ChangeEvent>) {
+    // A float has no `DbValue` (our columns are Bytes/Uuid/Text/I64). The caller's
+    // type error must surface as a `DbError`, not panic the task.
+    let result = notes::query(s, |q| {
+        q.and_where(Expr::col(notes::Col::n).eq(1.5_f64));
+    })
+    .await;
+    assert!(result.is_err(), "a float filter should error, not panic");
 }
 
 async fn composite_pk_upsert_get_and_delete(s: &impl SqlStore<Op, ChangeEvent>) {
