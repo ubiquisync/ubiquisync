@@ -24,15 +24,17 @@ pub enum ChangeEvent {
 impl RoutableEvent for ChangeEvent {
     type Target = WatchTarget;
 
-    /// Every change fans out to two targets: the whole [`Table`](WatchTarget::Table)
-    /// and the single [`TableRow`](WatchTarget::TableRow) it touched — so watchers
-    /// at either granularity see it.
+    /// Every change fans out to three targets: [`All`](WatchTarget::All), the
+    /// whole [`Table`](WatchTarget::Table), and the single
+    /// [`TableRow`](WatchTarget::TableRow) it touched — so a watcher at any
+    /// granularity sees it. Unwatched targets cost only a map probe on publish.
     fn targets(&self) -> impl Iterator<Item = WatchTarget> {
         let (table_id, primary_key) = match self {
             ChangeEvent::Upsert(e) => (e.table_id, e.primary_key.clone()),
             ChangeEvent::Delete(e) => (e.table_id, e.primary_key.clone()),
         };
         [
+            WatchTarget::All,
             WatchTarget::Table(table_id),
             WatchTarget::TableRow(table_id, primary_key),
         ]
@@ -40,10 +42,11 @@ impl RoutableEvent for ChangeEvent {
     }
 }
 
-/// What an observer subscribes to: either a whole table or a single row within
-/// it.
+/// What an observer subscribes to: every change, a whole table, or a single row.
 #[derive(Clone, Eq, PartialEq, Hash)]
 pub enum WatchTarget {
+    /// Every change to any row of any table.
+    All,
     /// Every change to any row of the table.
     Table(TableId),
     /// Changes to the one row identified by these primary-key values.
