@@ -34,11 +34,12 @@ use crate::{
     tracker::{HistoryTracker, LogTracker, LogTrackerError},
 };
 
-// Crate-private until the public store that drives it lands. `#[allow(dead_code)]`
-// because the only caller today is the in-crate `test_support` harness, so a
-// plain build sees it as unused.
-#[allow(dead_code)]
-pub(crate) struct Processor<R: Reducer, D: Db, T, E: EventHandler<R::Event>> {
+/// Drives a [`Reducer`] over a [`Db`]: applies local writes ([`exec`](Self::exec))
+/// and ingests remote log entries, advancing the HLC and per-peer cursors and
+/// emitting change events through its [`EventHandler`]. This is the concrete
+/// engine behind the [`Store`](ubiquisync_core::store::Store)/[`SqlStore`] surface
+/// (open one with [`open`](Self::open)); it also implements the sync traits.
+pub struct Processor<R: Reducer, D: Db, T, E: EventHandler<R::Event>> {
     self_id: Uuid,
     // Behind an async mutex: it hands out `&mut` for the reducer's `prepare`, and
     // holding it across an apply serializes writes (single-writer log store).

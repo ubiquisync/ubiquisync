@@ -42,6 +42,22 @@ impl RoutableEvent for ChangeEvent {
     }
 }
 
+/// How one value column changed in a generated table's upsert event.
+///
+/// An upsert event reports only the columns it actually changed (won LWW for),
+/// so a column is [`Unchanged`](ColumnChange::Unchanged) when this event left it
+/// alone, [`SetNull`](ColumnChange::SetNull) when it was written to SQL NULL, and
+/// [`Set`](ColumnChange::Set) when it was written to a value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ColumnChange<T> {
+    /// This event didn't touch the column.
+    Unchanged,
+    /// The column was set to SQL NULL.
+    SetNull,
+    /// The column was set to this value.
+    Set(T),
+}
+
 /// What an observer subscribes to: every change, a whole table, or a single row.
 #[derive(Clone, Eq, PartialEq, Hash)]
 pub enum WatchTarget {
