@@ -21,7 +21,8 @@ use crate::db::{Db, DbBatch, DbStatementResult};
 ///    batch. It is pure and read-free (it consumes the `ReadState`), so the
 ///    batch stays a flat, declarative statement list.
 /// 3. [`post_apply`](Reducer::post_apply) runs *after* the batch commits, when
-///    `RETURNING` rows finally exist, and turns the results into the event.
+///    `RETURNING` rows finally exist, and turns the results into zero or more
+///    events — empty when the op changed nothing observable.
 /// # Idempotency
 ///
 /// Whether a reducer must apply idempotently is not its own choice — it depends
@@ -69,12 +70,15 @@ pub trait Reducer: Send {
         read: Self::ReadState,
     ) -> Result<Self::ApplyState, Self::Error>;
 
-    /// Build the event once the batch has committed. `batch_result` holds the
+    /// Build the events once the batch has committed — empty when the op changed
+    /// nothing observable (e.g. an upsert that lost every column's LWW, or a
+    /// write to a table with no observer-facing name), usually one, or several
+    /// when a single op has multiple logical effects. `batch_result` holds the
     /// whole batch's per-statement results in add order; locate this op's
     /// `RETURNING` rows via the `StmtId`s stored in `apply_state`.
     fn post_apply(
         &self,
         apply_state: Self::ApplyState,
         batch_result: &[DbStatementResult],
-    ) -> Result<Self::Event, Self::Error>;
+    ) -> Result<Vec<Self::Event>, Self::Error>;
 }

@@ -513,7 +513,13 @@ async fn apply(reducer: &mut Reducer, db: &dyn Db, raw_ts: u64, op: &Op) -> Opti
     let mut batch = db.new_batch();
     let state = reducer.apply(batch.as_mut(), ts, op, ()).expect("apply");
     let result = batch.commit().await.expect("commit");
-    reducer.post_apply(state, &result).expect("post_apply")
+    // A table op emits at most one event; collapse the reducer's 0-or-many
+    // `Vec` back to the `Option` these tests assert on.
+    reducer
+        .post_apply(state, &result)
+        .expect("post_apply")
+        .into_iter()
+        .next()
 }
 
 /// Assert an op is rejected by validation in `prepare`, before any batch runs.

@@ -91,7 +91,7 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>, E: EventHandler<R::Event>> Process
     ) -> Result<(), ProcessorError<R::Error>> {
         let mut reducer = self.reducer.lock().await;
         let entry_idx = self.cached_cursor(&self.self_id);
-        let event = self
+        let events = self
             .ingest_entry_or_local(
                 &mut reducer,
                 &self.self_id,
@@ -103,7 +103,9 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>, E: EventHandler<R::Event>> Process
             .await?;
         // Emit outside the reducer lock (see `ingest_entry_or_local`).
         drop(reducer);
-        self.event_publish.publish(event);
+        for event in events {
+            self.event_publish.publish(event);
+        }
         Ok(())
     }
 
@@ -127,7 +129,7 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>, E: EventHandler<R::Event>> Process
         peer_id: &Uuid,
         entry_idx: u64,
         entry: &LogEntry<R::Op>,
-    ) -> Result<R::Event, ProcessorError<R::Error>> {
+    ) -> Result<Vec<R::Event>, ProcessorError<R::Error>> {
         self.ingest_entry_or_local(
             reducer,
             peer_id,
@@ -147,7 +149,7 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>, E: EventHandler<R::Event>> Process
         timestamp: Option<Timestamp>,
         server_user_id: Option<Uuid>,
         op: &R::Op,
-    ) -> Result<R::Event, ProcessorError<R::Error>> {
+    ) -> Result<Vec<R::Event>, ProcessorError<R::Error>> {
         let prepare_state = reducer
             .prepare(&self.db, op)
             .await
@@ -207,11 +209,13 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>, E: EventHandler<R::Event>> Process
         entry: &LogEntry<R::Op>,
     ) -> Result<(), ProcessorError<R::Error>> {
         let mut reducer = self.reducer.lock().await;
-        let event = self
+        let events = self
             .ingest_entry(&mut reducer, peer_id, entry_idx, entry)
             .await?;
         drop(reducer);
-        self.event_publish.publish(event);
+        for event in events {
+            self.event_publish.publish(event);
+        }
         Ok(())
     }
 }
@@ -312,24 +316,21 @@ where
         }
         // `ingest_entry_or_local` advances the cursor after its commit; the
         // expunged path does no reducer work, so it advances here instead.
-        let outcome: Result<Option<R::Event>, ProcessorError<R::Error>> = match entry {
-            DecodedEntry::LogEntry(e) => self
-                .ingest_entry(&mut reducer, &peer, index, &e)
-                .await
-                .map(Some),
+        let outcome: Result<Vec<R::Event>, ProcessorError<R::Error>> = match entry {
+            DecodedEntry::LogEntry(e) => self.ingest_entry(&mut reducer, &peer, index, &e).await,
             DecodedEntry::Expunged(hash) => {
                 let outcome = self.ingest_expunged(&peer, index, &hash).await;
                 if outcome.is_ok() {
                     self.advance_cursor(&peer, index + 1);
                 }
-                outcome.map(|()| None)
+                outcome.map(|()| Vec::new())
             }
         };
         // Emit outside the reducer lock (see `ingest_entry_or_local`).
         drop(reducer);
         match outcome {
-            Ok(event) => {
-                if let Some(event) = event {
+            Ok(events) => {
+                for event in events {
                     self.event_publish.publish(event);
                 }
                 Ok(Applied { new: true })

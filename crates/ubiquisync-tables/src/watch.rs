@@ -7,6 +7,8 @@
 //! since there is no user-facing name to report. A [`WatchTarget`] names the
 //! granularity at which an observer subscribes.
 
+use ubiquisync_core::event::RoutableEvent;
+
 use crate::id::{ColumnId, TableId};
 use crate::op::Value;
 
@@ -17,6 +19,25 @@ pub enum ChangeEvent {
     Upsert(UpsertEvent),
     /// A row was soft-deleted (tombstoned).
     Delete(DeleteEvent),
+}
+
+impl RoutableEvent for ChangeEvent {
+    type Target = WatchTarget;
+
+    /// Every change fans out to two targets: the whole [`Table`](WatchTarget::Table)
+    /// and the single [`TableRow`](WatchTarget::TableRow) it touched — so watchers
+    /// at either granularity see it.
+    fn targets(&self) -> impl Iterator<Item = WatchTarget> {
+        let (table_id, primary_key) = match self {
+            ChangeEvent::Upsert(e) => (e.table_id, e.primary_key.clone()),
+            ChangeEvent::Delete(e) => (e.table_id, e.primary_key.clone()),
+        };
+        [
+            WatchTarget::Table(table_id),
+            WatchTarget::TableRow(table_id, primary_key),
+        ]
+        .into_iter()
+    }
 }
 
 /// What an observer subscribes to: either a whole table or a single row within

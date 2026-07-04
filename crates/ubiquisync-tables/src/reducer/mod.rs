@@ -90,7 +90,7 @@ impl ubiquisync_sql::reducer::Reducer for Reducer {
     type Error = TablesError;
     type ReadState = ();
     type ApplyState = ApplyState;
-    type Event = Option<ChangeEvent>;
+    type Event = ChangeEvent;
 
     async fn prepare(&mut self, db: &dyn Db, op: &Op) -> Result<(), Self::Error> {
         // Reject malformed ops before touching the schema or building any SQL.
@@ -124,19 +124,20 @@ impl ubiquisync_sql::reducer::Reducer for Reducer {
         &self,
         apply_state: Self::ApplyState,
         batch_result: &[DbStatementResult],
-    ) -> Result<Option<ChangeEvent>, Self::Error> {
-        if let Some(event) = apply_state.staged_event {
-            match event {
-                ChangeEvent::Upsert(event) => {
-                    self.post_upsert(apply_state.stmt_id, event, batch_result)
-                }
-                ChangeEvent::Delete(event) => {
-                    self.post_delete(apply_state.stmt_id, event, batch_result)
-                }
+    ) -> Result<Vec<ChangeEvent>, Self::Error> {
+        // A single table op maps to at most one change event; `post_upsert`/
+        // `post_delete` return `None` when the write lost LWW or hit an unnamed
+        // table. Collect that 0-or-1 into the reducer's 0-or-many contract.
+        let event = match apply_state.staged_event {
+            Some(ChangeEvent::Upsert(event)) => {
+                self.post_upsert(apply_state.stmt_id, event, batch_result)?
             }
-        } else {
-            Ok(None)
-        }
+            Some(ChangeEvent::Delete(event)) => {
+                self.post_delete(apply_state.stmt_id, event, batch_result)?
+            }
+            None => None,
+        };
+        Ok(event.into_iter().collect())
     }
 }
 
