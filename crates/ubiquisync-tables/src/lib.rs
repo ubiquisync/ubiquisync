@@ -26,6 +26,14 @@ pub mod index_codec;
 /// Declarative macros for building [`schema`] values from a compact table DSL.
 pub mod macros;
 mod naming;
+
+/// The `sea-query` version this crate builds its typed table columns against.
+///
+/// Compose filters/ordering for the generated `query` readers through this
+/// re-export (e.g. `ubiquisync_tables::sea_query::Expr`) so the `Iden` impls on
+/// each table's `Col`/`Table` line up — a separately-versioned `sea-query`
+/// dependency would not.
+pub use sea_query;
 pub mod op;
 // Physical storage layer (surrogate tables, schema reconciliation). Wired into
 // the shipping build by the table reducer; `allow(dead_code)` until then. The

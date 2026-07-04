@@ -145,11 +145,11 @@ impl Reducer for MaxRegister {
         &self,
         apply_state: StmtId,
         batch_result: &[DbStatementResult],
-    ) -> Result<i64, DbError> {
+    ) -> Result<Vec<i64>, DbError> {
         // Safe to index `rows[0]` only because this upsert's `DO UPDATE` is
         // unconditional, so `RETURNING` always yields a row. A reducer with a
         // guarded upsert must handle an empty result instead.
-        batch_result[apply_state.0].rows[0].get_i64(0)
+        Ok(vec![batch_result[apply_state.0].rows[0].get_i64(0)?])
     }
 }
 

@@ -513,7 +513,12 @@ async fn apply(reducer: &mut Reducer, db: &dyn Db, raw_ts: u64, op: &Op) -> Opti
     let mut batch = db.new_batch();
     let state = reducer.apply(batch.as_mut(), ts, op, ()).expect("apply");
     let result = batch.commit().await.expect("commit");
-    reducer.post_apply(state, &result).expect("post_apply")
+    // A table op emits at most one event; collapse the reducer's 0-or-many `Vec`
+    // back to the `Option` these tests assert on, failing loudly if that
+    // invariant ever breaks (a duplicate or multi-event regression).
+    let mut events = reducer.post_apply(state, &result).expect("post_apply");
+    assert!(events.len() <= 1, "a table op must emit at most one event, got {}", events.len());
+    events.pop()
 }
 
 /// Assert an op is rejected by validation in `prepare`, before any batch runs.

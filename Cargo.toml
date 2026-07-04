@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.0.2"
+version = "0.0.3"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/ubiquisync/ubiquisync"
@@ -22,11 +22,11 @@ repository = "https://github.com/ubiquisync/ubiquisync"
 missing_docs = "warn"
 
 [workspace.dependencies]
-ubiquisync-core = { path = "crates/ubiquisync-core", version = "0.0.2" }
-ubiquisync-sql = { path = "crates/ubiquisync-sql", version = "0.0.2" }
-ubiquisync-postgres = { path = "crates/ubiquisync-postgres", version = "0.0.2" }
-ubiquisync-sqlite = { path = "crates/ubiquisync-sqlite", version = "0.0.2" }
-ubiquisync-tables = { path = "crates/ubiquisync-tables", version = "0.0.2" }
+ubiquisync-core = { path = "crates/ubiquisync-core", version = "0.0.3" }
+ubiquisync-sql = { path = "crates/ubiquisync-sql", version = "0.0.3" }
+ubiquisync-postgres = { path = "crates/ubiquisync-postgres", version = "0.0.3" }
+ubiquisync-sqlite = { path = "crates/ubiquisync-sqlite", version = "0.0.3" }
+ubiquisync-tables = { path = "crates/ubiquisync-tables", version = "0.0.3" }
 async-trait = "0.1.89"
 bitfield-struct = "0.13.0"
 blake3 = "1.8.5"
@@ -35,3 +35,6 @@ futures-channel = "0.3.32"
 futures-core = "0.3.32"
 pollster = "0.4.0"
 thiserror = "2.0.18"
+sea-query = { version = "1.0.1", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "with-uuid"] }
+uuid = { version = "1.23.4", default-features = false }
+pastey = "0.2.3"

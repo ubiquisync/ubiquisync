@@ -7,8 +7,10 @@
 //! scenarios here — rather than duplicated in each backend's tests — is what
 //! makes every backend assert identical behavior.
 
+pub mod macros;
 pub mod physical_schema;
 pub mod reducer;
 
+pub use macros::run_macros_suite;
 pub use physical_schema::run_physical_schema_suite;
 pub use reducer::run_reducer_suite;

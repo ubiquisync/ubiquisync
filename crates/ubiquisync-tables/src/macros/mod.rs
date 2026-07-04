@@ -7,10 +7,29 @@
 //! count can never disagree — the one `TableSchema::new` error the macro cannot
 //! hit by construction.
 //!
-//! This is intentionally schema-only for now. The source `def` module also
-//! generated a typed update/query/event/store API per table; those layers
-//! depend on store plumbing that isn't ported yet and will grow here (likely as
-//! sibling helper-macro modules) once it lands.
+//! Alongside the schema, [`define_table!`] emits per table:
+//! - a typed **query** surface (a [`sea_query`](crate::macros::support::sea_query)
+//!   `Table`/`Col` iden pair, a `Row`, and `get`/`get_all`/`query` readers) — see
+//!   the sibling `query` helper-macro module;
+//! - a typed **write** surface (`upsert` builder + `delete`, producing
+//!   [`Op`](crate::op::Op)s) — see the sibling `write` module;
+//! - a typed **watch** surface (an `Event` projected from
+//!   [`ChangeEvent`](crate::watch::ChangeEvent) plus `watch`/`watch_row` streams)
+//!   — see the sibling `watch` module.
+//!
+//! End-to-end coverage of all of the above lives in `ubiquisync-sqlite`'s
+//! integration tests, which drive a real processor over real SQLite.
+
+// Sibling helper-macro modules expanded by `define_table!`. `#[macro_export]`
+// hoists their macros to the crate root, so these just need to be compiled.
+mod query;
+mod watch;
+mod write;
+
+/// Runtime glue and re-exports the generated code expands against. `pub` (but
+/// hidden) so `$crate::macros::support::…` resolves in downstream crates.
+#[doc(hidden)]
+pub mod support;
 
 /// Internal: map a column-type keyword (`Bytes`/`Text`/`I64`/`Uuid`) to a
 /// [`ColType`](crate::col_type::ColType). Shared by PK and value columns.
@@ -48,6 +67,17 @@ macro_rules! define_table {
     ) => {
         #[doc = concat!("Schema for the `", stringify!($mod), "` table.")]
         pub mod $mod {
+            /// This table's type-encoded [`TableId`](crate::id::TableId) (PK
+            /// shape + index), shared by the schema, the op builders, and the
+            /// query readers. `const` so `TableId::new`'s shape/index asserts run
+            /// at compile time: an out-of-range index or >4 PK columns is a build
+            /// error, not a runtime panic.
+            #[allow(dead_code)]
+            pub const TABLE_ID: $crate::id::TableId = $crate::id::TableId::new(
+                &[ $( $crate::__col_type!($pk_type) ),+ ],
+                $index,
+            );
+
             /// Build this table's `TableSchema`. The returned `Result` surfaces
             /// only `TableSchema::new` validation errors (e.g. a duplicate
             /// column name); the PK-count check can't fire, since the ID and PK
@@ -58,15 +88,8 @@ macro_rules! define_table {
                 $crate::schema::TableSchema,
                 $crate::error::TablesError,
             > {
-                // `const` so `TableId::new`'s shape/index asserts run at compile
-                // time: an out-of-range index or >4 PK columns is a build error,
-                // not a runtime panic.
-                const ID: $crate::id::TableId = $crate::id::TableId::new(
-                    &[ $( $crate::__col_type!($pk_type) ),+ ],
-                    $index,
-                );
                 $crate::schema::TableSchema::new(
-                    ID,
+                    TABLE_ID,
                     stringify!($mod).into(),
                     ::std::vec![ $( stringify!($pk_name).into() ),+ ],
                     ::std::vec![ $(
@@ -90,6 +113,28 @@ macro_rules! define_table {
                     ),* ],
                 )
             }
+
+            // Typed query surface (Table/Col idens, Row, get/get_all/query) over
+            // this table's VIEW. See the `macros::query` module.
+            $crate::__define_table_query!(
+                $mod,
+                ( $($pk_name $pk_type),+ ),
+                { $( $col_name $col_type ),* }
+            );
+
+            // Typed write surface (upsert builder + delete). See `macros::write`.
+            $crate::__define_table_write!(
+                $mod,
+                ( $($pk_name $pk_type),+ ),
+                { $( ($col_idx $col_name $col_type) ),* }
+            );
+
+            // Typed watch surface (Event + watch/watch_row). See `macros::watch`.
+            $crate::__define_table_watch!(
+                $mod,
+                ( $($pk_name $pk_type),+ ),
+                { $( ($col_idx $col_name $col_type) ),* }
+            );
         }
     };
 }
@@ -135,64 +180,4 @@ macro_rules! define_tables {
             ::core::result::Result::Ok(::std::vec![ $( $mod::table()? ),+ ])
         }
     };
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::col_type::ColType;
-
-    // A representative schema: a single-PK table and a composite-PK table,
-    // exercising every column-type keyword and an empty value-column list.
-    define_tables! {
-        1 notes (id Uuid) => {
-            (0 body Text),
-            (1 n I64),
-            (2 blob Bytes),
-            (3 author Uuid),
-        },
-        2 events (k Text, seq I64) => {
-            (0 payload Bytes),
-        },
-        3 counters (id I64) => {},
-    }
-
-    #[test]
-    fn builds_all_declared_schemas() {
-        // Goal: the collector yields one schema per declaration, in order.
-        let all = tables().expect("schemas build");
-        assert_eq!(all.len(), 3);
-        assert_eq!(all[0].name, "notes");
-        assert_eq!(all[1].name, "events");
-        assert_eq!(all[2].name, "counters");
-    }
-
-    #[test]
-    fn single_pk_table_shape() {
-        // Goal: PK name/type and value columns come straight from the DSL.
-        let s = notes::table().unwrap();
-        assert_eq!(s.pk_names, ["id"]);
-        assert_eq!(s.id.pk_count(), 1);
-        assert_eq!(s.id.pk_col_type(0), ColType::Uuid);
-        assert_eq!(s.id.index(), 1);
-        // Four value columns, keyed by their (type, index)-encoded IDs.
-        assert_eq!(s.value_cols.len(), 4);
-    }
-
-    #[test]
-    fn composite_pk_table_shape() {
-        // Goal: multi-column PKs keep declaration order for both name and type.
-        let s = events::table().unwrap();
-        assert_eq!(s.pk_names, ["k", "seq"]);
-        assert_eq!(s.id.pk_count(), 2);
-        assert_eq!(s.id.pk_col_type(0), ColType::Text);
-        assert_eq!(s.id.pk_col_type(1), ColType::I64);
-    }
-
-    #[test]
-    fn table_with_no_value_columns() {
-        // Goal: an empty `{}` value-column list is valid — a key-only table.
-        let s = counters::table().unwrap();
-        assert_eq!(s.pk_names, ["id"]);
-        assert!(s.value_cols.is_empty());
-    }
 }

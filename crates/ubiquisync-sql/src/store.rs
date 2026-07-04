@@ -4,6 +4,7 @@ use ubiquisync_core::event::RoutableEvent;
 
 use crate::{
     db::{DbError, DbRow, DbValue},
+    dialect::SqlDialect,
     processor::{BoxError, ProcessorError},
 };
 
@@ -19,4 +20,8 @@ pub trait SqlStore<Op, Event: RoutableEvent>:
 {
     /// Run a read-only query against the backend.
     async fn query(&self, sql: &str, params: &[DbValue]) -> Result<Vec<DbRow>, DbError>;
+
+    /// The backend's SQL dialect — lets a caller build dialect-correct SQL
+    /// (placeholder style, quoting) to hand back to [`query`](SqlStore::query).
+    fn dialect(&self) -> SqlDialect;
 }

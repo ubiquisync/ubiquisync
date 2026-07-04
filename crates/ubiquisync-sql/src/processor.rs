@@ -34,11 +34,12 @@ use crate::{
     tracker::{HistoryTracker, LogTracker, LogTrackerError},
 };
 
-// Crate-private until the public store that drives it lands. `#[allow(dead_code)]`
-// because the only caller today is the in-crate `test_support` harness, so a
-// plain build sees it as unused.
-#[allow(dead_code)]
-pub(crate) struct Processor<R: Reducer, D: Db, T, E: EventHandler<R::Event>> {
+/// Drives a [`Reducer`] over a [`Db`]: applies local writes ([`exec`](Self::exec))
+/// and ingests remote log entries, advancing the HLC and per-peer cursors and
+/// emitting change events through its [`EventHandler`]. This is the concrete
+/// engine behind the [`Store`](ubiquisync_core::store::Store)/[`SqlStore`] surface
+/// (open one with [`open`](Self::open)); it also implements the sync traits.
+pub struct Processor<R: Reducer, D: Db, T, E: EventHandler<R::Event>> {
     self_id: Uuid,
     // Behind an async mutex: it hands out `&mut` for the reducer's `prepare`, and
     // holding it across an apply serializes writes (single-writer log store).
@@ -91,7 +92,7 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>, E: EventHandler<R::Event>> Process
     ) -> Result<(), ProcessorError<R::Error>> {
         let mut reducer = self.reducer.lock().await;
         let entry_idx = self.cached_cursor(&self.self_id);
-        let event = self
+        let events = self
             .ingest_entry_or_local(
                 &mut reducer,
                 &self.self_id,
@@ -103,7 +104,9 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>, E: EventHandler<R::Event>> Process
             .await?;
         // Emit outside the reducer lock (see `ingest_entry_or_local`).
         drop(reducer);
-        self.event_publish.publish(event);
+        for event in events {
+            self.event_publish.publish(event);
+        }
         Ok(())
     }
 
@@ -127,7 +130,7 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>, E: EventHandler<R::Event>> Process
         peer_id: &Uuid,
         entry_idx: u64,
         entry: &LogEntry<R::Op>,
-    ) -> Result<R::Event, ProcessorError<R::Error>> {
+    ) -> Result<Vec<R::Event>, ProcessorError<R::Error>> {
         self.ingest_entry_or_local(
             reducer,
             peer_id,
@@ -147,7 +150,7 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>, E: EventHandler<R::Event>> Process
         timestamp: Option<Timestamp>,
         server_user_id: Option<Uuid>,
         op: &R::Op,
-    ) -> Result<R::Event, ProcessorError<R::Error>> {
+    ) -> Result<Vec<R::Event>, ProcessorError<R::Error>> {
         let prepare_state = reducer
             .prepare(&self.db, op)
             .await
@@ -207,11 +210,13 @@ impl<R: Reducer, D: Db, T: LogTracker<R::Op>, E: EventHandler<R::Event>> Process
         entry: &LogEntry<R::Op>,
     ) -> Result<(), ProcessorError<R::Error>> {
         let mut reducer = self.reducer.lock().await;
-        let event = self
+        let events = self
             .ingest_entry(&mut reducer, peer_id, entry_idx, entry)
             .await?;
         drop(reducer);
-        self.event_publish.publish(event);
+        for event in events {
+            self.event_publish.publish(event);
+        }
         Ok(())
     }
 }
@@ -312,24 +317,21 @@ where
         }
         // `ingest_entry_or_local` advances the cursor after its commit; the
         // expunged path does no reducer work, so it advances here instead.
-        let outcome: Result<Option<R::Event>, ProcessorError<R::Error>> = match entry {
-            DecodedEntry::LogEntry(e) => self
-                .ingest_entry(&mut reducer, &peer, index, &e)
-                .await
-                .map(Some),
+        let outcome: Result<Vec<R::Event>, ProcessorError<R::Error>> = match entry {
+            DecodedEntry::LogEntry(e) => self.ingest_entry(&mut reducer, &peer, index, &e).await,
             DecodedEntry::Expunged(hash) => {
                 let outcome = self.ingest_expunged(&peer, index, &hash).await;
                 if outcome.is_ok() {
                     self.advance_cursor(&peer, index + 1);
                 }
-                outcome.map(|()| None)
+                outcome.map(|()| Vec::new())
             }
         };
         // Emit outside the reducer lock (see `ingest_entry_or_local`).
         drop(reducer);
         match outcome {
-            Ok(event) => {
-                if let Some(event) = event {
+            Ok(events) => {
+                for event in events {
                     self.event_publish.publish(event);
                 }
                 Ok(Applied { new: true })
@@ -409,6 +411,10 @@ where
 {
     async fn query(&self, sql: &str, params: &[DbValue]) -> Result<Vec<DbRow>, DbError> {
         self.db().query(sql, params).await
+    }
+
+    fn dialect(&self) -> crate::dialect::SqlDialect {
+        self.db().dialect()
     }
 }
 
