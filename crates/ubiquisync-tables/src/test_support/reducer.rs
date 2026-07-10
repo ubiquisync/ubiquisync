@@ -77,7 +77,7 @@ async fn insert_populates_row_and_event(db: &dyn Db) {
 
     assert_eq!(read_col(db, id, &pk1(1), body).await, Some((tv("hi"), Some(100))));
     assert_eq!(read_col(db, id, &pk1(1), n).await, Some((iv(7), Some(100))));
-    assert_eq!(read_ts(db, id, &pk1(1)).await, Some((Some(100), None)));
+    assert_eq!(read_ts(db, id, &pk1(1)).await, Some((100, 0)));
 }
 
 /// The later write wins regardless of arrival order; the earlier arrival is a
@@ -134,7 +134,7 @@ async fn disjoint_columns_merge_independently(db: &dyn Db) {
     assert_eq!(read_col(db, id, &pk1(1), a).await, Some((tv("x"), Some(100))));
     assert_eq!(read_col(db, id, &pk1(1), b).await, Some((iv(9), Some(50))));
     // __upsert_ts tracks the max of the two upserts.
-    assert_eq!(read_ts(db, id, &pk1(1)).await, Some((Some(100), None)));
+    assert_eq!(read_ts(db, id, &pk1(1)).await, Some((100, 0)));
 }
 
 /// A newer delete tombstones the row: it sets `__deleted_ts` and nulls every
@@ -151,7 +151,7 @@ async fn delete_tombstones_and_nulls_columns(db: &dyn Db) {
     assert_eq!(read_col(db, id, &pk1(1), a).await, Some((DbValue::Null, None)));
     assert_eq!(read_col(db, id, &pk1(1), b).await, Some((DbValue::Null, None)));
     // The row still exists as a tombstone; __upsert_ts is untouched.
-    assert_eq!(read_ts(db, id, &pk1(1)).await, Some((Some(100), Some(200))));
+    assert_eq!(read_ts(db, id, &pk1(1)).await, Some((100, 200)));
 }
 
 /// A column written *after* the delete timestamp (its lww is newer) survives the
@@ -167,7 +167,7 @@ async fn column_written_after_delete_survives(db: &dyn Db) {
 
     assert_eq!(read_col(db, id, &pk1(1), old).await, Some((DbValue::Null, None)));
     assert_eq!(read_col(db, id, &pk1(1), fresh).await, Some((iv(9), Some(300))));
-    assert_eq!(read_ts(db, id, &pk1(1)).await, Some((Some(300), Some(200))));
+    assert_eq!(read_ts(db, id, &pk1(1)).await, Some((300, 200)));
 }
 
 /// An upsert newer than the delete (`ts >= __deleted_ts`) resurrects the row: it
@@ -182,7 +182,7 @@ async fn delete_then_newer_upsert_resurrects(db: &dyn Db) {
     expect_upsert(ev);
 
     assert_eq!(read_col(db, id, &pk1(1), body).await, Some((tv("back"), Some(200))));
-    assert_eq!(read_ts(db, id, &pk1(1)).await, Some((Some(200), Some(100))));
+    assert_eq!(read_ts(db, id, &pk1(1)).await, Some((200, 100)));
 }
 
 /// An upsert older than the delete (`ts < __deleted_ts`) is blocked by the
@@ -197,7 +197,7 @@ async fn delete_blocks_older_upsert(db: &dyn Db) {
     expect_none(ev);
 
     assert_eq!(read_col(db, id, &pk1(1), body).await, Some((DbValue::Null, None)));
-    assert_eq!(read_ts(db, id, &pk1(1)).await, Some((None, Some(200))));
+    assert_eq!(read_ts(db, id, &pk1(1)).await, Some((0, 200)));
 }
 
 /// Deletes are LWW too: the newest wins and an older delete is a silent no-op.
@@ -209,7 +209,7 @@ async fn newer_delete_wins_older_is_silent(db: &dyn Db) {
     expect_delete(apply(&mut reducer, db, 200, &delete(id, pk1(1))).await);
     expect_none(apply(&mut reducer, db, 50, &delete(id, pk1(1))).await);
 
-    assert_eq!(read_ts(db, id, &pk1(1)).await, Some((None, Some(200))));
+    assert_eq!(read_ts(db, id, &pk1(1)).await, Some((0, 200)));
 }
 
 /// When some columns of an upsert win LWW and others lose, the event lists only
@@ -248,7 +248,7 @@ async fn pkey_only_insert_still_emits_event(db: &dyn Db) {
     let up = expect_upsert(ev);
     assert_eq!(up.primary_key, pk1(1));
     assert!(up.changed_columns.is_empty(), "no value columns to report");
-    assert_eq!(read_ts(db, id, &pk1(1)).await, Some((Some(100), None)));
+    assert_eq!(read_ts(db, id, &pk1(1)).await, Some((100, 0)));
 
     expect_none(apply(&mut reducer, db, 50, &upsert(id, pk1(1), &[])).await);
 }
@@ -566,7 +566,8 @@ async fn read_col(
 }
 
 /// `(__upsert_ts, __deleted_ts)` for the row keyed by `pk`, or `None` if absent.
-async fn read_ts(db: &dyn Db, table: TableId, pk: &[Value]) -> Option<(Option<i64>, Option<i64>)> {
+/// Both columns are `NOT NULL DEFAULT 0`, so an unwritten timestamp reads as `0`.
+async fn read_ts(db: &dyn Db, table: TableId, pk: &[Value]) -> Option<(i64, i64)> {
     let sql = format!(
         "SELECT {UPSERT_TS_COL}, {DELETED_TS_COL} FROM {} WHERE {}",
         quote_ident(&table.table_name(PREFIX)),
@@ -574,7 +575,7 @@ async fn read_ts(db: &dyn Db, table: TableId, pk: &[Value]) -> Option<(Option<i6
     );
     let rows = db.query(&sql, &pk_params(pk)).await.unwrap();
     rows.first()
-        .map(|r| (r.get_optional_i64(0).unwrap(), r.get_optional_i64(1).unwrap()))
+        .map(|r| (r.get_i64(0).unwrap(), r.get_i64(1).unwrap()))
 }
 
 fn where_pk(db: &dyn Db, table: TableId) -> String {

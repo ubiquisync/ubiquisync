@@ -59,9 +59,9 @@ fn col_desc(name: String, db_type: DbType, nullable: bool) -> DbColumnDescriptio
 }
 
 /// The descriptor `create_table` should have produced for `id` with value
-/// columns `cols`: a `NOT NULL` PK column per slot, the two nullable ts columns,
-/// and a nullable value + nullable-integer lww column per value column. Non-PK
-/// columns are sorted by name so the comparison is order-insensitive.
+/// columns `cols`: a `NOT NULL` PK column per slot, the two `NOT NULL` ts
+/// columns, and a nullable value + nullable-integer lww column per value column.
+/// Non-PK columns are sorted by name so the comparison is order-insensitive.
 fn expected_descriptor(
     dialect: SqlDialect,
     id: TableId,
@@ -78,8 +78,8 @@ fn expected_descriptor(
         .collect();
 
     let mut non_pk = vec![
-        col_desc(UPSERT_TS_COL.into(), DbType::Integer, true),
-        col_desc(DELETED_TS_COL.into(), DbType::Integer, true),
+        col_desc(UPSERT_TS_COL.into(), DbType::Integer, false),
+        col_desc(DELETED_TS_COL.into(), DbType::Integer, false),
     ];
     for (cid, ct) in cols {
         non_pk.push(col_desc(cid.col_name(), stored_db_type(dialect, *ct), true));
@@ -341,6 +341,8 @@ fn reconciliation_rejects_malformed(dialect: SqlDialect) {
     rejects!("missing __upsert_ts", |d| d.cols.retain(|c| c.name != UPSERT_TS_COL));
     rejects!("missing __deleted_ts", |d| d.cols.retain(|c| c.name != DELETED_TS_COL));
     rejects!("__deleted_ts wrong type", |d| col_mut(d, DELETED_TS_COL).db_type = DbType::Text);
+    rejects!("__upsert_ts nullable", |d| col_mut(d, UPSERT_TS_COL).nullable = true);
+    rejects!("__deleted_ts nullable", |d| col_mut(d, DELETED_TS_COL).nullable = true);
 
     // Value / lww column defects.
     rejects!("value column wrong type", |d| col_mut(d, &col).db_type = DbType::Integer);

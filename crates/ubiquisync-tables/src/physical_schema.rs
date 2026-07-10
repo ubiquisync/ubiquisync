@@ -25,11 +25,11 @@ pub(crate) struct PhysicalTableSchema {
 }
 
 /// The timestamp of the latest upsert operation on the table.
-/// A nullable i64 column: the reducer reads it as `COALESCE(ts, 0)`.
+/// A `NOT NULL DEFAULT 0` i64 column
 pub const UPSERT_TS_COL: &str = "__upsert_ts";
 
 /// The timestamp of the latest delete operation on the table.
-/// A nullable i64 column: the reducer reads it as `COALESCE(ts, 0)`.
+/// A `NOT NULL DEFAULT 0` i64 column
 pub const DELETED_TS_COL: &str = "__deleted_ts";
 
 impl PhysicalTableSchema {
@@ -244,8 +244,9 @@ impl PhysicalTableSchema {
         }
 
         let int_type = DbType::Integer.sql_type(dialect);
-        col_defs.push(format!("{UPSERT_TS_COL} {int_type}"));
-        col_defs.push(format!("{DELETED_TS_COL} {int_type}"));
+        // NOT NULL DEFAULT 0 allows safe comparison without COALESCE
+        col_defs.push(format!("{UPSERT_TS_COL} {int_type} NOT NULL DEFAULT 0"));
+        col_defs.push(format!("{DELETED_TS_COL} {int_type} NOT NULL DEFAULT 0"));
 
         for col in &self.cols {
             col_defs.push(format!(
@@ -324,6 +325,13 @@ fn validate_upsert_delete_ts_cols(
         if db_type != DbType::Integer {
             return Err(TablesError::SchemaError(format!(
                 "invalid {col_name} type {db_type:?}"
+            )));
+        }
+        // Must be NOT NULL: reads compare these columns directly (no COALESCE),
+        // so a nullable column that held a NULL would break LWW comparisons.
+        if col.nullable {
+            return Err(TablesError::SchemaError(format!(
+                "{col_name} must be NOT NULL"
             )));
         }
     } else {
