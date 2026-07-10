@@ -59,7 +59,7 @@ impl Reducer {
             set_clauses.push(format!(
                 "{col_name} = CASE WHEN {lww_col_name} < {ts_placeholder} THEN NULL ELSE {col_name} END",
             ));
-            // Clear the lww back to the 0 as the never-written sentinel
+            // Clear the lww back to 0, the never-written sentinel
             set_clauses.push(format!(
                 "{lww_col_name} = CASE WHEN {lww_col_name} < {ts_placeholder} THEN 0 ELSE {lww_col_name} END",
             ))

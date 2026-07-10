@@ -35,6 +35,7 @@ pub async fn run_reducer_suite<D: Db>(db: D) {
     delete_tombstones_and_nulls_columns(db).await;
     column_written_after_delete_survives(db).await;
     delete_then_newer_upsert_resurrects(db).await;
+    delete_then_equal_ts_upsert_resurrects(db).await;
     delete_blocks_older_upsert(db).await;
     newer_delete_wins_older_is_silent(db).await;
     event_reports_only_winning_columns(db).await;
@@ -184,6 +185,25 @@ async fn delete_then_newer_upsert_resurrects(db: &dyn Db) {
 
     assert_eq!(read_col(db, id, &pk1(1), body).await, Some((tv("back"), 200)));
     assert_eq!(read_ts(db, id, &pk1(1)).await, Some((200, 100)));
+}
+
+/// An upsert landing at *exactly* `__deleted_ts` resurrects the row: the guard is
+/// `ts >= __deleted_ts`, and the delete-cleared column (value NULL, lww reset to
+/// the 0 sentinel) is won back by `EXCLUDED.lww(ts) > 0`. This is the equal-ts
+/// boundary where the delete guard meets the 0-cleared lww.
+async fn delete_then_equal_ts_upsert_resurrects(db: &dyn Db) {
+    let id = TableId::new(&[ColType::I64], 20);
+    let body = col(0, ColType::Text);
+    let mut reducer = named(db, id, &[(body, "body")]).await;
+
+    apply(&mut reducer, db, 100, &upsert(id, pk1(1), &[(body, text("gone"))])).await;
+    apply(&mut reducer, db, 200, &delete(id, pk1(1))).await;
+    // The column is now cleared to (NULL, 0); the delete stamped __deleted_ts=200.
+    let ev = apply(&mut reducer, db, 200, &upsert(id, pk1(1), &[(body, text("back"))])).await;
+    expect_upsert(ev);
+
+    assert_eq!(read_col(db, id, &pk1(1), body).await, Some((tv("back"), 200)));
+    assert_eq!(read_ts(db, id, &pk1(1)).await, Some((200, 200)));
 }
 
 /// An upsert older than the delete (`ts < __deleted_ts`) is blocked by the

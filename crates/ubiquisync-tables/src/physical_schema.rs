@@ -329,6 +329,14 @@ fn validate_upsert_delete_ts_cols(
         }
         // Must be NOT NULL: reads compare these columns directly (no COALESCE),
         // so a nullable column that held a NULL would break LWW comparisons.
+        //
+        // We do NOT verify the DEFAULT 0 that inserts also rely on (they omit
+        // these columns and lean on the default): DbColumnDescription carries no
+        // default, and normalizing default expressions across dialects is
+        // brittle. create_table always pairs NOT NULL with DEFAULT 0, so the only
+        // way to violate this is a foreign-created table — which would fail
+        // loudly with a NOT NULL constraint error on its first insert, not
+        // silently corrupt data.
         if col.nullable {
             return Err(TablesError::SchemaError(format!(
                 "{col_name} must be NOT NULL"
