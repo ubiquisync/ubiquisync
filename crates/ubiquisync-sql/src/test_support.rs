@@ -12,7 +12,9 @@
 //! Postgres driver lands, a second test that hands the suite a `PgDb` is all it
 //! takes.
 
+use std::collections::HashMap;
 use std::io::BufRead;
+use std::rc::Rc;
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -23,7 +25,10 @@ use ubiquisync_core::{
     },
     hlc::Timestamp,
     log_entry::LogEntry,
-    sync::{CursorsEvent, HasCursors, LogProcessor, LogSource, SyncError},
+    sync::{
+        CursorStream, CursorsEvent, FileLogPublisher, FileLogSink, HasCursors, LogProcessor,
+        LogSource, PeerCursors, SyncError,
+    },
     uuid::Uuid,
 };
 
@@ -507,4 +512,139 @@ pub async fn run_replica_suite<D: Db>(db: D) {
         5,
         "max register merged the two local writes"
     );
+}
+
+// ── In-memory file log ──────────────────────────────────────────────────────
+
+/// A [`FileLogSink`] backed by in-memory segments — one append-only vec per
+/// origin. Stands in for the on-disk file log so the publisher suite can assert
+/// what reached shared storage without a filesystem.
+struct MemFileLog {
+    self_id: Uuid,
+    segments: HashMap<Uuid, Vec<(u64, DecodedEntry<MaxOp>)>>,
+}
+
+impl MemFileLog {
+    fn new(self_id: Uuid) -> Self {
+        Self {
+            self_id,
+            segments: HashMap::new(),
+        }
+    }
+
+    /// The entries written for `origin`, in index order.
+    fn entries(&self, origin: &Uuid) -> &[(u64, DecodedEntry<MaxOp>)] {
+        self.segments.get(origin).map_or(&[], Vec::as_slice)
+    }
+}
+
+impl FileLogSink<MaxOp> for MemFileLog {
+    fn self_id(&self) -> Uuid {
+        self.self_id
+    }
+
+    fn write(&mut self, entries: &[(u64, DecodedEntry<MaxOp>)]) -> Result<(), SyncError> {
+        let segment = self.segments.entry(self.self_id).or_default();
+        for (idx, entry) in entries {
+            // Append-only: an index must land exactly at the segment's extent.
+            let extent = segment.len() as u64;
+            if *idx != extent {
+                return Err(SyncError::CursorMismatch {
+                    expected_idx: extent,
+                    actual_idx: *idx,
+                });
+            }
+            segment.push((*idx, entry.clone()));
+        }
+        Ok(())
+    }
+}
+
+#[async_trait(?Send)]
+impl HasCursors for MemFileLog {
+    async fn cursors(&self) -> Result<PeerCursors, SyncError> {
+        Ok(self
+            .segments
+            .iter()
+            .filter(|(_, seg)| !seg.is_empty())
+            .map(|(origin, seg)| (*origin, seg.len() as u64))
+            .collect())
+    }
+
+    async fn get_cursor(&self, peer: Uuid) -> Result<u64, SyncError> {
+        Ok(self.segments.get(&peer).map_or(0, |seg| seg.len() as u64))
+    }
+
+    fn watch_cursors(&self) -> CursorStream {
+        // Unused by the publisher suite (it drives `sync` directly); an empty
+        // stream satisfies the trait.
+        Box::pin(futures::stream::empty())
+    }
+}
+
+/// Drives the [`FileLogPublisher`] against `db`: local writes committed to the
+/// oplog are published into a file log, syncing is incremental and idempotent,
+/// and a fresh publisher resumes from the file log's existing extent.
+///
+/// Generic over the backend like the other suites; call with an empty database.
+pub async fn run_publisher_suite<D: Db>(db: D) {
+    let processor: Rc<MaxProcessor<D>> = Rc::new(
+        Processor::open(MaxRegister::new("reg"), db, PREFIX, NODE)
+            .await
+            .unwrap(),
+    );
+
+    // Two local writes land in the oplog under NODE.
+    let write = |key: &'static [u8], value| {
+        let processor = processor.clone();
+        async move {
+            processor
+                .exec(
+                    None,
+                    MaxOp {
+                        key: key.to_vec(),
+                        value,
+                    },
+                )
+                .await
+                .unwrap();
+        }
+    };
+    write(b"a", 1).await;
+    write(b"b", 2).await;
+
+    // A fresh publisher over an empty file log copies both committed entries,
+    // contiguous from index 0.
+    let mut publisher = FileLogPublisher::open(processor.clone(), MemFileLog::new(NODE))
+        .await
+        .unwrap();
+    assert_eq!(publisher.sync().await.unwrap(), 2, "publisher copied both entries");
+    assert_eq!(
+        publisher
+            .sink()
+            .entries(&NODE)
+            .iter()
+            .map(|(i, _)| *i)
+            .collect::<Vec<_>>(),
+        vec![0, 1],
+        "file log segment is contiguous from 0"
+    );
+
+    // Idempotent: with nothing new committed, syncing copies nothing.
+    assert_eq!(publisher.sync().await.unwrap(), 0, "no new entries to publisher");
+
+    // A later local write is picked up incrementally.
+    write(b"c", 3).await;
+    assert_eq!(publisher.sync().await.unwrap(), 1, "incremental write published");
+    assert_eq!(publisher.sink().entries(&NODE).len(), 3);
+
+    // Resume: a new publisher over a file log that already holds NODE's first entry
+    // seeds `written` from that extent and copies only the not-yet-published tail.
+    let mut partial = MemFileLog::new(NODE);
+    let head = processor.read_since(NODE, 0).await.unwrap();
+    partial.write(&head[..1]).unwrap();
+    let mut resumed = FileLogPublisher::open(processor.clone(), partial).await.unwrap();
+    assert_eq!(resumed.written(), 1, "resume point seeded from file extent");
+    assert_eq!(resumed.sync().await.unwrap(), 2, "copied only the tail");
+    assert_eq!(resumed.sink().entries(&NODE).len(), 3);
 }

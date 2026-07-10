@@ -8,7 +8,6 @@
 //! suffices and each log's extent is a trustworthy cursor.
 
 use crate::codec::DecodedEntry;
-use crate::log_entry::LogEntry;
 use crate::uuid::Uuid;
 
 use super::error::SyncError;
@@ -38,14 +37,13 @@ pub trait FileLogSink<E> {
     fn self_id(&self) -> Uuid;
 
     /// Append `entries` at their given indices; batched so one call can be one
-    /// segment write. Real entries only — expunging rewrites an existing
-    /// segment, it never appends.
-    fn write(&mut self, entries: &[(u64, LogEntry<E>)]) -> Result<(), SyncError>;
+    /// segment write. Indices are contiguous from the sink's current extent.
+    fn write(&mut self, entries: &[(u64, DecodedEntry<E>)]) -> Result<(), SyncError>;
 }
 
 /// A file log as a replica: multi-reader ([`LogSource`]), single-writer
 /// ([`FileLogSink`]). The single-writer counterpart to
-/// [`Replica`](super::Replica); owned by its mirror, not shared.
+/// [`Replica`](super::Replica); owned by its publisher, not shared.
 pub trait FileLogReplica<E>: FileLogSink<E> + LogSource<E> {}
 
 /// Anything that is both is a [`FileLogReplica`].

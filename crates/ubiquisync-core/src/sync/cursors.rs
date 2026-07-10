@@ -43,6 +43,12 @@ pub trait HasCursors {
     /// Snapshot of the current cursor vector.
     async fn cursors(&self) -> Result<PeerCursors, SyncError>;
 
+    /// The cursor for a single `peer` — its next entry index, `0` if unseen.
+    /// Defaults to reading the whole vector; override where one peer is cheaper.
+    async fn get_cursor(&self, peer: Uuid) -> Result<u64, SyncError> {
+        Ok(self.cursors().await?.get(&peer).copied().unwrap_or(0))
+    }
+
     /// Live cursor progress: a first [`Snapshot`](CursorsEvent::Snapshot), then
     /// [`Advanced`](CursorsEvent::Advanced) deltas.
     fn watch_cursors(&self) -> CursorStream;

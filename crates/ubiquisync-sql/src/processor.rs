@@ -229,6 +229,10 @@ impl<R: Reducer, D: Db, T> HasCursors for Processor<R, D, T> {
         Ok(self.cursors.borrow().clone())
     }
 
+    async fn get_cursor(&self, peer: Uuid) -> Result<u64, SyncError> {
+        Ok(self.cached_cursor(&peer))
+    }
+
     fn watch_cursors(&self) -> CursorStream {
         // Synchronous: registration and the snapshot happen without an await, so
         // no apply can advance the cursor in between and be missed.
