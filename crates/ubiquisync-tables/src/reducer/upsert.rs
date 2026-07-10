@@ -217,7 +217,7 @@ fn lww_winner_sql_with_tiebreak(
 }
 
 pub(crate) fn lww_winner_sql(table_name: &str, lww_col: &str) -> String {
-    format!("EXCLUDED.{lww_col} > COALESCE({table_name}.{lww_col}, 0)")
+    format!("EXCLUDED.{lww_col} > {table_name}.{lww_col}")
 }
 
 fn tiebreak_sql(
@@ -241,7 +241,7 @@ fn tiebreak_sql(
 
 pub(crate) fn set_lww_sql(lww_col: &str, table_name: &str, dialect: SqlDialect) -> String {
     let greatest = dialect.scalar_max();
-    format!("{lww_col} = {greatest}(COALESCE({table_name}.{lww_col}, 0), EXCLUDED.{lww_col})")
+    format!("{lww_col} = {greatest}({table_name}.{lww_col}, EXCLUDED.{lww_col})")
 }
 
 pub(crate) fn bind_pkey(

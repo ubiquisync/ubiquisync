@@ -60,8 +60,9 @@ fn col_desc(name: String, db_type: DbType, nullable: bool) -> DbColumnDescriptio
 
 /// The descriptor `create_table` should have produced for `id` with value
 /// columns `cols`: a `NOT NULL` PK column per slot, the two `NOT NULL` ts
-/// columns, and a nullable value + nullable-integer lww column per value column.
-/// Non-PK columns are sorted by name so the comparison is order-insensitive.
+/// columns, and a nullable value + `NOT NULL` integer lww column per value
+/// column. Non-PK columns are sorted by name so the comparison is
+/// order-insensitive.
 fn expected_descriptor(
     dialect: SqlDialect,
     id: TableId,
@@ -83,7 +84,7 @@ fn expected_descriptor(
     ];
     for (cid, ct) in cols {
         non_pk.push(col_desc(cid.col_name(), stored_db_type(dialect, *ct), true));
-        non_pk.push(col_desc(cid.lww_col_name(), DbType::Integer, true));
+        non_pk.push(col_desc(cid.lww_col_name(), DbType::Integer, false));
     }
     non_pk.sort_by(|a, b| a.name.cmp(&b.name));
 
@@ -349,5 +350,5 @@ fn reconciliation_rejects_malformed(dialect: SqlDialect) {
     rejects!("value column not nullable", |d| col_mut(d, &col).nullable = false);
     rejects!("missing lww partner", |d| d.cols.retain(|c| c.name != lww));
     rejects!("lww wrong type", |d| col_mut(d, &lww).db_type = DbType::Text);
-    rejects!("lww not nullable", |d| col_mut(d, &lww).nullable = false);
+    rejects!("lww nullable", |d| col_mut(d, &lww).nullable = true);
 }

@@ -32,10 +32,11 @@ impl SqlDialect {
     }
 
     /// Scalar two-argument max function: `MAX` on SQLite, `GREATEST` on
-    /// Postgres. Callers must keep the `COALESCE` wrapping around the
-    /// arguments — SQLite's `MAX` returns NULL if *any* argument is NULL
-    /// while Postgres's `GREATEST` ignores NULLs; the COALESCE is what makes
-    /// both backends merge identically. Do not simplify it away.
+    /// Postgres. The two backends disagree on NULLs — SQLite's `MAX` returns
+    /// NULL if *any* argument is NULL, while Postgres's `GREATEST` ignores
+    /// NULLs — so callers must pass only non-null arguments (or COALESCE them
+    /// first). The LWW callers satisfy this: their timestamp columns are
+    /// NOT NULL and the incoming `EXCLUDED` side always binds a real timestamp.
     pub fn scalar_max(&self) -> &'static str {
         match self {
             SqlDialect::Sqlite => "MAX",

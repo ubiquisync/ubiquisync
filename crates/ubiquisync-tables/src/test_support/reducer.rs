@@ -75,8 +75,8 @@ async fn insert_populates_row_and_event(db: &dyn Db) {
         ]
     );
 
-    assert_eq!(read_col(db, id, &pk1(1), body).await, Some((tv("hi"), Some(100))));
-    assert_eq!(read_col(db, id, &pk1(1), n).await, Some((iv(7), Some(100))));
+    assert_eq!(read_col(db, id, &pk1(1), body).await, Some((tv("hi"), 100)));
+    assert_eq!(read_col(db, id, &pk1(1), n).await, Some((iv(7), 100)));
     assert_eq!(read_ts(db, id, &pk1(1)).await, Some((100, 0)));
 }
 
@@ -98,7 +98,7 @@ async fn newer_upsert_wins_and_converges(db: &dyn Db) {
     let lost = apply(&mut reducer, db, 100, &upsert(id, pk1(2), &[(body, text("old"))])).await;
     expect_none(lost);
 
-    let expected = Some((tv("new"), Some(200)));
+    let expected = Some((tv("new"), 200));
     assert_eq!(read_col(db, id, &pk1(1), body).await, expected);
     assert_eq!(read_col(db, id, &pk1(2), body).await, expected);
 }
@@ -116,7 +116,7 @@ async fn same_timestamp_breaks_tie_by_value(db: &dyn Db) {
     apply(&mut reducer, db, 100, &upsert(id, pk1(2), &[(body, text("bbb"))])).await;
     apply(&mut reducer, db, 100, &upsert(id, pk1(2), &[(body, text("aaa"))])).await;
 
-    let winner = Some((tv("bbb"), Some(100)));
+    let winner = Some((tv("bbb"), 100));
     assert_eq!(read_col(db, id, &pk1(1), body).await, winner);
     assert_eq!(read_col(db, id, &pk1(2), body).await, winner);
 }
@@ -131,14 +131,15 @@ async fn disjoint_columns_merge_independently(db: &dyn Db) {
     apply(&mut reducer, db, 100, &upsert(id, pk1(1), &[(a, text("x"))])).await;
     apply(&mut reducer, db, 50, &upsert(id, pk1(1), &[(b, int(9))])).await;
 
-    assert_eq!(read_col(db, id, &pk1(1), a).await, Some((tv("x"), Some(100))));
-    assert_eq!(read_col(db, id, &pk1(1), b).await, Some((iv(9), Some(50))));
+    assert_eq!(read_col(db, id, &pk1(1), a).await, Some((tv("x"), 100)));
+    assert_eq!(read_col(db, id, &pk1(1), b).await, Some((iv(9), 50)));
     // __upsert_ts tracks the max of the two upserts.
     assert_eq!(read_ts(db, id, &pk1(1)).await, Some((100, 0)));
 }
 
-/// A newer delete tombstones the row: it sets `__deleted_ts` and nulls every
-/// value column (and its lww) whose write predates the delete.
+/// A newer delete tombstones the row: it sets `__deleted_ts`, nulls every value
+/// column whose write predates the delete, and resets each such column's lww to
+/// the `0` sentinel.
 async fn delete_tombstones_and_nulls_columns(db: &dyn Db) {
     let id = TableId::new(&[ColType::I64], 5);
     let (a, b) = (col(0, ColType::Text), col(1, ColType::I64));
@@ -148,8 +149,8 @@ async fn delete_tombstones_and_nulls_columns(db: &dyn Db) {
     let ev = apply(&mut reducer, db, 200, &delete(id, pk1(1))).await;
     expect_delete(ev);
 
-    assert_eq!(read_col(db, id, &pk1(1), a).await, Some((DbValue::Null, None)));
-    assert_eq!(read_col(db, id, &pk1(1), b).await, Some((DbValue::Null, None)));
+    assert_eq!(read_col(db, id, &pk1(1), a).await, Some((DbValue::Null, 0)));
+    assert_eq!(read_col(db, id, &pk1(1), b).await, Some((DbValue::Null, 0)));
     // The row still exists as a tombstone; __upsert_ts is untouched.
     assert_eq!(read_ts(db, id, &pk1(1)).await, Some((100, 200)));
 }
@@ -165,8 +166,8 @@ async fn column_written_after_delete_survives(db: &dyn Db) {
     apply(&mut reducer, db, 300, &upsert(id, pk1(1), &[(fresh, int(9))])).await;
     apply(&mut reducer, db, 200, &delete(id, pk1(1))).await;
 
-    assert_eq!(read_col(db, id, &pk1(1), old).await, Some((DbValue::Null, None)));
-    assert_eq!(read_col(db, id, &pk1(1), fresh).await, Some((iv(9), Some(300))));
+    assert_eq!(read_col(db, id, &pk1(1), old).await, Some((DbValue::Null, 0)));
+    assert_eq!(read_col(db, id, &pk1(1), fresh).await, Some((iv(9), 300)));
     assert_eq!(read_ts(db, id, &pk1(1)).await, Some((300, 200)));
 }
 
@@ -181,7 +182,7 @@ async fn delete_then_newer_upsert_resurrects(db: &dyn Db) {
     let ev = apply(&mut reducer, db, 200, &upsert(id, pk1(1), &[(body, text("back"))])).await;
     expect_upsert(ev);
 
-    assert_eq!(read_col(db, id, &pk1(1), body).await, Some((tv("back"), Some(200))));
+    assert_eq!(read_col(db, id, &pk1(1), body).await, Some((tv("back"), 200)));
     assert_eq!(read_ts(db, id, &pk1(1)).await, Some((200, 100)));
 }
 
@@ -196,7 +197,7 @@ async fn delete_blocks_older_upsert(db: &dyn Db) {
     let ev = apply(&mut reducer, db, 100, &upsert(id, pk1(1), &[(body, text("nope"))])).await;
     expect_none(ev);
 
-    assert_eq!(read_col(db, id, &pk1(1), body).await, Some((DbValue::Null, None)));
+    assert_eq!(read_col(db, id, &pk1(1), body).await, Some((DbValue::Null, 0)));
     assert_eq!(read_ts(db, id, &pk1(1)).await, Some((0, 200)));
 }
 
@@ -233,8 +234,8 @@ async fn event_reports_only_winning_columns(db: &dyn Db) {
     let up = expect_upsert(ev);
     assert_eq!(changed(&up), vec![("a".into(), Some(text("fresh")))]);
 
-    assert_eq!(read_col(db, id, &pk1(1), a).await, Some((tv("fresh"), Some(100))));
-    assert_eq!(read_col(db, id, &pk1(1), b).await, Some((tv("keep"), Some(200))));
+    assert_eq!(read_col(db, id, &pk1(1), a).await, Some((tv("fresh"), 100)));
+    assert_eq!(read_col(db, id, &pk1(1), b).await, Some((tv("keep"), 200)));
 }
 
 /// A pkey-only table has no value columns, so a fresh insert carries no
@@ -266,14 +267,14 @@ async fn surrogate_table_emits_no_event(db: &dyn Db) {
     // First op creates the surrogate table with just `body`.
     let ev = apply(&mut reducer, db, 100, &upsert(id, pk1(1), &[(body, text("x"))])).await;
     expect_none(ev);
-    assert_eq!(read_col(db, id, &pk1(1), body).await, Some((tv("x"), Some(100))));
+    assert_eq!(read_col(db, id, &pk1(1), body).await, Some((tv("x"), 100)));
 
     // A later op references a column the table doesn't have yet: `prepare` must
     // ALTER it in, then the write lands alongside the original column.
     let ev = apply(&mut reducer, db, 200, &upsert(id, pk1(1), &[(extra, int(9))])).await;
     expect_none(ev);
-    assert_eq!(read_col(db, id, &pk1(1), extra).await, Some((iv(9), Some(200))));
-    assert_eq!(read_col(db, id, &pk1(1), body).await, Some((tv("x"), Some(100))));
+    assert_eq!(read_col(db, id, &pk1(1), extra).await, Some((iv(9), 200)));
+    assert_eq!(read_col(db, id, &pk1(1), body).await, Some((tv("x"), 100)));
 }
 
 /// An explicit NULL set merges by LWW like any other value: a newer null clears
@@ -288,12 +289,12 @@ async fn explicit_null_set_merges_by_lww(db: &dyn Db) {
     apply(&mut reducer, db, 100, &upsert(id, pk1(1), &[(a, text("x"))])).await;
     let up = expect_upsert(apply(&mut reducer, db, 200, &upsert_nulls(id, pk1(1), &[a])).await);
     assert_eq!(changed(&up), vec![("a".into(), None)]);
-    assert_eq!(read_col(db, id, &pk1(1), a).await, Some((DbValue::Null, Some(200))));
+    assert_eq!(read_col(db, id, &pk1(1), a).await, Some((DbValue::Null, 200)));
 
     // An older null loses to a newer value and is silent.
     apply(&mut reducer, db, 400, &upsert(id, pk1(2), &[(a, text("keep"))])).await;
     expect_none(apply(&mut reducer, db, 300, &upsert_nulls(id, pk1(2), &[a])).await);
-    assert_eq!(read_col(db, id, &pk1(2), a).await, Some((tv("keep"), Some(400))));
+    assert_eq!(read_col(db, id, &pk1(2), a).await, Some((tv("keep"), 400)));
 }
 
 /// A column that loses the same-timestamp value tiebreak must NOT be reported
@@ -323,8 +324,8 @@ async fn tiebreak_loser_is_not_reported(db: &dyn Db) {
     // Only `b` changed; `a` is unchanged despite sharing the timestamp.
     let up = expect_upsert(ev);
     assert_eq!(changed(&up), vec![("b".into(), Some(text("new")))]);
-    assert_eq!(read_col(db, id, &pk1(1), a).await, Some((tv("zzz"), Some(100))));
-    assert_eq!(read_col(db, id, &pk1(1), b).await, Some((tv("new"), Some(100))));
+    assert_eq!(read_col(db, id, &pk1(1), a).await, Some((tv("zzz"), 100)));
+    assert_eq!(read_col(db, id, &pk1(1), b).await, Some((tv("new"), 100)));
 }
 
 /// Malformed ops are rejected in `prepare` before any schema or SQL work: wrong
@@ -385,12 +386,12 @@ async fn composite_pk_and_mixed_types(db: &dyn Db) {
 
     assert_eq!(
         read_col(db, id, &key, blob).await,
-        Some((DbValue::Blob(vec![9]), Some(200)))
+        Some((DbValue::Blob(vec![9]), 200))
     );
     // A UUID stores natively on Postgres but as a 16-byte blob on SQLite, so
     // normalize to the raw bytes rather than asserting a dialect-specific form.
     let (uuid_val, uuid_lww) = read_col(db, id, &key, uuid).await.unwrap();
-    assert_eq!(uuid_lww, Some(100));
+    assert_eq!(uuid_lww, 100);
     let uuid_bytes = match uuid_val {
         DbValue::Uuid(bytes) => bytes.to_vec(),
         DbValue::Blob(bytes) => bytes,
@@ -545,14 +546,15 @@ async fn named(db: &dyn Db, id: TableId, cols: &[(ColumnId, &str)]) -> Reducer {
 // ── Reading physical state back ──────────────────────────────────────────────
 
 /// `(stored value, lww timestamp)` for `col` of the row keyed by `pk`, or `None`
-/// if the row is absent. A present row with a NULL column reads back as
-/// `Some((DbValue::Null, None))`.
+/// if the row is absent. The value may be `DbValue::Null` (absent or explicitly
+/// null), but the lww column is `NOT NULL`, so it reads back as an `i64` — `0`
+/// for a never-written or delete-cleared column.
 async fn read_col(
     db: &dyn Db,
     table: TableId,
     pk: &[Value],
     col: ColumnId,
-) -> Option<(DbValue, Option<i64>)> {
+) -> Option<(DbValue, i64)> {
     let sql = format!(
         "SELECT {}, {} FROM {} WHERE {}",
         col.col_name(),
@@ -562,7 +564,7 @@ async fn read_col(
     );
     let rows = db.query(&sql, &pk_params(pk)).await.unwrap();
     rows.first()
-        .map(|r| (r.values[0].clone(), r.get_optional_i64(1).unwrap()))
+        .map(|r| (r.values[0].clone(), r.get_i64(1).unwrap()))
 }
 
 /// `(__upsert_ts, __deleted_ts)` for the row keyed by `pk`, or `None` if absent.

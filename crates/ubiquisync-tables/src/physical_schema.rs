@@ -97,7 +97,7 @@ impl PhysicalTableSchema {
         let id = schema.id;
         let name = quote_ident(&id.table_name(prefix));
         let mut cols = BTreeSet::new();
-        for (id, _) in schema.value_cols.iter() {
+        for id in schema.value_cols.keys() {
             cols.insert(*id);
         }
         Self {
@@ -187,7 +187,7 @@ impl PhysicalTableSchema {
                     if !col.nullable {
                         return schema_mismatch(
                             id,
-                            format!("column {} is not nullable", &col.name),
+                            format!("column {} is not nullable", col.name),
                         );
                     }
 
@@ -202,10 +202,10 @@ impl PhysicalTableSchema {
                             ),
                         );
                     }
-                    if !lww_col.nullable {
+                    if lww_col.nullable {
                         return schema_mismatch(
                             id,
-                            format!("lww column {} is not nullable", &lww_col.name),
+                            format!("lww column {} must be NOT NULL", lww_col.name),
                         );
                     }
 
@@ -254,7 +254,7 @@ impl PhysicalTableSchema {
                 col.col_name(),
                 col.col_type().db_type().sql_type(dialect),
             ));
-            col_defs.push(format!("{} {int_type}", col.lww_col_name(),));
+            col_defs.push(format!("{} {int_type} NOT NULL DEFAULT 0", col.lww_col_name()));
         }
         let without_rowid = db.dialect().without_rowid();
         db.exec(
@@ -296,7 +296,7 @@ impl PhysicalTableSchema {
         // Add LWW column
         batch.add_statement(
             &format!(
-                "ALTER TABLE {} ADD COLUMN {} {};",
+                "ALTER TABLE {} ADD COLUMN {} {} NOT NULL DEFAULT 0;",
                 self.quoted_name,
                 col_id.lww_col_name(),
                 DbType::Integer.sql_type(dialect),
