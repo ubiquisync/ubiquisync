@@ -141,7 +141,7 @@ impl TableSchema {
         let drop_sql = format!("DROP VIEW IF EXISTS {quoted_name}");
         let create_sql = format!(
             "CREATE VIEW {quoted_name} AS SELECT {} FROM {surrogate_name} \
-            WHERE COALESCE({UPSERT_TS_COL}, 0) >= COALESCE({DELETED_TS_COL}, 0)",
+            WHERE {UPSERT_TS_COL} >= {DELETED_TS_COL}",
             select_clauses.join(", ")
         );
         (drop_sql, create_sql)
@@ -256,7 +256,7 @@ mod tests {
         assert!(create_sql.contains(r#"AS "n""#), "got {create_sql}");
         // Tombstoned rows (latest delete newer than latest upsert) are hidden.
         assert!(
-            create_sql.contains("WHERE COALESCE(__upsert_ts, 0) >= COALESCE(__deleted_ts, 0)"),
+            create_sql.contains("WHERE __upsert_ts >= __deleted_ts"),
             "got {create_sql}"
         );
     }

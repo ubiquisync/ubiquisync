@@ -147,7 +147,7 @@ impl Reducer {
         let mut sql = format!(
             "INSERT INTO {quoted_table_name} ({}) VALUES ({}) \
             ON CONFLICT ({}) DO UPDATE SET {} WHERE ({}) \
-            AND {timestamp_placeholder} >= COALESCE({DELETED_TS_COL},0)",
+            AND {timestamp_placeholder} >= {DELETED_TS_COL}",
             insert_into_cols.join(", "),
             insert_into_value_binds.join(", "),
             pk_name_list,
@@ -217,7 +217,7 @@ fn lww_winner_sql_with_tiebreak(
 }
 
 pub(crate) fn lww_winner_sql(table_name: &str, lww_col: &str) -> String {
-    format!("EXCLUDED.{lww_col} > COALESCE({table_name}.{lww_col}, 0)")
+    format!("EXCLUDED.{lww_col} > {table_name}.{lww_col}")
 }
 
 fn tiebreak_sql(
@@ -241,7 +241,7 @@ fn tiebreak_sql(
 
 pub(crate) fn set_lww_sql(lww_col: &str, table_name: &str, dialect: SqlDialect) -> String {
     let greatest = dialect.scalar_max();
-    format!("{lww_col} = {greatest}(COALESCE({table_name}.{lww_col}, 0), EXCLUDED.{lww_col})")
+    format!("{lww_col} = {greatest}({table_name}.{lww_col}, EXCLUDED.{lww_col})")
 }
 
 pub(crate) fn bind_pkey(

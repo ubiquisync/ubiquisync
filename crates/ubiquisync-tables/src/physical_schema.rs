@@ -25,11 +25,11 @@ pub(crate) struct PhysicalTableSchema {
 }
 
 /// The timestamp of the latest upsert operation on the table.
-/// A nullable i64 column: the reducer reads it as `COALESCE(ts, 0)`.
+/// A `NOT NULL DEFAULT 0` i64 column
 pub const UPSERT_TS_COL: &str = "__upsert_ts";
 
 /// The timestamp of the latest delete operation on the table.
-/// A nullable i64 column: the reducer reads it as `COALESCE(ts, 0)`.
+/// A `NOT NULL DEFAULT 0` i64 column
 pub const DELETED_TS_COL: &str = "__deleted_ts";
 
 impl PhysicalTableSchema {
@@ -97,7 +97,7 @@ impl PhysicalTableSchema {
         let id = schema.id;
         let name = quote_ident(&id.table_name(prefix));
         let mut cols = BTreeSet::new();
-        for (id, _) in schema.value_cols.iter() {
+        for id in schema.value_cols.keys() {
             cols.insert(*id);
         }
         Self {
@@ -187,7 +187,7 @@ impl PhysicalTableSchema {
                     if !col.nullable {
                         return schema_mismatch(
                             id,
-                            format!("column {} is not nullable", &col.name),
+                            format!("column {} is not nullable", col.name),
                         );
                     }
 
@@ -202,10 +202,10 @@ impl PhysicalTableSchema {
                             ),
                         );
                     }
-                    if !lww_col.nullable {
+                    if lww_col.nullable {
                         return schema_mismatch(
                             id,
-                            format!("lww column {} is not nullable", &lww_col.name),
+                            format!("lww column {} must be NOT NULL", lww_col.name),
                         );
                     }
 
@@ -244,8 +244,9 @@ impl PhysicalTableSchema {
         }
 
         let int_type = DbType::Integer.sql_type(dialect);
-        col_defs.push(format!("{UPSERT_TS_COL} {int_type}"));
-        col_defs.push(format!("{DELETED_TS_COL} {int_type}"));
+        // NOT NULL DEFAULT 0 allows safe comparison without COALESCE
+        col_defs.push(format!("{UPSERT_TS_COL} {int_type} NOT NULL DEFAULT 0"));
+        col_defs.push(format!("{DELETED_TS_COL} {int_type} NOT NULL DEFAULT 0"));
 
         for col in &self.cols {
             col_defs.push(format!(
@@ -253,7 +254,7 @@ impl PhysicalTableSchema {
                 col.col_name(),
                 col.col_type().db_type().sql_type(dialect),
             ));
-            col_defs.push(format!("{} {int_type}", col.lww_col_name(),));
+            col_defs.push(format!("{} {int_type} NOT NULL DEFAULT 0", col.lww_col_name()));
         }
         let without_rowid = db.dialect().without_rowid();
         db.exec(
@@ -295,7 +296,7 @@ impl PhysicalTableSchema {
         // Add LWW column
         batch.add_statement(
             &format!(
-                "ALTER TABLE {} ADD COLUMN {} {};",
+                "ALTER TABLE {} ADD COLUMN {} {} NOT NULL DEFAULT 0;",
                 self.quoted_name,
                 col_id.lww_col_name(),
                 DbType::Integer.sql_type(dialect),
@@ -324,6 +325,21 @@ fn validate_upsert_delete_ts_cols(
         if db_type != DbType::Integer {
             return Err(TablesError::SchemaError(format!(
                 "invalid {col_name} type {db_type:?}"
+            )));
+        }
+        // Must be NOT NULL: reads compare these columns directly (no COALESCE),
+        // so a nullable column that held a NULL would break LWW comparisons.
+        //
+        // We do NOT verify the DEFAULT 0 that inserts also rely on (they omit
+        // these columns and lean on the default): DbColumnDescription carries no
+        // default, and normalizing default expressions across dialects is
+        // brittle. create_table always pairs NOT NULL with DEFAULT 0, so the only
+        // way to violate this is a foreign-created table — which would fail
+        // loudly with a NOT NULL constraint error on its first insert, not
+        // silently corrupt data.
+        if col.nullable {
+            return Err(TablesError::SchemaError(format!(
+                "{col_name} must be NOT NULL"
             )));
         }
     } else {
