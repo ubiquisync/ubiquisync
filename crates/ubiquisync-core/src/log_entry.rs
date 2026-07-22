@@ -30,5 +30,60 @@ pub struct LogEntry<E> {
     /// treated as one logical write by LWW comparisons.
     pub timestamp: Timestamp,
     /// The state mutation.
-    pub op: E,
+    pub op: OpBody<E>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpBody<E> {
+    App(E),
+    Sys(SysOp),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SysOp {
+    SetDeviceName(String),
+    Join {
+        workspace_id: Uuid,
+        user_id: Uuid,
+    },
+    AdmitDevice {
+        device_id: Uuid,
+        user_id: Uuid,
+    },
+    AdmitServer {
+        server_id: Uuid,
+    },
+    SetCapability {
+        user_id: Uuid,
+        capability: u64,
+        value: Option<u64>,
+    }, // None revokes
+    RemoveDevice {
+        device_id: Uuid,
+        cut_index: u64,
+    }, // users always remove their own devices, doesn't apply to servers
+    RemoveUser {
+        user_id: Uuid,
+    },
+    RemoveServer {
+        server_id: Uuid,
+        cut_index: u64,
+    },
+    SetPolicy {
+        policy: Policy,
+        cel: String,
+    },
+    ShareKey {
+        device_id: Uuid,
+        fingerprint: [u8; 16],
+        cipher: Vec<u8>,
+    },
+}
+
+pub enum Policy {
+    AdmitUser,
+    SetCapability,
+    RemoveUser,
+    ManageServers,
+    SetPolicy,
 }
