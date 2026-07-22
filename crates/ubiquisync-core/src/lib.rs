@@ -18,6 +18,7 @@
 
 pub mod codec;
 pub mod crypto;
+pub mod ctl;
 pub mod event;
 pub mod hlc;
 pub mod init;
