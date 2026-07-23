@@ -2,6 +2,7 @@
 //! server-attested user attribution. This is the unit of encoding/decoding in a
 //! segment file.
 
+use crate::crypto::Signature;
 use crate::hlc::Timestamp;
 use crate::uuid::Uuid;
 
@@ -31,4 +32,22 @@ pub struct LogEntry<E> {
     pub timestamp: Timestamp,
     /// The state mutation.
     pub op: E,
+}
+
+/// One decoded entry: a live log entry or an expunged-entry marker.
+#[derive(Clone)]
+pub enum DecodedEntry<E> {
+    IndexedEntry { idx: u64, entry: EntryBody<E> },
+    Signature { height: u64, signatures: Signature },
+}
+
+#[derive(Clone)]
+pub enum EntryBody<E> {
+    /// A normal log entry.
+    LogEntry(LogEntry<E>),
+    /// A tombstone naming the hash of the entry that was expunged.
+    Expunged(blake3::Hash),
+    // Declares the fingerprint for the encryption key being used from
+    // this point forward until the next UseKey op changes the key.
+    UseKey([u8; 16]),
 }

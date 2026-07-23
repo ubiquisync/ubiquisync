@@ -24,20 +24,16 @@ pub trait LogSource<E>: HasCursors {
     /// A bounded batch of `peer`'s entries at or after `from`, ascending
     /// (expunged markers included). Empty means drained at `from`; the caller
     /// loops with an advancing `from` until then.
-    async fn read_since(&self, peer: Uuid, from: u64) -> Result<SignedEntries<E>, SyncError>;
+    async fn read_since(
+        &self,
+        container: Uuid,
+        peer: Uuid,
+        from: u64,
+    ) -> Result<Vec<DecodedEntry<E>>, SyncError>;
 }
 
 pub struct SignedInitEntry {
     pub entry: InitEntry,
+    pub raw_bytes: Vec<u8>,
     pub signature: Signature,
-}
-
-pub struct SignedEntries<E> {
-    pub entries: Vec<IndexedEntry<E>>,
-    pub signature: Signature,
-}
-
-pub struct IndexedEntry<E> {
-    pub index: u64,
-    pub entry: DecodedEntry<E>,
 }

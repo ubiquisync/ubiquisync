@@ -1,6 +1,7 @@
 use crate::{crypto::PubKey, hlc::Timestamp, uuid::Uuid};
 
 pub struct InitEntry {
+    pub version: u16,
     pub timestamp: Timestamp,
     pub device_name: String,
     pub app_magic: Vec<u8>,
