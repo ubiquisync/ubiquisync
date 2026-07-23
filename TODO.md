@@ -4,6 +4,56 @@ Known gaps and pending decisions, mostly surfaced while porting from the source
 codebase. Items here should graduate to GitHub issues (or get fixed) rather
 than accumulate.
 
+## Protocol design pass (July 2026) — put things in the right places
+
+File fixes:
+
+- [ ] `init.rs`: add `version: u16` as first field
+- [ ] `header.rs`: fix `key_fingeprint` typo; add missing imports
+- [ ] `ctl/op.rs`: doc-comment `CommitInfo.id` dual use (container id vs device
+  id); `ObservePeers` refs are ctl-log heads only
+- [ ] Subtype layout: critical bit (0x80); all ops critical except
+  `SetDeviceName`; non-critical requires proof skipping can't affect fold output
+
+Spec rules to write down (exist only in conversation):
+
+- [ ] AAD = canonical `LogicalHeader` encoding, reconstructed from path on disk
+- [ ] Nonces always random, never coordinate-derived (rewrite/expunge reuse)
+- [ ] Compression inside encryption; genesis byte-stability (hash raw bytes,
+  never re-serialize); `MerkleRoot` length pinned per version (v1 = 32, flat hash)
+- [ ] Signature acceptance: Ed25519 strict (RFC 8032), ECDSA low-s only
+- [ ] Total order = (HLC, origin, hash); ctl-op causal context = own-log prefix
+  + latest `ObservePeers` closure; fail-frozen-never-divergent on unknowns
+- [ ] Validity minimization: app-op validity = membership + cuts only, never caps
+- [ ] Cut semantics per removal type; RemoveUser implicit cut + AdmitUser
+  freshness default (closes backdated-invitation hole)
+- [ ] Binding: `Join`/`AdmitDevice` user ids must match, write-once; lazy
+  binding incl. root self-join
+- [ ] Root `encryption_key.is_some()` = workspace encryption flag; joiners must
+  match; `server: true` ⇒ plaintext workspace
+- [ ] Graft rules: consent-follows-root; membership edges + data import,
+  grants/policies never (no privilege smuggling); cross-join tiebreak
+- [ ] Metadata-cleartext disclosure list; E2EE = no forward secrecy by design;
+  recovery codes are a product requirement
+
+Profile v1:
+
+- [ ] Hook ↔ op mapping table + default CEL (admin cap, root device axiom)
+- [ ] CEL environment pin + context contract (actor device/user, caps, op
+  fields, is-server) — biggest unwritten surface
+- [ ] Size-bound constants (name, cel, cipher, app_magic)
+
+Conformance vectors (divergence = the cardinal sin):
+
+- [ ] Codec framing incl. unknown non-critical op (skipped, hashed, chained)
+  and unknown critical op (fold frozen at exact position)
+- [ ] Signature edge cases (non-canonical Ed25519 points, high-s ECDSA)
+- [ ] Fold evaluation: worked example incl. concurrent removal + mercy rule
+
+Crates: `chacha20poly1305`, `ed25519-dalek` (not `ed25519`), `p256`,
+`x25519-dalek`, `hpke`, `zeroize`, `getrandom`; signing behind a trait for
+enclave impls.
+
 ## Decided — implement during the engine port
 
 - [ ] **LWW tiebreak = value bytes** (decided June 2026). HLC timestamps carry
