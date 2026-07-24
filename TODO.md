@@ -12,21 +12,28 @@ File fixes:
 - [ ] `header.rs`: fix `key_fingeprint` typo; add missing imports
 - [ ] `ctl/op.rs`: doc-comment `CommitInfo.id` dual use (container id vs device
   id); `ObservePeers` refs are ctl-log heads only
+- [ ] `ctl/op.rs`: `RemoveDevice` drops `ctl_cut`/`hlc_cut` (witnessed-validity
+  design); self-targeted case carries a final-heads manifest (seal); the
+  "own devices only" comment is default-profile CEL, not protocol
 - [ ] Subtype layout: critical bit (0x80); all ops critical except
   `SetDeviceName`; non-critical requires proof skipping can't affect fold output
 
 Spec rules to write down (exist only in conversation):
 
 - [ ] AAD = canonical `LogicalHeader` encoding, reconstructed from path on disk
-- [ ] Nonces always random, never coordinate-derived (rewrite/expunge reuse)
+- [ ] Nonces: deterministic coordinate-derived for inner per-entry ciphertext
+  (safe because expunge is tombstone-only, never rewrite-in-place); random
+  for the outer batch/segment armor (`EncryptionInfo.nonce`)
 - [ ] Compression inside encryption; genesis byte-stability (hash raw bytes,
   never re-serialize); `MerkleRoot` length pinned per version (v1 = 32, flat hash)
 - [ ] Signature acceptance: Ed25519 strict (RFC 8032), ECDSA low-s only
 - [ ] Total order = (HLC, origin, hash); ctl-op causal context = own-log prefix
   + latest `ObservePeers` closure; fail-frozen-never-divergent on unknowns
 - [ ] Validity minimization: app-op validity = membership + cuts only, never caps
-- [ ] Cut semantics per removal type; RemoveUser implicit cut + AdmitUser
-  freshness default (closes backdated-invitation hole)
+- [ ] Removal semantics — see `docs/removal-and-cuts.md` (witnessed-validity
+  rule: no cut points, no unwinding of acknowledged history, monotone
+  verdicts; self-seal with final-heads manifest is the only hard boundary;
+  mass-removal handled by default-profile ratification gate)
 - [ ] Binding: `Join`/`AdmitDevice` user ids must match, write-once; lazy
   binding incl. root self-join
 - [ ] Root `encryption_key.is_some()` = workspace encryption flag; joiners must
