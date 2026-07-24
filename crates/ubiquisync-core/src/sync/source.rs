@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use crate::codec::DecodedEntry;
 use crate::crypto::Signature;
 use crate::init::InitEntry;
+use crate::log_entry::{GenericLogEntry, OpEntry};
 use crate::sync::cursors::HasCursors;
 use crate::uuid::Uuid;
 
@@ -18,7 +19,7 @@ use super::error::SyncError;
 /// herd — many holders advertise "I have X" for almost nothing, and the receiver
 /// fetches X once. Object-safe, like [`LogProcessor`](super::LogProcessor).
 #[async_trait]
-pub trait LogSource<E>: HasCursors {
+pub trait LogSource<OpPayload>: HasCursors {
     async fn read_init(&self, peer: Uuid) -> Result<SignedInitEntry, SyncError>;
 
     /// A bounded batch of `peer`'s entries at or after `from`, ascending
@@ -29,7 +30,7 @@ pub trait LogSource<E>: HasCursors {
         container: Uuid,
         peer: Uuid,
         from: u64,
-    ) -> Result<Vec<DecodedEntry<E>>, SyncError>;
+    ) -> Result<Vec<GenericLogEntry<OpPayload>>, SyncError>;
 }
 
 pub struct SignedInitEntry {

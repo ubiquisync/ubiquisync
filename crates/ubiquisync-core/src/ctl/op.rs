@@ -32,17 +32,14 @@ pub enum CtlOp {
     },
     RemoveDevice {
         device_id: Uuid,
-        ctl_cut: u64,
-        hlc_cut: Timestamp,
     }, // users always remove their own devices, doesn't apply to servers
     RemoveUser {
         user_id: Uuid,
     },
     RemoveServer {
         server_id: Uuid,
-        ctl_cut: u64,
-        hlc_cut: Timestamp,
     },
+    RemoveSelf,
     SetPolicy {
         policy: Policy,
         cel: String,
