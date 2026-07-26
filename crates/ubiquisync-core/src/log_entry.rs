@@ -15,7 +15,14 @@ use crate::uuid::Uuid;
 /// op vocabulary in `ubiquisync-tables`. Any domains in use share one HLC
 /// clock domain, so timestamps are causally comparable across them.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OpEntry<E> {
+pub struct OpBatch<E, H = OpHeader> {
+    pub header: H,
+    /// The state mutations.
+    pub ops: Vec<OpOrExpunge<E>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpHeader {
     /// The **server-attested** user id for this entry. Every entry originates
     /// from *some* user, but this field specifically carries the identity a
     /// server vouched for — it is populated only in server-mode segments, where
@@ -30,31 +37,30 @@ pub struct OpEntry<E> {
     /// Entries written in one atomic transaction share a tick, so they are
     /// treated as one logical write by LWW comparisons.
     pub timestamp: Timestamp,
-    /// The state mutation.
-    pub op: E,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpOrExpunge<E> {
+    Op(E),
+    Expunge(blake3::Hash),
 }
 
 /// One decoded entry: a live log entry or an expunged-entry marker.
 #[derive(Clone)]
-pub enum GenericLogEntry<OpPayload> {
-    IndexedEntry {
-        idx: u64,
-        entry: EntryBody<OpPayload>,
-    },
-    Signature {
-        height: u64,
-        signatures: Signature,
-    },
+pub enum GenericLogEntry<E, H> {
+    IndexedEntry { idx: u64, entry: EntryBody<E, H> },
+    Signature { height: u64, signatures: Signature },
 }
 
-pub type OpaqueLogEntry = GenericLogEntry<Vec<u8>>;
+/// Log entry where op and header are encoded as canonical hash bytes (may be encrypted)
+pub type OpaqueLogEntry = GenericLogEntry<Vec<u8>, Vec<u8>>;
 
-pub type LogEntry<Op> = GenericLogEntry<OpEntry<Op>>;
+pub type LogEntry<E> = GenericLogEntry<E, OpHeader>;
 
 #[derive(Clone)]
-pub enum EntryBody<OpPayload> {
+pub enum EntryBody<E, H> {
     /// A normal log entry.
-    LogEntry(OpPayload),
+    OpBatch(OpBatch<E, H>),
     /// A tombstone naming the hash of the entry that was expunged.
     Expunged(blake3::Hash),
     // Declares the fingerprint for the encryption key being used from
