@@ -16,6 +16,7 @@ mod consts;
 mod decoder;
 mod encoder;
 mod error;
+mod header;
 mod op;
 mod reader;
 mod writer;

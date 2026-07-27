@@ -10,12 +10,18 @@ use crate::uuid::Uuid;
 
 use super::error::SyncError;
 
-/// Per-origin position: `peer id → next entry index`. The value for a peer is
+#[derive(Debug, Hash, Eq, PartialEq, Clone, Copy)]
+pub struct LogId {
+    pub container_id: Uuid,
+    pub peer_id: Uuid,
+}
+
+/// Per-origin position: `log id → next entry index`. The value for a log is
 /// what to pass [`read_since`](super::LogSource::read_since) for the next entry;
 /// an absent key means `0`.
 ///
 /// A version vector: merge by pointwise `max`, diff to get the gap to pull.
-pub type PeerCursors = HashMap<Uuid, u64>;
+pub type PeerCursors = HashMap<LogId, u64>;
 
 /// An event from [`watch_cursors`](HasCursors::watch_cursors).
 ///
@@ -32,6 +38,13 @@ pub enum CursorsEvent {
     Advanced(PeerCursors),
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum CursorsTarget {
+    All,
+    Container(Uuid),
+    Log(LogId),
+}
+
 /// Stream from [`watch_cursors`](HasCursors::watch_cursors); ending means the
 /// watch closed.
 pub type CursorStream = Pin<Box<dyn Stream<Item = CursorsEvent> + Send>>;
@@ -41,9 +54,9 @@ pub type CursorStream = Pin<Box<dyn Stream<Item = CursorsEvent> + Send>>;
 #[async_trait]
 pub trait HasCursors: Send + Sync {
     /// Snapshot of the current cursor vector.
-    async fn cursors(&self) -> Result<PeerCursors, SyncError>;
+    async fn cursors(&self, target: CursorsTarget) -> Result<PeerCursors, SyncError>;
 
     /// Live cursor progress: a first [`Snapshot`](CursorsEvent::Snapshot), then
     /// [`Advanced`](CursorsEvent::Advanced) deltas.
-    fn watch_cursors(&self) -> CursorStream;
+    fn watch_cursors(&self, target: CursorsTarget) -> CursorStream;
 }

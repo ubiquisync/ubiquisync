@@ -2,6 +2,7 @@
 //! server-attested user attribution. This is the unit of encoding/decoding in a
 //! segment file.
 
+use crate::crypto::Signature;
 use crate::hlc::Timestamp;
 use crate::uuid::Uuid;
 
@@ -14,7 +15,7 @@ use crate::uuid::Uuid;
 /// op vocabulary in `ubiquisync-tables`. Any domains in use share one HLC
 /// clock domain, so timestamps are causally comparable across them.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LogEntry<E> {
+pub struct OpEntry<E> {
     /// The **server-attested** user id for this entry. Every entry originates
     /// from *some* user, but this field specifically carries the identity a
     /// server vouched for — it is populated only in server-mode segments, where
@@ -31,4 +32,32 @@ pub struct LogEntry<E> {
     pub timestamp: Timestamp,
     /// The state mutation.
     pub op: E,
+}
+
+/// One decoded entry: a live log entry or an expunged-entry marker.
+#[derive(Clone)]
+pub enum GenericLogEntry<OpPayload> {
+    IndexedEntry {
+        idx: u64,
+        entry: EntryBody<OpPayload>,
+    },
+    Signature {
+        height: u64,
+        signatures: Signature,
+    },
+}
+
+pub type OpaqueLogEntry = GenericLogEntry<Vec<u8>>;
+
+pub type LogEntry<Op> = GenericLogEntry<OpEntry<Op>>;
+
+#[derive(Clone)]
+pub enum EntryBody<OpPayload> {
+    /// A normal log entry.
+    LogEntry(OpPayload),
+    /// A tombstone naming the hash of the entry that was expunged.
+    Expunged(blake3::Hash),
+    // Declares the fingerprint for the encryption key being used from
+    // this point forward until the next UseKey op changes the key.
+    UseKey([u8; 16]),
 }

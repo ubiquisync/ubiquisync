@@ -8,7 +8,7 @@
 //! suffices and each log's extent is a trustworthy cursor.
 
 use crate::codec::DecodedEntry;
-use crate::log_entry::LogEntry;
+use crate::log_entry::{LogEntry, OpEntry};
 use crate::uuid::Uuid;
 
 use super::error::SyncError;
@@ -21,13 +21,16 @@ pub trait FileLogPuller<E> {
     /// Origins present in this store.
     fn list_peers(&self) -> Vec<Uuid>;
 
+    fn list_containers(&self) -> Vec<Uuid>;
+
     /// Bounded batch of `peer`'s entries at or after `from`; empty when drained.
     /// The synchronous counterpart to [`LogSource::read_since`].
     fn read_entries(
         &self,
+        container: Uuid,
         peer: Uuid,
         from: u64,
-    ) -> Result<Vec<(u64, DecodedEntry<E>)>, SyncError>;
+    ) -> Result<Vec<(u64, LogEntry<E>)>, SyncError>;
 }
 
 /// Write side of a file log: append to your own origin only. No method writes a
@@ -40,7 +43,7 @@ pub trait FileLogSink<E> {
     /// Append `entries` at their given indices; batched so one call can be one
     /// segment write. Real entries only — expunging rewrites an existing
     /// segment, it never appends.
-    fn write(&mut self, entries: &[(u64, LogEntry<E>)]) -> Result<(), SyncError>;
+    fn write(&mut self, container: Uuid, entries: &[LogEntry<E>]) -> Result<(), SyncError>;
 }
 
 /// A file log as a replica: multi-reader ([`LogSource`]), single-writer

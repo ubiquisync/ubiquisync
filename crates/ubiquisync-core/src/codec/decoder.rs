@@ -2,15 +2,18 @@ use std::collections::HashMap;
 use std::io::BufRead;
 use std::marker::PhantomData;
 
-use crate::codec::{
-    consts::{FLAG_DEVICE, FLAG_SERVER, TAG_EXPUNGED},
-    error::CodecError,
-    op::Op,
-    reader::{EntryBufferReader, Reader},
-};
 use crate::hlc::Timestamp;
 use crate::log_entry::LogEntry;
 use crate::uuid::Uuid;
+use crate::{
+    codec::{
+        consts::{FLAG_DEVICE, FLAG_SERVER, TAG_EXPUNGED},
+        error::CodecError,
+        op::Op,
+        reader::{EntryBufferReader, Reader},
+    },
+    log_entry::DecodedEntry,
+};
 
 /// Streaming decoder for one segment: reads the header on construction, then
 /// yields entries one at a time, carrying the cross-entry state (timestamp
@@ -35,15 +38,6 @@ pub struct DecodedLogs<E> {
     pub last_timestamp: u64,
     /// Whether the segment was written in server mode (entries carry user ids).
     pub server_mode: bool,
-}
-
-/// One decoded entry: a live log entry or an expunged-entry marker.
-#[derive(Clone)]
-pub enum DecodedEntry<E> {
-    /// A normal log entry.
-    LogEntry(LogEntry<E>),
-    /// A tombstone naming the hash of the entry that was expunged.
-    Expunged(blake3::Hash),
 }
 
 impl<E: Op, R: BufRead> Decoder<E, R> {

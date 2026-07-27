@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 
-use crate::codec::DecodedEntry;
+use crate::log_entry::LogEntry;
 use crate::sync::cursors::HasCursors;
 use crate::uuid::Uuid;
 
@@ -29,9 +29,10 @@ pub trait LogProcessor<E>: HasCursors {
     /// `index + 1`. Idempotent (see the trait docs).
     async fn apply(
         &self,
+        container: Uuid,
         peer: Uuid,
         index: u64,
-        entry: DecodedEntry<E>,
+        entry: LogEntry<E>,
     ) -> Result<Applied, SyncError>;
 }
 
