@@ -1,7 +1,7 @@
 use crate::{hlc::Timestamp, uuid::Uuid};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CtlOp {
+pub enum CtlOp<AuthOp> {
     CommitContainers {
         container_heads: Vec<CommitInfo>,
         merkle_root: Option<MerkleRoot>,
@@ -20,12 +20,7 @@ pub enum CtlOp {
         containers: Vec<Uuid>, // empty vec specifies that this is a default workspace key
         wraps: Vec<KeyWrap>,
     },
-    AuthOp {
-        opaque_bytes: Vec<u8>,
-    },
-    SetAuthPolicy {
-        cel: String,
-    },
+    AuthOp(AuthOp),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
