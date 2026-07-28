@@ -22,6 +22,7 @@ pub mod ctl;
 pub mod event;
 pub mod hlc;
 pub mod init;
+pub mod keyring;
 pub mod log_entry;
 pub mod store;
 pub mod sync;
