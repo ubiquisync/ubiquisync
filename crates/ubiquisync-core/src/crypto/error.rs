@@ -6,4 +6,6 @@ pub enum Error {
     CipherError,
     #[error("op count range exceeded")]
     OutOfRangeOp,
+    #[error("op count mismatch")]
+    OpCountMismatch,
 }
