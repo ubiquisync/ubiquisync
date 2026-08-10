@@ -47,7 +47,7 @@ impl EntryCipher {
         ad.extend_from_slice(self.ad_prefix.as_slice());
         ad.extend_from_slice(&entry_idx.to_le_bytes());
         ad.extend_from_slice(&slot_idx.to_le_bytes());
-        let nonce: [u8; 24] = blake3::derive_key(DOMAIN_SEPARTOR, &ad[..])[0..24]
+        let nonce: [u8; 24] = blake3::derive_key(DOMAIN_SEPARATOR, &ad[..])[0..24]
             .try_into()
             .unwrap();
         let mut res = vec![0; bytes.len()];
@@ -57,8 +57,8 @@ impl EntryCipher {
             .encrypt_inout_detached(&nonce.into(), &ad, inout)
             .map_err(|_| Error::CipherError)?;
         res.extend_from_slice(tag.as_slice());
-        todo!()
+        Ok(res)
     }
 }
 
-const DOMAIN_SEPARTOR: &str = "ubiquisync/v1/aead-nonce";
+const DOMAIN_SEPARATOR: &str = "ubiquisync/v1/aead-nonce";

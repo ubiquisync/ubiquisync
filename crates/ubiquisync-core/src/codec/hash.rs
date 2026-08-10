@@ -1,5 +1,5 @@
 use crate::{
-    codec::consts::ENTRY_TYPE_OP_BATCH,
+    codec::consts::{ENTRY_TYPE_OP_BATCH, ENTRY_TYPE_USE_KEY},
     crypto::{EntryCipher, Error},
 };
 
@@ -20,9 +20,10 @@ const DOMAIN_SLOT_HASH: &str = "ubiquisync/v1/slot-hash";
 impl OpBatchHasher {
     pub fn new(opaque_header_bytes: &[u8], entry_index: u64, num_ops: u64) -> Self {
         let mut hasher = blake3::Hasher::new_derive_key(DOMAIN_ENTRY_HASH);
-        hasher.update(ENTRY_TYPE_OP_BATCH); // TODO: is this still needed???
+        hasher.update(&entry_index.to_le_bytes());
+        hasher.update(ENTRY_TYPE_OP_BATCH);
         let header_hash = blake3::derive_key(DOMAIN_SLOT_HASH, opaque_header_bytes);
-        hasher.update(opaque_header_bytes);
+        hasher.update(&header_hash);
         hasher.update(&num_ops.to_le_bytes()[..]);
         Self {
             entry_index,
@@ -33,8 +34,8 @@ impl OpBatchHasher {
     }
 
     pub fn append_opaque_op(&mut self, opaque_op_bytes: &[u8]) -> Result<(), Error> {
-        let op_hash = blake3::hash(opaque_op_bytes);
-        self.append_op_hash(op_hash.as_bytes())
+        let op_hash = blake3::derive_key(DOMAIN_SLOT_HASH, opaque_op_bytes);
+        self.append_op_hash(&op_hash)
     }
 
     pub fn append_expunged_op(&mut self, op_hash: &[u8; 32]) -> Result<(), Error> {
@@ -86,4 +87,16 @@ impl<'a> PlaintextOpBatchHasher<'a> {
             self.hasher.append_opaque_op(canonical_bytes)
         }
     }
+
+    pub fn finalize(self) -> Result<blake3::Hash, Error> {
+        self.hasher.finalize()
+    }
+}
+
+pub fn hash_use_key(entry_index: u64, fingerprint: [u8; 32]) -> blake3::Hash {
+    let mut hasher = blake3::Hasher::new_derive_key(DOMAIN_ENTRY_HASH);
+    hasher.update(&entry_index.to_le_bytes());
+    hasher.update(ENTRY_TYPE_USE_KEY);
+    hasher.update(&fingerprint);
+    hasher.finalize()
 }
