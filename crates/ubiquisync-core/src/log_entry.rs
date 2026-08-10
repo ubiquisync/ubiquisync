@@ -6,19 +6,10 @@ use crate::crypto::Signature;
 use crate::hlc::Timestamp;
 use crate::uuid::Uuid;
 
-/// A single log entry: one operation plus metadata. This is the unit
-/// written to and read from segment files — each entry has its own
-/// blake3 hash and can be independently expunged.
-///
-/// The entry is generic over its op vocabulary `E`: each data domain defines
-/// its own op type and carries it in this envelope — for example the table
-/// op vocabulary in `ubiquisync-tables`. Any domains in use share one HLC
-/// clock domain, so timestamps are causally comparable across them.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OpBatch<E, H = OpHeader> {
+pub struct OpBatch<Op, H = OpHeader> {
     pub header: H,
-    /// The state mutations.
-    pub ops: Vec<OpOrExpunge<E>>,
+    pub ops: Vec<OpOrExpunge<Op>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +23,8 @@ pub struct OpHeader {
     /// Do not read this as "the author"; read it as "who the server said this
     /// was." It is distinct from a stream's `peer_id` (which stream the entry
     /// came from).
+    ///
+    /// This _can_ be empty in server logs if and only if all ops are device ops.
     pub server_user_id: Option<Uuid>,
     /// HLC timestamp — monotonically non-decreasing within a peer's stream.
     /// Entries written in one atomic transaction share a tick, so they are
@@ -40,30 +33,49 @@ pub struct OpHeader {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OpOrExpunge<E> {
-    Op(E),
-    Expunge(blake3::Hash),
+pub enum OpOrExpunge<Op> {
+    Op(Op),
+    Expunge(Hash),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpWrapper<UserOp, DeviceOp> {
+    UserOp(UserOp),
+    DeviceOp(DeviceOp),
 }
 
 /// One decoded entry: a live log entry or an expunged-entry marker.
 #[derive(Clone)]
-pub enum GenericLogEntry<E, H> {
-    IndexedEntry { idx: u64, entry: EntryBody<E, H> },
-    Signature { height: u64, signatures: Signature },
+pub enum GenericLogEntry<Op, H> {
+    IndexedEntry {
+        idx: u64,
+        entry: EntryBody<Op, H>,
+    },
+    Expunged {
+        /// Inclusive start index.
+        start_idx: u64,
+        /// Inclusive end index.
+        end_idx: u64,
+        cover: Vec<Hash>,
+    },
+    Signature {
+        height: u64,
+        signatures: Signature,
+    },
 }
 
 /// Log entry where op and header are encoded as canonical hash bytes (may be encrypted)
 pub type OpaqueLogEntry = GenericLogEntry<Vec<u8>, Vec<u8>>;
 
-pub type LogEntry<E> = GenericLogEntry<E, OpHeader>;
+pub type LogEntry<UserOp, DeviceOp> = GenericLogEntry<OpWrapper<UserOp, DeviceOp>, OpHeader>;
 
 #[derive(Clone)]
-pub enum EntryBody<E, H> {
-    /// A normal log entry.
-    OpBatch(OpBatch<E, H>),
-    /// A tombstone naming the hash of the entry that was expunged.
-    Expunged(blake3::Hash),
-    // Declares the fingerprint for the encryption key being used from
-    // this point forward until the next UseKey op changes the key.
-    UseKey([u8; 16]),
+pub enum EntryBody<Op, H> {
+    OpBatch(OpBatch<Op, H>),
+    /// Declares the fingerprint for the encryption key being used from
+    /// this point forward until the next UseKey op changes the key.
+    /// MUST NOT be expunged.
+    UseKey(Hash),
 }
+
+pub type Hash = [u8; 32];

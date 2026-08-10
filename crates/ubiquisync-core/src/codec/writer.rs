@@ -6,7 +6,7 @@ use crate::{codec::error::CodecError, uuid::Uuid};
 /// blake3 hash, and deduplicates UUIDs against a dictionary shared across the
 /// segment's entries.
 pub struct EntryBufferWriter<'a> {
-    buf: HashWriter,
+    buf: DualWireCanonicalWriter,
     uuid_dict: &'a mut HashMap<Uuid, u32>,
 }
 
@@ -15,7 +15,7 @@ impl<'a> EntryBufferWriter<'a> {
     /// across the entries of one segment.
     pub fn new(uuid_dict: &'a mut HashMap<Uuid, u32>) -> Self {
         Self {
-            buf: HashWriter::new(),
+            buf: DualWireCanonicalWriter::new(),
             uuid_dict,
         }
     }
@@ -62,7 +62,7 @@ impl<'a> EntryBufferWriter<'a> {
     pub fn write_uuid(&mut self, data: &Uuid) {
         // Hash the raw UUID bytes — canonical content identity must be
         // independent of dictionary state.
-        self.buf._hash_without_append(data);
+        self.buf._append_canonical_only(data);
 
         if let Some(id) = self.uuid_dict.get(data) {
             // Known UUID — write dict reference varint to buf only.
@@ -70,8 +70,8 @@ impl<'a> EntryBufferWriter<'a> {
         } else {
             // First occurrence — write 0 sentinel + raw bytes to buf,
             // and register in the dictionary for future references.
-            self.buf._append_without_hash(&[0]);
-            self.buf._append_without_hash(data);
+            self.buf._append_wire_only(&[0]);
+            self.buf._append_wire_only(data);
             let id = self.uuid_dict.len() as u32 + 1; // IDs start at 1; 0 is the inline sentinel.
             self.uuid_dict.insert(*data, id);
         }
@@ -82,10 +82,10 @@ impl<'a> EntryBufferWriter<'a> {
             let byte = (v & 0x7f) as u8;
             v >>= 7;
             if v == 0 {
-                self.buf._append_without_hash(&[byte]);
+                self.buf._append_wire_only(&[byte]);
                 break;
             } else {
-                self.buf._append_without_hash(&[byte | 0x80]);
+                self.buf._append_wire_only(&[byte | 0x80]);
             }
         }
     }
@@ -97,67 +97,50 @@ impl<'a> EntryBufferWriter<'a> {
             return Err(CodecError::NonMonotonicDelta);
         }
         let delta = current - last;
-        self.buf._hash_without_append(&current.to_le_bytes());
+        self.buf._append_canonical_only(&current.to_le_bytes());
         self._write_varint_without_hash(delta);
         Ok(())
     }
 
     /// Finalize the entry: appends truncated blake3 hash as integrity
     /// check bytes and returns the encoded buffer plus the full hash.
-    pub fn finalize(self) -> (Vec<u8>, blake3::Hash) {
+    pub fn finalize(self) -> (Vec<u8>, Vec<u8>) {
         self.buf.finalize()
     }
-
-    /// Return just the encoded body, **without** the truncated-hash integrity
-    /// trailer that [`finalize`](Self::finalize) appends. Used by callers that
-    /// reuse the wire encoding for storage and supply their own framing — e.g.
-    /// the SQL op-log index codec, which stores the raw `key`/`value` bytes and
-    /// has no use for a per-blob integrity hash.
-    pub fn into_bytes(self) -> Vec<u8> {
-        self.buf.into_bytes()
-    }
 }
 
-struct HashWriter {
-    buf: Vec<u8>,
-    hasher: blake3::Hasher,
+struct DualWireCanonicalWriter {
+    wire_bytes: Vec<u8>,
+    canonical_bytes: Vec<u8>,
 }
 
-impl HashWriter {
+impl DualWireCanonicalWriter {
     fn new() -> Self {
         Self {
-            buf: Vec::new(),
-            hasher: blake3::Hasher::new(),
+            wire_bytes: Vec::new(),
+            canonical_bytes: Vec::new(),
         }
     }
 
     fn append(&mut self, data: &[u8]) {
-        self.buf.extend_from_slice(data);
-        self.hasher.update(data);
+        self.wire_bytes.extend_from_slice(data);
+        self.canonical_bytes.extend_from_slice(data);
     }
 
     /// Write to buf only — skips the hasher. Used for dictionary-compressed
     /// encodings where the canonical hash sees different bytes than the buf.
-    fn _append_without_hash(&mut self, data: &[u8]) {
-        self.buf.extend_from_slice(data);
+    fn _append_wire_only(&mut self, data: &[u8]) {
+        self.wire_bytes.extend_from_slice(data);
     }
 
     /// Update the hasher only — skips the buf. Used to feed canonical
     /// content (e.g. raw UUID bytes) into the hash without writing them.
-    fn _hash_without_append(&mut self, data: &[u8]) {
-        self.hasher.update(data);
+    fn _append_canonical_only(&mut self, data: &[u8]) {
+        self.canonical_bytes.extend_from_slice(data);
     }
 
-    fn finalize(self) -> (Vec<u8>, blake3::Hash) {
-        let hash = self.hasher.finalize();
-        // append first 4 bytes of the blake3 hash as a truncated-hash integrity check
-        let mut buf = self.buf;
-        buf.extend_from_slice(&hash.as_bytes()[..4]);
-        (buf, hash)
-    }
-
-    /// Return the accumulated buffer without computing or appending the hash.
-    fn into_bytes(self) -> Vec<u8> {
-        self.buf
+    /// Returns the accumulated wire and canonical bytes respectively.
+    fn finalize(self) -> (Vec<u8>, Vec<u8>) {
+        (self.wire_bytes, self.canonical_bytes)
     }
 }

@@ -6,7 +6,7 @@ use std::io::BufRead;
 /// [`EntryBufferWriter`](super::writer::EntryBufferWriter). Feeds bytes through
 /// the rolling hash and resolves dictionary-compressed UUIDs.
 pub struct EntryBufferReader<'a, R> {
-    reader: HashReader<'a, R>,
+    reader: CanonicalizingReader<'a, R>,
     uuid_dict: &'a mut HashMap<u32, Uuid>,
 }
 
@@ -15,7 +15,7 @@ impl<'a, R: BufRead> EntryBufferReader<'a, R> {
     /// across the entries of one segment.
     pub fn new(reader: &'a mut Reader<R>, uuid_dict: &'a mut HashMap<u32, Uuid>) -> Self {
         Self {
-            reader: HashReader::new(reader),
+            reader: CanonicalizingReader::new(reader),
             uuid_dict,
         }
     }
@@ -40,7 +40,9 @@ impl<'a, R: BufRead> EntryBufferReader<'a, R> {
         let len = self.read_varint()?;
         // try_into, not `as`: on 32-bit targets (e.g. wasm32) `as usize` would
         // truncate a bogus 64-bit length and mis-decode instead of rejecting.
-        let len: usize = len.try_into().map_err(|_| CodecError::LengthTooLarge(len))?;
+        let len: usize = len
+            .try_into()
+            .map_err(|_| CodecError::LengthTooLarge(len))?;
         self.reader.read_exact(len, true)
     }
 
@@ -67,7 +69,7 @@ impl<'a, R: BufRead> EntryBufferReader<'a, R> {
         let current = last
             .checked_add(delta)
             .ok_or(CodecError::TimestampOverflow)?;
-        self.reader._update_hash(&current.to_le_bytes());
+        self.reader._append_canonical(&current.to_le_bytes());
         Ok(current)
     }
 
@@ -94,34 +96,33 @@ impl<'a, R: BufRead> EntryBufferReader<'a, R> {
                 .get(&idx)
                 .ok_or(CodecError::UnresolvedUuid(x))?
         };
-        self.reader._update_hash(&uuid);
+        self.reader._append_canonical(&uuid);
         Ok(uuid)
     }
 
-    /// Verify the trailing 4-byte hash check against the canonical
-    /// content hash. Returns the full hash on success.
-    pub fn finalize(mut self) -> Result<blake3::Hash, CodecError> {
+    /// Returns the accumulated canonical bytes or an error.
+    pub fn finalize(self) -> Result<Vec<u8>, CodecError> {
         self.reader.finalize()
     }
 }
 
-struct HashReader<'a, R> {
+struct CanonicalizingReader<'a, R> {
     reader: &'a mut Reader<R>,
-    hasher: blake3::Hasher,
+    canonical_bytes: Vec<u8>,
 }
 
-impl<'a, R: BufRead> HashReader<'a, R> {
+impl<'a, R: BufRead> CanonicalizingReader<'a, R> {
     fn new(reader: &'a mut Reader<R>) -> Self {
         Self {
             reader,
-            hasher: blake3::Hasher::new(),
+            canonical_bytes: Vec::new(),
         }
     }
 
     fn read_varint(&mut self, hash: bool) -> Result<u64, CodecError> {
         let (result, bytes, len) = self.reader.read_varint()?;
         if hash {
-            self.hasher.update(&bytes[..len]);
+            self.canonical_bytes.extend_from_slice(&bytes[..len]);
         }
         Ok(result)
     }
@@ -129,27 +130,18 @@ impl<'a, R: BufRead> HashReader<'a, R> {
     fn read_exact(&mut self, len: usize, hash: bool) -> Result<Vec<u8>, CodecError> {
         let bytes = self.reader.read_vec(len)?;
         if hash {
-            self.hasher.update(&bytes);
+            self.canonical_bytes.extend_from_slice(&bytes);
         }
         Ok(bytes)
     }
 
-    fn _update_hash(&mut self, bytes: &[u8]) {
-        self.hasher.update(bytes);
+    fn _append_canonical(&mut self, bytes: &[u8]) {
+        self.canonical_bytes.extend_from_slice(&bytes);
     }
 
-    fn finalize(&mut self) -> Result<blake3::Hash, CodecError> {
-        let hash = self.hasher.finalize();
-        let mut buf: [u8; 4] = [0; 4];
-        self.reader.read_exact(&mut buf)?;
-        let expected = &hash.as_bytes()[..4];
-        if buf != expected {
-            return Err(CodecError::HashMismatch {
-                expected: u32::from_le_bytes(expected.try_into().unwrap()),
-                got: u32::from_le_bytes(buf),
-            });
-        }
-        Ok(hash)
+    /// Returns the accumulated canonical bytes or an error.
+    fn finalize(self) -> Result<Vec<u8>, CodecError> {
+        Ok(self.canonical_bytes)
     }
 }
 
