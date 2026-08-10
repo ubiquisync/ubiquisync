@@ -11,3 +11,8 @@ pub const FLAG_SERVER: u8 = 1;
 /// 32-byte blake3 hash of the original entry, with no body, no timestamp
 /// delta, and no integrity-check suffix. Domain op vocabularies must not reuse this tag.
 pub const TAG_EXPUNGED: u8 = 0xFF;
+
+pub const ENTRY_TYPE_OP_BATCH = 0x00;
+pub const ENTRY_TYPE_USE_KEY = 0x01;
+pub const ENTRY_TYPE_SIGNATURE = 0x02;
+pub const ENTRY_TYPE_EXPUNGED = 0x03;

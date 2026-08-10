@@ -2,35 +2,30 @@ use std::collections::HashMap;
 use std::io::BufRead;
 use std::marker::PhantomData;
 
+use crate::codec::{
+    consts::{FLAG_DEVICE, FLAG_SERVER, TAG_EXPUNGED},
+    error::CodecError,
+    op::Op,
+    reader::{EntryBufferReader, Reader},
+};
 use crate::hlc::Timestamp;
 use crate::log_entry::LogEntry;
 use crate::uuid::Uuid;
-use crate::{
-    codec::{
-        consts::{FLAG_DEVICE, FLAG_SERVER, TAG_EXPUNGED},
-        error::CodecError,
-        op::Op,
-        reader::{EntryBufferReader, Reader},
-    },
-    log_entry::DecodedEntry,
-};
 
 /// Streaming decoder for one segment: reads the header on construction, then
 /// yields entries one at a time, carrying the cross-entry state (timestamp
 /// base, UUID dictionary) that delta- and dictionary-decoding need.
 pub struct Decoder<E, R> {
     buf: Reader<R>,
-    last_timestamp: u64,
-    uuids: HashMap<u32, Uuid>,
     server_mode: bool,
     _phantom: PhantomData<E>,
 }
 
 /// The result of decoding a whole segment, including the end state needed to
 /// append more entries to it.
-pub struct DecodedLogs<E> {
+pub struct DecodedLogs<UserOp, DeviceOp> {
     /// The decoded entries, in segment order.
-    pub entries: Vec<DecodedEntry<E>>,
+    pub entries: Vec<LogEntry<UserOp, DeviceOp>>,
     /// The UUID dictionary built while decoding (`uuid → id`), for an encoder
     /// that continues the segment.
     pub uuid_dict: HashMap<Uuid, u32>,

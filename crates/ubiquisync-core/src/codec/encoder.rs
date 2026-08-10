@@ -8,6 +8,7 @@ use crate::{
         writer::EntryBufferWriter,
     },
     hlc::Timestamp,
+    log_entry::LogEntry,
     uuid::Uuid,
 };
 
@@ -17,10 +18,8 @@ use crate::{
 pub struct Encoder<E, W> {
     sink: W,
     last_timestamp: u64,
-    uuids: HashMap<Uuid, u32>,
     server_mode: bool,
-    entry_index: usize,
-    size: usize,
+    next_entry_index: u64,
     _phantom: std::marker::PhantomData<E>,
 }
 
@@ -33,7 +32,13 @@ impl<E: Op, W: Write> Encoder<E, W> {
     /// never mistaken for another's when they share a sync location. Use a
     /// distinct value per app, and prefer same-length magics across apps so one
     /// cannot be a prefix of another.
-    pub fn new(mut sink: W, magic: &[u8], server_mode: bool) -> Result<Self, CodecError> {
+    pub fn new(
+        mut sink: W,
+        next_entry_index: u64,
+        last_timestamp: u64,
+        magic: &[u8],
+        server_mode: bool,
+    ) -> Result<Self, CodecError> {
         // An empty magic gives zero app isolation — the decoder would compare
         // zero bytes and accept any header.
         if magic.is_empty() {
@@ -48,11 +53,9 @@ impl<E: Op, W: Write> Encoder<E, W> {
         }
         Ok(Self {
             sink,
-            last_timestamp: 0,
-            uuids: HashMap::default(),
+            last_timestamp,
             server_mode,
-            entry_index: 0,
-            size: 0,
+            next_entry_index,
             _phantom: std::marker::PhantomData,
         })
     }
@@ -60,11 +63,6 @@ impl<E: Op, W: Write> Encoder<E, W> {
     /// Mutable access to the underlying writer (e.g. for fsync).
     pub fn sink_mut(&mut self) -> &mut W {
         &mut self.sink
-    }
-
-    /// Number of entries written so far in this segment.
-    pub fn entry_index(&self) -> usize {
-        self.entry_index
     }
 
     /// Encode one log entry. Takes parts by ref/value rather than a full
@@ -76,52 +74,45 @@ impl<E: Op, W: Write> Encoder<E, W> {
     /// failure partway through leaves the encoder exactly as it was, so a
     /// partly-built entry can never leave behind a UUID definition (or an
     /// advanced clock) that the flushed bytes don't account for.
-    pub fn encode_entry(
-        &mut self,
-        op: &E,
-        timestamp: Timestamp,
-        server_user_id: Option<Uuid>,
-    ) -> Result<usize, CodecError> {
-        let dict_len_before = self.uuids.len();
-        let result = self.try_encode_entry(op, timestamp, server_user_id);
-        if result.is_err() {
-            // Roll back UUID definitions registered before the failure. IDs are
-            // handed out sequentially from 1, so any id past the pre-call count
-            // belongs to this aborted entry.
-            self.uuids.retain(|_, id| (*id as usize) <= dict_len_before);
-        }
-        result
-    }
-
-    fn try_encode_entry(
-        &mut self,
-        op: &E,
-        timestamp: Timestamp,
-        server_user_id: Option<Uuid>,
-    ) -> Result<usize, CodecError> {
-        let mut writer = EntryBufferWriter::new(&mut self.uuids);
-        // Order must match decoder: op (tag + body) → timestamp → server_user_id
-        op.encode(&mut writer)?;
-        let raw_timestamp = timestamp.raw();
-        writer.write_delta(raw_timestamp, self.last_timestamp)?;
-        if self.server_mode {
-            match server_user_id {
-                Some(server_user_id) => writer.write_uuid(&server_user_id),
-                None => return Err(CodecError::MissingUserId),
+    pub fn encode_entry(&mut self, entry: LogEntry<E>) -> Result<(), CodecError> {
+        let mut writer = EntryBufferWriter::new();
+        match entry {
+            crate::log_entry::GenericLogEntry::IndexedEntry { idx, entry } => {
+                if idx != self.next_entry_index {
+                    todo!("error")
+                }
+                match entry {
+                    crate::log_entry::EntryBody::OpBatch(op_batch) => {}
+                    crate::log_entry::EntryBody::UseKey(_) => {}
+                }
             }
+            crate::log_entry::GenericLogEntry::Expunged {
+                start_idx,
+                end_idx,
+                cover,
+            } => {
+                if start_idx != self.next_entry_index {
+                    todo!("error")
+                }
+            }
+            crate::log_entry::GenericLogEntry::Signature { height, signatures } => {}
         }
-        let (bytes, _) = writer.finalize();
-        self.sink.write_all(&bytes)?;
-        // Commit cross-entry state only now that the bytes are written.
-        self.last_timestamp = raw_timestamp;
-        self.entry_index += 1;
-        self.size += bytes.len();
-        Ok(self.entry_index)
-    }
-
-    /// Total entry bytes written so far (the segment header is not counted),
-    /// for deciding when to roll over to a new segment.
-    pub fn size(&self) -> usize {
-        self.size
+        // // Order must match decoder: op (tag + body) → timestamp → server_user_id
+        // op.encode(&mut writer)?;
+        // let raw_timestamp = timestamp.raw();
+        // writer.write_delta(raw_timestamp, self.last_timestamp)?;
+        // if self.server_mode {
+        //     match server_user_id {
+        //         Some(server_user_id) => writer.write_uuid(&server_user_id),
+        //         None => return Err(CodecError::MissingUserId),
+        //     }
+        // }
+        // let (bytes, _) = writer.finalize();
+        // self.sink.write_all(&bytes)?;
+        // // Commit cross-entry state only now that the bytes are written.
+        // self.last_timestamp = raw_timestamp;
+        // self.entry_index += 1;
+        // self.size += bytes.len();
+        // Ok(self.entry_index)
     }
 }

@@ -1,157 +1,13 @@
 use crate::{codec::error::CodecError, uuid::Uuid};
-use std::collections::HashMap;
 use std::io::BufRead;
-
-/// Decodes one log entry's body — the read counterpart to
-/// [`EntryBufferWriter`](super::writer::EntryBufferWriter). Feeds bytes through
-/// the rolling hash and resolves dictionary-compressed UUIDs.
-pub struct EntryBufferReader<'a, R> {
-    reader: CanonicalizingReader<'a, R>,
-    uuid_dict: &'a mut HashMap<u32, Uuid>,
-}
-
-impl<'a, R: BufRead> EntryBufferReader<'a, R> {
-    /// Wrap `reader`, sharing `uuid_dict` to resolve UUID dictionary references
-    /// across the entries of one segment.
-    pub fn new(reader: &'a mut Reader<R>, uuid_dict: &'a mut HashMap<u32, Uuid>) -> Self {
-        Self {
-            reader: CanonicalizingReader::new(reader),
-            uuid_dict,
-        }
-    }
-
-    /// Read a single byte.
-    pub fn read_byte(&mut self) -> Result<u8, CodecError> {
-        self.reader.read_exact(1, true).map(|b| b[0])
-    }
-
-    /// Read exactly `len` raw bytes.
-    pub fn read_bytes(&mut self, len: usize) -> Result<Vec<u8>, CodecError> {
-        self.reader.read_exact(len, true)
-    }
-
-    /// Read an unsigned varint (7 data bits per byte, little-endian).
-    pub fn read_varint(&mut self) -> Result<u64, CodecError> {
-        self.reader.read_varint(true)
-    }
-
-    /// Read a length-prefixed byte string (varint length, then the bytes).
-    pub fn read_blob(&mut self) -> Result<Vec<u8>, CodecError> {
-        let len = self.read_varint()?;
-        // try_into, not `as`: on 32-bit targets (e.g. wasm32) `as usize` would
-        // truncate a bogus 64-bit length and mis-decode instead of rejecting.
-        let len: usize = len
-            .try_into()
-            .map_err(|_| CodecError::LengthTooLarge(len))?;
-        self.reader.read_exact(len, true)
-    }
-
-    /// Read a little-endian `u16`.
-    pub fn read_u16_le(&mut self) -> Result<u16, CodecError> {
-        self.reader
-            .read_exact(2, true)
-            .map(|b| u16::from_le_bytes([b[0], b[1]]))
-    }
-
-    /// Read a zigzag-encoded signed varint.
-    pub fn read_zigzag(&mut self) -> Result<i64, CodecError> {
-        let encoded = self.read_varint()?;
-        Ok(((encoded >> 1) as i64) ^ -((encoded & 1) as i64))
-    }
-
-    /// Read a delta-encoded timestamp. The wire stores the difference
-    /// from `last`; the canonical hash sees the full absolute timestamp
-    /// as fixed 8-byte little-endian (matching the writer).
-    pub fn read_delta(&mut self, last: u64) -> Result<u64, CodecError> {
-        let delta = self.reader.read_varint(false)?;
-        // A corrupted/hostile delta must not wrap u64: a wrapped value would
-        // still hash consistently for the wrong timestamp and pass the check.
-        let current = last
-            .checked_add(delta)
-            .ok_or(CodecError::TimestampOverflow)?;
-        self.reader._append_canonical(&current.to_le_bytes());
-        Ok(current)
-    }
-
-    /// Read a UUID, resolving dictionary compression: a `0` sentinel means the
-    /// 16 bytes follow inline (and are registered for later reuse); any other
-    /// value is a 1-based index into the segment's UUID dictionary.
-    pub fn read_uuid(&mut self) -> Result<Uuid, CodecError> {
-        // Do not hash raw bytes from the buffer because the hash will be the actual UUID!
-        let x = self.reader.read_varint(false)?;
-        let uuid: Uuid = if x == 0 {
-            // First instance of this UUID, read it in full and then save to dict.
-            let uuid = self.reader.read_exact(16, false)?;
-            let uuid: Uuid = uuid.try_into().map_err(|_| CodecError::UnexpectedEof)?;
-            let idx = self.uuid_dict.len() + 1; // 1-based index
-            self.uuid_dict.insert(idx as u32, uuid);
-            uuid
-        } else {
-            // Known UUID — look up by dict index. Reject a reference that
-            // doesn't fit u32 before converting, so an out-of-range value
-            // can't wrap and resolve to an unrelated dictionary entry.
-            let idx: u32 = x.try_into().map_err(|_| CodecError::UnresolvedUuid(x))?;
-            *self
-                .uuid_dict
-                .get(&idx)
-                .ok_or(CodecError::UnresolvedUuid(x))?
-        };
-        self.reader._append_canonical(&uuid);
-        Ok(uuid)
-    }
-
-    /// Returns the accumulated canonical bytes or an error.
-    pub fn finalize(self) -> Result<Vec<u8>, CodecError> {
-        self.reader.finalize()
-    }
-}
-
-struct CanonicalizingReader<'a, R> {
-    reader: &'a mut Reader<R>,
-    canonical_bytes: Vec<u8>,
-}
-
-impl<'a, R: BufRead> CanonicalizingReader<'a, R> {
-    fn new(reader: &'a mut Reader<R>) -> Self {
-        Self {
-            reader,
-            canonical_bytes: Vec::new(),
-        }
-    }
-
-    fn read_varint(&mut self, hash: bool) -> Result<u64, CodecError> {
-        let (result, bytes, len) = self.reader.read_varint()?;
-        if hash {
-            self.canonical_bytes.extend_from_slice(&bytes[..len]);
-        }
-        Ok(result)
-    }
-
-    fn read_exact(&mut self, len: usize, hash: bool) -> Result<Vec<u8>, CodecError> {
-        let bytes = self.reader.read_vec(len)?;
-        if hash {
-            self.canonical_bytes.extend_from_slice(&bytes);
-        }
-        Ok(bytes)
-    }
-
-    fn _append_canonical(&mut self, bytes: &[u8]) {
-        self.canonical_bytes.extend_from_slice(&bytes);
-    }
-
-    /// Returns the accumulated canonical bytes or an error.
-    fn finalize(self) -> Result<Vec<u8>, CodecError> {
-        Ok(self.canonical_bytes)
-    }
-}
 
 /// A thin [`BufRead`] wrapper that the codec reads a segment from, tracking
 /// position only enough to answer [`is_eof`](Self::is_eof).
-pub struct Reader<R> {
+pub struct EntryBufferReader<R> {
     reader: R,
 }
 
-impl<R: BufRead> Reader<R> {
+impl<R: BufRead> EntryBufferReader<R> {
     /// Wrap an underlying [`BufRead`] source.
     pub fn new(reader: R) -> Self {
         Self { reader }
@@ -162,10 +18,15 @@ impl<R: BufRead> Reader<R> {
         Ok(self.reader.fill_buf()?.is_empty())
     }
 
-    /// Returns the decoded value plus the raw on-wire bytes (the caller hashes
-    /// them). A u64 varint is at most 10 bytes, so they go in a fixed stack
+    pub(super) fn read_varint(&mut self) -> Result<u64, CodecError> {
+        let (x, _, _) = self.read_varint_parts()?;
+        Ok(x)
+    }
+
+    /// Returns the decoded value plus the raw on-wire bytes.
+    /// A u64 varint is at most 10 bytes, so they go in a fixed stack
     /// buffer — `len` is how many are valid. No allocation.
-    pub(super) fn read_varint(&mut self) -> Result<(u64, [u8; 10], usize), CodecError> {
+    pub(super) fn read_varint_parts(&mut self) -> Result<(u64, [u8; 10], usize), CodecError> {
         let mut bytes = [0u8; 10];
         let mut len = 0;
         let mut result = 0u64;
@@ -182,6 +43,9 @@ impl<R: BufRead> Reader<R> {
             }
             result |= ((byte & 0x7F) as u64) << shift;
             if byte & 0x80 == 0 {
+                if len > 1 && byte == 0 {
+                    return Err(CodecError::NonMinimalVarint);
+                }
                 return Ok((result, bytes, len));
             }
             shift += 7;
@@ -206,7 +70,7 @@ impl<R: BufRead> Reader<R> {
         })
     }
 
-    pub(super) fn read_vec(&mut self, len: usize) -> Result<Vec<u8>, CodecError> {
+    pub fn read_vec(&mut self, len: usize) -> Result<Vec<u8>, CodecError> {
         // Grow the buffer with the bytes actually delivered rather than
         // pre-allocating an on-wire length we haven't validated — a corrupt or
         // hostile blob length must not OOM the process before we hit EOF.
@@ -223,6 +87,54 @@ impl<R: BufRead> Reader<R> {
             remaining -= n;
         }
         Ok(buf)
+    }
+
+    pub fn must_read_byte(&mut self) -> Result<u8, CodecError> {
+        let b = self.read_byte()?;
+        b.ok_or(CodecError::UnexpectedEof)
+    }
+
+    /// Read a length-prefixed byte string (varint length, then the bytes).
+    pub fn read_blob(&mut self) -> Result<Vec<u8>, CodecError> {
+        let len = self.read_varint()?;
+        // try_into, not `as`: on 32-bit targets (e.g. wasm32) `as usize` would
+        // truncate a bogus 64-bit length and mis-decode instead of rejecting.
+        let len: usize = len
+            .try_into()
+            .map_err(|_| CodecError::LengthTooLarge(len))?;
+        self.read_vec(len)
+    }
+
+    /// Read a zigzag-encoded signed varint.
+    pub fn read_zigzag(&mut self) -> Result<i64, CodecError> {
+        let encoded = self.read_varint()?;
+        Ok(((encoded >> 1) as i64) ^ -((encoded & 1) as i64))
+    }
+
+    /// Read a little-endian `u16`.
+    pub fn read_u16_le(&mut self) -> Result<u16, CodecError> {
+        let mut x = [0; 2];
+        self.read_exact(&mut x[..])?;
+        Ok(u16::from_le_bytes(x))
+    }
+
+    /// Read a little-endian `u64`.
+    pub fn read_u64_le(&mut self) -> Result<u64, CodecError> {
+        let mut x = [0; 8];
+        self.read_exact(&mut x[..])?;
+        Ok(u64::from_le_bytes(x))
+    }
+
+    pub fn read_uuid(&mut self) -> Result<Uuid, CodecError> {
+        let mut res: Uuid = [0; 16];
+        self.read_exact(&mut res[..])?;
+        Ok(res)
+    }
+
+    pub fn read_hash(&mut self) -> Result<[u8; 32], CodecError> {
+        let mut res = [0; 32];
+        self.read_exact(&mut res[..])?;
+        Ok(res)
     }
 }
 
@@ -300,7 +212,7 @@ mod tests {
         combined.extend_from_slice(&buf1);
         combined.extend_from_slice(&buf2);
 
-        let mut reader = Reader::new(combined.as_slice());
+        let mut reader = EntryBufferReader::new(combined.as_slice());
         let mut read_uuid_dict: HashMap<u32, Uuid> = HashMap::new();
 
         // ── Read entry 1 ──
@@ -349,9 +261,9 @@ mod tests {
     #[test]
     fn read_varint_rejects_overflow() {
         let data = [0x80u8; 10];
-        let mut reader = Reader::new(data.as_slice());
+        let mut reader = EntryBufferReader::new(data.as_slice());
         assert!(matches!(
-            reader.read_varint(),
+            reader.read_varint_parts(),
             Err(CodecError::VarIntOverflow)
         ));
     }

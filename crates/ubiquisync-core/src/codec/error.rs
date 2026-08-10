@@ -70,4 +70,6 @@ pub enum CodecError {
     /// The log file's framing was structurally invalid.
     #[error("corrupted log file")]
     CorruptedLogFile,
+    #[error("varint not in minimal form")]
+    NonMinimalVarint,
 }

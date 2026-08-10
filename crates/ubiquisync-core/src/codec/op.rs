@@ -32,6 +32,25 @@ pub trait Op: Sized {
     /// Encode the op as a tag byte followed by its body. The tag must never be
     /// `0xFF` ([`TAG_EXPUNGED`](crate::codec::TAG_EXPUNGED)), which is reserved.
     fn encode(&self, w: &mut EntryBufferWriter) -> Result<(), CodecError>;
+
+    /// Defines what actor the op is attributed to which restricts where and how it can appear
+    /// in server and device logs. Server ops can only occur in server logs and whne user
+    /// ops occur in server logs they must always occur in a batch with server_user_id defined.
+    /// Device and server ops should never be interpreted as emitted directly by a user.
+    fn attribution(&self) -> OpAttribution {
+        OpAttribution::User
+    }
+}
+
+pub enum OpAttribution {
+    /// Attributed to a user. In server logs, must include server_user_id.
+    User,
+    /// Attributed to a device only, must not appear in server logs.
+    DeviceOnly,
+    /// Attributed to a server, must only appear in server logs.
+    ServerOnly,
+    ///
+    DeviceOrServer,
 }
 
 /// An [`Op`] that can also be split into an indexable `(tag, key, value)`

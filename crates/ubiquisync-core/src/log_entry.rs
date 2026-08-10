@@ -24,7 +24,7 @@ pub struct OpHeader {
     /// was." It is distinct from a stream's `peer_id` (which stream the entry
     /// came from).
     ///
-    /// This _can_ be empty in server logs if and only if all ops are device ops.
+    /// This _can_ be empty in server logs if and only if none of the ops are user attributable.
     pub server_user_id: Option<Uuid>,
     /// HLC timestamp — monotonically non-decreasing within a peer's stream.
     /// Entries written in one atomic transaction share a tick, so they are
@@ -67,7 +67,7 @@ pub enum GenericLogEntry<Op, H> {
 /// Log entry where op and header are encoded as canonical hash bytes (may be encrypted)
 pub type OpaqueLogEntry = GenericLogEntry<Vec<u8>, Vec<u8>>;
 
-pub type LogEntry<UserOp, DeviceOp> = GenericLogEntry<OpWrapper<UserOp, DeviceOp>, OpHeader>;
+pub type LogEntry<Op> = GenericLogEntry<Op, OpHeader>;
 
 #[derive(Clone)]
 pub enum EntryBody<Op, H> {
