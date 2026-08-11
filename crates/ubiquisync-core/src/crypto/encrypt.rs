@@ -27,12 +27,15 @@ pub struct EntryCipher {
 pub struct XChaCha20Poly1305Key(SecretBox<[u8; 32]>);
 
 impl XChaCha20Poly1305Key {
+    // TODO method to convert from existing bytes and scrub them on conversion
+    // TODO method to securely generate key
+    
     pub fn fingerprint(&self) -> [u8; 32] {
         blake3::derive_key(DOMAIN_KEY_FINGERPRINT, self.0.expose_secret())
     }
 
     pub fn cipher(&self) -> XChaCha20Poly1305 {
-        XChaCha20Poly1305::new(&self.0.expose_secret().into())
+        XChaCha20Poly1305::new(self.0.expose_secret().into())
     }
 }
 

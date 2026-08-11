@@ -1,7 +1,7 @@
 use ed25519_dalek::Verifier;
 use thiserror::Error;
 
-use crate::crypto::Signature;
+use crate::crypto::{Signature, XChaCha20Poly1305Key};
 
 pub enum PubKey {
     Ed25519([u8; 32]),
@@ -55,5 +55,9 @@ impl PubKey {
             }
         }
         Ok(())
+    }
+
+    pub fn wrap_key(&self, key: &XChaCha20Poly1305Key) {
+        todo!()
     }
 }
