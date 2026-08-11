@@ -32,11 +32,19 @@ impl PeerTracker {
             peer_id UUID,
             container_id UUID,
             received_idx INT,
-            received_hash BYTES,
+            mmr_peaks BYTES, // MMR peaks at received_idx
+            active_cipher BYTES NULL // encryption key fingerprint at received idx
             signed_idx INT,
             committed_idx INT,
-            active_key UUID
-            )"
+            );
+
+            CREATE TABLE processing_queue (
+                log_id INT,
+                entry_idx INT,
+                payload BYTES,
+                sign_bytes BYTES
+            )
+            "
         );
         todo!()
     }

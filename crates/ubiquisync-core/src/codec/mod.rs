@@ -23,9 +23,10 @@ mod reader;
 mod writer;
 
 pub use consts::{FLAG_DEVICE, FLAG_SERVER, TAG_EXPUNGED};
-pub use decoder::{DecodedEntry, DecodedLogs, Decoder};
+pub use decoder::{DecodedLogs, Decoder};
 pub use encoder::Encoder;
 pub use error::CodecError;
+pub use hash::*;
 pub use op::{IndexableOp, Op, OpIndexEntry};
-pub use reader::{EntryBufferReader};
+pub use reader::EntryBufferReader;
 pub use writer::EntryBufferWriter;
