@@ -3,8 +3,9 @@ use chacha20poly1305::KeyInit;
 use chacha20poly1305::XChaCha20Poly1305;
 use chacha20poly1305::XNonce;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
+use thiserror::Error;
 
-use crate::crypto::Error;
+use crate::crypto::Hash;
 use crate::uuid::Uuid;
 
 #[repr(u8)]
@@ -33,6 +34,10 @@ impl ChaCha20Poly1305Key {
 const DOMAIN_KEY_FINGERPRINT: &str = "ubiquisync/v1/key-fingerprint";
 const DOMAIN_AEAD_NONCE: &str = "ubiquisync/v1/aead-nonce";
 
+#[derive(Error, Debug)]
+#[error("cipher error")]
+pub struct CipherError;
+
 impl EntryCipher {
     pub fn new(key: ChaCha20Poly1305Key, peer_id: &Uuid, container_id: &Uuid) -> Self {
         let mut ad_prefix = vec![];
@@ -46,11 +51,16 @@ impl EntryCipher {
         }
     }
 
-    pub fn encrypt_header(&self, entry_idx: u64, header: &[u8]) -> Result<Vec<u8>, Error> {
+    pub fn encrypt_header(&self, entry_idx: u64, header: &[u8]) -> Result<Vec<u8>, CipherError> {
         self.encrypt_slot(entry_idx, 0, header)
     }
 
-    pub fn encrypt_op(&self, entry_idx: u64, op_index: u64, op: &[u8]) -> Result<Vec<u8>, Error> {
+    pub fn encrypt_op(
+        &self,
+        entry_idx: u64,
+        op_index: u64,
+        op: &[u8],
+    ) -> Result<Vec<u8>, CipherError> {
         self.encrypt_slot(
             entry_idx,
             op_index.checked_add(1).expect("op index overflow"),
@@ -58,12 +68,17 @@ impl EntryCipher {
         ) // convert to 1-based index, 0 for header
     }
 
-    fn encrypt_slot(&self, entry_idx: u64, slot_idx: u64, bytes: &[u8]) -> Result<Vec<u8>, Error> {
+    fn encrypt_slot(
+        &self,
+        entry_idx: u64,
+        slot_idx: u64,
+        bytes: &[u8],
+    ) -> Result<Vec<u8>, CipherError> {
         let (ad, nonce) = self.associated_data_and_nonce(entry_idx, slot_idx);
         let mut res = Vec::from(bytes); // we copy the input data to the res vec to encrypt in place
         self.cipher
             .encrypt_in_place(&nonce.into(), &ad, &mut res)
-            .map_err(|_| Error::CipherError)?;
+            .map_err(|_| CipherError)?;
         Ok(res)
     }
 
@@ -80,11 +95,16 @@ impl EntryCipher {
         (ad, nonce.into())
     }
 
-    pub fn decrypt_header(&self, entry_idx: u64, header: &[u8]) -> Result<Vec<u8>, Error> {
+    pub fn decrypt_header(&self, entry_idx: u64, header: &[u8]) -> Result<Vec<u8>, CipherError> {
         self.decrypt_slot(entry_idx, 0, header)
     }
 
-    pub fn decrypt_op(&self, entry_idx: u64, op_index: u64, op: &[u8]) -> Result<Vec<u8>, Error> {
+    pub fn decrypt_op(
+        &self,
+        entry_idx: u64,
+        op_index: u64,
+        op: &[u8],
+    ) -> Result<Vec<u8>, CipherError> {
         self.decrypt_slot(
             entry_idx,
             op_index.checked_add(1).expect("op index overflow"),
@@ -92,12 +112,25 @@ impl EntryCipher {
         ) // convert to 1-based index, 0 for header
     }
 
-    fn decrypt_slot(&self, entry_idx: u64, slot_idx: u64, bytes: &[u8]) -> Result<Vec<u8>, Error> {
+    fn decrypt_slot(
+        &self,
+        entry_idx: u64,
+        slot_idx: u64,
+        bytes: &[u8],
+    ) -> Result<Vec<u8>, CipherError> {
         let (ad, nonce) = self.associated_data_and_nonce(entry_idx, slot_idx);
         let mut res = Vec::from(bytes); // we copy the input data to the res vec to decrypt in place
         self.cipher
             .decrypt_in_place(&nonce.into(), &ad, &mut res)
-            .map_err(|_| Error::CipherError)?;
+            .map_err(|_| CipherError)?;
         Ok(res)
+    }
+}
+
+pub struct EncryptionKeyRing {}
+
+impl EncryptionKeyRing {
+    pub fn get_key(&self, fingerprint: &Hash) -> Option<ChaCha20Poly1305Key> {
+        todo!()
     }
 }

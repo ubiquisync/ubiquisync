@@ -2,6 +2,8 @@
 //! server-attested user attribution. This is the unit of encoding/decoding in a
 //! segment file.
 
+use std::borrow::Cow;
+
 use crate::crypto::Signature;
 use crate::hlc::Timestamp;
 use crate::uuid::Uuid;
@@ -60,12 +62,18 @@ pub enum GenericLogEntry<Op, H> {
     },
     Signature {
         height: u64,
-        signatures: Signature,
+        signature: Signature,
     },
 }
 
+pub struct OpaqueBytes<'a>(pub Cow<'a, [u8]>);
+
+pub struct PlaintextBytes<'a>(pub Cow<'a, [u8]>);
+
 /// Log entry where op and header are encoded as canonical hash bytes (may be encrypted)
-pub type OpaqueLogEntry = GenericLogEntry<Vec<u8>, Vec<u8>>;
+pub type OpaqueLogEntry<'a> = GenericLogEntry<OpaqueBytes<'a>, OpaqueBytes<'a>>;
+
+pub type PlaintextLogEntry<'a> = GenericLogEntry<PlaintextBytes<'a>, PlaintextBytes<'a>>;
 
 pub type LogEntry<Op> = GenericLogEntry<Op, OpHeader>;
 

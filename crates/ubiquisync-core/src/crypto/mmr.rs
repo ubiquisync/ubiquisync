@@ -1,9 +1,8 @@
 use blake3::Hasher;
 
+use crate::crypto::Hash;
 use crate::uuid::Uuid;
 use thiserror::Error;
-
-pub type Hash = [u8; 32];
 
 pub struct MmrAccumulator {
     state: MmrState,

@@ -8,5 +8,7 @@ mod sig;
 pub use encrypt::*;
 pub use error::*;
 pub use keyring::*;
-pub use mmr::*;
 pub use pub_key::*;
+pub use sig::*;
+
+pub type Hash = [u8; 32];
