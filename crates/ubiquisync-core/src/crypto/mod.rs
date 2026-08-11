@@ -1,5 +1,6 @@
 mod encrypt;
 mod error;
+mod mmr;
 mod pub_key;
 mod sig;
 
