@@ -2,6 +2,7 @@ use thiserror::Error;
 
 pub const MAX_VAR_U64_SIZE: usize = 9;
 
+/// Encodes a u64 to at most 9 bytes.
 pub fn encode_var_u64(v: u64, buf: &mut [u8; 9]) -> &[u8] {
     let mut v = v;
     for i in 0..9 {
@@ -19,6 +20,7 @@ pub fn encode_var_u64(v: u64, buf: &mut [u8; 9]) -> &[u8] {
     return buf;
 }
 
+/// Encodes an i64 using zigzag encoding to at most 9 bytes.
 pub fn encode_zigzag_i64(v: i64, buf: &mut [u8; 9]) -> &[u8] {
     let x = ((v << 1) ^ (v >> 63)) as u64;
     encode_var_u64(x, buf)
@@ -32,6 +34,7 @@ pub enum VarintDecodeError {
     UnexpectedEof,
 }
 
+/// Decode a u64 varint encoded by [encode_var_u64].
 pub fn decode_var_u64(buf: &[u8]) -> Result<(u64, &[u8]), VarintDecodeError> {
     let mut result = 0u64;
     let mut shift = 0;
@@ -64,6 +67,7 @@ pub fn decode_var_u64(buf: &[u8]) -> Result<(u64, &[u8]), VarintDecodeError> {
     Err(VarintDecodeError::UnexpectedEof)
 }
 
+/// Decode a zigzag i64 encoded by [encode_zigzag_i64].
 pub fn decode_zigzag_i64(buf: &[u8]) -> Result<(i64, &[u8]), VarintDecodeError> {
     let (decoded, rest) = decode_var_u64(buf)?;
     let res = ((decoded >> 1) as i64) ^ -((decoded & 1) as i64);
@@ -97,6 +101,8 @@ mod tests {
     #[test_case(0, &[0])]
     #[test_case(0x7F, &[0x7F])]
     #[test_case(0x80, &[0x80, 1])]
+    #[test_case((1 << 56) - 1, &[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F])]
+    #[test_case(1 << 56, &[0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x1])]
     #[test_case(1 << 63, &[0x80; 9]; "bit 63 set has the high bit of all 9 bytes set")]
     #[test_case(u64::MAX, &[0xFF; 9]; "u64 max fills 9 bytes")]
     fn sanity_check_varints(x: u64, expected: &[u8]) {
@@ -121,7 +127,18 @@ mod tests {
     }
 
     #[proptest]
-    fn zizzags_round_trip(x: i64) {
+    fn varint_only_accepts_canonical(random_bytes: Vec<u8>) {
+        if let Ok((x, rest)) = decode_var_u64(&random_bytes) {
+            let len = random_bytes.len() - rest.len();
+            let orig = &random_bytes[..len];
+            let mut buf = [0; 9];
+            let encoded = encode_var_u64(x, &mut buf);
+            assert_eq!(orig, encoded, "non-canonical encoding of {x} found");
+        }
+    }
+
+    #[proptest]
+    fn zigzags_round_trip(x: i64) {
         let mut buf = [0; 9];
         let encoded = encode_zigzag_i64(x, &mut buf);
         let res = decode_zigzag_i64(&encoded);

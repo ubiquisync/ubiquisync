@@ -20,7 +20,7 @@ mod hash;
 mod header;
 mod op;
 mod reader;
-mod varint;
+pub mod varint;
 mod writer;
 
 pub use consts::{FLAG_DEVICE, FLAG_SERVER, TAG_EXPUNGED};
