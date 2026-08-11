@@ -1,4 +1,5 @@
 use chacha20poly1305::AeadInOut;
+use chacha20poly1305::KeyInit;
 use chacha20poly1305::XChaCha20Poly1305;
 use chacha20poly1305::XNonce;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
@@ -17,19 +18,32 @@ pub struct EntryCipher {
     ad_prefix: Vec<u8>,
 }
 
+pub struct ChaCha20Poly1305Key(chacha20poly1305::Key);
+
+impl ChaCha20Poly1305Key {
+    pub fn fingerprint(&self) -> [u8; 32] {
+        blake3::derive_key(DOMAIN_KEY_FINGERPRINT, self.0.as_slice())
+    }
+
+    pub fn cipher(&self) -> XChaCha20Poly1305 {
+        XChaCha20Poly1305::new(&self.0)
+    }
+}
+
+const DOMAIN_KEY_FINGERPRINT: &str = "ubiquisync/v1/key-fingerprint";
+const DOMAIN_AEAD_NONCE: &str = "ubiquisync/v1/aead-nonce";
+
 impl EntryCipher {
-    pub fn new(
-        cipher: XChaCha20Poly1305,
-        fingerprint: &[u8; 32],
-        peer_id: &Uuid,
-        container_id: &Uuid,
-    ) -> Self {
+    pub fn new(key: ChaCha20Poly1305Key, peer_id: &Uuid, container_id: &Uuid) -> Self {
         let mut ad_prefix = vec![];
         ad_prefix.push(CipherSuite::XChaCha20Poly1305.into());
-        ad_prefix.extend_from_slice(&fingerprint[..]);
+        ad_prefix.extend_from_slice(&key.fingerprint()[..]);
         ad_prefix.extend_from_slice(&peer_id[..]);
         ad_prefix.extend_from_slice(&container_id[..]);
-        Self { ad_prefix, cipher }
+        Self {
+            ad_prefix,
+            cipher: key.cipher(),
+        }
     }
 
     pub fn encrypt_header(&self, entry_idx: u64, header: &[u8]) -> Result<Vec<u8>, Error> {
@@ -60,7 +74,7 @@ impl EntryCipher {
         ad.extend_from_slice(self.ad_prefix.as_slice());
         ad.extend_from_slice(&entry_idx.to_le_bytes());
         ad.extend_from_slice(&slot_idx.to_le_bytes());
-        let nonce: [u8; 24] = blake3::derive_key(DOMAIN_SEPARATOR, &ad[..])[0..24]
+        let nonce: [u8; 24] = blake3::derive_key(DOMAIN_AEAD_NONCE, &ad[..])[0..24]
             .try_into()
             .unwrap();
         (ad, nonce.into())
@@ -87,5 +101,3 @@ impl EntryCipher {
         Ok(res)
     }
 }
-
-const DOMAIN_SEPARATOR: &str = "ubiquisync/v1/aead-nonce";
