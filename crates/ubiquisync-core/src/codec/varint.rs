@@ -94,18 +94,30 @@ mod tests {
         assert_eq!(rest, tail.as_slice())
     }
 
-    #[test_case(&[128, 0]; "0")]
-    #[test_case(&[129, 0]; "1")]
-    #[test_case(&[0xFF, 0]; "0x7F")]
-    fn non_minimal_varints_fail(buf: &[u8]) {
-        assert_matches!(decode_var_u64(&buf), Err(VarintDecodeError::NonMinimal))
+    #[test_case(0, &[0])]
+    #[test_case(0x7F, &[0x7F])]
+    #[test_case(0x80, &[0x80, 1])]
+    #[test_case(1 << 63, &[0x80; 9]; "bit 63 set has the high bit of all 9 bytes set")]
+    #[test_case(u64::MAX, &[0xFF; 9]; "u64 max fills 9 bytes")]
+    fn sanity_check_varints(x: u64, expected: &[u8]) {
+        let mut buf = [0; 9];
+        let encoded = encode_var_u64(x, &mut buf);
+        assert_eq!(encoded, expected);
     }
 
     #[test_case(&[128, 0]; "0")]
     #[test_case(&[129, 0]; "1")]
     #[test_case(&[0xFF, 0]; "0x7F")]
-    fn truncated_varints_eof(buf: &[u8]) {
+    #[test_case(&[0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0]; "0 expressed in 8 bytes")]
+    fn non_minimal_varints_fail(buf: &[u8]) {
         assert_matches!(decode_var_u64(&buf), Err(VarintDecodeError::NonMinimal))
+    }
+
+    #[test_case(&[0x80])]
+    #[test_case(&[0xFF, 0x80])]
+    #[test_case(&[]; "empty")]
+    fn truncated_varints_eof(buf: &[u8]) {
+        assert_matches!(decode_var_u64(&buf), Err(VarintDecodeError::UnexpectedEof))
     }
 
     #[proptest]
@@ -117,5 +129,16 @@ mod tests {
         let (decoded, rest) = res.unwrap();
         assert_eq!(x, decoded, "encoded: {encoded:?}, rest: {rest:?}");
         assert_eq!(rest.len(), 0)
+    }
+
+    #[test_case(0, &[0])]
+    #[test_case(-1, &[1])]
+    #[test_case(1, &[2])]
+    #[test_case(i64::MIN, &[0xFF; 9])]
+    #[test_case(i64::MAX, &[0xFE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF])]
+    fn sanity_check_zigzags(x: i64, expected: &[u8]) {
+        let mut buf = [0; 9];
+        let encoded = encode_zigzag_i64(x, &mut buf);
+        assert_eq!(encoded, expected);
     }
 }
