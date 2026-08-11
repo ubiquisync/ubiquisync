@@ -1,7 +1,3 @@
-//! Wire-level log entry: a single op with timestamp and optional
-//! server-attested user attribution. This is the unit of encoding/decoding in a
-//! segment file.
-
 use std::borrow::Cow;
 
 use crate::crypto::Signature;

@@ -1,5 +1,3 @@
-use std::borrow::Borrow;
-
 use thiserror::Error;
 
 use crate::{
@@ -39,11 +37,11 @@ use crate::{
 
 pub struct Verifier<'a> {
     signing_key: PubKey,
-    peer_hash: Hash,
+    peer_id: Uuid,
     container_id: Uuid,
     active_key: Option<Hash>,
     mmr: MmrAccumulator,
-    signed_idx: u64,
+    signed_size: u64,
     keyring: &'a mut EncryptionKeyRing,
 }
 
@@ -52,17 +50,13 @@ impl<'a> Verifier<'a> {
         &mut self,
         entry: &PlaintextLogEntry,
     ) -> Result<(), VerificationError> {
+        // TODO cache the key if we've already retrieved it previously
         let maybe_cipher = if let Some(fingerprint) = self.active_key {
             let key = self
                 .keyring
                 .get_key(&fingerprint)
                 .ok_or(VerificationError::EncryptionKeyNotFound { fingerprint })?;
-            Some(EntryCipher::new(
-                key,
-                // TODO should we use full peer hash or just uuid prefix for AD & nonce?
-                &self.peer_hash[0..16].try_into().unwrap(),
-                &self.container_id,
-            ))
+            Some(EntryCipher::new(key, &self.peer_id, &self.container_id))
         } else {
             None
         };
@@ -120,7 +114,7 @@ impl<'a> Verifier<'a> {
 
                 let sign_bytes = self.mmr.sign_bytes();
                 self.signing_key.verify_signature(&sign_bytes, signature)?;
-                self.signed_idx = size;
+                self.signed_size = size;
             }
         }
         Ok(())

@@ -4,7 +4,7 @@ use chacha20poly1305::XChaCha20Poly1305;
 use chacha20poly1305::XNonce;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use secrecy::ExposeSecret;
-use secrecy::SecretSlice;
+use secrecy::SecretBox;
 use thiserror::Error;
 use zeroize::Zeroize;
 use zeroize::ZeroizeOnDrop;
@@ -24,7 +24,7 @@ pub struct EntryCipher {
 }
 
 #[derive(Zeroize, ZeroizeOnDrop)]
-pub struct XChaCha20Poly1305Key(SecretSlice<u8>);
+pub struct XChaCha20Poly1305Key(SecretBox<[u8; 32]>);
 
 impl XChaCha20Poly1305Key {
     pub fn fingerprint(&self) -> [u8; 32] {
@@ -32,7 +32,7 @@ impl XChaCha20Poly1305Key {
     }
 
     pub fn cipher(&self) -> XChaCha20Poly1305 {
-        XChaCha20Poly1305::new(&self.0.expose_secret().try_into().unwrap()) // TODO don't unwrap
+        XChaCha20Poly1305::new(&self.0.expose_secret().into())
     }
 }
 
@@ -82,7 +82,7 @@ impl EntryCipher {
         let (ad, nonce) = self.associated_data_and_nonce(entry_idx, slot_idx);
         let mut res = Vec::from(bytes); // we copy the input data to the res vec to encrypt in place
         self.cipher
-            .encrypt_in_place(&nonce.into(), &ad, &mut res)
+            .encrypt_in_place(&nonce, &ad, &mut res)
             .map_err(|_| CipherError)?;
         Ok(res)
     }
@@ -126,7 +126,7 @@ impl EntryCipher {
         let (ad, nonce) = self.associated_data_and_nonce(entry_idx, slot_idx);
         let mut res = Vec::from(bytes); // we copy the input data to the res vec to decrypt in place
         self.cipher
-            .decrypt_in_place(&nonce.into(), &ad, &mut res)
+            .decrypt_in_place(&nonce, &ad, &mut res)
             .map_err(|_| CipherError)?;
         Ok(res)
     }
