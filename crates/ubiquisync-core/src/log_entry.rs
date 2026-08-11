@@ -27,7 +27,7 @@ pub struct OpHeader {
     /// came from).
     ///
     /// This _can_ be empty in server logs if and only if none of the ops are user attributable.
-    pub server_user_id: Option<Uuid>, // TODO any reason to force fixed-length UUID now that we're not doing dictionary compression here?
+    pub server_user_id: Option<Uuid>,
     /// HLC timestamp — monotonically non-decreasing within a peer's stream.
     /// Entries written in one atomic transaction share a tick, so they are
     /// treated as one logical write by LWW comparisons.
@@ -38,12 +38,6 @@ pub struct OpHeader {
 pub enum OpOrExpunge<Op> {
     Op(Op),
     Expunge(Hash),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OpWrapper<UserOp, DeviceOp> {
-    UserOp(UserOp),
-    DeviceOp(DeviceOp),
 }
 
 /// One decoded entry: a live log entry or an expunged-entry marker.
@@ -61,13 +55,15 @@ pub enum GenericLogEntry<Op, H> {
         cover: Vec<Hash>,
     },
     Signature {
-        height: u64,
+        size: u64,
         signature: Signature,
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpaqueBytes<'a>(pub Cow<'a, [u8]>);
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaintextBytes<'a>(pub Cow<'a, [u8]>);
 
 /// Log entry where op and header are encoded as canonical hash bytes (may be encrypted)

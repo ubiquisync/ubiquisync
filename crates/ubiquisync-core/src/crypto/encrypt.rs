@@ -3,7 +3,11 @@ use chacha20poly1305::KeyInit;
 use chacha20poly1305::XChaCha20Poly1305;
 use chacha20poly1305::XNonce;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
+use secrecy::ExposeSecret;
+use secrecy::SecretSlice;
 use thiserror::Error;
+use zeroize::Zeroize;
+use zeroize::ZeroizeOnDrop;
 
 use crate::crypto::Hash;
 use crate::uuid::Uuid;
@@ -19,15 +23,16 @@ pub struct EntryCipher {
     ad_prefix: Vec<u8>,
 }
 
-pub struct ChaCha20Poly1305Key(chacha20poly1305::Key);
+#[derive(Zeroize, ZeroizeOnDrop)]
+pub struct XChaCha20Poly1305Key(SecretSlice<u8>);
 
-impl ChaCha20Poly1305Key {
+impl XChaCha20Poly1305Key {
     pub fn fingerprint(&self) -> [u8; 32] {
-        blake3::derive_key(DOMAIN_KEY_FINGERPRINT, self.0.as_slice())
+        blake3::derive_key(DOMAIN_KEY_FINGERPRINT, self.0.expose_secret())
     }
 
     pub fn cipher(&self) -> XChaCha20Poly1305 {
-        XChaCha20Poly1305::new(&self.0)
+        XChaCha20Poly1305::new(&self.0.expose_secret().try_into().unwrap()) // TODO don't unwrap
     }
 }
 
@@ -39,7 +44,7 @@ const DOMAIN_AEAD_NONCE: &str = "ubiquisync/v1/aead-nonce";
 pub struct CipherError;
 
 impl EntryCipher {
-    pub fn new(key: ChaCha20Poly1305Key, peer_id: &Uuid, container_id: &Uuid) -> Self {
+    pub fn new(key: XChaCha20Poly1305Key, peer_id: &Uuid, container_id: &Uuid) -> Self {
         let mut ad_prefix = vec![];
         ad_prefix.push(CipherSuite::XChaCha20Poly1305.into());
         ad_prefix.extend_from_slice(&key.fingerprint()[..]);
@@ -130,7 +135,7 @@ impl EntryCipher {
 pub struct EncryptionKeyRing {}
 
 impl EncryptionKeyRing {
-    pub fn get_key(&self, fingerprint: &Hash) -> Option<ChaCha20Poly1305Key> {
+    pub fn get_key(&self, fingerprint: &Hash) -> Option<XChaCha20Poly1305Key> {
         todo!()
     }
 }

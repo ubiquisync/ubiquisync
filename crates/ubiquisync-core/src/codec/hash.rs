@@ -29,7 +29,7 @@ pub enum EntryHashError {
     OutOfRangeOp,
     #[error("op count mismatch")]
     OpCountMismatch,
-    #[error("chiper error {0}")]
+    #[error("cipher error {0}")]
     CipherError(#[from] CipherError),
 }
 
@@ -156,7 +156,7 @@ impl OpBatchHashMethod<OpaqueBytes<'_>> for OpaqueOpBatchHashMethod {
     }
 }
 
-pub struct PlaintextOpBatchHashMethod<'a>(&'a Option<EntryCipher>);
+pub struct PlaintextOpBatchHashMethod<'a>(pub &'a Option<EntryCipher>);
 
 impl<'a> OpBatchHashMethod<PlaintextBytes<'_>> for PlaintextOpBatchHashMethod<'a> {
     type Hasher = PlaintextOpBatchHasher<'a>;
@@ -178,7 +178,7 @@ impl<'a> OpBatchHashMethod<PlaintextBytes<'_>> for PlaintextOpBatchHashMethod<'a
 pub fn hash_op_batch<B, M: OpBatchHashMethod<B>>(
     entry_idx: u64,
     batch: &OpBatch<B, B>,
-    method: M,
+    method: &M,
 ) -> Result<Hash, EntryHashError> {
     let mut hasher = method.hasher(entry_idx, &batch)?;
     for op in batch.ops.iter() {

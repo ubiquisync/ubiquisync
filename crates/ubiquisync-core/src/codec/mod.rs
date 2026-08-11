@@ -13,8 +13,8 @@
 //! vocabulary in `ubiquisync-tables`.
 
 mod consts;
-mod decoder;
-mod encoder;
+//mod decoder;
+//mod encoder;
 mod error;
 mod hash;
 mod header;
@@ -23,8 +23,8 @@ mod reader;
 mod writer;
 
 pub use consts::{FLAG_DEVICE, FLAG_SERVER, TAG_EXPUNGED};
-pub use decoder::{DecodedLogs, Decoder};
-pub use encoder::Encoder;
+//pub use decoder::{DecodedLogs, Decoder};
+//pub use encoder::Encoder;
 pub use error::CodecError;
 pub use hash::*;
 pub use op::{IndexableOp, Op, OpIndexEntry};

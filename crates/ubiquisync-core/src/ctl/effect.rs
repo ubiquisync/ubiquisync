@@ -1,5 +1,5 @@
 use crate::{crypto::PubKey, uuid::Uuid};
-use core::range::Range;
+use core::ops::Range;
 
 pub enum Effect {
     // 64 byte limit on keys and values

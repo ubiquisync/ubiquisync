@@ -3,9 +3,16 @@ use std::borrow::Borrow;
 use thiserror::Error;
 
 use crate::{
-    codec::{EntryHashError, OpaqueOpBatchHasher, hash_use_key},
-    crypto::{EncryptionKeyRing, Hash, PubKey, SignatureVerificationError, mmr::MmrAccumulator},
+    codec::{
+        EntryHashError, OpBatchHashMethod, OpaqueOpBatchHashMethod, OpaqueOpBatchHasher,
+        PlaintextOpBatchHashMethod, hash_op_batch, hash_use_key,
+    },
+    crypto::{
+        EncryptionKeyRing, EntryCipher, Hash, PubKey, SignatureVerificationError,
+        mmr::MmrAccumulator,
+    },
     log_entry::{GenericLogEntry, OpaqueLogEntry, PlaintextLogEntry},
+    uuid::Uuid,
 };
 // use crate::{
 //     codec::PlaintextOpBatchHasher, crypto::{MmrAccumulator, MmrState}, log_entry::{LogEntry, OpaqueLogEntry}, uuid::Uuid
@@ -32,6 +39,8 @@ use crate::{
 
 pub struct Verifier<'a> {
     signing_key: PubKey,
+    peer_hash: Hash,
+    container_id: Uuid,
     active_key: Option<Hash>,
     mmr: MmrAccumulator,
     signed_idx: u64,
@@ -39,74 +48,36 @@ pub struct Verifier<'a> {
 }
 
 impl<'a> Verifier<'a> {
-    pub fn process_plaintext(&mut self, entry: &PlaintextLogEntry) {}
-
-    pub fn process_opaque(&mut self, entry: &OpaqueLogEntry) -> Result<(), VerificationError> {
-        match entry {
-            crate::log_entry::GenericLogEntry::IndexedEntry { idx, entry } => {
-                let expected_idx = self.mmr.size();
-                let idx = *idx;
-                if idx != expected_idx {
-                    return Err(VerificationError::OutOfOrderLogEntry {
-                        expected: expected_idx,
-                        actual: idx,
-                    });
-                }
-
-                let entry_hash = match entry {
-                    crate::log_entry::EntryBody::OpBatch(op_batch) => {
-                        let mut hasher = OpaqueOpBatchHasher::new(
-                            op_batch.header.0.borrow(),
-                            idx,
-                            op_batch.ops.len() as u64,
-                        );
-                        for op in op_batch.ops.iter() {
-                            match op {
-                                crate::log_entry::OpOrExpunge::Op(bytes) => {
-                                    hasher.append_opaque_op(bytes.0.borrow())?
-                                }
-                                crate::log_entry::OpOrExpunge::Expunge(hash) => {
-                                    hasher.append_expunged_op(hash)?
-                                }
-                            }
-                        }
-                        let hash = hasher.finalize()?;
-                        hash
-                    }
-                    crate::log_entry::EntryBody::UseKey(fingerprint) => {
-                        self.active_key = Some(*fingerprint);
-                        hash_use_key(idx, fingerprint)
-                    }
-                };
-
-                self.mmr.append(&entry_hash.as_bytes());
-            }
-            crate::log_entry::GenericLogEntry::Expunged {
-                start_idx,
-                end_idx,
-                cover,
-            } => todo!(),
-            crate::log_entry::GenericLogEntry::Signature { height, signature } => {
-                let expected_height = self.mmr.size();
-                let height = *height;
-                if height != expected_height {
-                    return Err(VerificationError::OutOfOrderSignature {
-                        expected: expected_height,
-                        actual: height,
-                    });
-                }
-
-                let sign_bytes = self.mmr.sign_bytes();
-                self.signing_key.verify_signature(&sign_bytes, signature)?;
-                self.signed_idx = height;
-            }
-        }
-        Ok(())
+    pub fn process_plaintext(
+        &mut self,
+        entry: &PlaintextLogEntry,
+    ) -> Result<(), VerificationError> {
+        let maybe_cipher = if let Some(fingerprint) = self.active_key {
+            let key = self
+                .keyring
+                .get_key(&fingerprint)
+                .ok_or(VerificationError::EncryptionKeyNotFound { fingerprint })?;
+            Some(EntryCipher::new(
+                key,
+                // TODO should we use full peer hash or just uuid prefix for AD & nonce?
+                &self.peer_hash[0..16].try_into().unwrap(),
+                &self.container_id,
+            ))
+        } else {
+            None
+        };
+        let hash_method = PlaintextOpBatchHashMethod(&maybe_cipher);
+        self.process_generic(entry, &hash_method)
     }
 
-    fn process_generic<B>(
+    pub fn process_opaque(&mut self, entry: &OpaqueLogEntry) -> Result<(), VerificationError> {
+        self.process_generic(entry, &OpaqueOpBatchHashMethod)
+    }
+
+    fn process_generic<B, M: OpBatchHashMethod<B>>(
         &mut self,
         entry: &GenericLogEntry<B, B>,
+        hash_method: &M,
     ) -> Result<(), VerificationError> {
         match entry {
             crate::log_entry::GenericLogEntry::IndexedEntry { idx, entry } => {
@@ -121,22 +92,7 @@ impl<'a> Verifier<'a> {
 
                 let entry_hash = match entry {
                     crate::log_entry::EntryBody::OpBatch(op_batch) => {
-                        let mut hasher = OpaqueOpBatchHasher::new(
-                            op_batch.header.0.borrow(),
-                            idx,
-                            op_batch.ops.len() as u64,
-                        );
-                        for op in op_batch.ops.iter() {
-                            match op {
-                                crate::log_entry::OpOrExpunge::Op(bytes) => {
-                                    hasher.append_opaque_op(bytes.0.borrow())?
-                                }
-                                crate::log_entry::OpOrExpunge::Expunge(hash) => {
-                                    hasher.append_expunged_op(hash)?
-                                }
-                            }
-                        }
-                        let hash = hasher.finalize()?;
+                        let hash = hash_op_batch(idx, op_batch, hash_method)?;
                         hash
                     }
                     crate::log_entry::EntryBody::UseKey(fingerprint) => {
@@ -145,26 +101,26 @@ impl<'a> Verifier<'a> {
                     }
                 };
 
-                self.mmr.append(&entry_hash.as_bytes());
+                self.mmr.append(&entry_hash);
             }
             crate::log_entry::GenericLogEntry::Expunged {
                 start_idx,
                 end_idx,
                 cover,
             } => todo!(),
-            crate::log_entry::GenericLogEntry::Signature { height, signature } => {
-                let expected_height = self.mmr.size();
-                let height = *height;
-                if height != expected_height {
+            crate::log_entry::GenericLogEntry::Signature { size, signature } => {
+                let expected_size = self.mmr.size();
+                let size = *size;
+                if size != expected_size {
                     return Err(VerificationError::OutOfOrderSignature {
-                        expected: expected_height,
-                        actual: height,
+                        expected: expected_size,
+                        actual: size,
                     });
                 }
 
                 let sign_bytes = self.mmr.sign_bytes();
                 self.signing_key.verify_signature(&sign_bytes, signature)?;
-                self.signed_idx = height;
+                self.signed_idx = size;
             }
         }
         Ok(())
@@ -181,4 +137,6 @@ pub enum VerificationError {
     OutOfOrderSignature { expected: u64, actual: u64 },
     #[error("signature verification error: {0}")]
     SignatureVerificationError(#[from] SignatureVerificationError),
+    #[error("encryption key not found")]
+    EncryptionKeyNotFound { fingerprint: Hash },
 }
