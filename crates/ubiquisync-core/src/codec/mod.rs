@@ -20,6 +20,7 @@ mod hash;
 mod header;
 mod op;
 mod reader;
+mod varint;
 mod writer;
 
 pub use consts::{FLAG_DEVICE, FLAG_SERVER, TAG_EXPUNGED};
@@ -27,6 +28,6 @@ pub use consts::{FLAG_DEVICE, FLAG_SERVER, TAG_EXPUNGED};
 //pub use encoder::Encoder;
 pub use error::CodecError;
 pub use hash::*;
-pub use op::{IndexableOp, Op, OpIndexEntry};
+//pub use op::{IndexableOp, Op, OpIndexEntry};
 pub use reader::EntryBufferReader;
 pub use writer::EntryBufferWriter;

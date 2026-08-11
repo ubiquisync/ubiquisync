@@ -17,7 +17,7 @@ pub struct SegmentHeader {
 }
 
 pub struct EncryptionInfo {
-    pub key_fingerprint: [u8; 16],
+    pub key_fingerprint: [u8; 32],
     pub nonce: [u8; 24],
     pub count: u32,
 }

@@ -44,3 +44,6 @@ ed25519-dalek = "3.0.0"
 p256 = "0.14.0"
 zeroize = {version = "1.9.0", features = ["zeroize_derive"]}
 secrecy = "0.10.3"
+proptest = "1.11.0"
+test-strategy = "0.4.5"
+test-case = "3.3.1"

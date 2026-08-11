@@ -9,9 +9,7 @@ use crate::{
         writer::EntryBufferWriter,
     },
     crypto::{EntryCipher, MmrAccumulator},
-    hlc::Timestamp,
     log_entry::LogEntry,
-    uuid::Uuid,
 };
 
 /// Streaming encoder for one segment: writes the header on construction, then
@@ -21,8 +19,6 @@ pub struct Encoder<E, W> {
     sink: W,
     last_timestamp: u64,
     server_mode: bool,
-    mmr: MmrAccumulator,
-    cipher: Option<EntryCipher>,
     _phantom: std::marker::PhantomData<E>,
 }
 
