@@ -12,7 +12,7 @@ pub const FLAG_SERVER: u8 = 1;
 /// delta, and no integrity-check suffix. Domain op vocabularies must not reuse this tag.
 pub const TAG_EXPUNGED: u8 = 0xFF;
 
-pub const ENTRY_TYPE_OP_BATCH = 0x00;
-pub const ENTRY_TYPE_USE_KEY = 0x01;
-pub const ENTRY_TYPE_SIGNATURE = 0x02;
-pub const ENTRY_TYPE_EXPUNGED = 0x03;
+pub const ENTRY_TYPE_OP_BATCH: u8 = 0x00;
+pub const ENTRY_TYPE_USE_KEY: u8 = 0x01;
+pub const ENTRY_TYPE_SIGNATURE: u8 = 0x02;
+pub const ENTRY_TYPE_EXPUNGED: u8 = 0x03;

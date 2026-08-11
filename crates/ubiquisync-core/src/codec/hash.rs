@@ -21,7 +21,7 @@ impl OpBatchHasher {
     pub fn new(opaque_header_bytes: &[u8], entry_index: u64, num_ops: u64) -> Self {
         let mut hasher = blake3::Hasher::new_derive_key(DOMAIN_ENTRY_HASH);
         hasher.update(&entry_index.to_le_bytes());
-        hasher.update(ENTRY_TYPE_OP_BATCH);
+        hasher.update(&[ENTRY_TYPE_OP_BATCH]);
         let header_hash = blake3::derive_key(DOMAIN_SLOT_HASH, opaque_header_bytes);
         hasher.update(&header_hash);
         hasher.update(&num_ops.to_le_bytes()[..]);
@@ -96,7 +96,7 @@ impl<'a> PlaintextOpBatchHasher<'a> {
 pub fn hash_use_key(entry_index: u64, fingerprint: [u8; 32]) -> blake3::Hash {
     let mut hasher = blake3::Hasher::new_derive_key(DOMAIN_ENTRY_HASH);
     hasher.update(&entry_index.to_le_bytes());
-    hasher.update(ENTRY_TYPE_USE_KEY);
+    hasher.update(&[ENTRY_TYPE_USE_KEY]);
     hasher.update(&fingerprint);
     hasher.finalize()
 }
