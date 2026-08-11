@@ -1,6 +1,6 @@
 use chacha20poly1305::AeadInOut;
 use chacha20poly1305::XChaCha20Poly1305;
-use chacha20poly1305::aead::inout::InOutBuf;
+use chacha20poly1305::XNonce;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
 use crate::crypto::Error;
@@ -37,10 +37,23 @@ impl EntryCipher {
     }
 
     pub fn encrypt_op(&self, entry_idx: u64, op_index: u64, op: &[u8]) -> Result<Vec<u8>, Error> {
-        self.encrypt_slot(entry_idx, op_index + 1, op) // convert to 1-based index, 0 for header
+        self.encrypt_slot(
+            entry_idx,
+            op_index.checked_add(1).expect("op index overflow"),
+            op,
+        ) // convert to 1-based index, 0 for header
     }
 
     fn encrypt_slot(&self, entry_idx: u64, slot_idx: u64, bytes: &[u8]) -> Result<Vec<u8>, Error> {
+        let (ad, nonce) = self.associated_data_and_nonce(entry_idx, slot_idx);
+        let mut res = Vec::from(bytes); // we copy the input data to the res vec to encrypt in place
+        self.cipher
+            .encrypt_in_place(&nonce.into(), &ad, &mut res)
+            .map_err(|_| Error::CipherError)?;
+        Ok(res)
+    }
+
+    fn associated_data_and_nonce(&self, entry_idx: u64, slot_idx: u64) -> (Vec<u8>, XNonce) {
         let mut ad = Vec::new();
         const AD_LEN: usize = 1 + 32 + 16 + 16 + 8 + 8;
         ad.reserve_exact(AD_LEN);
@@ -50,13 +63,27 @@ impl EntryCipher {
         let nonce: [u8; 24] = blake3::derive_key(DOMAIN_SEPARATOR, &ad[..])[0..24]
             .try_into()
             .unwrap();
-        let mut res = vec![0; bytes.len()];
-        let inout = InOutBuf::new(bytes, res.as_mut_slice()).map_err(|_| Error::CipherError)?;
-        let tag = self
-            .cipher
-            .encrypt_inout_detached(&nonce.into(), &ad, inout)
+        (ad, nonce.into())
+    }
+
+    pub fn decrypt_header(&self, entry_idx: u64, header: &[u8]) -> Result<Vec<u8>, Error> {
+        self.decrypt_slot(entry_idx, 0, header)
+    }
+
+    pub fn decrypt_op(&self, entry_idx: u64, op_index: u64, op: &[u8]) -> Result<Vec<u8>, Error> {
+        self.decrypt_slot(
+            entry_idx,
+            op_index.checked_add(1).expect("op index overflow"),
+            op,
+        ) // convert to 1-based index, 0 for header
+    }
+
+    fn decrypt_slot(&self, entry_idx: u64, slot_idx: u64, bytes: &[u8]) -> Result<Vec<u8>, Error> {
+        let (ad, nonce) = self.associated_data_and_nonce(entry_idx, slot_idx);
+        let mut res = Vec::from(bytes); // we copy the input data to the res vec to decrypt in place
+        self.cipher
+            .decrypt_in_place(&nonce.into(), &ad, &mut res)
             .map_err(|_| Error::CipherError)?;
-        res.extend_from_slice(tag.as_slice());
         Ok(res)
     }
 }
