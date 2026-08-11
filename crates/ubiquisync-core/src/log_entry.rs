@@ -1,4 +1,4 @@
-use std::borrow::Cow;
+use std::borrow::{Borrow, Cow};
 
 use crate::crypto::Signature;
 use crate::hlc::Timestamp;
@@ -59,8 +59,20 @@ pub enum GenericLogEntry<Op, H> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpaqueBytes<'a>(pub Cow<'a, [u8]>);
 
+impl<'a> Borrow<[u8]> for OpaqueBytes<'a> {
+    fn borrow(&self) -> &[u8] {
+        self.0.borrow()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaintextBytes<'a>(pub Cow<'a, [u8]>);
+
+impl<'a> Borrow<[u8]> for PlaintextBytes<'a> {
+    fn borrow(&self) -> &[u8] {
+        self.0.borrow()
+    }
+}
 
 /// Log entry where op and header are encoded as canonical hash bytes (may be encrypted)
 pub type OpaqueLogEntry<'a> = GenericLogEntry<OpaqueBytes<'a>, OpaqueBytes<'a>>;

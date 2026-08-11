@@ -14,7 +14,7 @@
 
 mod consts;
 //mod decoder;
-//mod encoder;
+mod encoder;
 mod error;
 mod hash;
 mod header;

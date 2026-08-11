@@ -7,12 +7,12 @@ pub const FLAG_DEVICE: u8 = 0;
 /// Segment mode flag: server mode — every entry carries an explicit user id.
 pub const FLAG_SERVER: u8 = 1;
 
-/// Reserved entry tag marking an expunged entry: the tag followed by the
-/// 32-byte blake3 hash of the original entry, with no body, no timestamp
-/// delta, and no integrity-check suffix. Domain op vocabularies must not reuse this tag.
-pub const TAG_EXPUNGED: u8 = 0xFF;
-
 pub const ENTRY_TYPE_OP_BATCH: u8 = 0x00;
 pub const ENTRY_TYPE_USE_KEY: u8 = 0x01;
 pub const ENTRY_TYPE_SIGNATURE: u8 = 0x02;
 pub const ENTRY_TYPE_EXPUNGED: u8 = 0x03;
+
+pub const SENTINEL_EXPUNGED: u8 = 0x0;
+
+pub const SIG_ED25519: u8 = 0x0;
+pub const SIG_P256: u8 = 0x1;
