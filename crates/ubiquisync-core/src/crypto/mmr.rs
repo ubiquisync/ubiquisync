@@ -42,8 +42,8 @@ impl MmrAccumulator {
         Ok(Self { seed, state })
     }
 
-    pub fn append(&mut self, leaf: Hash) {
-        let mut node = leaf;
+    pub fn append(&mut self, leaf: &Hash) {
+        let mut node = *leaf;
         for _ in 0..self.state.size.trailing_ones() {
             let left = self
                 .state

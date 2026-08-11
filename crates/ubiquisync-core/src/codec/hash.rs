@@ -12,7 +12,7 @@ pub struct OpBatchHasher {
 
 pub struct PlaintextOpBatchHasher<'a> {
     hasher: OpBatchHasher,
-    cipher: Option<&'a mut EntryCipher>,
+    cipher: &'a Option<EntryCipher>,
 }
 const DOMAIN_ENTRY_HASH: &str = "ubiquisync/v1/entry-hash";
 const DOMAIN_SLOT_HASH: &str = "ubiquisync/v1/slot-hash";
@@ -61,12 +61,12 @@ impl OpBatchHasher {
 
 impl<'a> PlaintextOpBatchHasher<'a> {
     pub fn new(
-        cipher: Option<&'a mut EntryCipher>,
+        cipher: &'a Option<EntryCipher>,
         plaintext_header_bytes: &[u8],
         entry_index: u64,
         num_ops: u64,
     ) -> Result<Self, Error> {
-        let hasher = if let Some(ref cipher) = cipher {
+        let hasher = if let Some(cipher) = cipher {
             let bytes = cipher.encrypt_header(entry_index, plaintext_header_bytes)?;
             OpBatchHasher::new(bytes.as_slice(), entry_index, num_ops)
         } else {
@@ -76,7 +76,7 @@ impl<'a> PlaintextOpBatchHasher<'a> {
     }
 
     pub fn append_op(&mut self, canonical_bytes: &[u8]) -> Result<(), Error> {
-        if let Some(ref cipher) = self.cipher {
+        if let Some(cipher) = self.cipher {
             let bytes = cipher.encrypt_op(
                 self.hasher.entry_index,
                 self.hasher.next_op_index,
@@ -86,6 +86,10 @@ impl<'a> PlaintextOpBatchHasher<'a> {
         } else {
             self.hasher.append_opaque_op(canonical_bytes)
         }
+    }
+
+    pub fn append_expunged_op(&mut self, hash: &[u8; 32]) -> Result<(), Error> {
+        self.hasher.append_expunged_op(hash)
     }
 
     pub fn finalize(self) -> Result<blake3::Hash, Error> {

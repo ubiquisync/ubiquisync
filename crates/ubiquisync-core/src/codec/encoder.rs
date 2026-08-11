@@ -4,9 +4,11 @@ use crate::{
     codec::{
         consts::{FLAG_DEVICE, FLAG_SERVER},
         error::CodecError,
+        hash::{PlaintextOpBatchHasher, hash_use_key},
         op::Op,
         writer::EntryBufferWriter,
     },
+    crypto::{EntryCipher, MmrAccumulator},
     hlc::Timestamp,
     log_entry::LogEntry,
     uuid::Uuid,
@@ -19,7 +21,8 @@ pub struct Encoder<E, W> {
     sink: W,
     last_timestamp: u64,
     server_mode: bool,
-    next_entry_index: u64,
+    mmr: MmrAccumulator,
+    cipher: Option<EntryCipher>,
     _phantom: std::marker::PhantomData<E>,
 }
 
@@ -51,13 +54,14 @@ impl<E: Op, W: Write> Encoder<E, W> {
         } else {
             sink.write_all(&[FLAG_DEVICE])?;
         }
-        Ok(Self {
-            sink,
-            last_timestamp,
-            server_mode,
-            next_entry_index,
-            _phantom: std::marker::PhantomData,
-        })
+        todo!()
+        // Ok(Self {
+        //     sink,
+        //     last_timestamp,
+        //     server_mode,
+        //     next_entry_index,
+        //     _phantom: std::marker::PhantomData,
+        // })
     }
 
     /// Mutable access to the underlying writer (e.g. for fsync).
@@ -75,15 +79,52 @@ impl<E: Op, W: Write> Encoder<E, W> {
     /// partly-built entry can never leave behind a UUID definition (or an
     /// advanced clock) that the flushed bytes don't account for.
     pub fn encode_entry(&mut self, entry: LogEntry<E>) -> Result<(), CodecError> {
-        let mut writer = EntryBufferWriter::new();
         match entry {
             crate::log_entry::GenericLogEntry::IndexedEntry { idx, entry } => {
-                if idx != self.next_entry_index {
+                if idx != self.mmr.size() {
                     todo!("error")
                 }
                 match entry {
-                    crate::log_entry::EntryBody::OpBatch(op_batch) => {}
-                    crate::log_entry::EntryBody::UseKey(_) => {}
+                    crate::log_entry::EntryBody::OpBatch(op_batch) => {
+                        let mut writer = EntryBufferWriter::new();
+                        writer.write_u64_le(op_batch.header.timestamp.raw());
+                        if self.server_mode {
+                            if let Some(server_user_id) = op_batch.header.server_user_id {
+                                writer.write_byte(1);
+                                writer.write_uuid(&server_user_id);
+                            } else {
+                                writer.write_byte(0);
+                            }
+                        }
+                        let header_bytes = writer.finalize();
+                        let mut hasher = PlaintextOpBatchHasher::new(
+                            &self.cipher,
+                            &header_bytes,
+                            idx,
+                            op_batch.ops.len() as u64,
+                        )?;
+                        for op in op_batch.ops.iter() {
+                            match op {
+                                crate::log_entry::OpOrExpunge::Op(op) => {
+                                    let mut writer = EntryBufferWriter::new();
+                                    op.encode(&mut writer)?;
+                                    let bytes = writer.finalize();
+                                    hasher.append_op(&bytes);
+                                }
+                                crate::log_entry::OpOrExpunge::Expunge(hash) => {
+                                    hasher.append_expunged_op(hash)?;
+                                }
+                            }
+                        }
+                        let hash = hasher.finalize()?;
+                        self.mmr.append(hash.as_bytes());
+                        // TODO actually encode bytes to writer
+                    }
+                    crate::log_entry::EntryBody::UseKey(fingerprint) => {
+                        let hash = hash_use_key(idx, fingerprint);
+                        self.mmr.append(hash.as_bytes());
+                        // TODO actually encode bytes to writer
+                    }
                 }
             }
             crate::log_entry::GenericLogEntry::Expunged {
@@ -97,6 +138,7 @@ impl<E: Op, W: Write> Encoder<E, W> {
             }
             crate::log_entry::GenericLogEntry::Signature { height, signatures } => {}
         }
+        Ok(())
         // // Order must match decoder: op (tag + body) → timestamp → server_user_id
         // op.encode(&mut writer)?;
         // let raw_timestamp = timestamp.raw();

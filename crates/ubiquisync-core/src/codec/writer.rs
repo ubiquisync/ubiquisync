@@ -44,6 +44,14 @@ impl EntryBufferWriter {
         self.buf.extend_from_slice(&v.to_le_bytes());
     }
 
+    pub fn write_u64_le(&mut self, v: u64) {
+        self.buf.extend_from_slice(&v.to_le_bytes());
+    }
+
+    pub fn write_hash(&mut self, hash: &[u8; 32]) {
+        self.buf.extend_from_slice(hash);
+    }
+
     /// Append a signed integer as a zigzag-encoded varint.
     pub fn write_zigzag(&mut self, n: i64) {
         let encoded = ((n << 1) ^ (n >> 63)) as u64;

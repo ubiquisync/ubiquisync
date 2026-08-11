@@ -1,3 +1,4 @@
+use ed25519_dalek::Verifier;
 use thiserror::Error;
 
 pub enum PubKey {
@@ -24,11 +25,20 @@ impl PubKey {
                 let sig = ed25519_dalek::Signature::from_slice(signature)
                     .map_err(|_| VerifyError::InvalidSignature)?;
                 verifying_key
-                    .verify_strict(message, &sig) // TODO should we be using verify_strict or not??
+                    .verify_strict(message, &sig)
                     .map_err(|_| VerifyError::SignatureVerificationFailed)?;
-                Ok(())
             }
-            PubKey::P256(_) => todo!(),
+            PubKey::P256(key) => {
+                let verifying_key = p256::ecdsa::VerifyingKey::from_sec1_bytes(&key[..])
+                    .map_err(|_| VerifyError::InvalidKey)?;
+                let sig = p256::ecdsa::Signature::from_slice(signature)
+                    .map_err(|_| VerifyError::InvalidSignature)?;
+                // TODO check that s is normalized
+                verifying_key
+                    .verify(message, &sig)
+                    .map_err(|_| VerifyError::SignatureVerificationFailed)?;
+            }
         }
+        Ok(())
     }
 }
