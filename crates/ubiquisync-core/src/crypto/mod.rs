@@ -12,4 +12,4 @@ pub use pub_key::*;
 pub use sig::*;
 
 pub type Hash = [u8; 32];
-pub const HASH_SIZE: usize;
+pub const HASH_SIZE: usize = 32;
