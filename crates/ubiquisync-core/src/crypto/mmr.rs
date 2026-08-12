@@ -32,11 +32,15 @@ pub enum MmrError {
 }
 
 impl MmrAccumulator {
-    pub fn new(genesis_hash: Hash, container_id: Uuid, state: MmrState) -> Result<Self, MmrError> {
+    pub fn new(
+        genesis_hash: &Hash,
+        container_id: &Uuid,
+        state: MmrState,
+    ) -> Result<Self, MmrError> {
         state.validate()?;
         let mut seed_hasher = Hasher::new_derive_key(DOMAIN_MMR_SEED);
-        seed_hasher.update(&genesis_hash);
-        seed_hasher.update(&container_id);
+        seed_hasher.update(genesis_hash);
+        seed_hasher.update(container_id);
         let seed = seed_hasher.finalize().into();
         Ok(Self { seed, state })
     }

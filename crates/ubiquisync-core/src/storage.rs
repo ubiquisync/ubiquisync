@@ -1,7 +1,9 @@
+use thiserror::Error;
+
 use crate::{
     codec::op::OpIndexEntry,
-    crypto::mmr::MmrState,
-    log_entry::{GenericLogEntry, OpHeader, OpaqueLogEntry},
+    crypto::{Hash, PubKey, Signature, mmr::MmrState},
+    log_entry::{CipherInfo, GenericLogEntry, OpHeader, OpaqueLogEntry},
     uuid::Uuid,
 };
 
@@ -10,10 +12,19 @@ pub trait Storage {
 
     fn new_batch(&self) -> Self::Batch;
     fn commit_batch(&self, batch: Self::Batch) -> Result<(), StorageError>;
+
+    fn get_peer_info(&self, peer_id: &Uuid) -> Result<PeerInfo, StorageError>;
+    fn get_receive_state(
+        &self,
+        container_id: &Uuid,
+        peer_id: &Uuid,
+    ) -> Result<ReceiveState, StorageError>;
     // TODO methods to get unprocessed and uncommitted entries in order to retry later
 }
 
 // TODO define generic storage error
+#[derive(Error, Debug)]
+#[error("storage error")]
 pub struct StorageError;
 
 pub trait Batch {
@@ -21,20 +32,39 @@ pub trait Batch {
     fn add_log_entries(&mut self, log_entries: LogEntries<'_>);
 }
 
-pub struct LogId {
+pub struct LogEntries<'a> {
     pub container_id: Uuid,
     pub peer_id: Uuid,
-}
-
-pub struct LogEntries<'a> {
-    pub log_id: LogId,
     /// Updates the processed index when we have both decrypted entries and processed their HLC
     /// this must be less than or equal to the last entry in decoded_entries if it is set at all.
     pub processed_idx: Option<u64>,
-    pub decoded_entries: Vec<GenericLogEntry<OpHeader, Vec<OpIndexEntry>>>,
+    pub decoded_entries: Vec<(GenericLogEntry<OpHeader, Vec<OpIndexEntry>>, Option<Hash>)>,
     /// Start index for received entries must be last index in received entries + 1, or empty.
-    pub opaque_entries: Vec<OpaqueLogEntry<'a>>,
+    pub opaque_entries: Vec<(OpaqueLogEntry<'a>, Option<Hash>)>,
     /// This will update both the received index and peaks
     /// Size must match the last log index we have seen in plaintext_entries or decode_entries + 1
     pub received_mmr_state: MmrState,
 }
+
+pub struct ReceiveState {
+    pub mmr_state: MmrState,
+    pub active_cipher: Option<CipherInfo>,
+}
+
+pub struct PeerInfo {
+    pub peer_id: Uuid,
+    pub genesis_bytes: Vec<u8>,
+    pub genesis_signature: Signature,
+}
+
+impl PeerInfo {
+    pub fn genesis_hash(&self) -> Hash {
+        blake3::derive_key(DOMAIN_PEER_HASH, &self.genesis_bytes)
+    }
+
+    pub fn signing_pub_key(&self) -> PubKey {
+        todo!()
+    }
+}
+
+const DOMAIN_PEER_HASH: &str = "ubiquisync/v1/peer-hash";

@@ -1,6 +1,9 @@
-use std::io::Write;
+use std::{any::Any, io::Write, marker::PhantomData};
 
-use crate::codec::error::CodecError;
+use crate::{
+    codec::{PlaintextOpBatchHasher, error::CodecError},
+    log_entry::{OpBatch, PlaintextOpBatch},
+};
 
 pub trait Op: Sized {
     fn decode(bytes: &[u8]) -> Result<Self, CodecError>;
@@ -28,11 +31,55 @@ pub enum OpAttribution {
 }
 
 pub trait IndexableOp: Op {
-    fn to_index_entry(&self) -> Result<Vec<OpIndexEntry>, CodecError>;
+    fn to_index_parts(&self) -> Result<Vec<OpIndexEntry>, CodecError>;
     fn from_index_parts(index_entries: &[OpIndexEntry]) -> Result<Self, CodecError>;
 }
 
 pub struct OpIndexEntry {
     pub key: Vec<u8>,
     pub value: Vec<u8>,
+}
+
+pub trait DynOp: Any {
+    fn encode(&self, w: &mut dyn Write) -> Result<(), CodecError>;
+    fn attribution(&self) -> OpAttribution;
+    fn as_any(&self) -> &dyn Any;
+    fn to_index_parts(&self) -> Result<Vec<OpIndexEntry>, CodecError>;
+}
+
+impl<T: IndexableOp + Any> DynOp for T {
+    fn encode(&self, w: &mut dyn Write) -> Result<(), CodecError> {
+        Op::encode(self, w)
+    }
+
+    fn attribution(&self) -> OpAttribution {
+        Op::attribution(self)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn to_index_parts(&self) -> Result<Vec<OpIndexEntry>, CodecError> {
+        IndexableOp::to_index_parts(self)
+    }
+}
+
+pub struct OpParser<O> {
+    _phantom: PhantomData<O>,
+}
+
+pub trait DynOpParser {
+    fn decode(&self, bytes: &[u8]) -> Result<Box<dyn DynOp>, CodecError>;
+    fn from_index_parts(&self, index_parts: &[OpIndexEntry]) -> Result<Box<dyn DynOp>, CodecError>;
+}
+
+impl<O: IndexableOp + Any> DynOpParser for OpParser<O> {
+    fn decode(&self, bytes: &[u8]) -> Result<Box<dyn DynOp>, CodecError> {
+        Ok(Box::new(<O as Op>::decode(bytes)?))
+    }
+
+    fn from_index_parts(&self, index_parts: &[OpIndexEntry]) -> Result<Box<dyn DynOp>, CodecError> {
+        Ok(Box::new(<O as IndexableOp>::from_index_parts(index_parts)?))
+    }
 }

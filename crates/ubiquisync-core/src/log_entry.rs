@@ -81,6 +81,8 @@ pub type OpaqueOpBatch<'a> = OpBatch<OpaqueBytes<'a>, OpaqueBytes<'a>>;
 
 pub type PlaintextLogEntry<'a> = GenericLogEntry<PlaintextBytes<'a>, PlaintextBytes<'a>>;
 
+pub type PlaintextOpBatch<'a> = OpBatch<OpaqueBytes<'a>, OpaqueBytes<'a>>;
+
 pub type LogEntry<Op> = GenericLogEntry<Op, OpHeader>;
 
 #[derive(Clone)]
@@ -89,8 +91,59 @@ pub enum EntryBody<Op, H> {
     /// Declares the fingerprint for the encryption key being used from
     /// this point forward until the next UseKey op changes the key.
     /// MUST NOT be expunged.
-    UseKey {
-        cipher_suite: CipherSuite,
-        fingerprint: Hash,
-    },
+    UseKey(CipherInfo),
+}
+
+#[derive(Clone)]
+pub struct CipherInfo {
+    pub cipher_suite: CipherSuite,
+    pub fingerprint: Hash,
+}
+
+impl<O: Clone, H: Clone> GenericLogEntry<O, H> {
+    pub fn transform<O2, H2, E, F, G>(&self, f: F, g: G) -> Result<GenericLogEntry<O2, H2>, E>
+    where
+        F: Fn(&O) -> Result<O2, E>,
+        G: Fn(&H) -> Result<H2, E>,
+    {
+        Ok(match self {
+            GenericLogEntry::IndexedEntry { idx, entry } => GenericLogEntry::IndexedEntry {
+                idx: *idx,
+                entry: match entry {
+                    EntryBody::OpBatch(op_batch) => {
+                        let header = g(&op_batch.header)?;
+                        let mut ops = vec![];
+                        for op in op_batch.ops.iter() {
+                            ops.push(match op {
+                                OpOrExpunge::Op(op) => OpOrExpunge::Op(f(op)?),
+                                OpOrExpunge::Expunge(hash) => OpOrExpunge::Expunge(*hash),
+                            })
+                        }
+                        EntryBody::OpBatch(OpBatch { header, ops })
+                    }
+                    EntryBody::UseKey(cipher_info) => EntryBody::UseKey(cipher_info.clone()),
+                },
+            },
+            GenericLogEntry::Expunged {
+                start_idx,
+                end_idx,
+                cover,
+            } => GenericLogEntry::Expunged {
+                start_idx: *start_idx,
+                end_idx: *end_idx,
+                cover: cover.clone(),
+            },
+            GenericLogEntry::Signature { size, signature } => GenericLogEntry::Signature {
+                size: *size,
+                signature: *signature,
+            },
+        })
+    }
+
+    pub fn transform_op<O2, E, F>(&self, f: F) -> Result<GenericLogEntry<O2, H>, E>
+    where
+        F: Fn(&O) -> Result<O2, E>,
+    {
+        self.transform(f, |h| Ok(h.clone()))
+    }
 }
