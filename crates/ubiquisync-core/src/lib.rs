@@ -26,5 +26,6 @@ pub mod keyring;
 pub mod log_entry;
 pub mod store;
 //pub mod sync;
+pub mod storage;
 pub mod tracker;
 pub mod uuid;

@@ -1,11 +1,11 @@
-use std::borrow::Cow;
+use std::borrow::{Borrow, Cow};
 
 use thiserror::Error;
 
 use crate::{
     codec::consts::{ENTRY_TYPE_OP_BATCH, ENTRY_TYPE_USE_KEY},
-    crypto::{CipherError, EntryCipher, Hash},
-    log_entry::{OpBatch, OpaqueBytes, PlaintextBytes},
+    crypto::{CipherError, CipherSuite, EntryCipher, Hash},
+    log_entry::{OpBatch, OpOrExpunge, OpaqueBytes, OpaqueOpBatch, PlaintextBytes},
 };
 
 pub struct OpaqueOpBatchHasher {
@@ -59,9 +59,13 @@ impl OpaqueOpBatchHasher {
     }
 }
 
-impl OpBatchHasher<OpaqueBytes<'_>> for OpaqueOpBatchHasher {
-    fn append_op_bytes(&mut self, opaque_op_bytes: &OpaqueBytes<'_>) -> Result<(), EntryHashError> {
-        let op_hash = blake3::derive_key(DOMAIN_SLOT_HASH, &opaque_op_bytes.0);
+impl OpaqueOpBatchHasher {
+    fn append_op_bytes<'b>(
+        &mut self,
+        opaque_op_bytes: &'b OpaqueBytes<'_>,
+    ) -> Result<(), EntryHashError> {
+        let op_bytes = opaque_op_bytes.borrow();
+        let op_hash = blake3::derive_key(DOMAIN_SLOT_HASH, op_bytes);
         self.append_op_hash(&op_hash)
     }
 
@@ -78,27 +82,33 @@ impl OpBatchHasher<OpaqueBytes<'_>> for OpaqueOpBatchHasher {
 }
 
 impl<'a> PlaintextOpBatchHasher<'a> {
-    pub fn new(
+    pub fn new<'b>(
         cipher: &'a Option<EntryCipher>,
-        plaintext_header_bytes: &[u8],
+        plaintext_header_bytes: &'b [u8],
         entry_index: u64,
         num_ops: u64,
-    ) -> Result<Self, EntryHashError> {
-        let hasher = if let Some(cipher) = cipher {
+    ) -> Result<(Self, OpaqueBytes<'b>), EntryHashError> {
+        let (hasher, opaque_header) = if let Some(cipher) = cipher {
             let bytes = cipher.encrypt_header(entry_index, plaintext_header_bytes)?;
-            OpaqueOpBatchHasher::new(bytes.as_slice(), entry_index, num_ops)
+            (
+                OpaqueOpBatchHasher::new(bytes.as_slice(), entry_index, num_ops),
+                Cow::Owned(bytes),
+            )
         } else {
-            OpaqueOpBatchHasher::new(plaintext_header_bytes, entry_index, num_ops)
+            (
+                OpaqueOpBatchHasher::new(plaintext_header_bytes, entry_index, num_ops),
+                Cow::Borrowed(plaintext_header_bytes),
+            )
         };
-        Ok(Self { cipher, hasher })
+        Ok((Self { cipher, hasher }, OpaqueBytes(opaque_header)))
     }
 }
 
-impl<'a> OpBatchHasher<PlaintextBytes<'_>> for PlaintextOpBatchHasher<'a> {
-    fn append_op_bytes(
+impl<'a> PlaintextOpBatchHasher<'a> {
+    fn append_op_bytes<'b>(
         &mut self,
-        canonical_bytes: &PlaintextBytes<'_>,
-    ) -> Result<(), EntryHashError> {
+        canonical_bytes: &'b PlaintextBytes<'_>,
+    ) -> Result<OpaqueBytes<'b>, EntryHashError> {
         if let Some(cipher) = self.cipher {
             let bytes = cipher.encrypt_op(
                 self.hasher.entry_index,
@@ -106,10 +116,13 @@ impl<'a> OpBatchHasher<PlaintextBytes<'_>> for PlaintextOpBatchHasher<'a> {
                 &canonical_bytes.0,
             )?;
             self.hasher
-                .append_op_bytes(&OpaqueBytes(Cow::Borrowed(bytes.as_slice())))
+                .append_op_bytes(&OpaqueBytes(Cow::Borrowed(bytes.as_slice())))?;
+            Ok(OpaqueBytes(Cow::Owned(bytes)))
         } else {
+            let bytes = canonical_bytes.borrow();
             self.hasher
-                .append_op_bytes(&OpaqueBytes(Cow::Borrowed(&canonical_bytes.0)))
+                .append_op_bytes(&OpaqueBytes(Cow::Borrowed(bytes)))?;
+            Ok(OpaqueBytes(Cow::Borrowed(bytes)))
         }
     }
 
@@ -123,77 +136,80 @@ impl<'a> OpBatchHasher<PlaintextBytes<'_>> for PlaintextOpBatchHasher<'a> {
 }
 
 pub trait OpBatchHashMethod<B> {
-    type Hasher: OpBatchHasher<B>;
-
-    fn hasher(
+    fn hash<'b>(
         &self,
         entry_idx: u64,
-        op_batch: &OpBatch<B, B>,
-    ) -> Result<Self::Hasher, EntryHashError>;
-}
-
-pub trait OpBatchHasher<B> {
-    fn append_op_bytes(&mut self, bytes: &B) -> Result<(), EntryHashError>;
-    fn append_expunged_op(&mut self, hash: &Hash) -> Result<(), EntryHashError>;
-    fn finalize(self) -> Result<Hash, EntryHashError>;
+        op_batch: &'b OpBatch<B, B>,
+    ) -> Result<(Hash, Cow<'b, OpaqueOpBatch<'b>>), EntryHashError>;
 }
 
 pub struct OpaqueOpBatchHashMethod;
 
 impl OpBatchHashMethod<OpaqueBytes<'_>> for OpaqueOpBatchHashMethod {
-    type Hasher = OpaqueOpBatchHasher;
-
-    fn hasher(
+    fn hash<'b>(
         &self,
         entry_idx: u64,
-        op_batch: &OpBatch<OpaqueBytes<'_>, OpaqueBytes<'_>>,
-    ) -> Result<Self::Hasher, EntryHashError> {
-        Ok(OpaqueOpBatchHasher::new(
-            &op_batch.header.0,
+        op_batch: &'b OpBatch<OpaqueBytes<'_>, OpaqueBytes<'_>>,
+    ) -> Result<(Hash, Cow<'b, OpaqueOpBatch<'b>>), EntryHashError> {
+        let mut hasher = OpaqueOpBatchHasher::new(
+            op_batch.header.borrow(),
             entry_idx,
             op_batch.ops.len() as u64,
-        ))
+        );
+        for op in op_batch.ops.iter() {
+            match op {
+                crate::log_entry::OpOrExpunge::Op(bytes) => {
+                    hasher.append_op_bytes(bytes)?;
+                }
+                crate::log_entry::OpOrExpunge::Expunge(hash) => hasher.append_expunged_op(hash)?,
+            }
+        }
+        let hash = hasher.finalize()?;
+        Ok((hash, Cow::Borrowed(op_batch)))
     }
 }
 
 pub struct PlaintextOpBatchHashMethod<'a>(pub &'a Option<EntryCipher>);
 
 impl<'a> OpBatchHashMethod<PlaintextBytes<'_>> for PlaintextOpBatchHashMethod<'a> {
-    type Hasher = PlaintextOpBatchHasher<'a>;
-
-    fn hasher(
+    fn hash<'b>(
         &self,
         entry_idx: u64,
-        op_batch: &OpBatch<PlaintextBytes<'_>, PlaintextBytes<'_>>,
-    ) -> Result<Self::Hasher, EntryHashError> {
-        Ok(PlaintextOpBatchHasher::new(
+        op_batch: &'b OpBatch<PlaintextBytes<'_>, PlaintextBytes<'_>>,
+    ) -> Result<(Hash, Cow<'b, OpaqueOpBatch<'b>>), EntryHashError> {
+        let (mut hasher, opaque_header_bytes) = PlaintextOpBatchHasher::new(
             self.0,
-            &op_batch.header.0,
+            op_batch.header.borrow(),
             entry_idx,
             op_batch.ops.len() as u64,
-        )?)
-    }
-}
-
-pub fn hash_op_batch<B, M: OpBatchHashMethod<B>>(
-    entry_idx: u64,
-    batch: &OpBatch<B, B>,
-    method: &M,
-) -> Result<Hash, EntryHashError> {
-    let mut hasher = method.hasher(entry_idx, &batch)?;
-    for op in batch.ops.iter() {
-        match op {
-            crate::log_entry::OpOrExpunge::Op(bytes) => hasher.append_op_bytes(bytes)?,
-            crate::log_entry::OpOrExpunge::Expunge(hash) => hasher.append_expunged_op(hash)?,
+        )?;
+        let mut opaque_ops = vec![];
+        for op in op_batch.ops.iter() {
+            match op {
+                crate::log_entry::OpOrExpunge::Op(bytes) => {
+                    let opaque_bytes = hasher.append_op_bytes(bytes)?;
+                    opaque_ops.push(OpOrExpunge::Op(opaque_bytes));
+                }
+                crate::log_entry::OpOrExpunge::Expunge(hash) => {
+                    hasher.append_expunged_op(hash)?;
+                    opaque_ops.push(OpOrExpunge::Expunge(*hash));
+                }
+            }
         }
+        let hash = hasher.finalize()?;
+        let opaque_batch = OpBatch {
+            header: opaque_header_bytes,
+            ops: opaque_ops,
+        };
+        Ok((hash, Cow::Owned(opaque_batch)))
     }
-    hasher.finalize()
 }
 
-pub fn hash_use_key(entry_index: u64, fingerprint: &Hash) -> Hash {
+pub fn hash_use_key(entry_index: u64, cipher_suite: CipherSuite, fingerprint: &Hash) -> Hash {
     let mut hasher = blake3::Hasher::new_derive_key(DOMAIN_ENTRY_HASH);
     hasher.update(&entry_index.to_le_bytes());
     hasher.update(&[ENTRY_TYPE_USE_KEY]);
+    hasher.update(&[cipher_suite.into()]);
     hasher.update(fingerprint);
     hasher.finalize().into()
 }

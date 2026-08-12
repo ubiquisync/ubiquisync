@@ -77,6 +77,8 @@ impl<'a> Borrow<[u8]> for PlaintextBytes<'a> {
 /// Log entry where op and header are encoded as canonical hash bytes (may be encrypted)
 pub type OpaqueLogEntry<'a> = GenericLogEntry<OpaqueBytes<'a>, OpaqueBytes<'a>>;
 
+pub type OpaqueOpBatch<'a> = OpBatch<OpaqueBytes<'a>, OpaqueBytes<'a>>;
+
 pub type PlaintextLogEntry<'a> = GenericLogEntry<PlaintextBytes<'a>, PlaintextBytes<'a>>;
 
 pub type LogEntry<Op> = GenericLogEntry<Op, OpHeader>;

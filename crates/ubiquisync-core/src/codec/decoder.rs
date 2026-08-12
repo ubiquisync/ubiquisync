@@ -32,7 +32,7 @@ fn decode_one<'a, B: From<&'a [u8]>>(
             let header_bytes = reader.read_slice(header_len)?;
             let num_ops = reader.read_usize()?;
             let mut ops: Vec<OpOrExpunge<B>> = Vec::new();
-            ops.reserve_exact(num_ops);
+            // NOTE: don't reserve a count in the Vec because this could be an out-of-memory attack surfaces if the number is large
             for _ in 0..num_ops {
                 let op_len = reader.read_usize()?;
                 if op_len == 0 {

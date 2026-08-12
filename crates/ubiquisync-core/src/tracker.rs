@@ -2,8 +2,8 @@ use thiserror::Error;
 
 use crate::{
     codec::{
-        EntryHashError, OpBatchHashMethod, OpaqueOpBatchHashMethod, OpaqueOpBatchHasher,
-        PlaintextOpBatchHashMethod, hash_op_batch, hash_use_key,
+        EntryHashError, OpBatchHashMethod, OpaqueOpBatchHashMethod, PlaintextOpBatchHashMethod,
+        hash_use_key,
     },
     crypto::{
         EncryptionKeyRing, EntryCipher, Hash, PubKey, SignatureVerificationError,
@@ -86,12 +86,15 @@ impl<'a> Verifier<'a> {
 
                 let entry_hash = match entry {
                     crate::log_entry::EntryBody::OpBatch(op_batch) => {
-                        let hash = hash_op_batch(idx, op_batch, hash_method)?;
+                        let (hash, _opaque_log_entry) = hash_method.hash(idx, op_batch)?;
                         hash
                     }
-                    crate::log_entry::EntryBody::UseKey(fingerprint) => {
+                    crate::log_entry::EntryBody::UseKey {
+                        cipher_suite,
+                        fingerprint,
+                    } => {
                         self.active_key = Some(*fingerprint);
-                        hash_use_key(idx, fingerprint)
+                        hash_use_key(idx, *cipher_suite, fingerprint)
                     }
                 };
 
