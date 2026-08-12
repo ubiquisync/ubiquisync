@@ -13,7 +13,7 @@
 //! vocabulary in `ubiquisync-tables`.
 
 mod consts;
-//mod decoder;
+mod decoder;
 mod encoder;
 mod error;
 mod hash;
