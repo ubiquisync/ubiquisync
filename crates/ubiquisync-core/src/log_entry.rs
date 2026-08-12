@@ -1,6 +1,6 @@
 use std::borrow::{Borrow, Cow};
 
-use crate::crypto::Signature;
+use crate::crypto::{CipherSuite, Hash, Signature};
 use crate::hlc::Timestamp;
 use crate::uuid::Uuid;
 
@@ -87,7 +87,8 @@ pub enum EntryBody<Op, H> {
     /// Declares the fingerprint for the encryption key being used from
     /// this point forward until the next UseKey op changes the key.
     /// MUST NOT be expunged.
-    UseKey(Hash),
+    UseKey {
+        cipher_suite: CipherSuite,
+        fingerprint: Hash,
+    },
 }
-
-pub type Hash = [u8; 32];

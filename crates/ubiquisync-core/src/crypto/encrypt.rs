@@ -13,7 +13,7 @@ use crate::crypto::Hash;
 use crate::uuid::Uuid;
 
 #[repr(u8)]
-#[derive(IntoPrimitive, TryFromPrimitive)]
+#[derive(IntoPrimitive, TryFromPrimitive, Clone, Copy, PartialEq, Eq)]
 pub enum CipherSuite {
     XChaCha20Poly1305 = 0,
 }
@@ -29,7 +29,7 @@ pub struct XChaCha20Poly1305Key(SecretBox<[u8; 32]>);
 impl XChaCha20Poly1305Key {
     // TODO method to convert from existing bytes and scrub them on conversion
     // TODO method to securely generate key
-    
+
     pub fn fingerprint(&self) -> [u8; 32] {
         blake3::derive_key(DOMAIN_KEY_FINGERPRINT, self.0.expose_secret())
     }

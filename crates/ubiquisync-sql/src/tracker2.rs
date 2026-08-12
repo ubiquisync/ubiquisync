@@ -41,7 +41,7 @@ impl PeerTracker {
                 horizon_info BYTES NULL, -- horizon index + MMR peaks
                 received_idx INT NOT NULL DEFAULT 0,
                 received_mmr_peaks BYTES NULL, -- MMR peaks at received_idx
-                active_key BYTES NULL, -- encryption key fingerprint at received idx
+                active_cipher BYTES NULL, -- encryption key fingerprint + cipher suite at received idx
                 processed_idx INT NOT NULL DEFAULT 0,
                 committed_idx INT NOT NULL DEFAULT 0,
                 UNIQUE(container_id, peer_id)
@@ -52,7 +52,7 @@ impl PeerTracker {
                 entry_idx INT NOT NULL,
                 type INT NOT NULL,
                 meta BYTES NULL, -- includes expungement info or encrypted header bytes or op count if decrypted (1 byte prefix) or key for UseKey entries
-                leaf_hash BYTES,
+                leaf_hash BYTES NULL,
                 hlc INT NULL,
                 server_user_id BYTES NULL,
                 PRIMARY KEY(log_id, entry_idx)
@@ -76,6 +76,12 @@ impl PeerTracker {
                 PRIMARY_KEY(log_id, size)
             ) WITHOUT ROWID;
 
+            CREATE mmr_peak_cache (
+                log_id INT,
+                size INT, -- we'll usually want to retain at some power of 2 multiple, say every 1024 peaks
+                peaks BYTES,
+                PRIMARY KEY(log_id, size)
+            );
             "
         );
         todo!()
