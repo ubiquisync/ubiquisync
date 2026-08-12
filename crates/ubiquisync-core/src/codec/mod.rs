@@ -18,7 +18,7 @@ mod consts;
 mod error;
 mod hash;
 mod header;
-mod op;
+pub mod op;
 mod reader;
 pub mod varint;
 mod writer;

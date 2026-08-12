@@ -27,19 +27,12 @@ pub enum OpAttribution {
     DeviceOrServer,
 }
 
-/// An [`Op`] that can also be split into an indexable `(key, value)`
-/// pair for the SQL op-log. `key` is the indexable identity (such as table + primary key).
-/// `value` is the op's remaining payload.
-///
-/// # Round-trip
-///
-/// [`from_index_parts`](IndexableOp::from_index_parts) must invert
-/// [`to_index_entry`](IndexableOp::to_index_entry), so the full op can be
-/// reconstructed from its stored parts.
 pub trait IndexableOp: Op {
-    /// Split `self` into its `(key, value)` pair.
-    fn to_index_entry(&self) -> Result<(Vec<u8>, Vec<u8>), CodecError>;
-    /// Reconstruct an op from a key, value pair. The inverse of
-    /// [`to_index_entry`](IndexableOp::to_index_entry).
-    fn from_index_parts(key: &[u8], value: &[u8]) -> Result<Self, CodecError>;
+    fn to_index_entry(&self) -> Result<Vec<OpIndexEntry>, CodecError>;
+    fn from_index_parts(index_entries: &[OpIndexEntry]) -> Result<Self, CodecError>;
+}
+
+pub struct OpIndexEntry {
+    pub key: Vec<u8>,
+    pub value: Vec<u8>,
 }
