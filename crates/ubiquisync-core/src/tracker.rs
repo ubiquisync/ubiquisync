@@ -1,24 +1,27 @@
-use std::collections::HashMap;
+use std::{borrow::Borrow, collections::HashMap};
 
 use thiserror::Error;
 
 use crate::{
     codec::{
         EntryHashError, OpBatchHashMethod, OpaqueOpBatchHashMethod, PlaintextOpBatchHashMethod,
+        decoder::{DecodeError, decode_op_header},
         hash_use_key,
     },
     crypto::{
         EncryptionKeyRing, EntryCipher, Hash, PubKey, SignatureVerificationError,
         mmr::{MmrAccumulator, MmrError},
     },
+    hlc::{HlcService, wall_ms},
     log_entry::{CipherInfo, GenericLogEntry, OpaqueLogEntry, PlaintextLogEntry},
-    reducer::{DynReducer, ReducerResolver},
-    storage::{Storage, StorageError},
+    reducer::{DynReducer, DynReducerError, IndexedOpBatch, ReducerResolver},
+    storage::{Batch, LogEntries, Storage},
     uuid::Uuid,
 };
 
 pub struct Processor<S: Storage> {
     storage: S,
+    hlc: HlcService<S>,
     keyring: EncryptionKeyRing,
     reducers: Box<dyn ReducerResolver>,
 }
@@ -29,7 +32,7 @@ impl<S: Storage> Processor<S> {
         container_id: &Uuid,
         peer_id: &Uuid,
         entries: &[PlaintextLogEntry],
-    ) -> Result<(), ProcessorError> {
+    ) -> Result<(), ProcessorError<S::Error>> {
         if entries.is_empty() {
             return Err(ProcessorError::EmptyEntries);
         }
@@ -39,9 +42,15 @@ impl<S: Storage> Processor<S> {
             _ => return Err(ProcessorError::ExpectedSignature),
         }
 
-        let receive_state = self.storage.get_receive_state(container_id, peer_id)?;
+        let receive_state = self
+            .storage
+            .get_receive_state(container_id, peer_id)
+            .map_err(ProcessorError::StorageError)?;
         let size = receive_state.mmr_state.size;
-        let peer_info = self.storage.get_peer_info(peer_id)?;
+        let peer_info = self
+            .storage
+            .get_peer_info(peer_id)
+            .map_err(ProcessorError::StorageError)?;
         let mmr = MmrAccumulator::new(
             &peer_info.genesis_hash(),
             container_id,
@@ -57,10 +66,45 @@ impl<S: Storage> Processor<S> {
             keyring: &self.keyring,
         };
         if let Some(reducer) = self.reducers.resolve_reducer(container_id) {
+            let mut processable_batches = vec![];
+            let mut indexable_entries = vec![];
+            let local_wall_ms = wall_ms();
             for entry in entries.iter() {
                 verifier.process_plaintext(entry)?;
-                let decoded = entry.transform(|op| reducer.op_parser().decode(op.borrow()), |header| )
+                let decoded = entry.transform(
+                    |op| reducer.op_parser().decode(op.borrow()),
+                    decode_op_header,
+                )?;
+                let indexable = decoded.transform(|op| op.to_index_parts(), |h| Ok(h.clone()))?;
+                match decoded {
+                    GenericLogEntry::IndexedEntry { entry, idx } => match entry {
+                        crate::log_entry::EntryBody::OpBatch(op_batch) => {
+                            // TODO observe hlc timestamp - need to refactor the HLC service a bit and figure out what to do on a skew error
+                            processable_batches.push(IndexedOpBatch {
+                                index: idx,
+                                batch: op_batch,
+                            });
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                }
+                indexable_entries.push((indexable, None)); // TODO get digest from verifier
             }
+            let mut storage_batch = self.storage.new_batch();
+            storage_batch.add_log_entries(LogEntries {
+                container_id: *container_id,
+                peer_id: *peer_id,
+                processed_idx: Some(verifier.signed_size),
+                decoded_entries: indexable_entries,
+                opaque_entries: vec![],
+                received_mmr_state: verifier.mmr.state().clone(),
+            });
+            // TODO hlc update
+            self.storage
+                .commit_batch(storage_batch)
+                .map_err(ProcessorError::StorageError)?;
+            reducer.deliver(container_id, peer_id, &processable_batches)?;
         } else {
             let mut opaque_entries = vec![];
             for entry in entries.iter() {
@@ -68,7 +112,7 @@ impl<S: Storage> Processor<S> {
                 opaque_entries.push(opaque_entry);
             }
         }
-        todo!()
+        Ok(())
     }
 
     pub fn process_opaque(
@@ -76,19 +120,23 @@ impl<S: Storage> Processor<S> {
         container_id: &Uuid,
         peer_id: &Uuid,
         entries: &[OpaqueLogEntry],
-    ) -> Result<(), ProcessorError> {
+    ) -> Result<(), ProcessorError<S::Error>> {
         todo!()
     }
 }
 
 #[derive(Error, Debug)]
-pub enum ProcessorError {
+pub enum ProcessorError<StorageError> {
     #[error("storage error: {0}")]
-    StorageError(#[from] StorageError),
+    StorageError(StorageError),
     #[error("MMR error: {0}")]
     MmrError(#[from] MmrError),
     #[error("verification error: {0}")]
     VerificationError(#[from] VerificationError),
+    #[error("decode error: {0}")]
+    DecodeError(#[from] DecodeError),
+    #[error("reducer error: {0}")]
+    ReducerError(#[from] DynReducerError),
     #[error("last entry in a batch must be a signature")]
     ExpectedSignature,
     #[error("empty entries")]

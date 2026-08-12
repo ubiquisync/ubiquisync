@@ -100,7 +100,7 @@ pub struct CipherInfo {
     pub fingerprint: Hash,
 }
 
-impl<O: Clone, H: Clone> GenericLogEntry<O, H> {
+impl<O, H> GenericLogEntry<O, H> {
     pub fn transform<O2, H2, E, F, G>(&self, f: F, g: G) -> Result<GenericLogEntry<O2, H2>, E>
     where
         F: Fn(&O) -> Result<O2, E>,
@@ -138,12 +138,5 @@ impl<O: Clone, H: Clone> GenericLogEntry<O, H> {
                 signature: *signature,
             },
         })
-    }
-
-    pub fn transform_op<O2, E, F>(&self, f: F) -> Result<GenericLogEntry<O2, H>, E>
-    where
-        F: Fn(&O) -> Result<O2, E>,
-    {
-        self.transform(f, |h| Ok(h.clone()))
     }
 }

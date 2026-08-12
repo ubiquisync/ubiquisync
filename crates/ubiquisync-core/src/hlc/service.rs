@@ -10,30 +10,9 @@
 
 use std::sync::Mutex;
 
+use crate::storage::{Storage, StorageError};
+
 use super::{Hlc, SkewError, Timestamp, wall_ms};
-
-/// Durable storage for the clock state: a single packed-`u64` register.
-///
-/// Implemented by storage backend crates (e.g. as one row in a metadata
-/// table). The contract is a plain register — `load` returns whatever was
-/// last `save`d, or `None` if nothing ever was. Durability must match the
-/// data it timestamps: if log entries survive a crash, the saved clock
-/// state that covered them must too.
-pub trait HlcStorage {
-    /// Backend error type surfaced through the service's results.
-    type Error;
-
-    /// The transaction/batch `save` enqueues into (e.g. a `DbBatch`).
-    /// `?Sized` so a backend can use a trait object (`dyn DbBatch`).
-    type Sink: ?Sized;
-
-    /// Load the last persisted clock state, or `None` for a fresh store.
-    fn load(&self) -> Result<Option<u64>, Self::Error>;
-
-    /// Enqueue a write of the clock state into `sink`; it becomes durable when
-    /// the caller commits the sink, not before.
-    fn save(&self, sink: &mut Self::Sink, raw: u64) -> Result<(), Self::Error>;
-}
 
 /// Error from a clock operation: either the storage backend failed, or a
 /// remote timestamp was rejected by the skew bound.
@@ -67,17 +46,17 @@ impl<E: std::error::Error + 'static> std::error::Error for HlcError<E> {
 /// Shared HLC service: one lock-protected clock plus its persistence.
 /// Serializes `now()`/`observe()` across subsystems so they share a single
 /// causal clock domain in memory and on disk.
-pub struct HlcService<S: HlcStorage> {
+pub struct HlcService<S: Storage> {
     state: Mutex<Hlc>,
     storage: S,
 }
 
-impl<S: HlcStorage> HlcService<S> {
+impl<S: Storage> HlcService<S> {
     /// Seed the in-memory clock from the persisted state (0 if none) and
     /// return the service. The persisted state is the last-observed clock
     /// position, so causal monotonicity survives crashes.
-    pub fn open(storage: S) -> Result<Self, S::Error> {
-        let seed = storage.load()?.unwrap_or(0);
+    pub fn open(storage: S) -> Result<Self, StorageError> {
+        let seed = storage.load_hlc()?.unwrap_or(0);
         Ok(Self {
             state: Mutex::new(Hlc::new(seed)),
             storage,
@@ -95,13 +74,15 @@ impl<S: HlcStorage> HlcService<S> {
     /// operation. This beats `unwrap()`, which would let one subsystem's
     /// panic crash every subsystem sharing the clock.
     fn lock(&self) -> std::sync::MutexGuard<'_, Hlc> {
-        self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Generate a fresh timestamp for a local write and enqueue the new state
     /// into `sink`. Always advances; always writes — the state must reach the
     /// committing batch, or a crash could reissue it.
-    pub fn now(&self, sink: &mut S::Sink) -> Result<Timestamp, S::Error> {
+    pub fn now(&self, sink: &mut S::Batch) -> Result<Timestamp, S::Error> {
         let mut hlc = self.lock();
         let ts = hlc.tick(wall_ms());
         self.storage.save(sink, hlc.state().raw())?;
@@ -134,7 +115,9 @@ impl<S: HlcStorage> HlcService<S> {
             .map_err(HlcError::Skew)?;
         let after = hlc.state();
         if after != before {
-            self.storage.save(sink, after.raw()).map_err(HlcError::Storage)?;
+            self.storage
+                .save(sink, after.raw())
+                .map_err(HlcError::Storage)?;
         }
         Ok(())
     }
@@ -148,8 +131,8 @@ impl<S: HlcStorage> HlcService<S> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::{MAX_SKEW_MS, wall_ms};
+    use super::*;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
     /// In-memory register standing in for a backend metadata row.
@@ -227,7 +210,8 @@ mod tests {
         let saves_after_advance = mem.saves.load(Ordering::SeqCst);
         assert_eq!(saves_after_advance, 1, "advancing observe persists");
         // When: observing something older. Then: no new save.
-        svc.observe(Timestamp::from_parts(local, 0), local, &mut ()).unwrap();
+        svc.observe(Timestamp::from_parts(local, 0), local, &mut ())
+            .unwrap();
         assert_eq!(mem.saves.load(Ordering::SeqCst), saves_after_advance);
         assert_eq!(svc.state(), ahead);
     }
@@ -288,7 +272,7 @@ mod tests {
 
     #[test]
     fn lock_recovers_from_a_poisoned_clock() {
-        use std::panic::{catch_unwind, AssertUnwindSafe};
+        use std::panic::{AssertUnwindSafe, catch_unwind};
         // Goal: a panic that poisons the clock mutex (as a panicking
         // `storage.save` would) does not brick the clock for everyone else.
         let mem = MemStorage::default();
@@ -313,7 +297,13 @@ mod tests {
         let svc = HlcService::open(&mem).unwrap();
         let mut all: Vec<Timestamp> = std::thread::scope(|s| {
             let handles: Vec<_> = (0..8)
-                .map(|_| s.spawn(|| (0..100).map(|_| svc.now(&mut ()).unwrap()).collect::<Vec<_>>()))
+                .map(|_| {
+                    s.spawn(|| {
+                        (0..100)
+                            .map(|_| svc.now(&mut ()).unwrap())
+                            .collect::<Vec<_>>()
+                    })
+                })
                 .collect();
             handles
                 .into_iter()

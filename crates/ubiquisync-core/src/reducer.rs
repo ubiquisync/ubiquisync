@@ -1,5 +1,7 @@
 use std::any::Any;
 
+use thiserror::Error;
+
 use crate::{
     codec::op::{DynOp, DynOpParser, IndexableOp, OpParser},
     log_entry::{OpBatch, OpOrExpunge},
@@ -18,16 +20,17 @@ pub trait Reducer {
         container_id: &Uuid,
         peer_id: &Uuid,
         batches: &[IndexedOpBatch<Self::Op>],
-    ) -> Result<(), Error>;
+    ) -> Result<(), DeliverError>;
 }
+
+#[derive(Error, Debug)]
+#[error("deliver error")]
+pub struct DeliverError;
 
 pub struct IndexedOpBatch<O> {
     pub index: u64,
     pub batch: OpBatch<O>,
 }
-
-// TODO better error type
-pub struct Error;
 
 pub struct ReducerWrapper<R: Reducer> {
     parser: OpParser<R::Op>,
@@ -41,7 +44,15 @@ pub trait DynReducer {
         container_id: &Uuid,
         peer_id: &Uuid,
         batches: &[IndexedOpBatch<Box<dyn DynOp>>],
-    ) -> Result<(), Error>;
+    ) -> Result<(), DynReducerError>;
+}
+
+#[derive(Error, Debug)]
+pub enum DynReducerError {
+    #[error("downcast error")]
+    DowncastError,
+    #[error("deliver error")]
+    DeliverError(#[from] DeliverError),
 }
 
 impl<R: Reducer> DynReducer for ReducerWrapper<R> {
@@ -54,7 +65,7 @@ impl<R: Reducer> DynReducer for ReducerWrapper<R> {
         container_id: &Uuid,
         peer_id: &Uuid,
         batches: &[IndexedOpBatch<Box<dyn DynOp>>],
-    ) -> Result<(), Error> {
+    ) -> Result<(), DynReducerError> {
         let downcasted = vec![];
         for ib in batches.iter() {
             let mut downcasted_ops = vec![];
@@ -64,13 +75,15 @@ impl<R: Reducer> DynReducer for ReducerWrapper<R> {
                         if let Some(op) = op.as_any().downcast_ref::<R::Op>() {
                             downcasted_ops.push(OpOrExpunge::Op(op))
                         } else {
-                            return Err(Error); // TODO better error
+                            return Err(DynReducerError::DowncastError); // TODO better error
                         }
                     }
                     OpOrExpunge::Expunge(hash) => downcasted_ops.push(OpOrExpunge::Expunge(*hash)),
                 }
             }
         }
-        self.reducer.deliver_ops(container_id, peer_id, &downcasted)
+        self.reducer
+            .deliver_ops(container_id, peer_id, &downcasted)?;
+        Ok(())
     }
 }

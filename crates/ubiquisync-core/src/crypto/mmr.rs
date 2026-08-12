@@ -9,6 +9,7 @@ pub struct MmrAccumulator {
     seed: Hash,
 }
 
+#[derive(Clone)]
 pub struct MmrState {
     pub size: u64,
     pub peaks: Vec<Hash>,

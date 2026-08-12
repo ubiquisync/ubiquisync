@@ -1,31 +1,28 @@
-use thiserror::Error;
-
 use crate::{
     codec::op::OpIndexEntry,
     crypto::{Hash, PubKey, Signature, mmr::MmrState},
-    log_entry::{CipherInfo, GenericLogEntry, OpHeader, OpaqueLogEntry},
+    log_entry::{CipherInfo, LogEntry, OpaqueLogEntry},
     uuid::Uuid,
 };
 
 pub trait Storage {
     type Batch: Batch;
+    type Error;
 
     fn new_batch(&self) -> Self::Batch;
-    fn commit_batch(&self, batch: Self::Batch) -> Result<(), StorageError>;
+    fn commit_batch(&self, batch: Self::Batch) -> Result<(), Self::Error>;
 
-    fn get_peer_info(&self, peer_id: &Uuid) -> Result<PeerInfo, StorageError>;
+    /// Load the last persisted clock state, or `None` for a fresh store.
+    fn load_hlc(&self) -> Result<Option<u64>, Self::Error>;
+
+    fn get_peer_info(&self, peer_id: &Uuid) -> Result<PeerInfo, Self::Error>;
     fn get_receive_state(
         &self,
         container_id: &Uuid,
         peer_id: &Uuid,
-    ) -> Result<ReceiveState, StorageError>;
+    ) -> Result<ReceiveState, Self::Error>;
     // TODO methods to get unprocessed and uncommitted entries in order to retry later
 }
-
-// TODO define generic storage error
-#[derive(Error, Debug)]
-#[error("storage error")]
-pub struct StorageError;
 
 pub trait Batch {
     fn add_hlc_update(&mut self, raw: u64);
@@ -38,7 +35,7 @@ pub struct LogEntries<'a> {
     /// Updates the processed index when we have both decrypted entries and processed their HLC
     /// this must be less than or equal to the last entry in decoded_entries if it is set at all.
     pub processed_idx: Option<u64>,
-    pub decoded_entries: Vec<(GenericLogEntry<OpHeader, Vec<OpIndexEntry>>, Option<Hash>)>,
+    pub decoded_entries: Vec<(LogEntry<Vec<OpIndexEntry>>, Option<Hash>)>,
     /// Start index for received entries must be last index in received entries + 1, or empty.
     pub opaque_entries: Vec<(OpaqueLogEntry<'a>, Option<Hash>)>,
     /// This will update both the received index and peaks
