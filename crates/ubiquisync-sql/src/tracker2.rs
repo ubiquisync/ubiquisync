@@ -27,23 +27,55 @@ impl PeerTracker {
     /// return an instance bound to it.
     async fn init(db: &dyn Db, prefix: &str) -> Result<Self, DbError> {
         let sql = format!(
-            "CREATE TABLE peer_cursors (
-            log_id BIGSERIAL PRIMARY KEY, // TODO type
-            peer_id UUID,
-            container_id UUID,
-            received_idx INT,
-            mmr_peaks BYTES, // MMR peaks at received_idx
-            active_cipher BYTES NULL // encryption key fingerprint at received idx
-            signed_idx INT,
-            committed_idx INT,
+            "
+            CREATE TABLE peers (
+                peer_id UUID NOT NULL PRIMARY KEY,
+                genesis_bytes BYTES NOT NULL,
+                genesis_signature BYTES NOT NULL,
+            ) WITHOUT ROWID;
+
+            CREATE TABLE logs (
+                log_id BIGSERIAL  NOT NULLPRIMARY KEY, // TODO type
+                container_id UUID NOT NULL,
+                peer_id UUID NOT NULL,
+                horizon_info BYTES NULL, -- horizon index + MMR peaks
+                received_idx INT NOT NULL DEFAULT 0,
+                received_mmr_peaks BYTES NULL, -- MMR peaks at received_idx
+                active_key BYTES NULL, -- encryption key fingerprint at received idx
+                processed_idx INT NOT NULL DEFAULT 0,
+                committed_idx INT NOT NULL DEFAULT 0,
+                UNIQUE(container_id, peer_id)
             );
 
-            CREATE TABLE processing_queue (
-                log_id INT,
-                entry_idx INT,
-                payload BYTES,
-                sign_bytes BYTES
-            )
+            CREATE TABLE log_entries (
+                log_id INT NOT NULL,
+                entry_idx INT NOT NULL,
+                type INT NOT NULL,
+                meta BYTES NULL, -- includes expungement info or encrypted header bytes or op count if decrypted (1 byte prefix) or key for UseKey entries
+                leaf_hash BYTES,
+                hlc INT NULL,
+                server_user_id BYTES NULL,
+                PRIMARY KEY(log_id, entry_idx)
+            ) WITHOUT ROWID;
+
+            CREATE TABLE log_ops (
+                log_id INT NOT NULL,
+                entry_idx INT NOT NULL,
+                op_idx INT NOT NULL,
+                part_idx INT NOT NULL,
+                key BYTES NULL,
+                value BYTES NULL,
+                meta BYTES NULL, -- includes expungement info or encrypted bytes (1 byte prefix)
+                PRIMARY KEY(log_id, entry_idx, op_idx, part_idx)
+            ) WITHOUT ROWID;
+
+            CREATE TABLE signatures (
+                log_id INT NOT NULL,
+                size INT NOT NULL,
+                signature BYTES NOT NULL,
+                PRIMARY_KEY(log_id, size)
+            ) WITHOUT ROWID;
+
             "
         );
         todo!()
