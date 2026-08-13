@@ -70,6 +70,7 @@ impl MmrAccumulator {
 
     pub fn sign_bytes(&self) -> Hash {
         let mut hasher = Hasher::new_derive_key(DOMAIN_SIGN_BYTES);
+        // TODO add container & peer id here so it's trivial to bind this signature to a log height without even having the full MMR proof
         hasher.update(&self.state.size.to_le_bytes());
         hasher.update(&self.root());
         hasher.finalize().into()

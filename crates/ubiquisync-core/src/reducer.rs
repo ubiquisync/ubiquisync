@@ -3,8 +3,8 @@ use std::any::Any;
 use thiserror::Error;
 
 use crate::{
-    codec::op::{DynOp, DynOpParser, IndexableOp, OpParser},
-    log_entry::{OpBatch, OpOrExpunge},
+    codec::op::Op,
+    log_entry::{OpBatch, PlaintextBytes},
     uuid::Uuid,
 };
 
@@ -13,7 +13,7 @@ pub trait ReducerResolver {
 }
 
 pub trait Reducer {
-    type Op: IndexableOp + Any + 'static;
+    type Op: Op + Any + 'static;
 
     fn deliver_ops(
         &self,
@@ -33,18 +33,22 @@ pub struct IndexedOpBatch<O> {
 }
 
 pub struct ReducerWrapper<R: Reducer> {
-    parser: OpParser<R::Op>,
     reducer: R,
 }
 
 pub trait DynReducer {
-    fn op_parser(&self) -> &dyn DynOpParser;
     fn deliver(
         &self,
         container_id: &Uuid,
         peer_id: &Uuid,
-        batches: &[IndexedOpBatch<Box<dyn DynOp>>],
-    ) -> Result<(), DynReducerError>;
+        batches: &[IndexedOpBatch<PlaintextBytes>],
+    ) -> Result<Vec<OpIndexData>, DynReducerError>;
+}
+
+pub struct OpIndexData {
+    pub entry_idx: u64,
+    pub op_idx: u64,
+    pub index_key: Vec<u8>,
 }
 
 #[derive(Error, Debug)]
@@ -56,34 +60,12 @@ pub enum DynReducerError {
 }
 
 impl<R: Reducer> DynReducer for ReducerWrapper<R> {
-    fn op_parser(&self) -> &dyn DynOpParser {
-        &self.parser
-    }
-
     fn deliver(
         &self,
         container_id: &Uuid,
         peer_id: &Uuid,
-        batches: &[IndexedOpBatch<Box<dyn DynOp>>],
-    ) -> Result<(), DynReducerError> {
-        let downcasted = vec![];
-        for ib in batches.iter() {
-            let mut downcasted_ops = vec![];
-            for op in ib.batch.ops.iter() {
-                match op {
-                    OpOrExpunge::Op(op) => {
-                        if let Some(op) = op.as_any().downcast_ref::<R::Op>() {
-                            downcasted_ops.push(OpOrExpunge::Op(op))
-                        } else {
-                            return Err(DynReducerError::DowncastError); // TODO better error
-                        }
-                    }
-                    OpOrExpunge::Expunge(hash) => downcasted_ops.push(OpOrExpunge::Expunge(*hash)),
-                }
-            }
-        }
-        self.reducer
-            .deliver_ops(container_id, peer_id, &downcasted)?;
-        Ok(())
+        batches: &[IndexedOpBatch<PlaintextBytes>],
+    ) -> Result<Vec<OpIndexData>, DynReducerError> {
+        todo!()
     }
 }

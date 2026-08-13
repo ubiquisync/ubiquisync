@@ -54,6 +54,18 @@ pub enum GenericLogEntry<Op, H> {
         size: u64,
         signature: Signature,
     },
+    SealBranch {
+        signature: Signature,
+        start: EntryRef,
+        end: EntryRef,
+        ack_until: Option<EntryRef>,
+    },
+}
+
+#[derive(Clone)]
+pub struct EntryRef {
+    pub hash: Hash,
+    pub index: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

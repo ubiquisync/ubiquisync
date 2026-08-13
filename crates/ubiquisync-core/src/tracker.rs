@@ -109,8 +109,20 @@ impl<S: Storage> Processor<S> {
             let mut opaque_entries = vec![];
             for entry in entries.iter() {
                 let opaque_entry = verifier.process_plaintext(entry)?;
-                opaque_entries.push(opaque_entry);
+                opaque_entries.push((opaque_entry, None));
             }
+            let mut storage_batch = self.storage.new_batch();
+            storage_batch.add_log_entries(LogEntries {
+                container_id: *container_id,
+                peer_id: *peer_id,
+                processed_idx: None,
+                decoded_entries: vec![],
+                opaque_entries,
+                received_mmr_state: verifier.mmr.state().clone(),
+            });
+            self.storage
+                .commit_batch(storage_batch)
+                .map_err(ProcessorError::StorageError)?;
         }
         Ok(())
     }

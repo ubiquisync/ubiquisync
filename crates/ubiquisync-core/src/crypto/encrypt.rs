@@ -1,7 +1,7 @@
-use chacha20poly1305::AeadInOut;
-use chacha20poly1305::KeyInit;
-use chacha20poly1305::XChaCha20Poly1305;
-use chacha20poly1305::XNonce;
+use aes_gcm_siv::AeadInOut;
+use aes_gcm_siv::Aes256GcmSiv;
+use aes_gcm_siv::KeyInit;
+use aes_gcm_siv::Nonce;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use secrecy::ExposeSecret;
 use secrecy::SecretBox;
@@ -15,18 +15,18 @@ use crate::uuid::Uuid;
 #[repr(u8)]
 #[derive(IntoPrimitive, TryFromPrimitive, Clone, Copy, PartialEq, Eq)]
 pub enum CipherSuite {
-    XChaCha20Poly1305 = 0,
+    Aes256GcmSiv = 0,
 }
 
 pub struct EntryCipher {
-    cipher: XChaCha20Poly1305,
+    cipher: Aes256GcmSiv,
     ad_prefix: Vec<u8>,
 }
 
 #[derive(Zeroize, ZeroizeOnDrop)]
-pub struct XChaCha20Poly1305Key(SecretBox<[u8; 32]>);
+pub struct Key256(SecretBox<[u8; 32]>);
 
-impl XChaCha20Poly1305Key {
+impl Key256 {
     // TODO method to convert from existing bytes and scrub them on conversion
     // TODO method to securely generate key
 
@@ -34,8 +34,8 @@ impl XChaCha20Poly1305Key {
         blake3::derive_key(DOMAIN_KEY_FINGERPRINT, self.0.expose_secret())
     }
 
-    pub fn cipher(&self) -> XChaCha20Poly1305 {
-        XChaCha20Poly1305::new(self.0.expose_secret().into())
+    pub fn cipher(&self) -> Aes256GcmSiv {
+        Aes256GcmSiv::new(self.0.expose_secret().into())
     }
 }
 
@@ -47,9 +47,9 @@ const DOMAIN_AEAD_NONCE: &str = "ubiquisync/v1/aead-nonce";
 pub struct CipherError;
 
 impl EntryCipher {
-    pub fn new(key: XChaCha20Poly1305Key, peer_id: &Uuid, container_id: &Uuid) -> Self {
+    pub fn new(key: Key256, peer_id: &Uuid, container_id: &Uuid) -> Self {
         let mut ad_prefix = vec![];
-        ad_prefix.push(CipherSuite::XChaCha20Poly1305.into());
+        ad_prefix.push(CipherSuite::Aes256GcmSiv.into());
         ad_prefix.extend_from_slice(&key.fingerprint()[..]);
         ad_prefix.extend_from_slice(&peer_id[..]);
         ad_prefix.extend_from_slice(&container_id[..]);
@@ -90,14 +90,15 @@ impl EntryCipher {
         Ok(res)
     }
 
-    fn associated_data_and_nonce(&self, entry_idx: u64, slot_idx: u64) -> (Vec<u8>, XNonce) {
+    fn associated_data_and_nonce(&self, entry_idx: u64, slot_idx: u64) -> (Vec<u8>, Nonce) {
+        // TODO derive subkey
         let mut ad = Vec::new();
         const AD_LEN: usize = 1 + 32 + 16 + 16 + 8 + 8;
         ad.reserve_exact(AD_LEN);
         ad.extend_from_slice(self.ad_prefix.as_slice());
         ad.extend_from_slice(&entry_idx.to_le_bytes());
         ad.extend_from_slice(&slot_idx.to_le_bytes());
-        let nonce: [u8; 24] = blake3::derive_key(DOMAIN_AEAD_NONCE, &ad[..])[0..24]
+        let nonce: [u8; 12] = blake3::derive_key(DOMAIN_AEAD_NONCE, &ad[..])[0..12]
             .try_into()
             .unwrap();
         (ad, nonce.into())
@@ -138,7 +139,7 @@ impl EntryCipher {
 pub struct EncryptionKeyRing {}
 
 impl EncryptionKeyRing {
-    pub fn get_key(&self, fingerprint: &Hash) -> Option<XChaCha20Poly1305Key> {
+    pub fn get_key(&self, fingerprint: &Hash) -> Option<Key256> {
         todo!()
     }
 }

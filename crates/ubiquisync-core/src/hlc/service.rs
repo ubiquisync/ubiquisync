@@ -55,7 +55,7 @@ impl<S: Storage> HlcService<S> {
     /// Seed the in-memory clock from the persisted state (0 if none) and
     /// return the service. The persisted state is the last-observed clock
     /// position, so causal monotonicity survives crashes.
-    pub fn open(storage: S) -> Result<Self, StorageError> {
+    pub fn open(storage: S) -> Result<Self, S::Error> {
         let seed = storage.load_hlc()?.unwrap_or(0);
         Ok(Self {
             state: Mutex::new(Hlc::new(seed)),

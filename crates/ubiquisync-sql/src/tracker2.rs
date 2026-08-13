@@ -28,23 +28,27 @@ impl PeerTracker {
     async fn init(db: &dyn Db, prefix: &str) -> Result<Self, DbError> {
         let sql = format!(
             "
-            CREATE TABLE peers (
-                peer_id UUID NOT NULL PRIMARY KEY,
-                genesis_bytes BYTES NOT NULL,
-                genesis_signature BYTES NOT NULL,
+            CREATE TABLE streams (
+                stream_id UUID NOT NULL PRIMARY KEY, -- the peer id or synthentic (local, non-consensus) fork id
+                peer_id UUID NOT NULL, -- the real peer id
+                genesis_bytes BYTES,
+                genesis_signature BYTES,
+                fork_proof BYTES,
+                parent_stream_id UUID,
+                status INT
             ) WITHOUT ROWID;
 
             CREATE TABLE logs (
                 log_id BIGSERIAL  NOT NULLPRIMARY KEY, // TODO type
                 container_id UUID NOT NULL,
-                peer_id UUID NOT NULL,
+                stream_id UUID NOT NULL,
                 horizon_info BYTES NULL, -- horizon index + MMR peaks
                 received_idx INT NOT NULL DEFAULT 0,
                 received_mmr_peaks BYTES NULL, -- MMR peaks at received_idx
                 active_cipher BYTES NULL, -- encryption key fingerprint + cipher suite at received idx
                 processed_idx INT NOT NULL DEFAULT 0,
                 committed_idx INT NOT NULL DEFAULT 0,
-                UNIQUE(container_id, peer_id)
+                UNIQUE(container_id, stream_id)
             );
 
             CREATE TABLE log_entries (
