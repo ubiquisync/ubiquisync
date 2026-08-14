@@ -16,6 +16,9 @@
 //! Most applications should depend on the [`ubiquisync`](https://crates.io/crates/ubiquisync)
 //! facade crate rather than this crate directly.
 
+// TODO: no_std & alloc
+extern crate alloc;
+
 pub mod codec;
 pub mod crypto;
 pub mod ctl;

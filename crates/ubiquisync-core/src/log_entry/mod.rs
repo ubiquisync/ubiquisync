@@ -1,23 +1,14 @@
+mod bytes;
+mod error;
 mod header;
+mod ops;
 
+pub use bytes::*;
+pub use error::*;
 pub use header::*;
+pub use ops::*;
 
 use crate::crypto::{CipherSuite, Hash, Signature};
-use std::borrow::{Borrow, Cow};
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(test, derive(test_strategy::Arbitrary))]
-pub struct OpBatch<Op: std::fmt::Debug, H: std::fmt::Debug = OpHeader> {
-    pub header: H,
-    pub ops: Vec<OpOrExpunge<Op>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(test, derive(test_strategy::Arbitrary))]
-pub enum OpOrExpunge<Op> {
-    Op(Op),
-    Expunge(Hash),
-}
 
 /// One decoded entry: a live log entry or an expunged-entry marker.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -51,52 +42,6 @@ pub enum GenericLogEntry<Op: std::fmt::Debug, H: std::fmt::Debug> {
 pub struct EntryRef {
     pub hash: Hash,
     pub index: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OpaqueBytes<'a>(pub Cow<'a, [u8]>);
-
-impl<'a> Borrow<[u8]> for OpaqueBytes<'a> {
-    fn borrow(&self) -> &[u8] {
-        self.0.borrow()
-    }
-}
-
-#[cfg(test)]
-impl proptest::arbitrary::Arbitrary for OpaqueBytes<'static> {
-    type Parameters = ();
-    type Strategy = proptest::strategy::BoxedStrategy<Self>;
-
-    fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
-        use proptest::strategy::Strategy;
-
-        proptest::collection::vec(proptest::arbitrary::any::<u8>(), 0..=256)
-            .prop_map(|v| OpaqueBytes(Cow::Owned(v)))
-            .boxed()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PlaintextBytes<'a>(pub Cow<'a, [u8]>);
-
-impl<'a> Borrow<[u8]> for PlaintextBytes<'a> {
-    fn borrow(&self) -> &[u8] {
-        self.0.borrow()
-    }
-}
-
-#[cfg(test)]
-impl proptest::arbitrary::Arbitrary for PlaintextBytes<'static> {
-    type Parameters = ();
-    type Strategy = proptest::strategy::BoxedStrategy<Self>;
-
-    fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
-        use proptest::strategy::Strategy;
-
-        proptest::collection::vec(proptest::arbitrary::any::<u8>(), 0..=256)
-            .prop_map(|v| PlaintextBytes(Cow::Owned(v)))
-            .boxed()
-    }
 }
 
 /// Log entry where op and header are encoded as canonical hash bytes (may be encrypted)
