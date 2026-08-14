@@ -1,4 +1,3 @@
-use std::borrow::Borrow;
 use std::sync::Mutex;
 
 use thiserror::Error;
@@ -6,6 +5,7 @@ use thiserror::Error;
 use crate::hlc::Hlc;
 use crate::ids::ContainerId;
 use crate::ids::PeerId;
+use crate::log_entry::DecodeError;
 use crate::log_entry::GenericLogEntry;
 use crate::log_entry::OpHeader;
 use crate::log_entry::OpaqueLogEntry;
@@ -13,7 +13,6 @@ use crate::reducer::ReducerOpBatch;
 use crate::verifier::VerificationError;
 use crate::verifier::Verifier;
 use crate::{
-    codec::decoder::DecodeError,
     crypto::{
         EncryptionKeyRing,
         mmr::{MmrAccumulator, MmrError},

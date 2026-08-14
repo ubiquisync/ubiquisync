@@ -1,12 +1,12 @@
-use std::{any::Any, io::Write};
+use std::any::Any;
 
-use crate::codec::decoder::DecodeError;
+use crate::BoxedError;
 
-pub trait EncodableOp: Any {
+pub trait EncodableOp: Any + Sync + Send {
     /// Encode the op. The encoded op bytes must be non-empty.
-    fn encode(&self, w: &mut dyn Write) -> Result<(), DecodeError>; // TODO encode error lol
+    fn encode(&self) -> Vec<u8>;
 
-    fn index_keys(&self) -> Result<Vec<u8>, DecodeError>;
+    fn index_keys(&self) -> Vec<Vec<u8>>;
 
     /// Defines what actor the op is attributed to which restricts where and how it can appear
     /// in server and device logs. Server ops can only occur in server logs and whne user
@@ -18,9 +18,10 @@ pub trait EncodableOp: Any {
 }
 
 pub trait Op: EncodableOp + Sized + Clone {
-    fn decode(bytes: &[u8]) -> Result<Self, DecodeError>;
+    fn decode(bytes: &[u8]) -> Result<Self, BoxedError>;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpAttribution {
     /// Attributed to a user. In server logs, must include server_user_id.
     User,

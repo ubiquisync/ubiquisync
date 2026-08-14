@@ -1,16 +1,16 @@
 use thiserror::Error;
 
 use crate::{
-    codec::{
-        EntryHashError, OpBatchHashMethod, OpaqueOpBatchHashMethod, PlaintextOpBatchHashMethod,
-        hash_use_key,
-    },
     crypto::{
         EncryptionKeyRing, EntryCipher, Hash, PubKey, SignatureVerificationError,
         mmr::{MmrAccumulator, MmrState},
     },
     ids::{ContainerId, PeerId},
     log_entry::{CipherInfo, GenericLogEntry, OpaqueLogEntry, PlaintextLogEntry},
+    log_entry::{
+        EntryHashError, OpBatchHashMethod, OpaqueOpBatchHashMethod, PlaintextOpBatchHashMethod,
+        hash_use_key,
+    },
 };
 
 pub struct Verifier<'a> {

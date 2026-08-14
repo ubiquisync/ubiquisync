@@ -1,6 +1,7 @@
 use crate::{
-    codec::{decoder::DecodeError, reader::Reader, writer::Writer},
+    codec::{reader::Reader, writer::Writer},
     hlc::Timestamp,
+    log_entry::DecodeError,
     uuid::Uuid,
 };
 
@@ -41,9 +42,7 @@ impl OpHeader {
             });
         } else if n != 16 {
             // for now only handle UUIDs
-            return Err(DecodeError::Other(format!(
-                "expected server_user_id of length 16, got {n}"
-            )));
+            return Err(DecodeError::InvalidServerAttestedId { length: n });
         } else {
             return Ok(OpHeader {
                 server_attested_user_id: Some(server_user_id_bytes.try_into().unwrap()), // length already checked above

@@ -3,7 +3,6 @@ use std::borrow::{Borrow, Cow};
 use thiserror::Error;
 
 use crate::{
-    codec::consts::{ENTRY_TYPE_OP_BATCH, ENTRY_TYPE_USE_KEY},
     crypto::{CipherError, CipherSuite, EntryCipher, Hash},
     log_entry::{OpBatch, OpOrExpunge, OpaqueBytes, OpaqueOpBatch, PlaintextBytes},
 };
@@ -20,8 +19,10 @@ pub struct PlaintextOpBatchHasher<'a> {
     cipher: &'a Option<EntryCipher>,
 }
 
-const DOMAIN_ENTRY_HASH: &str = "ubiquisync/v1/entry-hash";
-const DOMAIN_SLOT_HASH: &str = "ubiquisync/v1/slot-hash";
+const DOMAIN_OP_BATCH_HASH: &str = "ubiquisync/v1/op-batch";
+const DOMAIN_USE_KEY_HASH: &str = "ubiquisync/v1/use-key";
+const DOMAIN_OP_SLOT_HASH: &str = "ubiquisync/v1/op-slot";
+const DOMAIN_OP_HEADER_HASH: &str = "ubiquisync/v1/op-header";
 
 #[derive(Error, Debug)]
 pub enum EntryHashError {
@@ -35,10 +36,9 @@ pub enum EntryHashError {
 
 impl OpaqueOpBatchHasher {
     pub fn new(opaque_header_bytes: &[u8], entry_index: u64, num_ops: u64) -> Self {
-        let mut hasher = blake3::Hasher::new_derive_key(DOMAIN_ENTRY_HASH);
+        let mut hasher = blake3::Hasher::new_derive_key(DOMAIN_OP_BATCH_HASH);
         hasher.update(&entry_index.to_le_bytes());
-        hasher.update(&[ENTRY_TYPE_OP_BATCH]);
-        let header_hash = blake3::derive_key(DOMAIN_SLOT_HASH, opaque_header_bytes);
+        let header_hash = blake3::derive_key(DOMAIN_OP_SLOT_HASH, opaque_header_bytes);
         hasher.update(&header_hash);
         hasher.update(&num_ops.to_le_bytes()[..]);
         Self {
@@ -65,7 +65,7 @@ impl OpaqueOpBatchHasher {
         opaque_op_bytes: &'b OpaqueBytes<'_>,
     ) -> Result<(), EntryHashError> {
         let op_bytes = opaque_op_bytes.borrow();
-        let op_hash = blake3::derive_key(DOMAIN_SLOT_HASH, op_bytes);
+        let op_hash = blake3::derive_key(DOMAIN_OP_HEADER_HASH, op_bytes);
         self.append_op_hash(&op_hash)
     }
 
@@ -206,9 +206,8 @@ impl<'a> OpBatchHashMethod<PlaintextBytes<'_>> for PlaintextOpBatchHashMethod<'a
 }
 
 pub fn hash_use_key(entry_index: u64, cipher_suite: CipherSuite, fingerprint: &Hash) -> Hash {
-    let mut hasher = blake3::Hasher::new_derive_key(DOMAIN_ENTRY_HASH);
+    let mut hasher = blake3::Hasher::new_derive_key(DOMAIN_USE_KEY_HASH);
     hasher.update(&entry_index.to_le_bytes());
-    hasher.update(&[ENTRY_TYPE_USE_KEY]);
     hasher.update(&[cipher_suite.into()]);
     hasher.update(fingerprint);
     hasher.finalize().into()

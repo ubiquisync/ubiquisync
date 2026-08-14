@@ -20,4 +20,6 @@ pub enum DecodeError {
     UknownSignatureAlgorithm(u8),
     #[error("unexpected entry type: {0}")]
     UnexpectedEntryType(u8),
+    #[error("invalid server attested user id length: {length}")]
+    InvalidServerAttestedId { length: usize },
 }

@@ -36,3 +36,5 @@ pub mod reducer;
 pub mod storage;
 pub mod uuid;
 pub mod verifier;
+
+pub type BoxedError = Box<dyn core::error::Error + Send + Sync>;

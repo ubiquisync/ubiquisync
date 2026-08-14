@@ -3,12 +3,9 @@ use std::{any::Any, borrow::Borrow};
 use thiserror::Error;
 
 use crate::{
-    codec::{
-        decoder::DecodeError,
-        op::{EncodableOp, Op},
-    },
+    BoxedError,
     ids::{ContainerId, PeerId},
-    log_entry::{OpHeader, PlaintextBytes},
+    log_entry::{EncodableOp, Op, OpAttribution, OpHeader, PlaintextBytes},
 };
 
 pub trait ReducerResolver {
@@ -62,7 +59,7 @@ pub struct OpIndexData {
 #[derive(Error, Debug)]
 pub enum ReducerError {
     #[error("decode error {0}")]
-    DecodeError(#[from] DecodeError),
+    DecodeError(BoxedError),
 }
 
 impl<R: Reducer> ReducerManager for ReducerWrapper<R> {
@@ -75,13 +72,13 @@ impl<R: Reducer> ReducerManager for ReducerWrapper<R> {
         // TODO verify op attribution - can we extract server flag from the PeerId itself?
         for batch in batches {
             for op_bytes in batch.ops.iter() {
-                let op = R::Op::decode(op_bytes.borrow())?;
+                let op = R::Op::decode(op_bytes.borrow()).map_err(ReducerError::DecodeError)?;
                 let attribution = op.attribution();
                 match attribution {
-                    crate::codec::op::OpAttribution::User => todo!(),
-                    crate::codec::op::OpAttribution::DeviceOnly => todo!(),
-                    crate::codec::op::OpAttribution::ServerOnly => todo!(),
-                    crate::codec::op::OpAttribution::DeviceOrServer => todo!(),
+                    OpAttribution::User => todo!(),
+                    OpAttribution::DeviceOnly => todo!(),
+                    OpAttribution::ServerOnly => todo!(),
+                    OpAttribution::DeviceOrServer => todo!(),
                 }
             }
         }
