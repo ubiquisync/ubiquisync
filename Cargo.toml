@@ -1,12 +1,12 @@
 [workspace]
 resolver = "2"
 members = [
-  "crates/ubiquisync",
+  # "crates/ubiquisync",
   "crates/ubiquisync-core",
-  "crates/ubiquisync-sql",
-  "crates/ubiquisync-postgres",
-  "crates/ubiquisync-sqlite",
-  "crates/ubiquisync-tables",
+  # "crates/ubiquisync-sql",
+  # "crates/ubiquisync-postgres",
+  # "crates/ubiquisync-sqlite",
+  # "crates/ubiquisync-tables",
 ]
 
 [workspace.package]
