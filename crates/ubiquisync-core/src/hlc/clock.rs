@@ -32,6 +32,7 @@ pub const MAX_SKEW_MS: u64 = 60_000;
 /// This type does no I/O and is single-threaded; almost all callers want
 /// [`HlcService`](super::service::HlcService), which wraps one of these
 /// in a lock and persists its state so monotonicity survives restarts.
+#[derive(Debug)]
 pub struct Hlc {
     state: Timestamp,
 }

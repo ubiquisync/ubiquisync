@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use std::sync::Mutex;
 
 use thiserror::Error;
@@ -72,22 +73,26 @@ impl<S: Storage> Processor<S> {
             let mut processable_batches = vec![];
             let mut decoded_entries = vec![];
             let local_wall_ms = wall_ms();
+            let mut hlc = self.hlc.lock().unwrap_or_else(|e| e.into_inner());
             for entry in entries.iter() {
                 verifier.process_plaintext(entry)?;
+                decoded_entries.push((entry.clone(), None)); // TODO get digest from verifier
                 match entry {
                     GenericLogEntry::IndexedEntry { entry, idx } => match entry {
                         crate::log_entry::EntryBody::OpBatch(op_batch) => {
-                            // TODO observe hlc timestamp - need to refactor the HLC service a bit and figure out what to do on a skew error
-                            processable_batches.push(IndexedOpBatch {
-                                index: *idx,
-                                batch: op_batch.clone(),
-                            });
+                            let header = decode_op_header(op_batch.header.borrow())?;
+                            match hlc.observe(header.timestamp, local_wall_ms) {
+                                Ok(_) => processable_batches.push(IndexedOpBatch {
+                                    index: *idx,
+                                    batch: op_batch.clone(),
+                                }),
+                                Err(_) => todo!(),
+                            };
                         }
                         _ => {}
                     },
                     _ => {}
                 }
-                decoded_entries.push((entry.clone(), None)); // TODO get digest from verifier
             }
             let mut storage_batch = self.storage.new_batch();
             storage_batch.add_log_entries(LogEntries {

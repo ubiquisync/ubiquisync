@@ -9,7 +9,7 @@ use crate::{
 };
 
 pub trait ReducerResolver {
-    fn resolve_reducer(&self, container_id: &ContainerId) -> Option<&dyn DynReducer>;
+    fn resolve_reducer(&self, container_id: &ContainerId) -> Option<&dyn ReducerManager>;
 }
 
 pub trait Reducer {
@@ -36,7 +36,7 @@ pub struct ReducerWrapper<R: Reducer> {
     reducer: R,
 }
 
-pub trait DynReducer {
+pub trait ReducerManager {
     fn deliver(
         &self,
         container_id: &ContainerId,
@@ -59,13 +59,14 @@ pub enum DynReducerError {
     DeliverError(#[from] DeliverError),
 }
 
-impl<R: Reducer> DynReducer for ReducerWrapper<R> {
+impl<R: Reducer> ReducerManager for ReducerWrapper<R> {
     fn deliver(
         &self,
         container_id: &ContainerId,
         peer_id: &PeerId,
         batches: &[IndexedOpBatch],
     ) -> Result<Vec<OpIndexData>, DynReducerError> {
+        // TODO verify op attribution
         todo!()
     }
 }

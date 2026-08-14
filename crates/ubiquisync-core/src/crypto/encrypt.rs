@@ -52,8 +52,8 @@ impl EntryCipher {
         let mut ad_prefix = vec![];
         ad_prefix.push(CipherSuite::Aes256GcmSiv.into());
         ad_prefix.extend_from_slice(&key.fingerprint()[..]);
-        ad_prefix.extend_from_slice(&peer_id[..]);
-        ad_prefix.extend_from_slice(&container_id[..]);
+        ad_prefix.extend_from_slice(&peer_id.0[..]);
+        ad_prefix.extend_from_slice(&container_id.0[..]);
         Self {
             ad_prefix,
             cipher: key.cipher(),

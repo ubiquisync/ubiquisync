@@ -42,7 +42,7 @@ impl MmrAccumulator {
         state.validate()?;
         let mut seed_hasher = Hasher::new_derive_key(DOMAIN_MMR_SEED);
         seed_hasher.update(genesis_hash);
-        seed_hasher.update(container_id);
+        seed_hasher.update(&container_id.0);
         let seed = seed_hasher.finalize().into();
         Ok(Self { seed, state })
     }

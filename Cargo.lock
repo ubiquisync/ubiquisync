@@ -1165,6 +1165,7 @@ dependencies = [
  "futures",
  "futures-channel",
  "futures-core",
+ "getrandom 0.4.3",
  "num_enum",
  "p256",
  "pollster",
