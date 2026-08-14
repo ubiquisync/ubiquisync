@@ -1,11 +1,14 @@
-use std::any::Any;
+use std::{any::Any, borrow::Borrow};
 
 use thiserror::Error;
 
 use crate::{
     ContainerId, PeerId,
-    codec::op::Op,
-    log_entry::{OpBatch, PlaintextBytes, PlaintextOpBatch},
+    codec::{
+        decoder::{DecodeError, decode_op_header},
+        op::{EncodableOp, Op},
+    },
+    log_entry::{OpBatch, OpHeader, PlaintextBytes, PlaintextOpBatch},
 };
 
 pub trait ReducerResolver {
@@ -19,7 +22,7 @@ pub trait Reducer {
         &self,
         container_id: &ContainerId,
         peer_id: &PeerId,
-        batches: &[IndexedOpBatch],
+        batches: &[IndexedOpBatch<Self::Op, OpHeader>],
     ) -> Result<(), DeliverError>;
 }
 
@@ -27,9 +30,9 @@ pub trait Reducer {
 #[error("deliver error")]
 pub struct DeliverError;
 
-pub struct IndexedOpBatch<'a> {
+pub struct IndexedOpBatch<O, H> {
     pub index: u64,
-    pub batch: PlaintextOpBatch<'a>, // TODO decode header in advance
+    pub batch: OpBatch<O, H>, // TODO decode header in advance
 }
 
 pub struct ReducerWrapper<R: Reducer> {
@@ -41,8 +44,8 @@ pub trait ReducerManager {
         &self,
         container_id: &ContainerId,
         peer_id: &PeerId,
-        batches: &[IndexedOpBatch],
-    ) -> Result<Vec<OpIndexData>, DynReducerError>;
+        batches: &[IndexedOpBatch<PlaintextBytes, PlaintextBytes>],
+    ) -> Result<Vec<OpIndexData>, ReducerError>;
 }
 
 pub struct OpIndexData {
@@ -52,11 +55,9 @@ pub struct OpIndexData {
 }
 
 #[derive(Error, Debug)]
-pub enum DynReducerError {
-    #[error("downcast error")]
-    DowncastError,
-    #[error("deliver error")]
-    DeliverError(#[from] DeliverError),
+pub enum ReducerError {
+    #[error("decode error {0}")]
+    DecodeError(#[from] DecodeError),
 }
 
 impl<R: Reducer> ReducerManager for ReducerWrapper<R> {
@@ -64,9 +65,25 @@ impl<R: Reducer> ReducerManager for ReducerWrapper<R> {
         &self,
         container_id: &ContainerId,
         peer_id: &PeerId,
-        batches: &[IndexedOpBatch],
-    ) -> Result<Vec<OpIndexData>, DynReducerError> {
-        // TODO verify op attribution
+        batches: &[IndexedOpBatch<PlaintextBytes, PlaintextBytes>],
+    ) -> Result<Vec<OpIndexData>, ReducerError> {
+        // TODO verify op attribution - can we extract server flag from the PeerId itself?
+        for batch in batches {
+            batch.batch.transform(
+                |op_bytes, h| {
+                    let op = R::Op::decode(op_bytes.borrow())?;
+                    let attribution = op.attribution();
+                    match attribution {
+                        crate::codec::op::OpAttribution::User => todo!(),
+                        crate::codec::op::OpAttribution::DeviceOnly => todo!(),
+                        crate::codec::op::OpAttribution::ServerOnly => todo!(),
+                        crate::codec::op::OpAttribution::DeviceOrServer => todo!(),
+                    }
+                    Ok(op)
+                },
+                |h| decode_op_header(h.borrow()),
+            )?;
+        }
         todo!()
     }
 }

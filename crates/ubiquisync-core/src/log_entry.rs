@@ -112,27 +112,35 @@ pub struct CipherInfo {
     pub fingerprint: Hash,
 }
 
+impl<O, H> OpBatch<O, H> {
+    pub fn transform<O2, H2, E, F, G>(&self, f: F, g: G) -> Result<OpBatch<O2, H2>, E>
+    where
+        F: Fn(&O, &H2) -> Result<O2, E>,
+        G: Fn(&H) -> Result<H2, E>,
+    {
+        let header = g(&self.header)?;
+        let mut ops = vec![];
+        for op in self.ops.iter() {
+            ops.push(match op {
+                OpOrExpunge::Op(op) => OpOrExpunge::Op(f(op, &header)?),
+                OpOrExpunge::Expunge(hash) => OpOrExpunge::Expunge(*hash),
+            })
+        }
+        Ok(OpBatch { header, ops })
+    }
+}
+
 impl<O, H> GenericLogEntry<O, H> {
     pub fn transform<O2, H2, E, F, G>(&self, f: F, g: G) -> Result<GenericLogEntry<O2, H2>, E>
     where
-        F: Fn(&O) -> Result<O2, E>,
+        F: Fn(&O, &H2) -> Result<O2, E>,
         G: Fn(&H) -> Result<H2, E>,
     {
         Ok(match self {
             GenericLogEntry::IndexedEntry { idx, entry } => GenericLogEntry::IndexedEntry {
                 idx: *idx,
                 entry: match entry {
-                    EntryBody::OpBatch(op_batch) => {
-                        let header = g(&op_batch.header)?;
-                        let mut ops = vec![];
-                        for op in op_batch.ops.iter() {
-                            ops.push(match op {
-                                OpOrExpunge::Op(op) => OpOrExpunge::Op(f(op)?),
-                                OpOrExpunge::Expunge(hash) => OpOrExpunge::Expunge(*hash),
-                            })
-                        }
-                        EntryBody::OpBatch(OpBatch { header, ops })
-                    }
+                    EntryBody::OpBatch(op_batch) => EntryBody::OpBatch(op_batch.transform(f, g)?),
                     EntryBody::UseKey(cipher_info) => EntryBody::UseKey(cipher_info.clone()),
                 },
             },

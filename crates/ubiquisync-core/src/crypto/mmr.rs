@@ -2,7 +2,6 @@ use blake3::Hasher;
 
 use crate::ContainerId;
 use crate::crypto::Hash;
-use crate::uuid::Uuid;
 use thiserror::Error;
 
 pub struct MmrAccumulator {
