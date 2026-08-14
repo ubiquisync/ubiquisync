@@ -179,9 +179,11 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> GenericLogEntry<B, H> {
         })
     }
 
-    pub fn expected_next_index(&self) -> Option<u64> {
+    #[cfg(test)]
+    /// Just used for testing to be able to roundtrip random data.
+    fn end_index(&self) -> Option<u64> {
         match self {
-            GenericLogEntry::IndexedEntry { idx, .. } => Some(idx + 1),
+            GenericLogEntry::IndexedEntry { idx, .. } => Some(*idx),
             GenericLogEntry::Expunged { range, .. } => Some(range.end),
             GenericLogEntry::Signature { size, .. } => Some(*size),
             GenericLogEntry::SealBranch { .. } => None,
@@ -245,9 +247,9 @@ mod tests {
         let res = w.finalize();
 
         let mut r = Reader::new(&res);
-        let next_index = entry.expected_next_index();
-        let decoded = GenericLogEntry::decode(&mut r, next_index.unwrap_or(1)).unwrap();
+        let idx = entry.end_index();
+        let decoded = GenericLogEntry::decode(&mut r, idx.unwrap_or(1)).unwrap();
         assert_eq!(entry, decoded);
-        assert_eq!(next_index, decoded.expected_next_index());
+        assert_eq!(idx, decoded.end_index());
     }
 }

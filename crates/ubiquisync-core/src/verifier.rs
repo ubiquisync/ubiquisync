@@ -103,11 +103,7 @@ impl<'a> Verifier<'a> {
 
                 self.mmr.append(&entry_hash);
             }
-            crate::log_entry::GenericLogEntry::Expunged {
-                start_idx,
-                end_idx,
-                cover,
-            } => todo!(),
+            crate::log_entry::GenericLogEntry::Expunged { range, cover } => todo!(),
             crate::log_entry::GenericLogEntry::Signature { size, signature } => {
                 let expected_size = self.mmr.size();
                 let size = *size;

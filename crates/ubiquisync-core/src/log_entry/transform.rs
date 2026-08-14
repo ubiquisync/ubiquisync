@@ -40,13 +40,8 @@ impl<O: std::fmt::Debug, H: std::fmt::Debug> GenericLogEntry<O, H> {
                     EntryBody::UseKey(cipher_info) => EntryBody::UseKey(cipher_info.clone()),
                 },
             },
-            GenericLogEntry::Expunged {
-                start_idx,
-                end_idx,
-                cover,
-            } => GenericLogEntry::Expunged {
-                start_idx: *start_idx,
-                end_idx: *end_idx,
+            GenericLogEntry::Expunged { range, cover } => GenericLogEntry::Expunged {
+                range: range.clone(),
                 cover: cover.clone(),
             },
             GenericLogEntry::Signature { size, signature } => GenericLogEntry::Signature {

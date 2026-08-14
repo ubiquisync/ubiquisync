@@ -18,7 +18,7 @@ impl Signature {
                 s
             }
             Signature::P256(s) => {
-                writer.write_byte(SIG_ED25519);
+                writer.write_byte(SIG_P256);
                 s
             }
         };
@@ -37,3 +37,36 @@ impl Signature {
 
 pub const SIG_ED25519: u8 = 0x0;
 pub const SIG_P256: u8 = 0x1;
+
+#[cfg(test)]
+mod tests {
+    use std::assert_matches;
+    use test_strategy::proptest;
+
+    use crate::codec::{reader::Reader, writer::Writer};
+    use crate::crypto::Signature;
+
+    #[proptest]
+    fn test_roundtrip(signature: Signature) {
+        let mut w = Writer::new();
+        signature.encode(&mut w);
+        let res = w.finalize();
+        let mut r = Reader::new(&res);
+        let decoded = Signature::decode(&mut r).unwrap();
+        assert_eq!(signature, decoded);
+    }
+
+    #[test]
+    fn test_unknown() {
+        let mut w = Writer::new();
+        w.write_byte(46);
+        w.write_array(&[0, 1, 3, 4, 5]);
+        let res = w.finalize();
+        let mut r = Reader::new(&res);
+        let decoded = Signature::decode(&mut r);
+        assert_matches!(
+            decoded,
+            Err(crate::log_entry::DecodeError::UknownSignatureAlgorithm(46))
+        )
+    }
+}
