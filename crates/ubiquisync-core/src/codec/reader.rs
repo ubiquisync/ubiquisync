@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::codec::varint::{VarintDecodeError, decode_var_u64, decode_zigzag_i64};
+use crate::codec::varint::{decode_var_u64, decode_zigzag_i64};
 
 pub struct Reader<'a> {
     buf: &'a [u8],
@@ -10,10 +10,10 @@ pub struct Reader<'a> {
 pub enum ReadError {
     #[error("unexpected EOF")]
     UnexpectedEof,
-    #[error("varint decode error: {0}")]
-    VarintDecodeError(#[from] VarintDecodeError),
-    #[error("overflow")]
-    Overflow,
+    #[error("non-minimal varint")]
+    NonMinimalVarint,
+    #[error("usize overflow: {0}")]
+    USizeOverflow(u64),
 }
 
 impl<'a> Reader<'a> {
@@ -22,23 +22,28 @@ impl<'a> Reader<'a> {
     }
 
     pub fn read_byte(&mut self) -> Result<u8, ReadError> {
-        if self.buf.is_empty() {
-            return Err(ReadError::UnexpectedEof);
-        }
-
-        let x = self.buf[0];
-        self.buf = &self.buf[1..];
-        Ok(x)
+        let (x, rest) = self.buf.split_first().ok_or(ReadError::UnexpectedEof)?;
+        self.buf = rest;
+        Ok(*x)
     }
 
     pub fn read_slice(&mut self, n: usize) -> Result<&'a [u8], ReadError> {
-        if self.buf.len() < n {
-            return Err(ReadError::UnexpectedEof);
-        }
+        let (bz, rest) = self
+            .buf
+            .split_at_checked(n)
+            .ok_or(ReadError::UnexpectedEof)?;
+        self.buf = rest;
+        Ok(bz)
+    }
 
-        let bytes = &self.buf[..n];
-        self.buf = &self.buf[n..];
-        Ok(bytes)
+    pub fn read_len_prefixed(&mut self) -> Result<&'a [u8], ReadError> {
+        let n = self.read_var_u64()?;
+        let n: usize = n.try_into().map_err(|_| ReadError::USizeOverflow(n))?;
+        self.read_slice(n)
+    }
+
+    pub fn read_array<const N: usize>(&mut self) -> Result<[u8; N], ReadError> {
+        Ok(self.read_slice(N)?.try_into().unwrap())
     }
 
     pub fn read_var_u64(&mut self) -> Result<u64, ReadError> {
@@ -47,14 +52,8 @@ impl<'a> Reader<'a> {
         Ok(x)
     }
 
-    pub fn read_var_usize(&mut self) -> Result<usize, ReadError> {
-        let x = self.read_var_u64()?;
-        let x: usize = x.try_into().map_err(|_| ReadError::Overflow)?;
-        Ok(x)
-    }
-
     pub fn read_le_u64(&mut self) -> Result<u64, ReadError> {
-        Ok(u64::from_le_bytes(self.read_slice(8)?.try_into().unwrap()))
+        Ok(u64::from_le_bytes(self.read_array()?))
     }
 
     pub fn read_zigzag_i64(&mut self) -> Result<i64, ReadError> {
@@ -63,7 +62,15 @@ impl<'a> Reader<'a> {
         Ok(x)
     }
 
-    pub fn unwrap(self) -> &'a [u8] {
+    pub fn is_empty(&self) -> bool {
+        self.buf.is_empty()
+    }
+
+    pub fn remaining(&self) -> &'a [u8] {
+        self.buf
+    }
+
+    pub fn into_remaining(self) -> &'a [u8] {
         self.buf
     }
 }

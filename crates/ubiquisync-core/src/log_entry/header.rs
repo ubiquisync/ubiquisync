@@ -1,5 +1,5 @@
 use crate::{
-    codec::{decoder::DecodeError, reader::Reader},
+    codec::{decoder::DecodeError, reader::Reader, writer::Writer},
     hlc::Timestamp,
     uuid::Uuid,
 };
@@ -32,7 +32,7 @@ impl OpHeader {
         let mut reader = Reader::new(buf);
         let timestamp = Timestamp::from_raw(reader.read_le_u64()?);
         // NOTE: all the remaining header bytes are for the server user id which is len delimited at the layer above this
-        let server_user_id_bytes = reader.unwrap();
+        let server_user_id_bytes = reader.into_remaining();
         let n = server_user_id_bytes.len();
         if n == 0 {
             return Ok(OpHeader {
@@ -63,6 +63,11 @@ impl OpHeader {
     }
 
     /// Encodes the header to the writer
-    /// IMPORTANT: when encoding, the encoder must first prepend the encoded length and then encode.
-    pub fn encode(&self) {}
+    /// IMPORTANT: when encoding, the encoder must first prepend the encoded length to the output and then encode.
+    pub fn encode(&self, writer: &mut Writer) {
+        writer.write_le_u64(self.timestamp.raw());
+        if let Some(id) = self.server_attested_user_id {
+            writer.write_array(&id);
+        }
+    }
 }

@@ -1,5 +1,7 @@
 use thiserror::Error;
 
+use crate::codec::reader::ReadError;
+
 pub const MAX_VAR_U64_SIZE: usize = 9;
 pub const MAX_ZIGZAG_I64_SIZE: usize = 9;
 
@@ -27,16 +29,8 @@ pub fn encode_zigzag_i64(v: i64, buf: &mut [u8; 9]) -> &[u8] {
     encode_var_u64(x, buf)
 }
 
-#[derive(Error, Debug)]
-pub enum VarintDecodeError {
-    #[error("non-minimal")]
-    NonMinimal,
-    #[error("unexpected EOF")]
-    UnexpectedEof,
-}
-
 /// Decode a u64 varint encoded by [encode_var_u64].
-pub fn decode_var_u64(buf: &[u8]) -> Result<(u64, &[u8]), VarintDecodeError> {
+pub fn decode_var_u64(buf: &[u8]) -> Result<(u64, &[u8]), ReadError> {
     let mut result = 0u64;
     let mut shift = 0;
     for i in 0..buf.len() {
@@ -45,7 +39,7 @@ pub fn decode_var_u64(buf: &[u8]) -> Result<(u64, &[u8]), VarintDecodeError> {
         // we must return to not keep consuming input and overflow
         if i == 8 {
             if byte == 0 {
-                return Err(VarintDecodeError::NonMinimal);
+                return Err(ReadError::NonMinimalVarint);
             }
             result |= (byte as u64) << shift;
             return Ok((result, &buf[i + 1..]));
@@ -58,18 +52,18 @@ pub fn decode_var_u64(buf: &[u8]) -> Result<(u64, &[u8]), VarintDecodeError> {
         if byte & 0x80 == 0 {
             // if we're past the first byte and we have a zero
             if i >= 1 && byte == 0 {
-                return Err(VarintDecodeError::NonMinimal);
+                return Err(ReadError::NonMinimalVarint);
             }
             return Ok((result, &buf[i + 1..]));
         }
         shift += 7;
     }
     // we might end up here if the 8th bit of the last byte was 1 and we didn't have any more input
-    Err(VarintDecodeError::UnexpectedEof)
+    Err(ReadError::UnexpectedEof)
 }
 
 /// Decode a zigzag i64 encoded by [encode_zigzag_i64].
-pub fn decode_zigzag_i64(buf: &[u8]) -> Result<(i64, &[u8]), VarintDecodeError> {
+pub fn decode_zigzag_i64(buf: &[u8]) -> Result<(i64, &[u8]), ReadError> {
     let (decoded, rest) = decode_var_u64(buf)?;
     let res = ((decoded >> 1) as i64) ^ -((decoded & 1) as i64);
     Ok((res, rest))
@@ -81,8 +75,9 @@ mod tests {
     use test_case::test_case;
     use test_strategy::proptest;
 
+    use crate::codec::reader::ReadError;
     use crate::codec::varint::{
-        VarintDecodeError, decode_var_u64, decode_zigzag_i64, encode_var_u64, encode_zigzag_i64,
+        decode_var_u64, decode_zigzag_i64, encode_var_u64, encode_zigzag_i64,
     };
 
     #[proptest]
@@ -117,14 +112,14 @@ mod tests {
     #[test_case(&[0xFF, 0]; "0x7F")]
     #[test_case(&[0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0]; "0 expressed in 8 bytes")]
     fn non_minimal_varints_fail(buf: &[u8]) {
-        assert_matches!(decode_var_u64(&buf), Err(VarintDecodeError::NonMinimal))
+        assert_matches!(decode_var_u64(&buf), Err(ReadError::NonMinimalVarint))
     }
 
     #[test_case(&[0x80])]
     #[test_case(&[0xFF, 0x80])]
     #[test_case(&[]; "empty")]
     fn truncated_varints_eof(buf: &[u8]) {
-        assert_matches!(decode_var_u64(&buf), Err(VarintDecodeError::UnexpectedEof))
+        assert_matches!(decode_var_u64(&buf), Err(ReadError::UnexpectedEof))
     }
 
     #[proptest]
