@@ -37,8 +37,7 @@ impl<'a> Reader<'a> {
     }
 
     pub fn read_len_prefixed(&mut self) -> Result<&'a [u8], ReadError> {
-        let n = self.read_var_u64()?;
-        let n: usize = n.try_into().map_err(|_| ReadError::USizeOverflow(n))?;
+        let n = self.read_var_usize()?;
         self.read_slice(n)
     }
 
@@ -50,6 +49,12 @@ impl<'a> Reader<'a> {
         let (x, rest) = decode_var_u64(self.buf)?;
         self.buf = rest;
         Ok(x)
+    }
+
+    /// Reads a usize as a var u64 with a checked conversion for overflow.
+    pub fn read_var_usize(&mut self) -> Result<usize, ReadError> {
+        let n = self.read_var_u64()?;
+        n.try_into().map_err(|_| ReadError::USizeOverflow(n))
     }
 
     pub fn read_le_u64(&mut self) -> Result<u64, ReadError> {

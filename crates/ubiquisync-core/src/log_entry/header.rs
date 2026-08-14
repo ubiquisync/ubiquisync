@@ -52,6 +52,11 @@ impl OpHeader {
         }
     }
 
+    pub fn encode(&self, writer: &mut Writer) {
+        writer.write_var_usize(self.encoded_len());
+        self.encode_body(writer);
+    }
+
     /// Returns the encoded length of the header in its canonical form.
     /// IMPORTANT: when encoding, the encoder must first prepend the encoded length and then encode.
     pub fn encoded_len(&self) -> usize {
@@ -62,12 +67,36 @@ impl OpHeader {
         }
     }
 
-    /// Encodes the header to the writer
-    /// IMPORTANT: when encoding, the encoder must first prepend the encoded length to the output and then encode.
-    pub fn encode(&self, writer: &mut Writer) {
+    /// Encodes the body header to the writer.
+    /// IMPORTANT: when encoding, the encoder must first prepend the encoded length to the output and then encode the body.
+    pub fn encode_body(&self, writer: &mut Writer) {
         writer.write_le_u64(self.timestamp.raw());
         if let Some(id) = self.server_attested_user_id {
             writer.write_array(&id);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use test_strategy::proptest;
+
+    use crate::{
+        codec::{reader::Reader, writer::Writer},
+        log_entry::OpHeader,
+    };
+
+    #[proptest]
+    fn test_roundtrip(header: OpHeader) {
+        let mut w = Writer::new();
+        header.encode(&mut w);
+        let res = w.finalize();
+
+        let mut r = Reader::new(&res);
+        let len = r.read_var_usize().unwrap();
+        let rest = r.into_remaining();
+        assert_eq!(len, rest.len());
+        let header2 = OpHeader::decode(rest).unwrap();
+        assert_eq!(header, header2);
     }
 }

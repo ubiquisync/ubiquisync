@@ -35,6 +35,11 @@ impl Writer {
         self.write_slice(res)
     }
 
+    /// Write a usize as a var u64 (exists to match read_var_usize).
+    pub fn write_var_usize(&mut self, x: usize) {
+        self.write_var_u64(x as u64)
+    }
+
     pub fn write_le_u64(&mut self, x: u64) {
         self.write_slice(&x.to_le_bytes()[..])
     }
