@@ -89,13 +89,14 @@ impl<B> OpOrExpunge<B> {
 
 #[cfg(test)]
 mod tests {
-    use std::borrow::Borrow;
+    use std::assert_matches;
+    use std::borrow::Cow;
 
     use test_strategy::proptest;
 
     use crate::{
         codec::{reader::Reader, writer::Writer},
-        log_entry::{OpBatch, OpaqueBytes},
+        log_entry::{EncodeError, OpBatch, OpOrExpunge, OpaqueBytes, PlaintextBytes},
     };
 
     #[proptest]
@@ -110,5 +111,11 @@ mod tests {
         assert_eq!(op_batch, decoded);
     }
 
-    // TODO test the failure path of empty bytes
+    #[test]
+    fn test_empty_op() {
+        let op = OpOrExpunge::Op(PlaintextBytes(Cow::Owned(vec![])));
+        let mut w = Writer::new();
+        let res = op.encode(&mut w);
+        assert_matches!(res, Err(EncodeError::EmptyOp))
+    }
 }
