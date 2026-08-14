@@ -14,14 +14,14 @@
 
 mod consts;
 pub mod decoder;
-// mod encoder;
+// pub mod encoder;
 mod error;
 mod hash;
 mod header;
 pub mod op;
-mod reader;
+pub mod reader;
 pub mod varint;
-mod writer;
+pub mod writer;
 
 //pub use decoder::{DecodedLogs, Decoder};
 //pub use encoder::Encoder;

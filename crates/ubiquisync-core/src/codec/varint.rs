@@ -1,6 +1,7 @@
 use thiserror::Error;
 
 pub const MAX_VAR_U64_SIZE: usize = 9;
+pub const MAX_ZIGZAG_I64_SIZE: usize = 9;
 
 /// Encodes a u64 to at most 9 bytes.
 pub fn encode_var_u64(v: u64, buf: &mut [u8; 9]) -> &[u8] {

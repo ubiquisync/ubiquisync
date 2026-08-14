@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::codec::varint::{VarintDecodeError, decode_var_u64};
+use crate::codec::varint::{VarintDecodeError, decode_var_u64, decode_zigzag_i64};
 
 pub struct Reader<'a> {
     buf: &'a [u8],
@@ -43,7 +43,6 @@ impl<'a> Reader<'a> {
 
     pub fn read_var_u64(&mut self) -> Result<u64, ReadError> {
         let (x, rest) = decode_var_u64(self.buf)?;
-
         self.buf = rest;
         Ok(x)
     }
@@ -54,8 +53,14 @@ impl<'a> Reader<'a> {
         Ok(x)
     }
 
-    pub fn reader_le_u64(&mut self) -> Result<u64, ReadError> {
+    pub fn read_le_u64(&mut self) -> Result<u64, ReadError> {
         Ok(u64::from_le_bytes(self.read_slice(8)?.try_into().unwrap()))
+    }
+
+    pub fn read_zigzag_i64(&mut self) -> Result<i64, ReadError> {
+        let (x, rest) = decode_zigzag_i64(self.buf)?;
+        self.buf = rest;
+        Ok(x)
     }
 
     pub fn unwrap(self) -> &'a [u8] {

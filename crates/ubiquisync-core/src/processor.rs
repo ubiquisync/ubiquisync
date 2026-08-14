@@ -7,12 +7,13 @@ use crate::hlc::Hlc;
 use crate::ids::ContainerId;
 use crate::ids::PeerId;
 use crate::log_entry::GenericLogEntry;
+use crate::log_entry::OpHeader;
 use crate::log_entry::OpaqueLogEntry;
 use crate::reducer::ReducerOpBatch;
 use crate::verifier::VerificationError;
 use crate::verifier::Verifier;
 use crate::{
-    codec::decoder::{DecodeError, decode_op_header},
+    codec::decoder::DecodeError,
     crypto::{
         EncryptionKeyRing,
         mmr::{MmrAccumulator, MmrError},
@@ -77,7 +78,8 @@ impl<S: Storage> Processor<S> {
                 match entry {
                     GenericLogEntry::IndexedEntry { entry, idx } => match entry {
                         crate::log_entry::EntryBody::OpBatch(op_batch) => {
-                            let header = decode_op_header(op_batch.header.borrow())?;
+                            // let header = decode_op_header(op_batch.header.borrow())?;
+                            let header: OpHeader = todo!();
                             match hlc.observe(header.timestamp, local_wall_ms) {
                                 Ok(_) => {
                                     let ops = op_batch

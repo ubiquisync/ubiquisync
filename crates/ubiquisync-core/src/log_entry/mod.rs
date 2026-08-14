@@ -1,6 +1,8 @@
+mod header;
+
+pub use header::*;
+
 use crate::crypto::{CipherSuite, Hash, Signature};
-use crate::hlc::Timestamp;
-use crate::uuid::Uuid;
 use std::borrow::{Borrow, Cow};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -8,27 +10,6 @@ use std::borrow::{Borrow, Cow};
 pub struct OpBatch<Op: std::fmt::Debug, H: std::fmt::Debug = OpHeader> {
     pub header: H,
     pub ops: Vec<OpOrExpunge<Op>>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(test, derive(test_strategy::Arbitrary))]
-pub struct OpHeader {
-    /// The **server-attested** user id for this entry. Every entry originates
-    /// from *some* user, but this field specifically carries the identity a
-    /// server vouched for — it is populated only in server-mode segments, where
-    /// the server asserts attribution. `None` in device mode, where attribution
-    /// is implicit from the peer directory and no server assertion exists.
-    ///
-    /// Do not read this as "the author"; read it as "who the server said this
-    /// was." It is distinct from a stream's `peer_id` (which stream the entry
-    /// came from).
-    ///
-    /// This _can_ be empty in server logs if and only if none of the ops are user attributable.
-    pub server_user_id: Option<Uuid>,
-    /// HLC timestamp — monotonically non-decreasing within a peer's stream.
-    /// Entries written in one atomic transaction share a tick, so they are
-    /// treated as one logical write by LWW comparisons.
-    pub timestamp: Timestamp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

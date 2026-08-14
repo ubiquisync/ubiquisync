@@ -70,27 +70,3 @@ pub enum DecodeError {
 //         _ => return Err(DecodeError::UnexpectedEntryType(entry_type)),
 //     }
 // }
-
-pub fn decode_op_header(header_bytes: &PlaintextBytes) -> Result<OpHeader, DecodeError> {
-    let mut reader = Reader::new(header_bytes.borrow());
-    let timestamp = Timestamp::from_raw(reader.reader_le_u64()?);
-    // NOTE: all the remaining header bytes are for the server user id which is len delimited at the layer above this
-    let server_user_id_bytes = reader.unwrap();
-    let n = server_user_id_bytes.len();
-    if n == 0 {
-        return Ok(OpHeader {
-            server_user_id: None,
-            timestamp,
-        });
-    } else if n != 16 {
-        // for now only handle UUIDs
-        return Err(DecodeError::Other(format!(
-            "expected server_user_id of length 16, got {n}"
-        )));
-    } else {
-        return Ok(OpHeader {
-            server_user_id: Some(server_user_id_bytes.try_into().unwrap()), // length already checked above
-            timestamp,
-        });
-    }
-}
