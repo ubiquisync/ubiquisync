@@ -3,13 +3,13 @@ use std::any::Any;
 use thiserror::Error;
 
 use crate::{
+    ContainerId, PeerId,
     codec::op::Op,
-    log_entry::{OpBatch, PlaintextBytes},
-    uuid::Uuid,
+    log_entry::{OpBatch, PlaintextBytes, PlaintextOpBatch},
 };
 
 pub trait ReducerResolver {
-    fn resolve_reducer(&self, container_id: &Uuid) -> Option<&dyn DynReducer>;
+    fn resolve_reducer(&self, container_id: &ContainerId) -> Option<&dyn DynReducer>;
 }
 
 pub trait Reducer {
@@ -17,9 +17,9 @@ pub trait Reducer {
 
     fn deliver_ops(
         &self,
-        container_id: &Uuid,
-        peer_id: &Uuid,
-        batches: &[IndexedOpBatch<Self::Op>],
+        container_id: &ContainerId,
+        peer_id: &PeerId,
+        batches: &[IndexedOpBatch],
     ) -> Result<(), DeliverError>;
 }
 
@@ -27,9 +27,9 @@ pub trait Reducer {
 #[error("deliver error")]
 pub struct DeliverError;
 
-pub struct IndexedOpBatch<O> {
+pub struct IndexedOpBatch<'a> {
     pub index: u64,
-    pub batch: OpBatch<O>,
+    pub batch: PlaintextOpBatch<'a>, // TODO decode header in advance
 }
 
 pub struct ReducerWrapper<R: Reducer> {
@@ -39,9 +39,9 @@ pub struct ReducerWrapper<R: Reducer> {
 pub trait DynReducer {
     fn deliver(
         &self,
-        container_id: &Uuid,
-        peer_id: &Uuid,
-        batches: &[IndexedOpBatch<PlaintextBytes>],
+        container_id: &ContainerId,
+        peer_id: &PeerId,
+        batches: &[IndexedOpBatch],
     ) -> Result<Vec<OpIndexData>, DynReducerError>;
 }
 
@@ -62,9 +62,9 @@ pub enum DynReducerError {
 impl<R: Reducer> DynReducer for ReducerWrapper<R> {
     fn deliver(
         &self,
-        container_id: &Uuid,
-        peer_id: &Uuid,
-        batches: &[IndexedOpBatch<PlaintextBytes>],
+        container_id: &ContainerId,
+        peer_id: &PeerId,
+        batches: &[IndexedOpBatch],
     ) -> Result<Vec<OpIndexData>, DynReducerError> {
         todo!()
     }

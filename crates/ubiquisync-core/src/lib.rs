@@ -26,7 +26,11 @@ pub mod keyring;
 pub mod log_entry;
 pub mod store;
 //pub mod sync;
+pub mod processor;
 pub mod reducer;
 pub mod storage;
-pub mod tracker;
 pub mod uuid;
+pub mod verifier;
+
+pub type PeerId = [u8; 32];
+pub type ContainerId = [u8; 32];

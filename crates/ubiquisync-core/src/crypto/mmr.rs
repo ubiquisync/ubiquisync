@@ -1,5 +1,6 @@
 use blake3::Hasher;
 
+use crate::ContainerId;
 use crate::crypto::Hash;
 use crate::uuid::Uuid;
 use thiserror::Error;
@@ -35,7 +36,7 @@ pub enum MmrError {
 impl MmrAccumulator {
     pub fn new(
         genesis_hash: &Hash,
-        container_id: &Uuid,
+        container_id: &ContainerId,
         state: MmrState,
     ) -> Result<Self, MmrError> {
         state.validate()?;

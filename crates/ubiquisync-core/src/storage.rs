@@ -1,7 +1,7 @@
 use crate::{
-    codec::op::OpIndexEntry,
+    ContainerId, PeerId,
     crypto::{Hash, PubKey, Signature, mmr::MmrState},
-    log_entry::{CipherInfo, LogEntry, OpaqueLogEntry},
+    log_entry::{CipherInfo, OpaqueLogEntry, PlaintextLogEntry},
     uuid::Uuid,
 };
 
@@ -15,11 +15,11 @@ pub trait Storage {
     /// Load the last persisted clock state, or `None` for a fresh store.
     fn load_hlc(&self) -> Result<Option<u64>, Self::Error>;
 
-    fn get_peer_info(&self, peer_id: &Uuid) -> Result<PeerInfo, Self::Error>;
+    fn get_peer_info(&self, peer_id: &PeerId) -> Result<PeerInfo, Self::Error>;
     fn get_receive_state(
         &self,
-        container_id: &Uuid,
-        peer_id: &Uuid,
+        container_id: &ContainerId,
+        peer_id: &PeerId,
     ) -> Result<ReceiveState, Self::Error>;
     // TODO methods to get unprocessed and uncommitted entries in order to retry later
 }
@@ -30,12 +30,12 @@ pub trait Batch {
 }
 
 pub struct LogEntries<'a> {
-    pub container_id: Uuid,
-    pub peer_id: Uuid,
+    pub container_id: ContainerId,
+    pub peer_id: PeerId,
     /// Updates the processed index when we have both decrypted entries and processed their HLC
     /// this must be less than or equal to the last entry in decoded_entries if it is set at all.
     pub processed_idx: Option<u64>,
-    pub decoded_entries: Vec<(LogEntry<Vec<OpIndexEntry>>, Option<Hash>)>,
+    pub decoded_entries: Vec<(PlaintextLogEntry<'a>, Option<Hash>)>, // TODO we want to preserve the entries but still index header data (hlc & server user id)
     /// Start index for received entries must be last index in received entries + 1, or empty.
     pub opaque_entries: Vec<(OpaqueLogEntry<'a>, Option<Hash>)>,
     /// This will update both the received index and peaks

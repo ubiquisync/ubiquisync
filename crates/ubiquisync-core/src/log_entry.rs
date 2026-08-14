@@ -62,7 +62,7 @@ pub enum GenericLogEntry<Op, H> {
     },
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct EntryRef {
     pub hash: Hash,
     pub index: u64,
@@ -93,7 +93,7 @@ pub type OpaqueOpBatch<'a> = OpBatch<OpaqueBytes<'a>, OpaqueBytes<'a>>;
 
 pub type PlaintextLogEntry<'a> = GenericLogEntry<PlaintextBytes<'a>, PlaintextBytes<'a>>;
 
-pub type PlaintextOpBatch<'a> = OpBatch<OpaqueBytes<'a>, OpaqueBytes<'a>>;
+pub type PlaintextOpBatch<'a> = OpBatch<PlaintextBytes<'a>, PlaintextBytes<'a>>;
 
 pub type LogEntry<Op> = GenericLogEntry<Op, OpHeader>;
 
@@ -148,6 +148,17 @@ impl<O, H> GenericLogEntry<O, H> {
             GenericLogEntry::Signature { size, signature } => GenericLogEntry::Signature {
                 size: *size,
                 signature: *signature,
+            },
+            GenericLogEntry::SealBranch {
+                signature,
+                start,
+                end,
+                ack_until,
+            } => GenericLogEntry::SealBranch {
+                signature: *signature,
+                start: *start,
+                end: *end,
+                ack_until: *ack_until,
             },
         })
     }

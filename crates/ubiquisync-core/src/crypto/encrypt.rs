@@ -9,8 +9,9 @@ use thiserror::Error;
 use zeroize::Zeroize;
 use zeroize::ZeroizeOnDrop;
 
+use crate::ContainerId;
+use crate::PeerId;
 use crate::crypto::Hash;
-use crate::uuid::Uuid;
 
 #[repr(u8)]
 #[derive(IntoPrimitive, TryFromPrimitive, Clone, Copy, PartialEq, Eq)]
@@ -47,7 +48,7 @@ const DOMAIN_AEAD_NONCE: &str = "ubiquisync/v1/aead-nonce";
 pub struct CipherError;
 
 impl EntryCipher {
-    pub fn new(key: Key256, peer_id: &Uuid, container_id: &Uuid) -> Self {
+    pub fn new(key: Key256, peer_id: &PeerId, container_id: &ContainerId) -> Self {
         let mut ad_prefix = vec![];
         ad_prefix.push(CipherSuite::Aes256GcmSiv.into());
         ad_prefix.extend_from_slice(&key.fingerprint()[..]);
