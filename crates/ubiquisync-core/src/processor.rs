@@ -3,11 +3,12 @@ use std::sync::Mutex;
 
 use thiserror::Error;
 
-use crate::ContainerId;
-use crate::PeerId;
 use crate::hlc::Hlc;
+use crate::ids::ContainerId;
+use crate::ids::PeerId;
 use crate::log_entry::GenericLogEntry;
 use crate::log_entry::OpaqueLogEntry;
+use crate::reducer::ReducerOpBatch;
 use crate::verifier::VerificationError;
 use crate::verifier::Verifier;
 use crate::{
@@ -18,7 +19,7 @@ use crate::{
     },
     hlc::wall_ms,
     log_entry::PlaintextLogEntry,
-    reducer::{DynReducerError, IndexedOpBatch, ReducerResolver},
+    reducer::{ReducerError, ReducerResolver},
     storage::{Batch, LogEntries, Storage},
     uuid::Uuid,
 };
@@ -55,11 +56,7 @@ impl<S: Storage> Processor<S> {
             .storage
             .get_peer_info(peer_id)
             .map_err(ProcessorError::StorageError)?;
-        let mmr = MmrAccumulator::new(
-            &peer_info.genesis_hash(),
-            container_id,
-            receive_state.mmr_state,
-        )?;
+        let mmr = MmrAccumulator::new(&peer_info.peer_id, container_id, receive_state.mmr_state)?;
         let mut verifier = Verifier::new(
             peer_info.signing_pub_key(),
             *peer_id,
@@ -82,11 +79,24 @@ impl<S: Storage> Processor<S> {
                         crate::log_entry::EntryBody::OpBatch(op_batch) => {
                             let header = decode_op_header(op_batch.header.borrow())?;
                             match hlc.observe(header.timestamp, local_wall_ms) {
-                                Ok(_) => processable_batches.push(IndexedOpBatch {
-                                    index: *idx,
-                                    batch: op_batch.clone(),
-                                }),
-                                Err(_) => todo!(),
+                                Ok(_) => {
+                                    let ops = op_batch
+                                        .ops
+                                        .iter()
+                                        .filter_map(|o| match o {
+                                            crate::log_entry::OpOrExpunge::Op(op) => {
+                                                Some(op.clone())
+                                            }
+                                            crate::log_entry::OpOrExpunge::Expunge(_) => None,
+                                        })
+                                        .collect();
+                                    processable_batches.push(ReducerOpBatch {
+                                        header: header.clone(),
+                                        ops,
+                                    });
+                                }
+
+                                Err(_) => todo!("handle skew error and don't send to reducer!!!"),
                             };
                         }
                         _ => {}
@@ -151,7 +161,7 @@ pub enum ProcessorError<StorageError> {
     #[error("decode error: {0}")]
     DecodeError(#[from] DecodeError),
     #[error("reducer error: {0}")]
-    ReducerError(#[from] DynReducerError),
+    ReducerError(#[from] ReducerError),
     #[error("last entry in a batch must be a signature")]
     ExpectedSignature,
     #[error("empty entries")]

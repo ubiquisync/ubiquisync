@@ -1,7 +1,6 @@
 use thiserror::Error;
 
 use crate::{
-    ContainerId, PeerId,
     codec::{
         EntryHashError, OpBatchHashMethod, OpaqueOpBatchHashMethod, PlaintextOpBatchHashMethod,
         hash_use_key,
@@ -10,6 +9,7 @@ use crate::{
         EncryptionKeyRing, EntryCipher, Hash, PubKey, SignatureVerificationError,
         mmr::{MmrAccumulator, MmrState},
     },
+    ids::{ContainerId, PeerId},
     log_entry::{CipherInfo, GenericLogEntry, OpaqueLogEntry, PlaintextLogEntry},
 };
 
@@ -68,7 +68,7 @@ impl<'a> Verifier<'a> {
         self.process_generic(entry, &OpaqueOpBatchHashMethod)
     }
 
-    fn process_generic<B, M: OpBatchHashMethod<B>>(
+    fn process_generic<B: std::fmt::Debug, M: OpBatchHashMethod<B>>(
         &mut self,
         entry: &GenericLogEntry<B, B>,
         hash_method: &M,

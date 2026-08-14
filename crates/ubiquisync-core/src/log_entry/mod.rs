@@ -1,16 +1,17 @@
-use std::borrow::{Borrow, Cow};
-
 use crate::crypto::{CipherSuite, Hash, Signature};
 use crate::hlc::Timestamp;
 use crate::uuid::Uuid;
+use std::borrow::{Borrow, Cow};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OpBatch<Op, H = OpHeader> {
+#[cfg_attr(test, derive(test_strategy::Arbitrary))]
+pub struct OpBatch<Op: std::fmt::Debug, H: std::fmt::Debug = OpHeader> {
     pub header: H,
     pub ops: Vec<OpOrExpunge<Op>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub struct OpHeader {
     /// The **server-attested** user id for this entry. Every entry originates
     /// from *some* user, but this field specifically carries the identity a
@@ -31,14 +32,16 @@ pub struct OpHeader {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub enum OpOrExpunge<Op> {
     Op(Op),
     Expunge(Hash),
 }
 
 /// One decoded entry: a live log entry or an expunged-entry marker.
-#[derive(Clone)]
-pub enum GenericLogEntry<Op, H> {
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(test, derive(test_strategy::Arbitrary))]
+pub enum GenericLogEntry<Op: std::fmt::Debug, H: std::fmt::Debug> {
     IndexedEntry {
         idx: u64,
         entry: EntryBody<Op, H>,
@@ -62,7 +65,8 @@ pub enum GenericLogEntry<Op, H> {
     },
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub struct EntryRef {
     pub hash: Hash,
     pub index: u64,
@@ -77,12 +81,40 @@ impl<'a> Borrow<[u8]> for OpaqueBytes<'a> {
     }
 }
 
+#[cfg(test)]
+impl proptest::arbitrary::Arbitrary for OpaqueBytes<'static> {
+    type Parameters = ();
+    type Strategy = proptest::strategy::BoxedStrategy<Self>;
+
+    fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
+        use proptest::strategy::Strategy;
+
+        proptest::collection::vec(proptest::arbitrary::any::<u8>(), 0..=256)
+            .prop_map(|v| OpaqueBytes(Cow::Owned(v)))
+            .boxed()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaintextBytes<'a>(pub Cow<'a, [u8]>);
 
 impl<'a> Borrow<[u8]> for PlaintextBytes<'a> {
     fn borrow(&self) -> &[u8] {
         self.0.borrow()
+    }
+}
+
+#[cfg(test)]
+impl proptest::arbitrary::Arbitrary for PlaintextBytes<'static> {
+    type Parameters = ();
+    type Strategy = proptest::strategy::BoxedStrategy<Self>;
+
+    fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
+        use proptest::strategy::Strategy;
+
+        proptest::collection::vec(proptest::arbitrary::any::<u8>(), 0..=256)
+            .prop_map(|v| PlaintextBytes(Cow::Owned(v)))
+            .boxed()
     }
 }
 
@@ -97,8 +129,9 @@ pub type PlaintextOpBatch<'a> = OpBatch<PlaintextBytes<'a>, PlaintextBytes<'a>>;
 
 pub type LogEntry<Op> = GenericLogEntry<Op, OpHeader>;
 
-#[derive(Clone)]
-pub enum EntryBody<Op, H> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(test, derive(test_strategy::Arbitrary))]
+pub enum EntryBody<Op: std::fmt::Debug, H: std::fmt::Debug> {
     OpBatch(OpBatch<Op, H>),
     /// Declares the fingerprint for the encryption key being used from
     /// this point forward until the next UseKey op changes the key.
@@ -106,14 +139,19 @@ pub enum EntryBody<Op, H> {
     UseKey(CipherInfo),
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub struct CipherInfo {
     pub cipher_suite: CipherSuite,
     pub fingerprint: Hash,
 }
 
-impl<O, H> OpBatch<O, H> {
-    pub fn transform<O2, H2, E, F, G>(&self, f: F, g: G) -> Result<OpBatch<O2, H2>, E>
+impl<O: std::fmt::Debug, H: std::fmt::Debug> OpBatch<O, H> {
+    pub fn transform<O2: std::fmt::Debug, H2: std::fmt::Debug, E, F, G>(
+        &self,
+        f: F,
+        g: G,
+    ) -> Result<OpBatch<O2, H2>, E>
     where
         F: Fn(&O, &H2) -> Result<O2, E>,
         G: Fn(&H) -> Result<H2, E>,
@@ -130,8 +168,12 @@ impl<O, H> OpBatch<O, H> {
     }
 }
 
-impl<O, H> GenericLogEntry<O, H> {
-    pub fn transform<O2, H2, E, F, G>(&self, f: F, g: G) -> Result<GenericLogEntry<O2, H2>, E>
+impl<O: std::fmt::Debug, H: std::fmt::Debug> GenericLogEntry<O, H> {
+    pub fn transform<O2: std::fmt::Debug, H2: std::fmt::Debug, E, F, G>(
+        &self,
+        f: F,
+        g: G,
+    ) -> Result<GenericLogEntry<O2, H2>, E>
     where
         F: Fn(&O, &H2) -> Result<O2, E>,
         G: Fn(&H) -> Result<H2, E>,

@@ -9,12 +9,13 @@ use thiserror::Error;
 use zeroize::Zeroize;
 use zeroize::ZeroizeOnDrop;
 
-use crate::ContainerId;
-use crate::PeerId;
 use crate::crypto::Hash;
+use crate::ids::ContainerId;
+use crate::ids::PeerId;
 
 #[repr(u8)]
-#[derive(IntoPrimitive, TryFromPrimitive, Clone, Copy, PartialEq, Eq)]
+#[derive(IntoPrimitive, TryFromPrimitive, Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub enum CipherSuite {
     Aes256GcmSiv = 0,
 }

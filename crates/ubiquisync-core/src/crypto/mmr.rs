@@ -1,7 +1,9 @@
 use blake3::Hasher;
 
-use crate::ContainerId;
-use crate::crypto::Hash;
+use crate::{
+    crypto::Hash,
+    ids::{ContainerId, PeerId},
+};
 use thiserror::Error;
 
 pub struct MmrAccumulator {
@@ -34,13 +36,13 @@ pub enum MmrError {
 
 impl MmrAccumulator {
     pub fn new(
-        genesis_hash: &Hash,
+        peer_id: &PeerId,
         container_id: &ContainerId,
         state: MmrState,
     ) -> Result<Self, MmrError> {
         state.validate()?;
         let mut seed_hasher = Hasher::new_derive_key(DOMAIN_MMR_SEED);
-        seed_hasher.update(genesis_hash);
+        seed_hasher.update(&peer_id.0);
         seed_hasher.update(&container_id.0);
         let seed = seed_hasher.finalize().into();
         Ok(Self { seed, state })

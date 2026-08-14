@@ -135,7 +135,7 @@ impl<'a> PlaintextOpBatchHasher<'a> {
     }
 }
 
-pub trait OpBatchHashMethod<B> {
+pub trait OpBatchHashMethod<B: std::fmt::Debug> {
     fn hash<'b>(
         &self,
         entry_idx: u64,

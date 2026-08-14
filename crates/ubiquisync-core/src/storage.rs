@@ -1,6 +1,6 @@
 use crate::{
-    ContainerId, PeerId,
     crypto::{Hash, PubKey, Signature, mmr::MmrState},
+    ids::{ContainerId, PeerId},
     log_entry::{CipherInfo, OpaqueLogEntry, PlaintextLogEntry},
     uuid::Uuid,
 };
@@ -49,7 +49,7 @@ pub struct ReceiveState {
 }
 
 pub struct PeerInfo {
-    pub peer_id: Uuid,
+    pub peer_id: PeerId,
     pub genesis_bytes: Vec<u8>,
     pub genesis_signature: Signature,
 }
