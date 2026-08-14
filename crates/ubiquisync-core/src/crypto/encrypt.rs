@@ -2,6 +2,8 @@ use aes_gcm_siv::AeadInOut;
 use aes_gcm_siv::Aes256GcmSiv;
 use aes_gcm_siv::KeyInit;
 use aes_gcm_siv::Nonce;
+use blake3::Hasher;
+use blake3::derive_key;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use secrecy::ExposeSecret;
 use secrecy::SecretBox;
@@ -21,7 +23,7 @@ pub enum CipherSuite {
 }
 
 pub struct EntryCipher {
-    cipher: Aes256GcmSiv,
+    key_hasher: Hasher,
     ad_prefix: Vec<u8>,
 }
 
@@ -36,28 +38,40 @@ impl Key256 {
         blake3::derive_key(DOMAIN_KEY_FINGERPRINT, self.0.expose_secret())
     }
 
-    pub fn cipher(&self) -> Aes256GcmSiv {
-        Aes256GcmSiv::new(self.0.expose_secret().into())
+    pub fn expose_secret(&self) -> &[u8; 32] {
+        self.0.expose_secret()
     }
 }
 
 const DOMAIN_KEY_FINGERPRINT: &str = "ubiquisync/v1/key-fingerprint";
-const DOMAIN_AEAD_NONCE: &str = "ubiquisync/v1/aead-nonce";
+const DOMAIN_DERIVE_KEY: &str = "ubiquisync/v1/derive-key";
 
 #[derive(Error, Debug)]
 #[error("cipher error")]
 pub struct CipherError;
 
 impl EntryCipher {
-    pub fn new(key: Key256, peer_id: &PeerId, container_id: &ContainerId) -> Self {
+    pub fn new(
+        suite: CipherSuite,
+        key: Key256,
+        peer_id: &PeerId,
+        container_id: &ContainerId,
+    ) -> Self {
+        assert_eq!(
+            suite,
+            CipherSuite::Aes256GcmSiv,
+            "if this gets triggered it means we need to support new cipher suites",
+        );
+
         let mut ad_prefix = vec![];
-        ad_prefix.push(CipherSuite::Aes256GcmSiv.into());
+        ad_prefix.push(suite.into());
         ad_prefix.extend_from_slice(&key.fingerprint()[..]);
         ad_prefix.extend_from_slice(&peer_id.0[..]);
         ad_prefix.extend_from_slice(&container_id.0[..]);
+        let key_hasher = Hasher::new_keyed(key.expose_secret());
         Self {
             ad_prefix,
-            cipher: key.cipher(),
+            key_hasher,
         }
     }
 
@@ -84,15 +98,19 @@ impl EntryCipher {
         slot_idx: u64,
         bytes: &[u8],
     ) -> Result<Vec<u8>, CipherError> {
-        let (ad, nonce) = self.associated_data_and_nonce(entry_idx, slot_idx);
+        let (ad, cipher, nonce) = self.associated_data_and_key(entry_idx, slot_idx);
         let mut res = Vec::from(bytes); // we copy the input data to the res vec to encrypt in place
-        self.cipher
+        cipher
             .encrypt_in_place(&nonce, &ad, &mut res)
             .map_err(|_| CipherError)?;
         Ok(res)
     }
 
-    fn associated_data_and_nonce(&self, entry_idx: u64, slot_idx: u64) -> (Vec<u8>, Nonce) {
+    fn associated_data_and_key(
+        &self,
+        entry_idx: u64,
+        slot_idx: u64,
+    ) -> (Vec<u8>, Aes256GcmSiv, Nonce) {
         // TODO derive subkey
         let mut ad = Vec::new();
         const AD_LEN: usize = 1 + 32 + 16 + 16 + 8 + 8;
@@ -100,10 +118,10 @@ impl EntryCipher {
         ad.extend_from_slice(self.ad_prefix.as_slice());
         ad.extend_from_slice(&entry_idx.to_le_bytes());
         ad.extend_from_slice(&slot_idx.to_le_bytes());
-        let nonce: [u8; 12] = blake3::derive_key(DOMAIN_AEAD_NONCE, &ad[..])[0..12]
-            .try_into()
-            .unwrap();
-        (ad, nonce.into())
+        let mut key_hasher = self.key_hasher.clone();
+        key_hasher.update(&ad);
+        let cipher = Aes256GcmSiv::new(key_hasher.finalize().as_bytes().into());
+        (ad, cipher, [0; 12].into()) // since we derive every key based on coordinates, we can use a zero nonce
     }
 
     pub fn decrypt_header(&self, entry_idx: u64, header: &[u8]) -> Result<Vec<u8>, CipherError> {
@@ -129,9 +147,9 @@ impl EntryCipher {
         slot_idx: u64,
         bytes: &[u8],
     ) -> Result<Vec<u8>, CipherError> {
-        let (ad, nonce) = self.associated_data_and_nonce(entry_idx, slot_idx);
+        let (ad, cipher, nonce) = self.associated_data_and_key(entry_idx, slot_idx);
         let mut res = Vec::from(bytes); // we copy the input data to the res vec to decrypt in place
-        self.cipher
+        cipher
             .decrypt_in_place(&nonce, &ad, &mut res)
             .map_err(|_| CipherError)?;
         Ok(res)

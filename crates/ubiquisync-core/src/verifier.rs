@@ -55,7 +55,12 @@ impl<'a> Verifier<'a> {
                     fingerprint: cipher.fingerprint,
                 },
             )?;
-            Some(EntryCipher::new(key, &self.peer_id, &self.container_id))
+            Some(EntryCipher::new(
+                cipher.cipher_suite,
+                key,
+                &self.peer_id,
+                &self.container_id,
+            ))
         } else {
             None
         };
