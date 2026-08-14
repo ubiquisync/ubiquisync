@@ -89,4 +89,6 @@ mod tests {
         assert_eq!(0, r.remaining().len());
         assert_eq!(0, r.into_remaining().len())
     }
+
+    // TODO test the failure path
 }

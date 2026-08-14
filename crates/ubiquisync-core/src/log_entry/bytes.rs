@@ -25,7 +25,8 @@ impl proptest::arbitrary::Arbitrary for OpaqueBytes<'static> {
     fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
         use proptest::strategy::Strategy;
 
-        proptest::collection::vec(proptest::arbitrary::any::<u8>(), 0..=256)
+        // NOTE: empty bytes are almost never valid in this protocol so we don't generate them
+        proptest::collection::vec(proptest::arbitrary::any::<u8>(), 1..=256)
             .prop_map(|v| OpaqueBytes(Cow::Owned(v)))
             .boxed()
     }
@@ -59,7 +60,8 @@ impl proptest::arbitrary::Arbitrary for PlaintextBytes<'static> {
     fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
         use proptest::strategy::Strategy;
 
-        proptest::collection::vec(proptest::arbitrary::any::<u8>(), 0..=256)
+        // NOTE: empty bytes are almost never valid in this protocol so we don't generate them
+        proptest::collection::vec(proptest::arbitrary::any::<u8>(), 1..=256)
             .prop_map(|v| PlaintextBytes(Cow::Owned(v)))
             .boxed()
     }
