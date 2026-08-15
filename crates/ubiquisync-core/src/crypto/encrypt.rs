@@ -3,7 +3,6 @@ use aes_gcm_siv::Aes256GcmSiv;
 use aes_gcm_siv::KeyInit;
 use aes_gcm_siv::Nonce;
 use blake3::Hasher;
-use blake3::derive_key;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use secrecy::ExposeSecret;
 use secrecy::SecretBox;
@@ -28,18 +27,11 @@ pub struct EntryCipher {
 }
 
 #[derive(Zeroize, ZeroizeOnDrop)]
-pub struct Key256(SecretBox<[u8; 32]>);
+pub struct Key256(pub SecretBox<[u8; 32]>);
 
 impl Key256 {
-    // TODO method to convert from existing bytes and scrub them on conversion
-    // TODO method to securely generate key
-
     pub fn fingerprint(&self) -> [u8; 32] {
         blake3::derive_key(DOMAIN_KEY_FINGERPRINT, self.0.expose_secret())
-    }
-
-    pub fn expose_secret(&self) -> &[u8; 32] {
-        self.0.expose_secret()
     }
 }
 
@@ -68,7 +60,7 @@ impl EntryCipher {
         ad_prefix.extend_from_slice(&key.fingerprint()[..]);
         ad_prefix.extend_from_slice(&peer_id.0[..]);
         ad_prefix.extend_from_slice(&container_id.0[..]);
-        let key_hasher = Hasher::new_keyed(key.expose_secret());
+        let key_hasher = Hasher::new_keyed(key.0.expose_secret());
         Self {
             ad_prefix,
             key_hasher,
@@ -161,5 +153,44 @@ pub struct EncryptionKeyRing {}
 impl EncryptionKeyRing {
     pub fn get_key(&self, fingerprint: &Hash) -> Option<Key256> {
         todo!()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use secrecy::SecretBox;
+    use test_strategy::proptest;
+
+    use crate::ids::ContainerId;
+    use crate::{
+        crypto::{CipherSuite, EntryCipher, Key256},
+        ids::PeerId,
+    };
+
+    #[proptest]
+    fn test_roundtrip(
+        key: [u8; 32],
+        peer_id: [u8; 32],
+        container_id: [u8; 16],
+        entry_idx: u64,
+        op_or_header: Option<u64>,
+        slot_bytes: Vec<u8>,
+    ) {
+        let key = Key256(SecretBox::new(Box::new(key)));
+        let cipher = EntryCipher::new(
+            CipherSuite::Aes256GcmSiv,
+            key,
+            &PeerId(peer_id),
+            &ContainerId(container_id),
+        );
+        if let Some(idx) = op_or_header {
+            let encrypted = cipher.encrypt_op(entry_idx, idx, &slot_bytes).unwrap();
+            let decrypted = cipher.decrypt_op(entry_idx, idx, &encrypted).unwrap();
+            assert_eq!(slot_bytes, decrypted);
+        } else {
+            let encrypted = cipher.encrypt_header(entry_idx, &slot_bytes).unwrap();
+            let decrypted = cipher.decrypt_header(entry_idx, &encrypted).unwrap();
+            assert_eq!(slot_bytes, decrypted);
+        }
     }
 }

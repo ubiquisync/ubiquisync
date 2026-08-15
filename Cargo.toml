@@ -27,24 +27,31 @@ ubiquisync-sql = { path = "crates/ubiquisync-sql", version = "0.0.4" }
 ubiquisync-postgres = { path = "crates/ubiquisync-postgres", version = "0.0.4" }
 ubiquisync-sqlite = { path = "crates/ubiquisync-sqlite", version = "0.0.4" }
 ubiquisync-tables = { path = "crates/ubiquisync-tables", version = "0.0.4" }
-async-trait = "0.1.89"
-bitfield-struct = "0.13.0"
-blake3 = "1.8.5"
+
 futures = "0.3.32"
 futures-channel = "0.3.32"
 futures-core = "0.3.32"
 pollster = "0.4.0"
-thiserror = "2.0.18"
 sea-query = { version = "1.0.1", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "with-uuid"] }
 uuid = { version = "1.23.4", default-features = false }
-pastey = "0.2.3"
+getrandom = "0.4"
+
+# macros
+async-trait = "0.1.89"
+bitfield-struct = "0.13.0"
+thiserror = "2.0.18"
 num_enum = "0.7.6"
+pastey = "0.2.3"
+
+# cryptography
+blake3 = "1.8.5"
 ed25519-dalek = "3.0.0"
 p256 = "0.14.0"
 aes-gcm-siv = {version="0.12.0", features=["zeroize"]}
 zeroize = {version = "1.9.0", features = ["zeroize_derive"]}
 secrecy = "0.10.3"
+
+# testing
 proptest = "1.11.0"
 test-strategy = "0.4.5"
 test-case = "3.3.1"
-getrandom = "0.4"
