@@ -1172,7 +1172,6 @@ dependencies = [
  "pollster",
  "proptest",
  "secrecy",
- "sha2",
  "test-case",
  "test-strategy",
  "thiserror",
