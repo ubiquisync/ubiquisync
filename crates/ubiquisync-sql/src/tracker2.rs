@@ -48,6 +48,7 @@ impl PeerTracker {
                 active_cipher BYTES NULL, -- encryption key fingerprint + cipher suite at received idx
                 processed_idx INT NOT NULL DEFAULT 0,
                 committed_idx INT NOT NULL DEFAULT 0,
+                status BYTES, -- awaiting cipher key, awaiting upgrade (entry type, cipher suite), stalled on hlc skew, other stall (should distinguish waiting vs unrecoverable)
                 UNIQUE(container_id, stream_id)
             );
 

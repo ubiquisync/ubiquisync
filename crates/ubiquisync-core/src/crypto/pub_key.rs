@@ -1,4 +1,3 @@
-use ed25519_dalek::Verifier;
 use thiserror::Error;
 
 use crate::crypto::{Key256, Signature};
@@ -38,6 +37,7 @@ impl PubKey {
                     .map_err(|_| SignatureVerificationError::SignatureVerificationFailed)?;
             }
             PubKey::P256(key) => {
+                use ed25519_dalek::Verifier;
                 let sig = match signature {
                     Signature::P256(sig) => sig,
                     Signature::Ed25519(_) => {
@@ -60,4 +60,49 @@ impl PubKey {
     pub fn wrap_key(&self, key: &Key256) {
         todo!()
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use aes_gcm_siv::aead::Generate;
+    use test_strategy::proptest;
+
+    #[cfg(test)]
+    use crate::crypto::PubKey;
+    use crate::crypto::Signature;
+
+    #[proptest(cases = 5)] // we don't need that many cases here
+    fn test_ed25519_verify_signature(
+        secret_key: [u8; ed25519_dalek::SECRET_KEY_LENGTH],
+        msg: Vec<u8>,
+    ) {
+        use ed25519_dalek::Signer;
+
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&secret_key);
+        let pubkey = PubKey::Ed25519(signing_key.verifying_key().to_bytes());
+        let sig = signing_key.try_sign(&msg).unwrap();
+        let sig = Signature::Ed25519(sig.to_bytes());
+        pubkey.verify_signature(&msg, &sig).unwrap();
+    }
+
+    #[proptest(cases = 5)]
+    fn test_p256_verify_signature(msg: Vec<u8>) {
+        use crypto_common::Generate;
+        use p256::ecdsa::signature::Signer;
+
+        let signing_key = p256::ecdsa::SigningKey::generate();
+        let pubkey = PubKey::P256(
+            signing_key
+                .verifying_key()
+                .to_sec1_point(true)
+                .as_bytes()
+                .try_into()
+                .unwrap(),
+        );
+        let sig: p256::ecdsa::Signature = signing_key.try_sign(&msg).unwrap();
+        let sig = Signature::P256(sig.to_bytes().into());
+        pubkey.verify_signature(&msg, &sig).unwrap();
+    }
+
+    // TODO sad path tests
 }

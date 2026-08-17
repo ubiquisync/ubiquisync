@@ -154,7 +154,7 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> GenericLogEntry<B, H> {
                 Self::Expunged {
                     range: Range {
                         start,
-                        end: start + span,
+                        end: start + span, // TODO check for overflow first!
                     },
                     cover,
                 }

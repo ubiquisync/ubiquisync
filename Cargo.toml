@@ -34,7 +34,7 @@ futures-core = "0.3.32"
 pollster = "0.4.0"
 sea-query = { version = "1.0.1", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "with-uuid"] }
 uuid = { version = "1.23.4", default-features = false }
-getrandom = "0.4"
+getrandom = "0.4.3"
 
 # macros
 async-trait = "0.1.89"
@@ -50,6 +50,8 @@ p256 = "0.14.0"
 aes-gcm-siv = {version="0.12.0", features=["zeroize"]}
 zeroize = {version = "1.9.0", features = ["zeroize_derive"]}
 secrecy = "0.10.3"
+sha2 = "0.11.0"
+crypto-common = "0.2.2"
 
 # testing
 proptest = "1.11.0"

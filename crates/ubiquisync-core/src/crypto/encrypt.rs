@@ -36,7 +36,6 @@ impl Key256 {
 }
 
 const DOMAIN_KEY_FINGERPRINT: &str = "ubiquisync/v1/key-fingerprint";
-const DOMAIN_DERIVE_KEY: &str = "ubiquisync/v1/derive-key";
 
 #[derive(Error, Debug)]
 #[error("cipher error")]
