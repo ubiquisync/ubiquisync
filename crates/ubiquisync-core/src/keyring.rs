@@ -1,4 +1,4 @@
-use crate::{crypto::PubKey, uuid::Uuid};
+use crate::{crypto::VerifyingKey, uuid::Uuid};
 
 pub struct EntryCoordinates {
     pub peer: Uuid,
@@ -9,7 +9,7 @@ pub struct EntryCoordinates {
 
 pub trait KeyRing {
     fn create_key(key_type: KeyType) -> Uuid;
-    fn wrap_key(key_fingerprint: Uuid, pub_key: PubKey) -> Vec<u8>;
+    fn wrap_key(key_fingerprint: Uuid, pub_key: VerifyingKey) -> Vec<u8>;
     fn store_key(key_fingerprint: Uuid, key_type: KeyType, key: &[u8]);
     fn encrypt(key_fingerprint: Uuid, coordinates: &EntryCoordinates, payload: &[u8]) -> Vec<u8>;
     fn decrypt(key_fingerprint: Uuid, coordinates: &EntryCoordinates, payload: &[u8]) -> Vec<u8>;

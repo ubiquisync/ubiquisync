@@ -1,4 +1,4 @@
-use crate::{crypto::PubKey, uuid::Uuid};
+use crate::{crypto::VerifyingKey, uuid::Uuid};
 use core::ops::Range;
 
 pub enum Effect {
@@ -38,7 +38,7 @@ pub enum Effect {
     },
     AddRecoveryKey {
         principal: Principal,
-        pub_key: PubKey,
+        pub_key: VerifyingKey,
     },
     RemoveRecoveryKey {
         principal: Principal,

@@ -1,5 +1,5 @@
 use crate::{
-    crypto::{Hash, PubKey, Signature, mmr::MmrState},
+    crypto::{Hash, VerifyingKey, Signature, mmr::MmrState},
     ids::{ContainerId, PeerId},
     log_entry::{CipherInfo, OpaqueLogEntry, PlaintextLogEntry},
     uuid::Uuid,
@@ -59,7 +59,7 @@ impl PeerInfo {
         blake3::derive_key(DOMAIN_PEER_HASH, &self.genesis_bytes)
     }
 
-    pub fn signing_pub_key(&self) -> PubKey {
+    pub fn signing_pub_key(&self) -> VerifyingKey {
         todo!()
     }
 }

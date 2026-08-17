@@ -2,7 +2,7 @@ use thiserror::Error;
 
 use crate::{
     crypto::{
-        EncryptionKeyRing, EntryCipher, Hash, PubKey, SignatureVerificationError,
+        EncryptionKeyRing, EntryCipher, Hash, SignatureVerificationError, VerifyingKey,
         mmr::{MmrAccumulator, MmrState},
     },
     ids::{ContainerId, PeerId},
@@ -14,7 +14,7 @@ use crate::{
 };
 
 pub struct Verifier<'a> {
-    signing_key: PubKey,
+    signing_key: VerifyingKey,
     peer_id: PeerId,
     container_id: ContainerId,
     active_cipher: Option<CipherInfo>,
@@ -25,7 +25,7 @@ pub struct Verifier<'a> {
 
 impl<'a> Verifier<'a> {
     pub fn new(
-        signing_key: PubKey,
+        signing_key: VerifyingKey,
         peer_id: PeerId,
         container_id: ContainerId,
         active_cipher: Option<CipherInfo>,
