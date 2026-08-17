@@ -1,8 +1,13 @@
 use thiserror::Error;
 
-use crate::crypto::Signature;
+use crate::{
+    codec::{reader::Reader, writer::Writer},
+    crypto::{SIG_ALGO_ED25519, SIG_ALGO_P256, Signature},
+    log_entry::DecodeError,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub enum VerifyingKey {
     Ed25519([u8; 32]),
     P256([u8; 33]),
@@ -57,15 +62,34 @@ impl VerifyingKey {
         }
         Ok(())
     }
+
+    pub fn encode(&self, writer: &mut Writer) {
+        match self {
+            VerifyingKey::Ed25519(key) => {
+                writer.write_byte(SIG_ALGO_ED25519);
+                writer.write_array(key);
+            }
+            VerifyingKey::P256(key) => {
+                writer.write_byte(SIG_ALGO_P256);
+                writer.write_array(key);
+            }
+        }
+    }
+
+    pub fn decode(reader: &mut Reader) -> Result<Self, DecodeError> {
+        Ok(match reader.read_byte()? {
+            SIG_ALGO_ED25519 => VerifyingKey::Ed25519(reader.read_array()?),
+            SIG_ALGO_P256 => VerifyingKey::P256(reader.read_array()?),
+            n => return Err(DecodeError::UnknownSignatureAlgorithm(n)),
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use test_strategy::proptest;
 
-    use crate::crypto::Signature;
     use crate::crypto::SigningKey;
-    use crate::crypto::VerifyingKey;
 
     #[proptest(cases = 5)] // we don't need that many cases here
     fn test_ed25519_verify_signature(

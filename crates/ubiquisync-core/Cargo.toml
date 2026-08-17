@@ -19,6 +19,8 @@ p256 = { workspace = true }
 zeroize = { workspace = true }
 secrecy = { workspace = true }
 getrandom = { workspace = true }
+hpke = { workspace = true }
+x25519-dalek = { workspace = true }
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 security-framework =  { workspace = true }

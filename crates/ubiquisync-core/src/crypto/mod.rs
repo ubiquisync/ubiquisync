@@ -1,3 +1,4 @@
+mod encapsulation_key;
 mod encrypt;
 mod error;
 mod keyring;
@@ -6,6 +7,7 @@ mod sig;
 mod signing_key;
 mod verifying_key;
 
+pub use encapsulation_key::*;
 pub use encrypt::*;
 pub use error::*;
 pub use keyring::*;

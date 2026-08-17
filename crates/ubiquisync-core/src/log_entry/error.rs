@@ -17,7 +17,9 @@ pub enum DecodeError {
     #[error("unknown cipher suite: {0}")]
     UnknownCipherSuite(u8),
     #[error("unknown signature algorithm: {0}")]
-    UknownSignatureAlgorithm(u8),
+    UnknownSignatureAlgorithm(u8),
+    #[error("unknown key-exchange algorithm: {0}")]
+    UnknownKeyExchangeAlgorithm(u8),
     #[error("unexpected entry type: {0}")]
     UnexpectedEntryType(u8),
     #[error("invalid server attested user id length: {length}")]

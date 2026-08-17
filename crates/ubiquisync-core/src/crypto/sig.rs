@@ -14,11 +14,11 @@ impl Signature {
     pub fn encode(&self, writer: &mut Writer) {
         let s = match self {
             Signature::Ed25519(s) => {
-                writer.write_byte(SIG_ED25519);
+                writer.write_byte(SIG_ALGO_ED25519);
                 s
             }
             Signature::P256(s) => {
-                writer.write_byte(SIG_P256);
+                writer.write_byte(SIG_ALGO_P256);
                 s
             }
         };
@@ -28,15 +28,15 @@ impl Signature {
     pub fn decode(reader: &mut Reader) -> Result<Self, DecodeError> {
         let algo = reader.read_byte()?;
         Ok(match algo {
-            SIG_ED25519 => Signature::Ed25519(reader.read_array()?),
-            SIG_P256 => Signature::P256(reader.read_array()?),
-            _ => return Err(DecodeError::UknownSignatureAlgorithm(algo)),
+            SIG_ALGO_ED25519 => Signature::Ed25519(reader.read_array()?),
+            SIG_ALGO_P256 => Signature::P256(reader.read_array()?),
+            _ => return Err(DecodeError::UnknownSignatureAlgorithm(algo)),
         })
     }
 }
 
-pub const SIG_ED25519: u8 = 0x0;
-pub const SIG_P256: u8 = 0x1;
+pub const SIG_ALGO_ED25519: u8 = 0x0;
+pub const SIG_ALGO_P256: u8 = 0x1;
 
 #[cfg(test)]
 mod tests {
@@ -66,7 +66,7 @@ mod tests {
         let decoded = Signature::decode(&mut r);
         assert_matches!(
             decoded,
-            Err(crate::log_entry::DecodeError::UknownSignatureAlgorithm(46))
+            Err(crate::log_entry::DecodeError::UnknownSignatureAlgorithm(46))
         )
     }
 }
