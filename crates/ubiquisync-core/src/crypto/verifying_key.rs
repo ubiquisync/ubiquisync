@@ -2,6 +2,7 @@ use thiserror::Error;
 
 use crate::crypto::Signature;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerifyingKey {
     Ed25519([u8; 32]),
     P256([u8; 33]),
