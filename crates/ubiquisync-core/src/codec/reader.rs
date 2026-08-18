@@ -6,6 +6,7 @@ pub struct Reader<'a> {
     buf: &'a [u8],
 }
 
+// TODO rename to DataReadError
 #[derive(Error, Debug)]
 pub enum ReadError {
     #[error("unexpected EOF")]
@@ -14,6 +15,8 @@ pub enum ReadError {
     NonMinimalVarint,
     #[error("usize overflow: {0}")]
     USizeOverflow(u64),
+    #[error("u64 add overflow: {0} + {1}")]
+    U64AddOverflow(u64, u64),
 }
 
 impl<'a> Reader<'a> {

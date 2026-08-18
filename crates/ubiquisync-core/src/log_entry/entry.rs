@@ -3,9 +3,15 @@ use std::ops::Range;
 use alloc::borrow::Borrow;
 
 use crate::{
-    codec::{reader::Reader, writer::Writer},
-    crypto::{CipherSuite, Hash256, Signature},
-    log_entry::{DecodeError, EncodeError, OpBatch, OpHeader, OpaqueBytes, PlaintextBytes},
+    codec::{
+        reader::{ReadError, Reader},
+        writer::Writer,
+    },
+    crypto::{CipherSuite, Hash256, Key256Fingerprint, Signature},
+    log_entry::{
+        DataIngestError, EncodeError, OpBatch, OpHeader, OpaqueBytes, PlaintextBytes,
+        SoftwareVersionError,
+    },
 };
 
 /// One decoded entry: a live log entry or an expunged-entry marker.
@@ -60,11 +66,11 @@ pub enum EntryBody<Op: std::fmt::Debug, H: std::fmt::Debug> {
     UseKey(CipherInfo),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub struct CipherInfo {
     pub cipher_suite: CipherSuite,
-    pub fingerprint: Hash256,
+    pub fingerprint: Key256Fingerprint,
 }
 
 impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> GenericLogEntry<B, H> {
@@ -123,7 +129,10 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> GenericLogEntry<B, H> {
         Ok(())
     }
 
-    pub fn decode<'a>(reader: &mut Reader<'a>, next_entry_index: u64) -> Result<Self, DecodeError>
+    pub fn decode<'a>(
+        reader: &mut Reader<'a>,
+        next_entry_index: u64,
+    ) -> Result<Self, DataIngestError>
     where
         B: From<&'a [u8]>,
         H: From<&'a [u8]>,
@@ -145,17 +154,18 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> GenericLogEntry<B, H> {
             ENTRY_TYPE_EXPUNGED => {
                 let start = reader.read_var_u64()?;
                 let span = reader.read_var_u64()?;
+                let end = start
+                    .checked_add(span)
+                    .ok_or(ReadError::U64AddOverflow(start, span))?;
                 let cover_len = reader.read_var_usize()?;
+                // TODO check cover len (easy to determine max size)
                 // NOTE don't reserve capacity in the vec to prevent out-of-memory attacks!
                 let mut cover = vec![];
                 for _ in 0..cover_len {
                     cover.push(reader.read_array()?);
                 }
                 Self::Expunged {
-                    range: Range {
-                        start,
-                        end: start + span, // TODO check for overflow first!
-                    },
+                    range: Range { start, end },
                     cover,
                 }
             }
@@ -175,7 +185,7 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> GenericLogEntry<B, H> {
                     ack_until,
                 }
             }
-            _ => return Err(DecodeError::UnexpectedEntryType(entry_type)),
+            _ => return Err(SoftwareVersionError::UnexpectedEntryType(entry_type).into()),
         })
     }
 
@@ -201,18 +211,18 @@ const ENTRY_TYPE_ACKED_SEAL_BRANCH: u8 = 0x05;
 impl CipherInfo {
     pub fn encode(&self, writer: &mut Writer) {
         writer.write_byte(self.cipher_suite.into());
-        writer.write_array(&self.fingerprint);
+        writer.write_array(&self.fingerprint.0);
     }
 
-    pub fn decode<'a>(reader: &mut Reader<'a>) -> Result<Self, DecodeError> {
+    pub fn decode<'a>(reader: &mut Reader<'a>) -> Result<Self, DataIngestError> {
         let cipher_suite = reader.read_byte()?.try_into().map_err(
             |e: num_enum::TryFromPrimitiveError<CipherSuite>| {
-                DecodeError::UnknownCipherSuite(e.number)
+                SoftwareVersionError::UnknownCipherSuite(e.number)
             },
         )?;
         Ok(CipherInfo {
             cipher_suite,
-            fingerprint: reader.read_array()?,
+            fingerprint: Key256Fingerprint(reader.read_array()?),
         })
     }
 }
@@ -223,7 +233,7 @@ impl EntryRef {
         writer.write_array(&self.hash);
     }
 
-    pub fn decode(reader: &mut Reader) -> Result<Self, DecodeError> {
+    pub fn decode(reader: &mut Reader) -> Result<Self, ReadError> {
         let index = reader.read_var_u64()?;
         Ok(Self {
             index,

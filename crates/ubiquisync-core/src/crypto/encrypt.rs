@@ -30,10 +30,17 @@ pub struct EntryCipher {
 pub struct Key256(pub SecretBox<[u8; 32]>);
 
 impl Key256 {
-    pub fn fingerprint(&self) -> [u8; 32] {
-        blake3::derive_key(DOMAIN_KEY_FINGERPRINT, self.0.expose_secret())
+    pub fn fingerprint(&self) -> Key256Fingerprint {
+        Key256Fingerprint(blake3::derive_key(
+            DOMAIN_KEY_FINGERPRINT,
+            self.0.expose_secret(),
+        ))
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(test, derive(test_strategy::Arbitrary))]
+pub struct Key256Fingerprint(pub [u8; 32]);
 
 const DOMAIN_KEY_FINGERPRINT: &str = "ubiquisync/v1/key-fingerprint";
 
@@ -56,7 +63,7 @@ impl EntryCipher {
 
         let mut ad_prefix = vec![];
         ad_prefix.push(suite.into());
-        ad_prefix.extend_from_slice(&key.fingerprint()[..]);
+        ad_prefix.extend_from_slice(&key.fingerprint().0[..]);
         ad_prefix.extend_from_slice(&peer_id.0[..]);
         ad_prefix.extend_from_slice(&container_id.0[..]);
         let key_hasher = Hasher::new_keyed(key.0.expose_secret());
@@ -150,7 +157,7 @@ impl EntryCipher {
 pub struct EncryptionKeyRing {}
 
 impl EncryptionKeyRing {
-    pub fn get_key(&self, fingerprint: &Hash256) -> Option<Key256> {
+    pub fn get_key(&self, fingerprint: &Key256Fingerprint) -> Option<Key256> {
         todo!()
     }
 }

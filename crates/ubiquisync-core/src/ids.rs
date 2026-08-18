@@ -1,6 +1,9 @@
 use crate::rand::{self, rand_fill};
 
 #[derive(Clone, Copy, Debug)]
+pub struct AppId(pub [u8; 16]);
+
+#[derive(Clone, Copy, Debug)]
 pub struct PeerId(pub [u8; 32]);
 
 const DOMAIN_PEER_ID: &str = "ubiquisync/v1/peer-id";

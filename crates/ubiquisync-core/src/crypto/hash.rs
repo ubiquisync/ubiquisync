@@ -1,8 +1,11 @@
+use hkdf::Hkdf;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
+use secrecy::{ExposeSecret, SecretBox};
 use sha2::{Digest, Sha256};
 
 use crate::{
     codec::{reader::Reader, writer::Writer},
+    crypto::{Key256, Key256Fingerprint},
     log_entry::DecodeError,
 };
 
@@ -29,6 +32,9 @@ enum HasherInternal {
 
 #[derive(Debug, Clone, Copy)]
 pub struct TaggedHashDomain(&'static str);
+
+#[derive(Debug, Clone, Copy)]
+pub struct KdfDomain(&'static str);
 
 impl Hash256Suite {
     pub fn encode(&self, writer: &mut Writer) {
@@ -66,11 +72,41 @@ impl Hash256Suite {
             }
         })
     }
+
+    pub fn derive_key(&self, domain: KdfDomain, key: &Key256, info: &[u8]) -> Key256 {
+        match self {
+            Hash256Suite::Sha256 => {
+                let hk = Hkdf::<Sha256>::from_prk(key.0.expose_secret()).expect("32 byte key");
+                let mut okm = [0; 32];
+                let domain_len: u8 = domain.0.len().try_into().expect("max length 255");
+                hk.expand_multi_info(&[&[domain_len], domain.0.as_bytes(), info], &mut okm)
+                    .expect("valid lengths");
+                Key256(SecretBox::new(Box::new(okm)))
+            }
+            Hash256Suite::Blake3 => {
+                let mut hasher = blake3::Hasher::new_keyed(key.0.expose_secret());
+                hasher.update(domain.0.as_bytes());
+                hasher.update(info);
+                Key256(SecretBox::new(Box::new(hasher.finalize().into())))
+            }
+        }
+    }
+
+    pub fn key_fingerprint(&self, domain: KdfDomain, key: &Key256) -> Key256Fingerprint {
+        Key256Fingerprint(*self.derive_key(domain, key, &[]).0.expose_secret())
+    }
 }
 
 impl TaggedHashDomain {
     pub const fn new(domain: &'static str) -> Self {
         assert!(domain.len() < 256, "TaggedHashDomain is too long");
+        Self(domain)
+    }
+}
+
+impl KdfDomain {
+    pub const fn new(domain: &'static str) -> Self {
+        assert!(domain.len() < 256, "KdfDomain is too long");
         Self(domain)
     }
 }

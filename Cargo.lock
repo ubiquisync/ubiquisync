@@ -1436,7 +1436,7 @@ dependencies = [
  "futures-channel",
  "futures-core",
  "getrandom 0.4.3",
- "hmac",
+ "hkdf",
  "hpke",
  "num_enum",
  "p256",

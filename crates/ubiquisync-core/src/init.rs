@@ -77,20 +77,23 @@ impl InitEntry {
         let peer_hash = hasher.finalize();
         let peer_id = PeerId(peer_hash);
         let signature = signing_key.sign(&peer_hash)?;
-        Ok(InitEntry {
+        let entry = InitEntry {
             commitment_bytes,
             peer_id,
             signature,
             server_endorsement: None,
-        })
+        };
+        entry.verify(app_magic)?;
+        Ok(entry)
     }
 
-    pub fn unverified_commitment(&self) -> Result<InitCommitment, DecodeError> {
+    pub fn commitment_data(&self) -> Result<InitCommitment, DecodeError> {
+        // TODO check size
         InitCommitment::decode(&self.commitment_bytes)
     }
 
     pub fn verify(&self, app_magic: &Hash256) -> Result<InitCommitment, InitVerifyError> {
-        let commitment = self.unverified_commitment()?;
+        let commitment = self.commitment_data()?;
         let mut hasher = commitment.hash_suite.tagged_hasher(DOMAIN_INIT_COMMITMENT);
         hasher.update(&app_magic[..]);
         hasher.update(&self.commitment_bytes);
@@ -105,12 +108,21 @@ impl InitEntry {
     }
 }
 
+/// Limits [InitCommitment] entries to 32kb.
+/// Way more than we need now but could accomodate quantum-resistant cryptography in the future.
+pub const MAX_INIT_COMMITMENT_LEN: usize = 32768;
+/// Limits [InitEntry] entries to 64kb.
+/// Way more than we need now but could accomodate quantum-resistant cryptography in the future.
+pub const MAX_INIT_ENTRY_LEN: usize = 65536;
+
 #[derive(Error, Debug)]
 pub enum InitCreationError {
     #[error("signing error: {0}")]
     SigningError(#[from] SigningError),
     #[error("unsupported version: {0:?}")]
     UnsupportedVersion(Version),
+    #[error("unsupported version: {0:?}")]
+    InitVerifyError(#[from] InitVerifyError),
 }
 
 #[derive(Error, Debug)]

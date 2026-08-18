@@ -1,9 +1,12 @@
 use std::borrow::Borrow;
 
 use crate::{
-    codec::{reader::Reader, writer::Writer},
+    codec::{
+        reader::{ReadError, Reader},
+        writer::Writer,
+    },
     crypto::Hash256,
-    log_entry::{DecodeError, error::EncodeError},
+    log_entry::error::EncodeError,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,7 +37,7 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> OpBatch<B, H> {
         Ok(())
     }
 
-    pub fn decode<'a>(reader: &mut Reader<'a>) -> Result<Self, DecodeError>
+    pub fn decode<'a>(reader: &mut Reader<'a>) -> Result<Self, ReadError>
     where
         B: From<&'a [u8]>,
         H: From<&'a [u8]>,
@@ -74,7 +77,7 @@ impl<B> OpOrExpunge<B> {
         Ok(())
     }
 
-    pub fn decode<'a>(reader: &mut Reader<'a>) -> Result<Self, DecodeError>
+    pub fn decode<'a>(reader: &mut Reader<'a>) -> Result<Self, ReadError>
     where
         B: From<&'a [u8]>,
     {

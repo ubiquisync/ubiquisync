@@ -6,10 +6,10 @@ use crate::{
         mmr::{MmrAccumulator, MmrState},
     },
     ids::{ContainerId, PeerId},
-    log_entry::{CipherInfo, GenericLogEntry, OpaqueLogEntry, PlaintextLogEntry},
     log_entry::{
-        EntryHashError, OpBatchHashMethod, OpaqueOpBatchHashMethod, PlaintextOpBatchHashMethod,
-        hash_use_key,
+        CipherInfo, DataIngestError, EntryHashError, GenericLogEntry, LogProcessError,
+        OpBatchHashMethod, OpaqueLogEntry, OpaqueOpBatchHashMethod, PlaintextLogEntry,
+        PlaintextOpBatchHashMethod, hash_use_key,
     },
 };
 
@@ -47,14 +47,13 @@ impl<'a> Verifier<'a> {
     pub fn process_plaintext<'b>(
         &mut self,
         entry: &PlaintextLogEntry<'b>,
-    ) -> Result<OpaqueLogEntry<'b>, VerificationError> {
+    ) -> Result<OpaqueLogEntry<'b>, LogProcessError> {
         // TODO cache the key if we've already retrieved it previously
         let maybe_cipher = if let Some(cipher) = &self.active_cipher {
-            let key = self.keyring.get_key(&cipher.fingerprint).ok_or(
-                VerificationError::EncryptionKeyNotFound {
-                    fingerprint: cipher.fingerprint,
-                },
-            )?;
+            let key = self
+                .keyring
+                .get_key(&cipher.fingerprint)
+                .ok_or(LogProcessError::MissingDecryptionKey(cipher.fingerprint))?;
             Some(EntryCipher::new(
                 cipher.cipher_suite,
                 key,
@@ -69,7 +68,7 @@ impl<'a> Verifier<'a> {
         todo!("reconstruct opaque from hasher return")
     }
 
-    pub fn process_opaque(&mut self, entry: &OpaqueLogEntry) -> Result<(), VerificationError> {
+    pub fn process_opaque(&mut self, entry: &OpaqueLogEntry) -> Result<(), LogProcessError> {
         self.process_generic(entry, &OpaqueOpBatchHashMethod)
     }
 
@@ -77,7 +76,7 @@ impl<'a> Verifier<'a> {
         &mut self,
         entry: &GenericLogEntry<B, B>,
         hash_method: &M,
-    ) -> Result<(), VerificationError> {
+    ) -> Result<(), LogProcessError> {
         match entry {
             crate::log_entry::GenericLogEntry::IndexedEntry { idx, entry } => {
                 let expected_idx = self.mmr.size();
