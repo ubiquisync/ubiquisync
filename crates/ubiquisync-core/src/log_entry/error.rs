@@ -49,14 +49,6 @@ pub enum DataIngestError {
 }
 
 #[derive(Error, Debug)]
-pub enum DataCorruptionError {
-    #[error("read error: {0}")]
-    ReadError(#[from] ReadError),
-    #[error("invalid server attested user id length: {length}")]
-    InvalidServerAttestedId { length: usize },
-}
-
-#[derive(Error, Debug)]
 pub enum SoftwareVersionError {
     #[error("unknown signature algorithm: {0}")]
     UnknownSignatureAlgorithm(u8),
