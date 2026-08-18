@@ -80,16 +80,16 @@ impl Hash256Suite {
     }
 
     fn tagged_hash_internal(&self, domain: &str, data: &[u8]) -> Hash256 {
-        let mut hasher = self.tagged_hasher_internal(domain);
+        let mut hasher = self.new_tagged_hasher_internal(domain);
         hasher.update(data);
         hasher.finalize()
     }
 
-    pub fn tagged_hasher(&self, domain: TaggedHashDomain) -> Hasher {
-        self.tagged_hasher_internal(domain.into())
+    pub fn new_tagged_hasher(&self, domain: TaggedHashDomain) -> Hasher {
+        self.new_tagged_hasher_internal(domain.into())
     }
 
-    fn tagged_hasher_internal(&self, domain: &str) -> Hasher {
+    fn new_tagged_hasher_internal(&self, domain: &str) -> Hasher {
         let len: u8 = domain_len(domain);
         Hasher(match self {
             // TODO feature flags for supported hashes at build time
@@ -227,7 +227,7 @@ mod tests {
             writeln!(&mut out, "{0} = {1}", d, hex(&h)).unwrap();
 
             // check that both hash methods produce the same output
-            let mut hasher = suite.tagged_hasher(domain);
+            let mut hasher = suite.new_tagged_hasher(domain);
             hasher.update(b"abc");
             hasher.update(b"defg");
             let h2 = hasher.finalize();

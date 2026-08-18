@@ -1,7 +1,7 @@
 // mod encapsulation_key;
 mod encrypt;
 mod hash;
-// pub mod mmr;
+pub mod mmr;
 // mod sig;
 // mod signing_key;
 // mod verifying_key;

@@ -1,14 +1,15 @@
-use blake3::Hasher;
-
 use crate::{
-    crypto::Hash256,
+    crypto::{Hash256, Hash256Suite, TaggedHashDomain},
     ids::{ContainerId, PeerId},
 };
 use thiserror::Error;
 
 pub struct MmrAccumulator {
+    hash_suite: Hash256Suite,
     state: MmrState,
     seed: Hash256,
+    peer_id: PeerId,
+    container_id: ContainerId,
 }
 
 #[derive(Clone)]
@@ -36,16 +37,23 @@ pub enum MmrError {
 
 impl MmrAccumulator {
     pub fn new(
+        hash_suite: Hash256Suite,
         peer_id: &PeerId,
         container_id: &ContainerId,
         state: MmrState,
     ) -> Result<Self, MmrError> {
         state.validate()?;
-        let mut seed_hasher = Hasher::new_derive_key(DOMAIN_MMR_SEED);
+        let mut seed_hasher = hash_suite.new_tagged_hasher(super::TaggedHashDomain::MmrSeed);
         seed_hasher.update(&peer_id.0);
         seed_hasher.update(&container_id.0);
-        let seed = seed_hasher.finalize().into();
-        Ok(Self { seed, state })
+        let seed = seed_hasher.finalize();
+        Ok(Self {
+            hash_suite,
+            seed,
+            state,
+            container_id: *container_id,
+            peer_id: *peer_id,
+        })
     }
 
     pub fn append(&mut self, leaf: &Hash256) {
@@ -56,7 +64,7 @@ impl MmrAccumulator {
                 .peaks
                 .pop()
                 .expect("invalid MMR state: expected a peak");
-            node = hash_node(DOMAIN_MMR_NODE, &left, &node);
+            node = self.hash_node(TaggedHashDomain::MmrNode, &left, &node);
         }
         self.state.peaks.push(node);
         self.state.size = self.state.size.checked_add(1).expect("MMR size overflow");
@@ -65,14 +73,17 @@ impl MmrAccumulator {
     pub fn root(&self) -> Hash256 {
         let mut acc = self.seed;
         for peak in self.state.peaks.iter().rev() {
-            acc = hash_node(DOMAIN_MMR_BAG, peak, &acc);
+            acc = self.hash_node(TaggedHashDomain::MmrBag, peak, &acc);
         }
         acc
     }
 
     pub fn sign_bytes(&self) -> Hash256 {
-        let mut hasher = Hasher::new_derive_key(DOMAIN_SIGN_BYTES);
-        // TODO add container & peer id here so it's trivial to bind this signature to a log height without even having the full MMR proof
+        let mut hasher = self
+            .hash_suite
+            .new_tagged_hasher(TaggedHashDomain::MmrSignBytes);
+        hasher.update(&self.peer_id.0);
+        hasher.update(&self.container_id.0);
         hasher.update(&self.state.size.to_le_bytes());
         hasher.update(&self.root());
         hasher.finalize().into()
@@ -85,16 +96,11 @@ impl MmrAccumulator {
     pub fn state(&self) -> &MmrState {
         &self.state
     }
-}
 
-fn hash_node(domain: &str, left: &Hash256, right: &Hash256) -> Hash256 {
-    let mut hasher = Hasher::new_derive_key(domain);
-    hasher.update(left);
-    hasher.update(right);
-    hasher.finalize().into()
+    fn hash_node(&self, domain: TaggedHashDomain, left: &Hash256, right: &Hash256) -> Hash256 {
+        let mut hasher = self.hash_suite.new_tagged_hasher(domain);
+        hasher.update(left);
+        hasher.update(right);
+        hasher.finalize().into()
+    }
 }
-
-const DOMAIN_MMR_NODE: &str = "ubiquisync/v1/mmr-node";
-const DOMAIN_MMR_BAG: &str = "ubiquisync/v1/mmr-bag";
-const DOMAIN_MMR_SEED: &str = "ubiquisync/v1/mmr-seed";
-const DOMAIN_SIGN_BYTES: &str = "ubiquisync/v1/sign-bytes";
