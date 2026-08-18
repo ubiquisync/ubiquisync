@@ -156,6 +156,7 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> GenericLogEntry<B, H> {
         Ok(match entry_type {
             ENTRY_TYPE_OP_BATCH => Self::IndexedEntry {
                 idx: next_entry_index,
+                // TODO max op length
                 entry: EntryBody::OpBatch(OpBatch::decode(reader)?),
             },
             ENTRY_TYPE_SIGNATURE => Self::Signature {
@@ -193,6 +194,7 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> GenericLogEntry<B, H> {
                 };
                 let start = EntryRef::decode(reader)?;
                 let end = EntryRef::decode(reader)?;
+                // TODO error when end < start or not start <= ack <= end
                 let signature =
                     Signature::decode(reader).map_err(LogDecodeError::from_sig_decode_err)?;
                 Self::SealBranch {

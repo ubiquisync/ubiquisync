@@ -1,5 +1,3 @@
-use thiserror::Error;
-
 use crate::codec::reader::ReadError;
 
 pub const MAX_VAR_U64_SIZE: usize = 9;

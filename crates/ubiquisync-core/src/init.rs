@@ -2,10 +2,13 @@ use bitfield_struct::bitfield;
 use thiserror::Error;
 
 use crate::{
-    codec::{reader::Reader, writer::Writer},
+    codec::{
+        reader::{ReadError, Reader},
+        writer::Writer,
+    },
     crypto::{
-        EncapsulationKey, Hash256, Hash256Suite, Signature, SignatureVerificationError,
-        SigningError, SigningKey, TaggedHashDomain, VerifyingKey,
+        CryptoDecodeError, EncapsulationKey, Hash256, Hash256Suite, Signature,
+        SignatureVerificationError, SigningError, SigningKey, TaggedHashDomain, VerifyingKey,
     },
     ids::PeerId,
 };
@@ -85,14 +88,16 @@ impl InitEntry {
         Ok(entry)
     }
 
-    pub fn commitment_data(&self) -> Result<InitCommitment, DecodeError> {
+    pub fn commitment_data(&self) -> Result<InitCommitment, InitDecodeError> {
         // TODO check size
         InitCommitment::decode(&self.commitment_bytes)
     }
 
     pub fn verify(&self, app_magic: &Hash256) -> Result<InitCommitment, InitVerifyError> {
         let commitment = self.commitment_data()?;
-        let mut hasher = commitment.hash_suite.tagged_hasher(DOMAIN_INIT_COMMITMENT);
+        let mut hasher = commitment
+            .hash_suite
+            .new_tagged_hasher(TaggedHashDomain::PeerInitCommitment);
         hasher.update(&app_magic[..]);
         hasher.update(&self.commitment_bytes);
         let peer_hash = hasher.finalize();
@@ -126,11 +131,29 @@ pub enum InitCreationError {
 #[derive(Error, Debug)]
 pub enum InitVerifyError {
     #[error("decode error: {0}")]
-    DecodeError(#[from] DecodeError),
+    DecodeError(#[from] InitDecodeError),
     #[error("hash mismatch")]
     HashMismatch,
     #[error("signature verification error: {0}")]
     SignatureError(#[from] SignatureVerificationError),
+}
+
+#[derive(Error, Debug)]
+pub enum InitDecodeError {
+    #[error("decode error: {0}")]
+    ReadError(#[from] ReadError),
+    #[error("unsupported version: {0:?}")]
+    UnsupportedVersion(Version),
+    #[error("unknown hash algorithm: {0}")]
+    UnknownHashAlgorithm(u8),
+    #[error("unknown signature key type: {0}")]
+    UnknownSignatureKeyType(u8),
+    #[error("unknown encapsulation type: {0}")]
+    UnknownEncapsulationKeyType(u8),
+    #[error("unknown init flags: {0}")]
+    UnknownInitFlags(u8),
+    #[error("unknown init data, {remaining} unreadable bytes, version: {version:?}")]
+    UnknownInitData { version: Version, remaining: usize },
 }
 
 impl InitCommitment {
@@ -149,19 +172,30 @@ impl InitCommitment {
         }
     }
 
-    pub fn decode(commitment_bytes: &[u8]) -> Result<Self, DecodeError> {
+    pub fn decode(commitment_bytes: &[u8]) -> Result<Self, InitDecodeError> {
         let mut reader = Reader::new(commitment_bytes);
         let version: Version = reader.read_byte()?.into();
         if version.major() > 0 {
-            return Err(DecodeError::UnsupportedVersion(version.major()));
+            return Err(InitDecodeError::UnsupportedVersion(version));
         }
-        let hash_suite = Hash256Suite::decode(&mut reader)?;
+        let hash_suite = Hash256Suite::decode(&mut reader).map_err(|e| match e {
+            CryptoDecodeError::ReadError(read_error) => InitDecodeError::ReadError(read_error),
+            CryptoDecodeError::UnknownAlgorithm(b) => InitDecodeError::UnknownHashAlgorithm(b),
+        })?;
         let flags = Flags::from_bits(reader.read_byte()?);
         if flags.reserved() != 0 {
-            return Err(DecodeError::UnknownInitFlags(flags.0));
+            return Err(InitDecodeError::UnknownInitFlags(flags.0));
         }
-        let sig_verify_key = VerifyingKey::decode(&mut reader)?;
-        let encrypt_wrap_key = EncapsulationKey::decode(&mut reader)?;
+        let sig_verify_key = VerifyingKey::decode(&mut reader).map_err(|e| match e {
+            CryptoDecodeError::ReadError(read_error) => InitDecodeError::ReadError(read_error),
+            CryptoDecodeError::UnknownAlgorithm(b) => InitDecodeError::UnknownSignatureKeyType(b),
+        })?;
+        let encrypt_wrap_key = EncapsulationKey::decode(&mut reader).map_err(|e| match e {
+            CryptoDecodeError::ReadError(read_error) => InitDecodeError::ReadError(read_error),
+            CryptoDecodeError::UnknownAlgorithm(b) => {
+                InitDecodeError::UnknownEncapsulationKeyType(b)
+            }
+        })?;
         let workspace_join = if flags.workspace_join() {
             Some(PeerId(reader.read_array()?))
         } else {
@@ -172,7 +206,7 @@ impl InitCommitment {
             // error if we are at the current supported minor version (0) and we have remaining data
             // if we are at another minor version, but the same major (0), we tolerate extra remaining data
             // without parsing it - basically minor communicates that this data is non-critical
-            return Err(DecodeError::UnknownInitData { version, remaining });
+            return Err(InitDecodeError::UnknownInitData { version, remaining });
         }
 
         Ok(Self {
