@@ -154,14 +154,6 @@ impl EntryCipher {
     }
 }
 
-pub struct EncryptionKeyRing {}
-
-impl EncryptionKeyRing {
-    pub fn get_key(&self, fingerprint: &Key256Fingerprint) -> Option<Key256> {
-        todo!()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use secrecy::SecretBox;

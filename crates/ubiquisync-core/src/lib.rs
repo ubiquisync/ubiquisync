@@ -21,20 +21,18 @@ extern crate alloc;
 
 pub mod codec;
 pub mod crypto;
-// pub mod ctl;
-// pub mod event;
+pub mod event;
 pub mod hlc;
 pub mod init;
-// pub mod keyring;
 pub mod log_entry;
 // pub mod store;
 // pub mod sync;
 pub mod ids;
 // pub mod processor;
 pub mod rand;
-// pub mod reducer;
-// pub mod storage;
-//pub mod replica;
+pub mod reducer;
+pub mod replica;
+pub mod storage;
 pub mod uuid;
 // pub mod verifier;
 

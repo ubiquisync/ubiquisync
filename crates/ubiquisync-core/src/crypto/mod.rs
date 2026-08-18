@@ -1,8 +1,9 @@
+pub mod credentials;
 mod encapsulation_key;
 mod encrypt;
 mod error;
 mod hash;
-mod kem;
+pub mod kem;
 pub mod mmr;
 mod sig;
 mod signing_key;
