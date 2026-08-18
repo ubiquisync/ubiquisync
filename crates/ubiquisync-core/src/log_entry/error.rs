@@ -26,10 +26,10 @@ pub enum DecodeError {
     UnexpectedEntryType(u8),
     #[error("invalid server attested user id length: {length}")]
     InvalidServerAttestedId { length: usize },
-    #[error("unsupported version: {0:?}")]
-    UnsupportedVersion(Version),
+    #[error("unsupported version: {0}")]
+    UnsupportedVersion(u8),
     #[error("unknown init flags: {0}")]
     UnknownInitFlags(u8),
-    #[error("unknown init data, {0} unreadable bytes")]
-    UnknownInitData(usize),
+    #[error("unknown init data, {remaining} unreadable bytes, version: {version:?}")]
+    UnknownInitData { version: Version, remaining: usize },
 }

@@ -1,10 +1,11 @@
 use bitfield_struct::bitfield;
+use thiserror::Error;
 
 use crate::{
     codec::{reader::Reader, writer::Writer},
     crypto::{
-        EncapsulationKey, Hash256, Hash256Suite, Signature, SigningError, SigningKey,
-        TaggedHashDomain, VerifyingKey,
+        EncapsulationKey, Hash256, Hash256Suite, Signature, SignatureVerificationError,
+        SigningError, SigningKey, TaggedHashDomain, VerifyingKey,
     },
     ids::PeerId,
     log_entry::DecodeError,
@@ -80,6 +81,33 @@ impl InitEntry {
             server_endorsement: None,
         })
     }
+
+    pub fn verify(
+        &self,
+        app_magic: &Hash256,
+        verify_key: &VerifyingKey,
+    ) -> Result<InitCommitment, InitVerifyError> {
+        let commitment = InitCommitment::decode(&self.commitment_bytes)?;
+        let mut hasher = commitment.hash_suite.tagged_hasher(DOMAIN_INIT_COMMITMENT);
+        hasher.update(&app_magic[..]);
+        hasher.update(&self.commitment_bytes);
+        let peer_hash = hasher.finalize();
+        if peer_hash != self.peer_id.0 {
+            return Err(InitVerifyError::HashMismatch);
+        }
+        verify_key.verify_signature(&peer_hash, &self.signature)?;
+        Ok(commitment)
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum InitVerifyError {
+    #[error("decode error: {0}")]
+    DecodeError(#[from] DecodeError),
+    #[error("hash mismatch")]
+    HashMismatch,
+    #[error("signature verification error: {0}")]
+    SignatureError(#[from] SignatureVerificationError),
 }
 
 impl InitCommitment {
@@ -98,26 +126,30 @@ impl InitCommitment {
         }
     }
 
-    pub fn decode(reader: &mut Reader) -> Result<Self, DecodeError> {
+    pub fn decode(commitment_bytes: &[u8]) -> Result<Self, DecodeError> {
+        let mut reader = Reader::new(commitment_bytes);
         let version: Version = reader.read_byte()?.into();
-        if version.major() != 0 || version.minor() != 0 {
-            return Err(DecodeError::UnsupportedVersion(version));
+        if version.major() > 0 {
+            return Err(DecodeError::UnsupportedVersion(version.major()));
         }
-        let hash_suite = Hash256Suite::decode(reader)?;
+        let hash_suite = Hash256Suite::decode(&mut reader)?;
         let flags = Flags::from_bits(reader.read_byte()?);
         if flags.reserved() != 0 {
             return Err(DecodeError::UnknownInitFlags(flags.0));
         }
-        let sig_verify_key = VerifyingKey::decode(reader)?;
-        let encrypt_wrap_key = EncapsulationKey::decode(reader)?;
+        let sig_verify_key = VerifyingKey::decode(&mut reader)?;
+        let encrypt_wrap_key = EncapsulationKey::decode(&mut reader)?;
         let workspace_join = if flags.workspace_join() {
             Some(PeerId(reader.read_array()?))
         } else {
             None
         };
-        let remaining = reader.remaining();
-        if !remaining.is_empty() {
-            return Err(DecodeError::UnknownInitData(remaining.len()));
+        let remaining = reader.remaining().len();
+        if remaining != 0 && version.minor() == 0 {
+            // error if we are at the current supported minor version (0) and we have remaining data
+            // if we are at another minor version, but the same major (0), we tolerate extra remaining data
+            // without parsing it - basically minor communicates that this data is non-critical
+            return Err(DecodeError::UnknownInitData { version, remaining });
         }
 
         Ok(Self {
