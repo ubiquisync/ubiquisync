@@ -9,8 +9,7 @@ use thiserror::Error;
 
 use crate::{
     codec::{reader::Reader, writer::Writer},
-    crypto::Key256,
-    log_entry::DecodeError,
+    crypto::{CryptoDecodeError, Key256},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,30 +21,24 @@ pub enum EncapsulationKey {
 
 #[derive(Error, Debug)]
 #[error("TODO: better error")]
-pub struct KeyWrapError;
+pub struct KemError;
 
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub enum KeyWrap {
-    X25519HkdfSha256AesGcm256 {
-        encapped_key: [u8; 32],
-        ciphertext: [u8; 48],
-    },
-    DhP256HkdfSha256AesGcm256 {
-        encapped_key: [u8; 33],
-        ciphertext: [u8; 48],
-    },
+    X25519HkdfSha256AesGcm256 { enc: [u8; 32], ciphertext: [u8; 48] },
+    DhP256HkdfSha256AesGcm256 { enc: [u8; 33], ciphertext: [u8; 48] },
 }
 
 pub const DOMAIN_KEY_WRAP: &[u8] = b"ubiquisync/v1/key-wrap";
 
 impl EncapsulationKey {
-    pub fn wrap_key(&self, key: &Key256) -> Result<KeyWrap, KeyWrapError> {
+    pub fn wrap_key(&self, key: &Key256) -> Result<KeyWrap, KemError> {
         match self {
             EncapsulationKey::X25519(pubkey) => {
                 let pubkey = <X25519HkdfSha256 as Kem>::PublicKey::from_bytes(pubkey)
-                    .map_err(|_| KeyWrapError)?;
+                    .map_err(|_| KemError)?;
                 let (encapped_key, ciphertext) =
                     hpke::single_shot_seal::<AesGcm256, HkdfSha256, X25519HkdfSha256>(
                         &hpke::OpModeS::Base,
@@ -54,13 +47,10 @@ impl EncapsulationKey {
                         key.0.expose_secret(),
                         &[],
                     )
-                    .map_err(|_| KeyWrapError)?;
+                    .map_err(|_| KemError)?;
                 Ok(KeyWrap::X25519HkdfSha256AesGcm256 {
-                    encapped_key: encapped_key
-                        .to_bytes()
-                        .try_into()
-                        .map_err(|_| KeyWrapError)?,
-                    ciphertext: ciphertext.try_into().map_err(|_| KeyWrapError)?,
+                    enc: encapped_key.to_bytes().try_into().map_err(|_| KemError)?,
+                    ciphertext: ciphertext.try_into().map_err(|_| KemError)?,
                 })
             }
             EncapsulationKey::P256(_) => todo!(),
@@ -80,11 +70,11 @@ impl EncapsulationKey {
         }
     }
 
-    pub fn decode(reader: &mut Reader) -> Result<Self, DecodeError> {
+    pub fn decode(reader: &mut Reader) -> Result<Self, CryptoDecodeError> {
         Ok(match reader.read_byte()? {
             KEM_ALGO_X25519 => EncapsulationKey::X25519(reader.read_array()?),
             KEM_ALGO_P256 => EncapsulationKey::P256(reader.read_array()?),
-            n => return Err(DecodeError::UnknownKeyExchangeAlgorithm(n)),
+            n => return Err(CryptoDecodeError::UnknownAlgorithm(n)),
         })
     }
 }

@@ -7,11 +7,8 @@ use crate::{
         reader::{ReadError, Reader},
         writer::Writer,
     },
-    crypto::{CipherSuite, Hash256, Key256Fingerprint, Signature},
-    log_entry::{
-        DataIngestError, EncodeError, OpBatch, OpHeader, OpaqueBytes, PlaintextBytes,
-        SoftwareVersionError,
-    },
+    crypto::{Hash256, Key256Fingerprint, Signature},
+    log_entry::{LogDecodeError, LogEncodeError, OpBatch, OpHeader, OpaqueBytes, PlaintextBytes},
 };
 
 /// One decoded entry: a live log entry or an expunged-entry marker.
@@ -36,6 +33,15 @@ pub enum GenericLogEntry<Op: std::fmt::Debug, H: std::fmt::Debug> {
         end: EntryRef,
         ack_until: Option<EntryRef>,
     },
+    Unknown(UnknownEntryType),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(test, derive(test_strategy::Arbitrary))]
+pub struct UnknownEntryType {
+    idx: Option<u64>,
+    entry_type: u8,
+    bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,12 +75,12 @@ pub enum EntryBody<Op: std::fmt::Debug, H: std::fmt::Debug> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub struct CipherInfo {
-    pub cipher_suite: CipherSuite,
+    pub cipher_suite: u8,
     pub fingerprint: Key256Fingerprint,
 }
 
 impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> GenericLogEntry<B, H> {
-    pub fn encode(&self, writer: &mut Writer) -> Result<(), EncodeError>
+    pub fn encode(&self, writer: &mut Writer) -> Result<(), LogEncodeError>
     where
         B: Borrow<[u8]>,
         H: Borrow<[u8]>,
@@ -94,7 +100,7 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> GenericLogEntry<B, H> {
                 writer.write_byte(ENTRY_TYPE_EXPUNGED);
                 writer.write_var_u64(range.start);
                 if range.is_empty() {
-                    return Err(EncodeError::InvalidExpungeRange);
+                    return Err(LogEncodeError::InvalidExpungeRange);
                 }
                 let span = range.end - range.start;
                 writer.write_var_u64(span);
@@ -125,6 +131,15 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> GenericLogEntry<B, H> {
                 end.encode(writer);
                 signature.encode(writer);
             }
+            GenericLogEntry::Unknown(unknown_entry_type) => {
+                assert_eq!(
+                    unknown_entry_type.idx.is_some(),
+                    unknown_entry_type.entry_type & 0x80 != 0,
+                    "indexed unknown entry type should have its top bit set to 1"
+                );
+                writer.write_byte(unknown_entry_type.entry_type);
+                writer.write_len_prefixed(&unknown_entry_type.bytes);
+            }
         }
         Ok(())
     }
@@ -132,7 +147,7 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> GenericLogEntry<B, H> {
     pub fn decode<'a>(
         reader: &mut Reader<'a>,
         next_entry_index: u64,
-    ) -> Result<Self, DataIngestError>
+    ) -> Result<Self, LogDecodeError>
     where
         B: From<&'a [u8]>,
         H: From<&'a [u8]>,
@@ -145,7 +160,8 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> GenericLogEntry<B, H> {
             },
             ENTRY_TYPE_SIGNATURE => Self::Signature {
                 size: next_entry_index,
-                signature: Signature::decode(reader)?,
+                signature: Signature::decode(reader)
+                    .map_err(LogDecodeError::from_sig_decode_err)?,
             },
             ENTRY_TYPE_USE_KEY => Self::IndexedEntry {
                 idx: next_entry_index,
@@ -177,7 +193,8 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> GenericLogEntry<B, H> {
                 };
                 let start = EntryRef::decode(reader)?;
                 let end = EntryRef::decode(reader)?;
-                let signature = Signature::decode(reader)?;
+                let signature =
+                    Signature::decode(reader).map_err(LogDecodeError::from_sig_decode_err)?;
                 Self::SealBranch {
                     signature,
                     start,
@@ -185,7 +202,19 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> GenericLogEntry<B, H> {
                     ack_until,
                 }
             }
-            _ => return Err(SoftwareVersionError::UnexpectedEntryType(entry_type).into()),
+            unknown => {
+                let bytes = reader.read_len_prefixed()?;
+                let idx = if unknown & 0x80 != 0 {
+                    Some(next_entry_index)
+                } else {
+                    None
+                };
+                GenericLogEntry::Unknown(UnknownEntryType {
+                    idx,
+                    entry_type: unknown,
+                    bytes: bytes.into(),
+                })
+            }
         })
     }
 
@@ -197,6 +226,7 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> GenericLogEntry<B, H> {
             GenericLogEntry::Expunged { range, .. } => Some(range.end),
             GenericLogEntry::Signature { size, .. } => Some(*size),
             GenericLogEntry::SealBranch { .. } => None,
+            GenericLogEntry::Unknown(UnknownEntryType { idx, .. }) => *idx,
         }
     }
 }
@@ -210,16 +240,12 @@ const ENTRY_TYPE_ACKED_SEAL_BRANCH: u8 = 0x05;
 
 impl CipherInfo {
     pub fn encode(&self, writer: &mut Writer) {
-        writer.write_byte(self.cipher_suite.into());
+        writer.write_byte(self.cipher_suite);
         writer.write_array(&self.fingerprint.0);
     }
 
-    pub fn decode<'a>(reader: &mut Reader<'a>) -> Result<Self, DataIngestError> {
-        let cipher_suite = reader.read_byte()?.try_into().map_err(
-            |e: num_enum::TryFromPrimitiveError<CipherSuite>| {
-                SoftwareVersionError::UnknownCipherSuite(e.number)
-            },
-        )?;
+    pub fn decode<'a>(reader: &mut Reader<'a>) -> Result<Self, ReadError> {
+        let cipher_suite = reader.read_byte()?;
         Ok(CipherInfo {
             cipher_suite,
             fingerprint: Key256Fingerprint(reader.read_array()?),

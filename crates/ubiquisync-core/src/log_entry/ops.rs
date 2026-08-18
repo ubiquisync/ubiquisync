@@ -6,7 +6,7 @@ use crate::{
         writer::Writer,
     },
     crypto::Hash256,
-    log_entry::error::EncodeError,
+    log_entry::LogEncodeError,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,7 +24,7 @@ pub enum OpOrExpunge<Op> {
 }
 
 impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> OpBatch<B, H> {
-    pub fn encode(&self, writer: &mut Writer) -> Result<(), EncodeError>
+    pub fn encode(&self, writer: &mut Writer) -> Result<(), LogEncodeError>
     where
         B: Borrow<[u8]>,
         H: Borrow<[u8]>,
@@ -55,7 +55,7 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> OpBatch<B, H> {
 }
 
 impl<B> OpOrExpunge<B> {
-    pub fn encode(&self, writer: &mut Writer) -> Result<(), EncodeError>
+    pub fn encode(&self, writer: &mut Writer) -> Result<(), LogEncodeError>
     where
         B: Borrow<[u8]>,
     {
@@ -63,7 +63,7 @@ impl<B> OpOrExpunge<B> {
             OpOrExpunge::Op(op) => {
                 let bz = op.borrow();
                 if bz.is_empty() {
-                    return Err(EncodeError::EmptyOp);
+                    return Err(LogEncodeError::EmptyOp);
                 }
                 writer.write_len_prefixed(bz);
             }
@@ -99,7 +99,7 @@ mod tests {
 
     use crate::{
         codec::{reader::Reader, writer::Writer},
-        log_entry::{EncodeError, OpBatch, OpOrExpunge, OpaqueBytes, PlaintextBytes},
+        log_entry::{OpBatch, OpOrExpunge, OpaqueBytes, PlaintextBytes},
     };
 
     #[proptest]

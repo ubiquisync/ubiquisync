@@ -51,7 +51,7 @@ blake3 = "1.8.5"
 ed25519-dalek = "3.0.0"
 p256 = "0.14.0"
 aes-gcm-siv = {version="0.12.0", features=["zeroize"]}
-hpke = {version="0.14.0", default-fetures=false, features=["alloc", "nistp", "getrandom", "x25519", "aes"]}
+hpke = {version="0.14.0", default-features=false, features=["alloc", "nistp", "getrandom", "x25519", "aes"]}
 x25519-dalek = {version="3.0.0", features=["zeroize"]} # TODO maybe enable precomputed-tables for performance
 sha2 = "0.11.0"
 hkdf = "0.13.0"

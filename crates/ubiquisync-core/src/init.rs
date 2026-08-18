@@ -8,7 +8,6 @@ use crate::{
         SigningError, SigningKey, TaggedHashDomain, VerifyingKey,
     },
     ids::PeerId,
-    log_entry::DecodeError,
 };
 
 pub struct InitEntry {
@@ -56,9 +55,6 @@ struct Flags {
     reserved: u8,
 }
 
-static DOMAIN_INIT_COMMITMENT: TaggedHashDomain =
-    TaggedHashDomain::new("ubiquisync/v1/init-commitment");
-
 impl InitEntry {
     pub fn create(
         commitment: InitCommitment,
@@ -71,7 +67,9 @@ impl InitEntry {
         let mut w = Writer::new();
         commitment.encode(&mut w);
         let commitment_bytes = w.finalize();
-        let mut hasher = commitment.hash_suite.tagged_hasher(DOMAIN_INIT_COMMITMENT);
+        let mut hasher = commitment
+            .hash_suite
+            .new_tagged_hasher(TaggedHashDomain::PeerInitCommitment);
         hasher.update(&app_magic[..]);
         hasher.update(&commitment_bytes);
         let peer_hash = hasher.finalize();

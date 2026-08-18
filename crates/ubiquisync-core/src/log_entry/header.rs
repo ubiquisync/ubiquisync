@@ -1,7 +1,11 @@
+use thiserror::Error;
+
 use crate::{
-    codec::{reader::Reader, writer::Writer},
+    codec::{
+        reader::{ReadError, Reader},
+        writer::Writer,
+    },
     hlc::Timestamp,
-    log_entry::DecodeError,
     uuid::Uuid,
 };
 
@@ -26,10 +30,18 @@ pub struct OpHeader {
     pub timestamp: Timestamp,
 }
 
+#[derive(Error, Debug)]
+pub enum HeaderDecodeError {
+    #[error("read error: {0}")]
+    ReadError(#[from] ReadError),
+    #[error("invalid server attested user id length: {length}")]
+    InvalidServerAttestedId { length: usize },
+}
+
 impl OpHeader {
     /// Decode the header from a buffer which contains ONLY header bytes.
     /// IMPORTANT: This method assumes the header bytes were ALREADY read with a length-delimited prefix!
-    pub fn decode(buf: &[u8]) -> Result<Self, DecodeError> {
+    pub fn decode(buf: &[u8]) -> Result<Self, HeaderDecodeError> {
         let mut reader = Reader::new(buf);
         let timestamp = Timestamp::from_raw(reader.read_le_u64()?);
         // NOTE: all the remaining header bytes are for the server user id which is len delimited at the layer above this
@@ -42,7 +54,7 @@ impl OpHeader {
             });
         } else if n != 16 {
             // for now only handle UUIDs
-            return Err(DecodeError::InvalidServerAttestedId { length: n });
+            return Err(HeaderDecodeError::InvalidServerAttestedId { length: n });
         } else {
             return Ok(OpHeader {
                 server_attested_user_id: Some(server_user_id_bytes.try_into().unwrap()), // length already checked above

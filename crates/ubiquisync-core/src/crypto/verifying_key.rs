@@ -2,8 +2,7 @@ use thiserror::Error;
 
 use crate::{
     codec::{reader::Reader, writer::Writer},
-    crypto::{SIG_ALGO_ED25519, SIG_ALGO_P256, Signature},
-    log_entry::DecodeError,
+    crypto::{CryptoDecodeError, SIG_ALGO_ED25519, SIG_ALGO_P256, Signature},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,11 +75,11 @@ impl VerifyingKey {
         }
     }
 
-    pub fn decode(reader: &mut Reader) -> Result<Self, DecodeError> {
+    pub fn decode(reader: &mut Reader) -> Result<Self, CryptoDecodeError> {
         Ok(match reader.read_byte()? {
             SIG_ALGO_ED25519 => VerifyingKey::Ed25519(reader.read_array()?),
             SIG_ALGO_P256 => VerifyingKey::P256(reader.read_array()?),
-            n => return Err(DecodeError::UnknownSignatureAlgorithm(n)),
+            n => return Err(CryptoDecodeError::UnknownAlgorithm(n)),
         })
     }
 }

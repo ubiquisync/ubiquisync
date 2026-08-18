@@ -3,14 +3,10 @@ use num_enum::{IntoPrimitive, TryFromPrimitive};
 use secrecy::{ExposeSecret, SecretBox};
 use sha2::{Digest, Sha256};
 use strum_macros::{EnumIter, IntoStaticStr};
-use thiserror::Error;
 
 use crate::{
-    codec::{
-        reader::{ReadError, Reader},
-        writer::Writer,
-    },
-    crypto::{Key256, Key256Fingerprint},
+    codec::{reader::Reader, writer::Writer},
+    crypto::{CryptoDecodeError, Key256, Key256Fingerprint},
 };
 
 pub type Hash256 = [u8; 32];
@@ -41,6 +37,7 @@ pub enum TaggedHashDomain {
     MmrSeed,
     MmrBag,
     MmrSignBytes,
+    PeerInitCommitment,
 }
 
 #[derive(IntoStaticStr, EnumIter, Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,23 +52,15 @@ pub enum KeyFingerprintDomain {
     EncryptionKey,
 }
 
-#[derive(Error, Debug)]
-pub enum Hash256SuiteDecodeError {
-    #[error("unknown hash suite: {0}")]
-    UnknownHashSuite(u8),
-    #[error("read error: {0}")]
-    ReadError(#[from] ReadError),
-}
-
 impl Hash256Suite {
     pub fn encode(&self, writer: &mut Writer) {
         writer.write_byte((*self).into())
     }
 
-    pub fn decode(reader: &mut Reader) -> Result<Self, Hash256SuiteDecodeError> {
+    pub fn decode(reader: &mut Reader) -> Result<Self, CryptoDecodeError> {
         let x = reader.read_byte()?;
-        let suite = Self::try_from_primitive(x)
-            .map_err(|_| Hash256SuiteDecodeError::UnknownHashSuite(x))?;
+        let suite =
+            Self::try_from_primitive(x).map_err(|_| CryptoDecodeError::UnknownAlgorithm(x))?;
         Ok(suite)
     }
 

@@ -59,6 +59,9 @@ impl<O: std::fmt::Debug, H: std::fmt::Debug> GenericLogEntry<O, H> {
                 end: *end,
                 ack_until: *ack_until,
             },
+            GenericLogEntry::Unknown(unknown_entry_type) => {
+                GenericLogEntry::Unknown(unknown_entry_type.clone())
+            }
         })
     }
 }

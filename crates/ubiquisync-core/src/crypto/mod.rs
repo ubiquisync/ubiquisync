@@ -1,14 +1,17 @@
-// mod encapsulation_key;
+mod encapsulation_key;
 mod encrypt;
+mod error;
 mod hash;
+mod kem;
 pub mod mmr;
-// mod sig;
-// mod signing_key;
-// mod verifying_key;
+mod sig;
+mod signing_key;
+mod verifying_key;
 
-// pub use encapsulation_key::*;
+pub use encapsulation_key::*;
 pub use encrypt::*;
+pub use error::*;
 pub use hash::*;
-// pub use sig::*;
-// pub use signing_key::*;
-// pub use verifying_key::*;
+pub use sig::*;
+pub use signing_key::*;
+pub use verifying_key::*;

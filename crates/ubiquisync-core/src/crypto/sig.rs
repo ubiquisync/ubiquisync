@@ -1,6 +1,6 @@
 use crate::{
     codec::{reader::Reader, writer::Writer},
-    log_entry::{DataIngestError, SoftwareVersionError},
+    crypto::CryptoDecodeError,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,12 +25,12 @@ impl Signature {
         writer.write_array(s);
     }
 
-    pub fn decode(reader: &mut Reader) -> Result<Self, DataIngestError> {
+    pub fn decode(reader: &mut Reader) -> Result<Self, CryptoDecodeError> {
         let algo = reader.read_byte()?;
         Ok(match algo {
             SIG_ALGO_ED25519 => Signature::Ed25519(reader.read_array()?),
             SIG_ALGO_P256 => Signature::P256(reader.read_array()?),
-            _ => return Err(SoftwareVersionError::UnknownSignatureAlgorithm(algo).into()),
+            _ => return Err(CryptoDecodeError::UnknownAlgorithm(algo).into()),
         })
     }
 }
@@ -44,8 +44,7 @@ mod tests {
     use test_strategy::proptest;
 
     use crate::codec::{reader::Reader, writer::Writer};
-    use crate::crypto::Signature;
-    use crate::log_entry::{DataIngestError, SoftwareVersionError};
+    use crate::crypto::{CryptoDecodeError, Signature};
 
     #[proptest]
     fn test_roundtrip(signature: Signature) {
@@ -65,11 +64,6 @@ mod tests {
         let res = w.finalize();
         let mut r = Reader::new(&res);
         let decoded = Signature::decode(&mut r);
-        assert_matches!(
-            decoded,
-            Err(DataIngestError::Version(
-                SoftwareVersionError::UnknownSignatureAlgorithm(46)
-            ))
-        )
+        assert_matches!(decoded, Err(CryptoDecodeError::UnknownAlgorithm(46)))
     }
 }
