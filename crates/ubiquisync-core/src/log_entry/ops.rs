@@ -2,7 +2,7 @@ use std::borrow::Borrow;
 
 use crate::{
     codec::{reader::Reader, writer::Writer},
-    crypto::Hash,
+    crypto::Hash256,
     log_entry::{DecodeError, error::EncodeError},
 };
 
@@ -17,7 +17,7 @@ pub struct OpBatch<Op: alloc::fmt::Debug, H: alloc::fmt::Debug> {
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub enum OpOrExpunge<Op> {
     Op(Op),
-    Expunge(Hash),
+    Expunge(Hash256),
 }
 
 impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> OpBatch<B, H> {

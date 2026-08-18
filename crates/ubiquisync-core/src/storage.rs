@@ -1,5 +1,5 @@
 use crate::{
-    crypto::{Hash, VerifyingKey, Signature, mmr::MmrState},
+    crypto::{Hash256, Signature, VerifyingKey, mmr::MmrState},
     ids::{ContainerId, PeerId},
     log_entry::{CipherInfo, OpaqueLogEntry, PlaintextLogEntry},
     uuid::Uuid,
@@ -35,9 +35,9 @@ pub struct LogEntries<'a> {
     /// Updates the processed index when we have both decrypted entries and processed their HLC
     /// this must be less than or equal to the last entry in decoded_entries if it is set at all.
     pub processed_idx: Option<u64>,
-    pub decoded_entries: Vec<(PlaintextLogEntry<'a>, Option<Hash>)>, // TODO we want to preserve the entries but still index header data (hlc & server user id)
+    pub decoded_entries: Vec<(PlaintextLogEntry<'a>, Option<Hash256>)>, // TODO we want to preserve the entries but still index header data (hlc & server user id)
     /// Start index for received entries must be last index in received entries + 1, or empty.
-    pub opaque_entries: Vec<(OpaqueLogEntry<'a>, Option<Hash>)>,
+    pub opaque_entries: Vec<(OpaqueLogEntry<'a>, Option<Hash256>)>,
     /// This will update both the received index and peaks
     /// Size must match the last log index we have seen in plaintext_entries or decode_entries + 1
     pub received_mmr_state: MmrState,
@@ -55,7 +55,7 @@ pub struct PeerInfo {
 }
 
 impl PeerInfo {
-    pub fn genesis_hash(&self) -> Hash {
+    pub fn genesis_hash(&self) -> Hash256 {
         blake3::derive_key(DOMAIN_PEER_HASH, &self.genesis_bytes)
     }
 

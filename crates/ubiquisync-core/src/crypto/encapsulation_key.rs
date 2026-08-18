@@ -33,7 +33,7 @@ pub enum KeyWrap {
         ciphertext: [u8; 48],
     },
     DhP256HkdfSha256AesGcm256 {
-        encapped_key: [u8; 32],
+        encapped_key: [u8; 33],
         ciphertext: [u8; 48],
     },
 }

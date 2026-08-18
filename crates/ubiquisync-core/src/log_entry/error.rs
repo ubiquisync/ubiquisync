@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::codec::reader::ReadError;
+use crate::{codec::reader::ReadError, init::Version};
 
 #[derive(Error, Debug)]
 pub enum EncodeError {
@@ -20,8 +20,16 @@ pub enum DecodeError {
     UnknownSignatureAlgorithm(u8),
     #[error("unknown key-exchange algorithm: {0}")]
     UnknownKeyExchangeAlgorithm(u8),
+    #[error("unknown hash suite: {0}")]
+    UnknownHashSuite(u8),
     #[error("unexpected entry type: {0}")]
     UnexpectedEntryType(u8),
     #[error("invalid server attested user id length: {length}")]
     InvalidServerAttestedId { length: usize },
+    #[error("unsupported version: {0:?}")]
+    UnsupportedVersion(Version),
+    #[error("unknown init flags: {0}")]
+    UnknownInitFlags(u8),
+    #[error("unknown init data, {0} unreadable bytes")]
+    UnknownInitData(usize),
 }

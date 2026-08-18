@@ -2,7 +2,7 @@ use thiserror::Error;
 
 use crate::{
     crypto::{
-        EncryptionKeyRing, EntryCipher, Hash, SignatureVerificationError, VerifyingKey,
+        EncryptionKeyRing, EntryCipher, Hash256, SignatureVerificationError, VerifyingKey,
         mmr::{MmrAccumulator, MmrState},
     },
     ids::{ContainerId, PeerId},
@@ -153,5 +153,5 @@ pub enum VerificationError {
     #[error("signature verification error: {0}")]
     SignatureVerificationError(#[from] SignatureVerificationError),
     #[error("encryption key not found")]
-    EncryptionKeyNotFound { fingerprint: Hash },
+    EncryptionKeyNotFound { fingerprint: Hash256 },
 }

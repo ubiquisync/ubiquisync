@@ -10,7 +10,7 @@ use thiserror::Error;
 use zeroize::Zeroize;
 use zeroize::ZeroizeOnDrop;
 
-use crate::crypto::Hash;
+use crate::crypto::Hash256;
 use crate::ids::ContainerId;
 use crate::ids::PeerId;
 
@@ -150,7 +150,7 @@ impl EntryCipher {
 pub struct EncryptionKeyRing {}
 
 impl EncryptionKeyRing {
-    pub fn get_key(&self, fingerprint: &Hash) -> Option<Key256> {
+    pub fn get_key(&self, fingerprint: &Hash256) -> Option<Key256> {
         todo!()
     }
 }

@@ -1,20 +1,20 @@
 use blake3::Hasher;
 
 use crate::{
-    crypto::Hash,
+    crypto::Hash256,
     ids::{ContainerId, PeerId},
 };
 use thiserror::Error;
 
 pub struct MmrAccumulator {
     state: MmrState,
-    seed: Hash,
+    seed: Hash256,
 }
 
 #[derive(Clone)]
 pub struct MmrState {
     pub size: u64,
-    pub peaks: Vec<Hash>,
+    pub peaks: Vec<Hash256>,
 }
 
 impl MmrState {
@@ -48,7 +48,7 @@ impl MmrAccumulator {
         Ok(Self { seed, state })
     }
 
-    pub fn append(&mut self, leaf: &Hash) {
+    pub fn append(&mut self, leaf: &Hash256) {
         let mut node = *leaf;
         for _ in 0..self.state.size.trailing_ones() {
             let left = self
@@ -62,7 +62,7 @@ impl MmrAccumulator {
         self.state.size = self.state.size.checked_add(1).expect("MMR size overflow");
     }
 
-    pub fn root(&self) -> Hash {
+    pub fn root(&self) -> Hash256 {
         let mut acc = self.seed;
         for peak in self.state.peaks.iter().rev() {
             acc = hash_node(DOMAIN_MMR_BAG, peak, &acc);
@@ -70,7 +70,7 @@ impl MmrAccumulator {
         acc
     }
 
-    pub fn sign_bytes(&self) -> Hash {
+    pub fn sign_bytes(&self) -> Hash256 {
         let mut hasher = Hasher::new_derive_key(DOMAIN_SIGN_BYTES);
         // TODO add container & peer id here so it's trivial to bind this signature to a log height without even having the full MMR proof
         hasher.update(&self.state.size.to_le_bytes());
@@ -87,7 +87,7 @@ impl MmrAccumulator {
     }
 }
 
-fn hash_node(domain: &str, left: &Hash, right: &Hash) -> Hash {
+fn hash_node(domain: &str, left: &Hash256, right: &Hash256) -> Hash256 {
     let mut hasher = Hasher::new_derive_key(domain);
     hasher.update(left);
     hasher.update(right);

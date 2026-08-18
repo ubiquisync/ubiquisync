@@ -21,6 +21,9 @@ secrecy = { workspace = true }
 getrandom = { workspace = true }
 hpke = { workspace = true }
 x25519-dalek = { workspace = true }
+bitfield-struct = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 security-framework =  { workspace = true }

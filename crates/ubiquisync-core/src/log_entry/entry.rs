@@ -4,7 +4,7 @@ use alloc::borrow::Borrow;
 
 use crate::{
     codec::{reader::Reader, writer::Writer},
-    crypto::{CipherSuite, Hash, Signature},
+    crypto::{CipherSuite, Hash256, Signature},
     log_entry::{DecodeError, EncodeError, OpBatch, OpHeader, OpaqueBytes, PlaintextBytes},
 };
 
@@ -18,7 +18,7 @@ pub enum GenericLogEntry<Op: std::fmt::Debug, H: std::fmt::Debug> {
     },
     Expunged {
         range: Range<u64>,
-        cover: Vec<Hash>,
+        cover: Vec<Hash256>,
     },
     Signature {
         size: u64,
@@ -35,7 +35,7 @@ pub enum GenericLogEntry<Op: std::fmt::Debug, H: std::fmt::Debug> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub struct EntryRef {
-    pub hash: Hash,
+    pub hash: Hash256,
     pub index: u64,
 }
 
@@ -64,7 +64,7 @@ pub enum EntryBody<Op: std::fmt::Debug, H: std::fmt::Debug> {
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub struct CipherInfo {
     pub cipher_suite: CipherSuite,
-    pub fingerprint: Hash,
+    pub fingerprint: Hash256,
 }
 
 impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> GenericLogEntry<B, H> {

@@ -3,7 +3,7 @@ use std::borrow::{Borrow, Cow};
 use thiserror::Error;
 
 use crate::{
-    crypto::{CipherError, CipherSuite, EntryCipher, Hash},
+    crypto::{CipherError, CipherSuite, EntryCipher, Hash256},
     log_entry::{OpBatch, OpOrExpunge, OpaqueBytes, OpaqueOpBatch, PlaintextBytes},
 };
 
@@ -73,7 +73,7 @@ impl OpaqueOpBatchHasher {
         self.append_op_hash(op_hash)
     }
 
-    fn finalize(self) -> Result<Hash, EntryHashError> {
+    fn finalize(self) -> Result<Hash256, EntryHashError> {
         if self.next_op_index != self.num_ops {
             return Err(EntryHashError::OpCountMismatch);
         }
@@ -126,11 +126,11 @@ impl<'a> PlaintextOpBatchHasher<'a> {
         }
     }
 
-    fn append_expunged_op(&mut self, hash: &Hash) -> Result<(), EntryHashError> {
+    fn append_expunged_op(&mut self, hash: &Hash256) -> Result<(), EntryHashError> {
         self.hasher.append_expunged_op(hash)
     }
 
-    fn finalize(self) -> Result<Hash, EntryHashError> {
+    fn finalize(self) -> Result<Hash256, EntryHashError> {
         Ok(self.hasher.finalize()?.into())
     }
 }
@@ -140,7 +140,7 @@ pub trait OpBatchHashMethod<B: std::fmt::Debug> {
         &self,
         entry_idx: u64,
         op_batch: &'b OpBatch<B, B>,
-    ) -> Result<(Hash, Cow<'b, OpaqueOpBatch<'b>>), EntryHashError>;
+    ) -> Result<(Hash256, Cow<'b, OpaqueOpBatch<'b>>), EntryHashError>;
 }
 
 pub struct OpaqueOpBatchHashMethod;
@@ -150,7 +150,7 @@ impl OpBatchHashMethod<OpaqueBytes<'_>> for OpaqueOpBatchHashMethod {
         &self,
         entry_idx: u64,
         op_batch: &'b OpBatch<OpaqueBytes<'_>, OpaqueBytes<'_>>,
-    ) -> Result<(Hash, Cow<'b, OpaqueOpBatch<'b>>), EntryHashError> {
+    ) -> Result<(Hash256, Cow<'b, OpaqueOpBatch<'b>>), EntryHashError> {
         let mut hasher = OpaqueOpBatchHasher::new(
             op_batch.header.borrow(),
             entry_idx,
@@ -176,7 +176,7 @@ impl<'a> OpBatchHashMethod<PlaintextBytes<'_>> for PlaintextOpBatchHashMethod<'a
         &self,
         entry_idx: u64,
         op_batch: &'b OpBatch<PlaintextBytes<'_>, PlaintextBytes<'_>>,
-    ) -> Result<(Hash, Cow<'b, OpaqueOpBatch<'b>>), EntryHashError> {
+    ) -> Result<(Hash256, Cow<'b, OpaqueOpBatch<'b>>), EntryHashError> {
         let (mut hasher, opaque_header_bytes) = PlaintextOpBatchHasher::new(
             self.0,
             op_batch.header.borrow(),
@@ -205,7 +205,7 @@ impl<'a> OpBatchHashMethod<PlaintextBytes<'_>> for PlaintextOpBatchHashMethod<'a
     }
 }
 
-pub fn hash_use_key(entry_index: u64, cipher_suite: CipherSuite, fingerprint: &Hash) -> Hash {
+pub fn hash_use_key(entry_index: u64, cipher_suite: CipherSuite, fingerprint: &Hash256) -> Hash256 {
     let mut hasher = blake3::Hasher::new_derive_key(DOMAIN_USE_KEY_HASH);
     hasher.update(&entry_index.to_le_bytes());
     hasher.update(&[cipher_suite.into()]);
