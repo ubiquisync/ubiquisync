@@ -206,57 +206,6 @@ mod tests {
         assert_ne!(x, y)
     }
 
-    // TODO is this stuff even needed anymore??
-    // #[test]
-    // fn test_known_sha256() {
-    //     test_known_hashes(
-    //         Hash256Suite::Sha256,
-    //         &[
-    //             "1e18834c426d00e57788444cb3ccd62c771b420c095bb0c4e040a8c122c4570d",
-    //             "3d723448c579b5e3e5d771bc0e5deda551db6cc198b0bc975bd30ac6584b62d8",
-    //             "158c46d846b5017928100e816969369dd5fdea2b379fda352922b97ef85045c5",
-    //         ],
-    //     );
-    // }
-
-    // #[test]
-    // fn test_known_blake3() {
-    //     test_known_hashes(
-    //         Hash256Suite::Blake3,
-    //         &[
-    //             "d12db47e19b120ba45062e4ff453d3d40d1d7c2b8a0ca07c9fe4945d283aee13",
-    //             "4bf31948ffa28caf02dc226346de69d7f2fecf36f3b86e1c3d4cdd508c21a3a7",
-    //             "aab5ab04ca17deb69363735d6c021919d7bca1fcccac66850728af543fa95233",
-    //         ],
-    //     );
-    // }
-    //
-    // fn test_known_hashes(suite: Hash256Suite, known: &[&str; 3]) {
-    //     let a = suite.tagged_hash_internal("a", b"bc");
-    //     assert_eq!(hex(&a), known[0]);
-
-    //     let mut h = suite.tagged_hasher_internal("a");
-    //     h.update(b"b");
-    //     h.update(b"c");
-    //     let b = h.finalize();
-    //     assert_eq!(hex(&b), known[0]);
-
-    //     let key = Key256(SecretBox::new(Box::new([1; 32])));
-    //     let c = suite.key_fingerprint("b", &key);
-    //     assert_eq!(hex(&c.0), known[1]);
-
-    //     let d = suite.derive_key("c", &key, b"xyz");
-    //     assert_eq!(hex(&d.0.expose_secret()), known[2]);
-    // }
-
-    fn hex(hash: &[u8; 32]) -> String {
-        let mut s = String::new();
-        for b in hash {
-            write!(s, "{b:02x}").unwrap()
-        }
-        s
-    }
-
     #[test]
     fn test_sha256_domain_regression() {
         assert_snapshot!(test_domain_regression(Hash256Suite::Sha256));
@@ -279,7 +228,8 @@ mod tests {
 
             // check that both hash methods produce the same output
             let mut hasher = suite.tagged_hasher(domain);
-            hasher.update(b"abcdefg");
+            hasher.update(b"abc");
+            hasher.update(b"defg");
             let h2 = hasher.finalize();
             assert_eq!(h, h2);
         }
@@ -312,5 +262,18 @@ mod tests {
             let s: &str = domain.into();
             assert!(s.len() <= 255);
         }
+
+        for domain in KeyFingerprintDomain::iter() {
+            let s: &str = domain.into();
+            assert!(s.len() <= 255);
+        }
+    }
+
+    fn hex(hash: &[u8; 32]) -> String {
+        let mut s = String::new();
+        for b in hash {
+            write!(s, "{b:02x}").unwrap()
+        }
+        s
     }
 }
