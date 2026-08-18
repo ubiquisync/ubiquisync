@@ -64,7 +64,10 @@ impl InitEntry {
         commitment: InitCommitment,
         app_magic: &Hash256,
         signing_key: &dyn SigningKey,
-    ) -> Result<InitEntry, SigningError> {
+    ) -> Result<InitEntry, InitCreationError> {
+        if commitment.version.major() != 0 || commitment.version.minor() != 0 {
+            return Err(InitCreationError::UnsupportedVersion(commitment.version));
+        }
         let mut w = Writer::new();
         commitment.encode(&mut w);
         let commitment_bytes = w.finalize();
@@ -82,12 +85,12 @@ impl InitEntry {
         })
     }
 
-    pub fn verify(
-        &self,
-        app_magic: &Hash256,
-        verify_key: &VerifyingKey,
-    ) -> Result<InitCommitment, InitVerifyError> {
-        let commitment = InitCommitment::decode(&self.commitment_bytes)?;
+    pub fn unverified_commitment(&self) -> Result<InitCommitment, DecodeError> {
+        InitCommitment::decode(&self.commitment_bytes)
+    }
+
+    pub fn verify(&self, app_magic: &Hash256) -> Result<InitCommitment, InitVerifyError> {
+        let commitment = self.unverified_commitment()?;
         let mut hasher = commitment.hash_suite.tagged_hasher(DOMAIN_INIT_COMMITMENT);
         hasher.update(&app_magic[..]);
         hasher.update(&self.commitment_bytes);
@@ -95,9 +98,19 @@ impl InitEntry {
         if peer_hash != self.peer_id.0 {
             return Err(InitVerifyError::HashMismatch);
         }
-        verify_key.verify_signature(&peer_hash, &self.signature)?;
+        commitment
+            .sig_verify_key
+            .verify_signature(&peer_hash, &self.signature)?;
         Ok(commitment)
     }
+}
+
+#[derive(Error, Debug)]
+pub enum InitCreationError {
+    #[error("signing error: {0}")]
+    SigningError(#[from] SigningError),
+    #[error("unsupported version: {0:?}")]
+    UnsupportedVersion(Version),
 }
 
 #[derive(Error, Debug)]
