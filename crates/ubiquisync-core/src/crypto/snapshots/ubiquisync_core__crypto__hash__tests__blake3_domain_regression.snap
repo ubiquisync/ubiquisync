@@ -1,0 +1,9 @@
+---
+source: crates/ubiquisync-core/src/crypto/hash.rs
+expression: "test_domain_regression(Hash256Suite::Blake3)"
+---
+Blake3
+ubiquisync/v1/MmrNode = 05649bb04e3da41f3e3bd12d4f2222bb329795bfa1a0e0e14d2171c4f11e3f6b
+ubiquisync/v1/MmrSeed = 8c7ebdf358dec372b3ac223bbb42407b853beb2158e994ed5a1651c18c4584ac
+ubiquisync/v1/MmrBag = bf12d465bcbbe418f375e3ed93dcac6259bfbf0a6d0db471c9fde338a90d0335
+ubiquisync/v1/MmrSignBytes = c67cddc10fff5aa5db29db2dfde5796d3d7ba9e4aecf5273602c5892a11455fc

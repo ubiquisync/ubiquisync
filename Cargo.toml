@@ -43,6 +43,8 @@ bitfield-struct = "0.13.0"
 thiserror = "2.0.18"
 num_enum = "0.7.6"
 pastey = "0.2.3"
+strum = "0.28.0"
+strum_macros = "0.28.0"
 
 # cryptography
 blake3 = "1.8.5"
@@ -61,6 +63,7 @@ crypto-common = "0.2.2"
 proptest = "1.11.0"
 test-strategy = "0.4.5"
 test-case = "3.3.1"
+insta = "1.48.0"
 
 ## platform deps
 # Apple only

@@ -2,6 +2,7 @@ use hkdf::Hkdf;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use secrecy::{ExposeSecret, SecretBox};
 use sha2::{Digest, Sha256};
+use strum_macros::{EnumIter, IntoStaticStr};
 use thiserror::Error;
 
 use crate::{
@@ -33,8 +34,14 @@ enum HasherInternal {
     Blake3(blake3::Hasher),
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct TaggedHashDomain(&'static str);
+#[derive(IntoStaticStr, EnumIter, Debug, Clone, Copy, PartialEq, Eq)]
+#[strum(prefix = "ubiquisync/v1/")]
+pub enum TaggedHashDomain {
+    MmrNode,
+    MmrSeed,
+    MmrBag,
+    MmrSignBytes,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct KdfDomain(&'static str);
@@ -60,22 +67,34 @@ impl Hash256Suite {
     }
 
     pub fn tagged_hash(&self, domain: TaggedHashDomain, data: &[u8]) -> Hash256 {
-        let mut hasher = self.tagged_hasher(domain);
+        self.tagged_hash_internal(domain.into(), data)
+    }
+
+    fn tagged_hash_internal(&self, domain: &str, data: &[u8]) -> Hash256 {
+        let mut hasher = self.tagged_hasher_internal(domain);
         hasher.update(data);
         hasher.finalize()
     }
 
     pub fn tagged_hasher(&self, domain: TaggedHashDomain) -> Hasher {
+        self.tagged_hasher_internal(domain.into())
+    }
+
+    fn tagged_hasher_internal(&self, domain: &str) -> Hasher {
+        let len: u8 = domain
+            .len()
+            .try_into()
+            .expect("domain string should have len <= 255");
         Hasher(match self {
             // TODO feature flags for supported hashes at build time
             Hash256Suite::Sha256 => {
                 let mut hasher = Sha256::new();
-                hasher.update(&[domain.len()]);
-                hasher.update(domain.0);
+                hasher.update(&[len]);
+                hasher.update(domain);
                 HasherInternal::Sha256(hasher)
             }
             Hash256Suite::Blake3 => {
-                let hasher = blake3::Hasher::new_derive_key(domain.0);
+                let hasher = blake3::Hasher::new_derive_key(domain);
                 HasherInternal::Blake3(hasher)
             }
         })
@@ -109,17 +128,6 @@ impl Hash256Suite {
                 hasher.finalize_xof().fill(output);
             }
         }
-    }
-}
-
-impl TaggedHashDomain {
-    pub const fn new(domain: &'static str) -> Self {
-        assert!(domain.len() < 256, "TaggedHashDomain is too long");
-        Self(domain)
-    }
-
-    fn len(&self) -> u8 {
-        self.0.len().try_into().expect("max length 255")
     }
 }
 
@@ -158,9 +166,12 @@ impl Hasher {
 
 #[cfg(test)]
 mod tests {
+    use insta::assert_snapshot;
     use secrecy::{ExposeSecret, SecretBox};
+    use std::fmt::Write;
+    use strum::IntoEnumIterator;
 
-    use crate::crypto::{Hash256, Hash256Suite, KdfDomain, Key256, TaggedHashDomain};
+    use crate::crypto::{Hash256Suite, KdfDomain, Key256, TaggedHashDomain};
 
     #[test]
     fn test_kdf_len_prefixed() {
@@ -186,8 +197,8 @@ mod tests {
     }
 
     fn do_test_tagged_hash_len_prefixed(suite: Hash256Suite) {
-        let x = suite.tagged_hash(TaggedHashDomain::new("a"), b"bc");
-        let y = suite.tagged_hash(TaggedHashDomain::new("ab"), b"c");
+        let x = suite.tagged_hash_internal("a", b"bc");
+        let y = suite.tagged_hash_internal("ab", b"c");
         assert_ne!(x, y)
     }
 
@@ -216,16 +227,16 @@ mod tests {
     }
 
     fn test_known_hashes(suite: Hash256Suite, known: &[&str; 3]) {
-        let a = suite.tagged_hash(TaggedHashDomain::new("a"), b"bc");
+        let a = suite.tagged_hash_internal("a", b"bc");
         assert_eq!(hex(&a), known[0]);
 
-        let mut h = suite.tagged_hasher(TaggedHashDomain::new("a"));
+        let mut h = suite.tagged_hasher_internal("a");
         h.update(b"b");
         h.update(b"c");
         let b = h.finalize();
         assert_eq!(hex(&b), known[0]);
 
-        let key = &Key256(SecretBox::new(Box::new([1; 32])));
+        let key = Key256(SecretBox::new(Box::new([1; 32])));
         let c = suite.key_fingerprint(KdfDomain::new("b"), &key);
         assert_eq!(hex(&c.0), known[1]);
 
@@ -234,11 +245,31 @@ mod tests {
     }
 
     fn hex(hash: &[u8; 32]) -> String {
-        use std::fmt::Write;
         let mut s = String::new();
         for b in hash {
             write!(s, "{b:02x}").unwrap()
         }
         s
+    }
+
+    #[test]
+    fn test_sha256_domain_regression() {
+        assert_snapshot!(test_domain_regression(Hash256Suite::Sha256));
+    }
+
+    #[test]
+    fn test_blake3_domain_regression() {
+        assert_snapshot!(test_domain_regression(Hash256Suite::Blake3));
+    }
+
+    // prevents hash regressions from renaming items in the domain enum
+    fn test_domain_regression(suite: Hash256Suite) -> String {
+        let mut out = String::from(format!("{suite:?}\n"));
+        for domain in TaggedHashDomain::iter() {
+            let h = suite.tagged_hash(domain, b"abcdefg");
+            let d: &str = domain.into();
+            writeln!(&mut out, "{0} = {1}", d, hex(&h)).unwrap();
+        }
+        out
     }
 }
