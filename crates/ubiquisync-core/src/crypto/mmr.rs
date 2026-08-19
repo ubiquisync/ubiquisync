@@ -192,7 +192,7 @@ impl InclusionProof {
             cur = hash_node(TaggedHashDomain::MmrBag, &cur, &seed);
         }
 
-        for j in (i + 1..n).rev() {
+        for j in (i..n).rev() {
             cur = hash_node(TaggedHashDomain::MmrBag, &self.witnesses[j], &cur);
         }
 
@@ -327,10 +327,13 @@ mod test {
         rand_fill(&mut seed).unwrap();
         let mut acc = MmrAccumulator::new(seed.clone(), MmrState::default()).unwrap();
         let mut node_store = TestNodeStore::default();
+        let mut leaves = vec![];
         for i in 0..=64 {
             let mut leaf = [0; 32];
             rand_fill(&mut leaf).unwrap();
             acc.append(&leaf);
+            leaves.push(leaf.clone());
+            node_store.insert(i..i + 1, leaf.clone());
             let state = acc.state();
             for (i, id) in state.node_ids().iter().enumerate() {
                 if !node_store.contains_key(id) {
@@ -342,7 +345,8 @@ mod test {
             for j in 0..i {
                 let proof = InclusionProof::generate(j, acc.size(), &node_store, &seed)
                     .expect("valid proof");
-                assert!(proof.verify(&leaf, &root, &seed));
+                let leaf = &leaves[j as usize];
+                assert!(proof.verify(leaf, &root, &seed));
             }
         }
     }
