@@ -9,14 +9,20 @@ use thiserror::Error;
 pub struct MmrAccumulator {
     state: MmrState,
     seed: Hash256,
-    peer_id: PeerId,
-    container_id: ContainerId,
+    // peer_id: PeerId,
+    // container_id: ContainerId,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct MmrState {
     pub size: u64,
     pub peaks: Vec<Hash256>,
+}
+
+pub struct InclusionProof {
+    pub i: u64,
+    pub size: u64,
+    pub witnesses: Vec<Hash256>,
 }
 
 impl MmrState {
@@ -27,6 +33,10 @@ impl MmrState {
             return Err(MmrError::InvalidPeakCount { expected, actual });
         }
         Ok(())
+    }
+
+    pub fn node_ids(&self) -> Vec<Range<u64>> {
+        peak_ids(self.size)
     }
 }
 
@@ -39,21 +49,17 @@ pub enum MmrError {
 const HASH_SUITE: Hash256Suite = Hash256Suite::Sha256;
 
 impl MmrAccumulator {
-    pub fn new(
-        peer_id: &PeerId,
-        container_id: &ContainerId,
-        state: MmrState,
-    ) -> Result<Self, MmrError> {
+    pub fn new(seed: Hash256, state: MmrState) -> Result<Self, MmrError> {
         state.validate()?;
-        let mut seed_hasher = HASH_SUITE.new_tagged_hasher(super::TaggedHashDomain::MmrSeed);
-        seed_hasher.update(&peer_id.0);
-        seed_hasher.update(&container_id.0);
-        let seed = seed_hasher.finalize();
+        // let mut seed_hasher = HASH_SUITE.new_tagged_hasher(super::TaggedHashDomain::MmrSeed);
+        // seed_hasher.update(&peer_id.0);
+        // seed_hasher.update(&container_id.0);
+        // let seed = seed_hasher.finalize();
         Ok(Self {
             seed,
             state,
-            container_id: *container_id,
-            peer_id: *peer_id,
+            // container_id: *container_id,
+            // peer_id: *peer_id,
         })
     }
 
@@ -79,14 +85,14 @@ impl MmrAccumulator {
         acc
     }
 
-    pub fn sign_bytes(&self) -> Hash256 {
-        let mut hasher = HASH_SUITE.new_tagged_hasher(TaggedHashDomain::MmrSignBytes);
-        hasher.update(&self.peer_id.0);
-        hasher.update(&self.container_id.0);
-        hasher.update(&self.state.size.to_le_bytes());
-        hasher.update(&self.root());
-        hasher.finalize().into()
-    }
+    // pub fn sign_bytes(&self) -> Hash256 {
+    //     let mut hasher = HASH_SUITE.new_tagged_hasher(TaggedHashDomain::MmrSignBytes);
+    //     hasher.update(&self.peer_id.0);
+    //     hasher.update(&self.container_id.0);
+    //     hasher.update(&self.state.size.to_le_bytes());
+    //     hasher.update(&self.root());
+    //     hasher.finalize().into()
+    // }
 
     pub fn size(&self) -> u64 {
         self.state.size
@@ -104,16 +110,27 @@ fn hash_node(domain: TaggedHashDomain, left: &Hash256, right: &Hash256) -> Hash2
     hasher.finalize().into()
 }
 
-pub struct InclusionProof {
-    pub i: u64,
-    pub size: u64,
-    pub witnesses: Vec<Hash256>,
-}
+// #[derive(Debug, Clone, PartialEq, Eq)]
+// enum WitnessId {
+//     Node(Range<u64>),
+//     Bag(Range<u64>),
+// }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum WitnessId {
-    Node(Range<u64>),
-    Bag(Range<u64>),
+struct InclusionProofIds {
+    climb_node_ids: Vec<Range<u64>>,
+    bag_id: Option<Range<u64>>,
+    lhs_peaks: Vec<Range<u64>>,
+}
+
+impl InclusionProofIds {
+    fn len(&self) -> usize {
+        let mut n = self.climb_node_ids.len() + self.lhs_peaks.len();
+        if self.bag_id.is_some() {
+            n += 1
+        }
+        n
+    }
 }
 
 fn peak_count(size: u64) -> usize {
@@ -142,44 +159,72 @@ impl InclusionProof {
         if self.i >= self.size {
             return false;
         }
-        let (witness_ids, need_seed) = Self::witness_ids(self.i, self.size);
+        let witness_ids = Self::witness_ids(self.i, self.size);
         let n = self.witnesses.len();
         if n != witness_ids.len() {
             return false;
         }
         let mut cur = *leaf;
         let mut cur_id = self.i..self.i + 1;
-        for i in 0..n {
+        let mut i = 0;
+
+        let climb_node_ids = witness_ids.climb_node_ids;
+        while i < climb_node_ids.len() {
             let witness = self.witnesses[i];
-            match &witness_ids[i] {
-                WitnessId::Node(witness_id) => {
-                    let w = cur_id.end - cur_id.end;
-                    if (cur_id.start / w) % 2 == 0 {
-                        // even -> cur LHS, witness RHS
-                        cur = hash_node(TaggedHashDomain::MmrNode, &cur, &witness);
-                        cur_id = cur_id.start..witness_id.end;
-                    } else {
-                        // odd -> witness LHS, cur RHS
-                        cur = hash_node(TaggedHashDomain::MmrNode, &witness, &cur);
-                        cur_id = witness_id.start..cur_id.end;
-                    }
-                }
-                WitnessId::Bag(witness_id) => {
-                    cur = hash_node(TaggedHashDomain::MmrBag, &cur, &witness);
-                    cur_id = cur_id.start..witness_id.end;
-                }
+            let witness_id = &climb_node_ids[i];
+            let w = cur_id.end - cur_id.start;
+            if (cur_id.start / w) % 2 == 0 {
+                // even -> cur LHS, witness RHS
+                cur = hash_node(TaggedHashDomain::MmrNode, &cur, &witness);
+                cur_id = cur_id.start..witness_id.end;
+            } else {
+                // odd -> witness LHS, cur RHS
+                cur = hash_node(TaggedHashDomain::MmrNode, &witness, &cur);
+                cur_id = witness_id.start..cur_id.end;
             }
+            i += 1;
         }
-        if need_seed {
+
+        if witness_ids.bag_id.is_some() {
+            cur = hash_node(TaggedHashDomain::MmrBag, &cur, &self.witnesses[i]);
+            i += 1;
+        } else {
             cur = hash_node(TaggedHashDomain::MmrBag, &cur, &seed);
         }
+
+        for j in (i + 1..n).rev() {
+            cur = hash_node(TaggedHashDomain::MmrBag, &self.witnesses[j], &cur);
+        }
+
         cur == *root
     }
 
-    fn witness_ids(i: u64, size: u64) -> (Vec<WitnessId>, bool) {
-        assert!(i < size);
+    pub fn generate(i: u64, size: u64, store: &dyn NodeStore, seed: &Hash256) -> Option<Self> {
+        let witness_ids = Self::witness_ids(i, size);
         let mut witnesses = vec![];
+        for id in witness_ids.climb_node_ids.iter() {
+            let node = resolve_node(store, &id)?;
+            witnesses.push(node);
+        }
+
+        if let Some(bag_id) = witness_ids.bag_id {
+            let bag = resolve_bag(store, &bag_id, seed)?;
+            witnesses.push(bag);
+        }
+
+        for id in witness_ids.lhs_peaks.iter() {
+            let node = resolve_node(store, &id)?;
+            witnesses.push(node);
+        }
+
+        Some(Self { i, size, witnesses })
+    }
+
+    fn witness_ids(i: u64, size: u64) -> InclusionProofIds {
+        assert!(i < size);
+        let mut climb_node_ids = vec![];
         let mut cur = i..i + 1;
+        // phase 1: climb until we reach a peak (which would be present in MMR peak state for this size)
         loop {
             let w = cur.end - cur.start;
             if (cur.start / w) % 2 == 0 {
@@ -189,61 +234,124 @@ impl InclusionProof {
                     .checked_add(w)
                     .expect("proof shouldn't overflow u64");
                 if new_end > size {
-                    if cur.start != 0 {
-                        let mut lhs_peaks: Vec<WitnessId> = peak_ids(cur.start)
-                            .iter()
-                            .map(|r| WitnessId::Node(r.clone()))
-                            .collect();
-                        witnesses.append(&mut lhs_peaks);
-                    }
-                    let need_bag = cur.end < size;
-                    if need_bag {
-                        witnesses.push(WitnessId::Bag(cur.end..size));
-                    }
-                    let need_seed = !need_bag;
-                    return (witnesses, need_seed);
+                    break;
                 }
                 let rhs = cur.end..new_end;
-                witnesses.push(WitnessId::Node(rhs));
+                climb_node_ids.push(rhs);
                 cur = cur.start..new_end;
             } else {
                 // odd -> need LHS
                 let start = cur.start - w;
                 let lhs = start..cur.start;
-                witnesses.push(WitnessId::Node(lhs));
+                climb_node_ids.push(lhs);
                 cur = start..cur.end;
             }
+        }
+
+        // phase 2: is there an initial bag in the proof or do we use the seed
+        let bag_id = if cur.end < size {
+            Some(cur.end..size)
+        } else {
+            None
+        };
+
+        // phase 3: collect any remaining LHS peaks that must be bagged (rather than hashed as nodes), this all would have been in the peak state for this size
+        // will be empty if cur.start == 0
+        let lhs_peaks = peak_ids(cur.start);
+        InclusionProofIds {
+            climb_node_ids,
+            bag_id,
+            lhs_peaks,
         }
     }
 }
 
+pub trait NodeStore {
+    fn lookup_node(&self, id: &Range<u64>) -> Option<Hash256>;
+}
+
+fn resolve_node(store: &dyn NodeStore, id: &Range<u64>) -> Option<Hash256> {
+    if let Some(node) = store.lookup_node(id) {
+        return Some(node);
+    }
+    let span = id.end.checked_sub(id.start).expect("valid range");
+    if span <= 1 {
+        return None;
+    }
+    if span.count_ones() != 1 {
+        // quick check that is a power of 2
+        return None;
+    }
+    let m = id.start + span / 2;
+    let lhs = resolve_node(store, &(id.start..m))?;
+    let rhs = resolve_node(store, &(m..id.end))?;
+    Some(hash_node(TaggedHashDomain::MmrNode, &lhs, &rhs))
+}
+
+fn resolve_bag(store: &dyn NodeStore, id: &Range<u64>, seed: &Hash256) -> Option<Hash256> {
+    let mut acc = *seed;
+    // lookup all peak ids that are >= id.start for size id.end
+    for peak_id in peak_ids(id.end)
+        .iter()
+        .filter(|p| p.start >= id.start)
+        .rev()
+    {
+        let peak = resolve_node(store, peak_id)?;
+        acc = hash_node(TaggedHashDomain::MmrBag, &peak, &acc);
+    }
+    Some(acc)
+}
+
 #[cfg(test)]
 mod test {
-    use crate::crypto::mmr::{InclusionProof, peak_count, peak_ids};
+    use std::{collections::HashMap, ops::Range};
+
+    use crate::{
+        crypto::{
+            Hash256,
+            mmr::{InclusionProof, MmrAccumulator, MmrState, NodeStore, peak_count, peak_ids},
+        },
+        rand::rand_fill,
+    };
 
     #[test]
-    fn test1() {
-        for i in 0..=16 {
-            testn(i);
+    fn test_peak_id_count() {
+        for i in 0..=64 {
+            assert_eq!(peak_count(i), peak_ids(i).len())
         }
     }
 
-    fn testn(size: u64) {
-        let n = peak_count(size);
-        let peaks = peak_ids(size);
-        assert_eq!(n, peaks.len());
-        println!("{size} {n} {peaks:?}")
-    }
-
     #[test]
-    fn test2() {
-        testi(7, 21);
-        testi(17, 21);
-        testi(20, 21);
+    fn test_inclusion_proofs() {
+        let mut seed = [0; 32];
+        rand_fill(&mut seed).unwrap();
+        let mut acc = MmrAccumulator::new(seed.clone(), MmrState::default()).unwrap();
+        let mut node_store = TestNodeStore::default();
+        for i in 0..=64 {
+            let mut leaf = [0; 32];
+            rand_fill(&mut leaf).unwrap();
+            acc.append(&leaf);
+            let state = acc.state();
+            for (i, id) in state.node_ids().iter().enumerate() {
+                if !node_store.contains_key(id) {
+                    node_store.insert(id.clone(), state.peaks[i]);
+                }
+            }
+
+            let root = acc.root();
+            for j in 0..i {
+                let proof = InclusionProof::generate(j, acc.size(), &node_store, &seed)
+                    .expect("valid proof");
+                assert!(proof.verify(&leaf, &root, &seed));
+            }
+        }
     }
 
-    fn testi(i: u64, size: u64) {
-        let (w, need_seed) = InclusionProof::witness_ids(i, size);
-        println!("{i} in {size} -> {w:?} {need_seed}")
+    type TestNodeStore = HashMap<Range<u64>, Hash256>;
+
+    impl NodeStore for HashMap<Range<u64>, Hash256> {
+        fn lookup_node(&self, id: &Range<u64>) -> Option<Hash256> {
+            self.get(id).cloned()
+        }
     }
 }
