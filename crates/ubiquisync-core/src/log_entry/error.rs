@@ -1,13 +1,16 @@
 use thiserror::Error;
 
-use crate::{codec::reader::ReadError, crypto::CryptoDecodeError};
+use crate::{
+    codec::{reader::ReadError, writer::WriteError},
+    crypto::CryptoDecodeError,
+};
 
 #[derive(Error, Debug)]
 pub enum LogEncodeError {
     #[error("empty op")]
     EmptyOp,
-    #[error("invalid expunge range")]
-    InvalidExpungeRange,
+    #[error("write error: {0}")]
+    WriteError(#[from] WriteError),
 }
 
 #[derive(Error, Debug)]

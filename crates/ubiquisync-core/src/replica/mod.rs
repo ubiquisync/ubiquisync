@@ -1,7 +1,9 @@
 mod ctl;
+mod decrypt;
 mod error;
 mod replica;
 mod storage;
+mod verify;
 
 pub use ctl::*;
 pub use error::*;

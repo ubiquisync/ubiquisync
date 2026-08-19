@@ -38,6 +38,10 @@ pub enum TaggedHashDomain {
     MmrBag,
     MmrSignBytes,
     PeerInitCommitment,
+    LogEntryOpBatch,
+    LogEntryUseKey,
+    OpBatchOp,
+    OpBatchHeader,
 }
 
 #[derive(IntoStaticStr, EnumIter, Debug, Clone, Copy, PartialEq, Eq)]

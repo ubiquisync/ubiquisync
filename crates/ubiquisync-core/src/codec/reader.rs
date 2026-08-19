@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use thiserror::Error;
 
 use crate::codec::varint::{decode_var_u64, decode_zigzag_i64};
@@ -15,8 +17,8 @@ pub enum ReadError {
     NonMinimalVarint,
     #[error("usize overflow: {0}")]
     USizeOverflow(u64),
-    #[error("u64 add overflow: {0} + {1}")]
-    U64AddOverflow(u64, u64),
+    #[error("invalid range with start {start} and span {span}")]
+    InvalidRange { start: u64, span: u64 },
 }
 
 impl<'a> Reader<'a> {
@@ -68,6 +70,15 @@ impl<'a> Reader<'a> {
         let (x, rest) = decode_zigzag_i64(self.buf)?;
         self.buf = rest;
         Ok(x)
+    }
+
+    pub fn read_range(&mut self) -> Result<Range<u64>, ReadError> {
+        let start = self.read_var_u64()?;
+        let span = self.read_var_u64()?;
+        let end = start
+            .checked_add(span)
+            .ok_or(ReadError::InvalidRange { start, span })?;
+        Ok(Range { start, end })
     }
 
     pub fn is_empty(&self) -> bool {

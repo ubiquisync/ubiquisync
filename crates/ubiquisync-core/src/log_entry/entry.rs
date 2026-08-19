@@ -98,12 +98,7 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> GenericLogEntry<B, H> {
             },
             GenericLogEntry::Expunged { range, cover } => {
                 writer.write_byte(ENTRY_TYPE_EXPUNGED);
-                writer.write_var_u64(range.start);
-                if range.is_empty() {
-                    return Err(LogEncodeError::InvalidExpungeRange);
-                }
-                let span = range.end - range.start;
-                writer.write_var_u64(span);
+                writer.write_range(range)?;
                 writer.write_var_usize(cover.len());
                 for h in cover.iter() {
                     writer.write_array(h);
@@ -169,11 +164,7 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> GenericLogEntry<B, H> {
                 entry: EntryBody::UseKey(CipherInfo::decode(reader)?),
             },
             ENTRY_TYPE_EXPUNGED => {
-                let start = reader.read_var_u64()?;
-                let span = reader.read_var_u64()?;
-                let end = start
-                    .checked_add(span)
-                    .ok_or(ReadError::U64AddOverflow(start, span))?;
+                let range = reader.read_range()?;
                 let cover_len = reader.read_var_usize()?;
                 // TODO check cover len (easy to determine max size)
                 // NOTE don't reserve capacity in the vec to prevent out-of-memory attacks!
@@ -181,10 +172,7 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> GenericLogEntry<B, H> {
                 for _ in 0..cover_len {
                     cover.push(reader.read_array()?);
                 }
-                Self::Expunged {
-                    range: Range { start, end },
-                    cover,
-                }
+                Self::Expunged { range, cover }
             }
             ENTRY_TYPE_SEAL_BRANCH | ENTRY_TYPE_ACKED_SEAL_BRANCH => {
                 let ack_until = if entry_type == ENTRY_TYPE_ACKED_SEAL_BRANCH {
@@ -194,7 +182,7 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> GenericLogEntry<B, H> {
                 };
                 let start = EntryRef::decode(reader)?;
                 let end = EntryRef::decode(reader)?;
-                // TODO error when end < start or not start <= ack <= end
+                // NOTE: we don't validate the seal range here to prevent invalid seal entries from blocking reading otherwise
                 let signature =
                     Signature::decode(reader).map_err(LogDecodeError::from_sig_decode_err)?;
                 Self::SealBranch {
@@ -218,6 +206,16 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> GenericLogEntry<B, H> {
                 })
             }
         })
+    }
+
+    pub(crate) fn next_entry_index(&self) -> Option<u64> {
+        match self {
+            GenericLogEntry::IndexedEntry { idx, .. } => Some(*idx + 1),
+            GenericLogEntry::Expunged { range, .. } => Some(range.end),
+            GenericLogEntry::Signature { size, .. } => Some(*size),
+            GenericLogEntry::SealBranch { .. } => None,
+            GenericLogEntry::Unknown(UnknownEntryType { idx, .. }) => idx.map(|x| x + 1),
+        }
     }
 
     #[cfg(test)]

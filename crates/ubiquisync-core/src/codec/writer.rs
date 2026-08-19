@@ -1,3 +1,7 @@
+use std::ops::Range;
+
+use thiserror::Error;
+
 use crate::codec::varint::{
     MAX_VAR_U64_SIZE, MAX_ZIGZAG_I64_SIZE, encode_var_u64, encode_zigzag_i64,
 };
@@ -5,6 +9,12 @@ use crate::codec::varint::{
 #[derive(Default)]
 pub struct Writer {
     buf: Vec<u8>,
+}
+
+#[derive(Error, Debug)]
+pub enum WriteError {
+    #[error("invalid range {0:?}")]
+    EmptyRange(Range<u64>),
 }
 
 impl Writer {
@@ -48,6 +58,16 @@ impl Writer {
         let mut buf = [0; MAX_ZIGZAG_I64_SIZE];
         let res = encode_zigzag_i64(x, &mut buf);
         self.write_slice(res)
+    }
+
+    pub fn write_range(&mut self, range: &Range<u64>) -> Result<(), WriteError> {
+        if range.is_empty() {
+            return Err(WriteError::EmptyRange(range));
+        }
+        self.write_var_u64(range.start);
+        let span = range.end - range.start; // already checked with range.is_empty()
+        self.write_var_u64(span);
+        Ok(())
     }
 
     pub fn finalize(self) -> Vec<u8> {
