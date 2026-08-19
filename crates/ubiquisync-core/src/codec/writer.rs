@@ -62,7 +62,7 @@ impl Writer {
 
     pub fn write_range(&mut self, range: &Range<u64>) -> Result<(), WriteError> {
         if range.is_empty() {
-            return Err(WriteError::EmptyRange(range));
+            return Err(WriteError::EmptyRange(range.clone()));
         }
         self.write_var_u64(range.start);
         let span = range.end - range.start; // already checked with range.is_empty()

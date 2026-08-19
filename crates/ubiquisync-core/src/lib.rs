@@ -31,8 +31,7 @@ pub mod ids;
 // pub mod processor;
 pub mod rand;
 pub mod reducer;
-pub mod replica;
-pub mod storage;
+//pub mod replica;
 pub mod uuid;
 // pub mod verifier;
 

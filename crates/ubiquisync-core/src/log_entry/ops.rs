@@ -99,7 +99,7 @@ mod tests {
 
     use crate::{
         codec::{reader::Reader, writer::Writer},
-        log_entry::{OpBatch, OpOrExpunge, OpaqueBytes, PlaintextBytes},
+        log_entry::{LogEncodeError, OpBatch, OpOrExpunge, OpaqueBytes, PlaintextBytes},
     };
 
     #[proptest]
@@ -119,6 +119,6 @@ mod tests {
         let op = OpOrExpunge::Op(PlaintextBytes(Cow::Owned(vec![])));
         let mut w = Writer::new();
         let res = op.encode(&mut w);
-        assert_matches!(res, Err(EncodeError::EmptyOp))
+        assert_matches!(res, Err(LogEncodeError::EmptyOp))
     }
 }
