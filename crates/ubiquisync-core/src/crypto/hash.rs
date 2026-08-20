@@ -160,7 +160,7 @@ impl Hasher {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use insta::assert_snapshot;
     use secrecy::{ExposeSecret, SecretBox};
     use std::fmt::Write;
@@ -262,7 +262,7 @@ mod tests {
         }
     }
 
-    fn hex(hash: &[u8; 32]) -> String {
+    pub(crate) fn hex(hash: &[u8; 32]) -> String {
         let mut s = String::new();
         for b in hash {
             write!(s, "{b:02x}").unwrap()

@@ -106,7 +106,7 @@ impl MmrAccumulator {
     //     hasher.update(&self.root());
     //     hasher.finalize().into()
     // }
-    //
+
     pub fn size(&self) -> u64 {
         self.size
     }
@@ -223,45 +223,63 @@ fn peak_count(size: u64) -> usize {
     size.count_ones() as usize
 }
 
-fn peak_ids(mut size: u64) -> Vec<Range<u64>> {
-    let mut ids = vec![];
-    let mut n = 0;
-    let mut end = size;
-    while size > 0 {
-        if size & 0x1 == 0x1 {
-            let start = (size & !0x1) << n;
-            ids.push(start..end);
-            end = start;
+fn peak_ids(size: u64) -> impl Iterator<Item = Range<u64>> {
+    let mut cur = 0;
+    std::iter::from_fn(move || {
+        if cur < size {
+            let left = size - cur;
+            let w = 1 << left.ilog2();
+            let start = cur;
+            let end = start + w;
+            cur = end;
+            Some(start..end)
+        } else {
+            None
         }
-        size = size >> 1;
-        n += 1;
-    }
-    ids.reverse();
-    ids
+    })
+}
+
+fn peak_ids_rev(size: u64) -> impl Iterator<Item = Range<u64>> {
+    let mut cur = size;
+    std::iter::from_fn(move || {
+        if cur > 0 {
+            let w = 1 << cur.trailing_zeros();
+            let start = cur - w;
+            let end = cur;
+            cur = start;
+            Some(cur..end)
+        } else {
+            None
+        }
+    })
 }
 
 fn peaks_to_nodes(size: u64, peaks: &[Hash256]) -> Option<Vec<Node>> {
     let mut nodes = vec![];
     let ids = peak_ids(size);
-    if peaks.len() != ids.len() {
-        return None;
-    }
-    // TODO we can find a way to do this without a second allocation (i.e. allocating peak ids, then nodes)
-    for (i, id) in ids.iter().enumerate() {
+    let n = peaks.len();
+    for (i, id) in ids.enumerate() {
+        if i >= n {
+            return None;
+        }
         nodes.push(Node {
             id: id.clone(),
             hash: peaks[i],
         })
+    }
+    if n > nodes.len() {
+        // don't tolerate trailing peaks
+        return None;
     }
     Some(nodes)
 }
 
 impl InclusionProof {
     pub fn verify(&self, leaf: &Hash256, root: &Hash256, seed: &Hash256) -> bool {
-        if self.i >= self.size {
+        let Some(witness_ids) = Self::witness_ids(self.i, self.size) else {
             return false;
-        }
-        let witness_ids = Self::witness_ids(self.i, self.size);
+        };
+
         let n = self.witnesses.len();
         if n != witness_ids.len() {
             return false;
@@ -327,7 +345,9 @@ impl InclusionProof {
     }
 
     pub fn generate(i: u64, size: u64, store: &dyn NodeStore, seed: &Hash256) -> Option<Self> {
-        let witness_ids = Self::witness_ids(i, size);
+        let Some(witness_ids) = Self::witness_ids(i, size) else {
+            return None;
+        };
         let mut witnesses = vec![];
         for id in witness_ids.climb_node_ids.iter() {
             let node = resolve_node(store, &id)?;
@@ -347,9 +367,10 @@ impl InclusionProof {
         Some(Self { i, size, witnesses })
     }
 
-    // TODO we can probably figure out a way to do this without allocating in the future, maybe with iter::from_fn
-    fn witness_ids(i: u64, size: u64) -> InclusionProofIds {
-        assert!(i < size);
+    fn witness_ids(i: u64, size: u64) -> Option<InclusionProofIds> {
+        if i >= size {
+            return None;
+        }
         let mut climb_node_ids = vec![];
         let mut cur = i..i + 1;
         // phase 1: climb until we reach a peak (which would be present in MMR peak state for this size)
@@ -386,11 +407,11 @@ impl InclusionProof {
         // phase 3: collect any remaining LHS peaks that must be bagged (rather than hashed as nodes), this all would have been in the peak state for this size
         // will be empty if cur.start == 0
         let lhs_peaks = peak_ids(cur.start);
-        InclusionProofIds {
+        Some(InclusionProofIds {
             climb_node_ids,
             bag_id,
-            lhs_peaks,
-        }
+            lhs_peaks: lhs_peaks.collect::<Vec<_>>(),
+        })
     }
 }
 
@@ -433,10 +454,14 @@ impl PrefixProof {
     }
 
     pub fn generate(m: u64, n: u64, store: &dyn NodeStore) -> Option<Self> {
+        if m > n {
+            return None;
+        }
+
         let peaks_ids_m = peak_ids(m);
         let mut peaks_m = vec![];
-        for id in peaks_ids_m.iter() {
-            let node = resolve_node(store, id)?;
+        for id in peaks_ids_m {
+            let node = resolve_node(store, &id)?;
             peaks_m.push(node.hash);
         }
 
@@ -456,7 +481,7 @@ impl PrefixProof {
 
     // assumes we already have peaks(m)
     fn cover_ids(m: u64, n: u64) -> impl Iterator<Item = Range<u64>> {
-        assert!(m < n);
+        assert!(m <= n);
         let mut p = m;
         std::iter::from_fn(move || {
             if p < n {
@@ -527,12 +552,8 @@ fn resolve_node(store: &dyn NodeStore, id: &Range<u64>) -> Option<Node> {
 fn resolve_bag(store: &dyn NodeStore, id: &Range<u64>, seed: &Hash256) -> Option<Bag> {
     let mut acc = seed_bag(seed, id.end);
     // lookup all peak ids that are >= id.start for size id.end
-    for peak_id in peak_ids(id.end)
-        .iter()
-        .filter(|p| p.start >= id.start)
-        .rev()
-    {
-        let peak = resolve_node(store, peak_id)?;
+    for peak_id in peak_ids_rev(id.end).filter(|p| p.start >= id.start) {
+        let peak = resolve_node(store, &peak_id)?;
         acc = bag_hash(&peak, &acc);
     }
     Some(acc)
@@ -540,14 +561,19 @@ fn resolve_bag(store: &dyn NodeStore, id: &Range<u64>, seed: &Hash256) -> Option
 
 #[cfg(test)]
 mod test {
+    use std::fmt::Write;
     use std::{collections::HashMap, ops::Range};
 
+    use insta::assert_snapshot;
+    use sha2::{Digest, Sha256};
+
+    use crate::crypto::tests::hex;
     use crate::{
         crypto::{
             Hash256,
             mmr::{
                 InclusionProof, MmrAccumulator, MmrState, NodeStore, PrefixProof, peak_count,
-                peak_ids,
+                peak_ids, peak_ids_rev,
             },
         },
         rand::rand_fill,
@@ -556,7 +582,14 @@ mod test {
     #[test]
     fn test_peak_id_count() {
         for i in 0..=64 {
-            assert_eq!(peak_count(i), peak_ids(i).len())
+            let n = peak_count(i);
+            let ids = peak_ids(i).collect::<Vec<_>>();
+            let mut ids_rev = peak_ids_rev(i).collect::<Vec<_>>();
+            assert_eq!(n, ids.len());
+            assert_eq!(n, ids_rev.len());
+            // reverse and check they're equal
+            ids_rev.reverse();
+            assert_eq!(ids, ids_rev);
         }
     }
 
@@ -590,6 +623,28 @@ mod test {
         }
     }
 
+    fn deterministic_hash(i: u64) -> Hash256 {
+        Sha256::digest(&i.to_be_bytes()).into()
+    }
+
+    // ensures that our hashes are deterministic and that there is no regression in root hashes or peaks
+    #[test]
+    fn test_regression() {
+        let seed = deterministic_hash(0);
+        let mut acc = MmrAccumulator::new(seed.clone(), MmrState::default()).unwrap();
+        let mut root_snapshot = String::new();
+        for i in 0..64 {
+            let leaf = deterministic_hash(i + 1);
+            acc.append(&leaf);
+            let root = hex(&acc.root());
+            let size = acc.size();
+            let peaks = acc.peaks().map(|h| hex(h)).collect::<Vec<_>>();
+            writeln!(root_snapshot, "{size} {root} {peaks:?}").unwrap();
+        }
+
+        assert_snapshot!(root_snapshot);
+    }
+
     #[test]
     fn test_prefix_proofs() {
         let mut seed = [0; 32];
@@ -614,7 +669,7 @@ mod test {
             let size = acc.size();
             assert_eq!(i + 1, size);
 
-            for j in 0..size {
+            for j in 0..=size {
                 let proof = PrefixProof::generate(j, size, &node_store).expect("valid proof");
                 let root_j = if j == 0 {
                     // this tests proofs that the full tree is rooted to the seed
