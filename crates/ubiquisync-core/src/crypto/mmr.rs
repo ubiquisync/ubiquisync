@@ -276,8 +276,12 @@ impl InclusionProof {
 
 impl PrefixProof {
     pub fn verify(&self, root_m: &Hash256, root_n: &Hash256, seed: &Hash256) -> bool {
+        if self.m > self.n {
+            return false;
+        }
+
         let peaks_ids_m = peak_ids(self.m);
-        if peaks_ids_m.len() != self.peaks_m.len() {
+        if self.peaks_m.len() != peak_count(self.m) {
             return false;
         }
         let cover_ids = Self::cover_ids(self.m, self.n);
@@ -292,6 +296,7 @@ impl PrefixProof {
         let mut peak_ids = peaks_ids_m.clone();
         for (i, id) in cover_ids.iter().enumerate() {
             let span = id.end - id.start;
+
             if let Some(last) = peak_ids.last().cloned() {
                 let last_span = last.end - last.start;
                 if last_span == span {
@@ -311,6 +316,31 @@ impl PrefixProof {
         }
 
         root_fold(seed, &peaks) == *root_n
+    }
+
+    fn reduce_peaks(
+        peaks: &mut Vec<Hash256>,
+        peak_ids: &mut Vec<Range<u64>>,
+        id: Range<u64>,
+        node: Hash256,
+    ) {
+        let span = id.end - id.start;
+        if let Some(last) = peak_ids.last().cloned() {
+            let last_span = last.end - last.start;
+            if last_span == span {
+                peak_ids.pop();
+                let node = hash_node(
+                    TaggedHashDomain::MmrNode,
+                    &peaks.pop().expect("non-empty node"),
+                    &node,
+                );
+                peaks.push(node);
+                peak_ids.push(last.start..id.end);
+            }
+        } else {
+            peaks.push(node);
+            peak_ids.push(id);
+        }
     }
 
     pub fn generate(m: u64, n: u64, store: &dyn NodeStore) -> Option<Self> {
@@ -338,40 +368,51 @@ impl PrefixProof {
 
     // assumes we already have peaks(m)
     fn cover_ids(m: u64, n: u64) -> Vec<Range<u64>> {
-        if m <= n {
-            return vec![];
-        }
-        let peaks_n = peak_ids(n);
+        assert!(m < n);
         let mut cover = vec![];
-        for id in peaks_n.iter() {
-            Self::breakdown_peak_cover(id, m, &mut cover);
+        let mut p = m;
+        while p < n {
+            let mut width = if p == 0 {
+                // this is the largest RHS node that could pair with p
+                u64::MAX
+            } else {
+                1 << p.trailing_zeros()
+            };
+            let remaining = n - p;
+            if width > remaining {
+                // if such a node is too wide to fit within n
+                width = 1 << (63 - remaining.leading_zeros());
+            }
+            let end = p + width;
+            cover.push(p..end);
+            p = end;
         }
         cover
     }
 
-    fn breakdown_peak_cover(id: &Range<u64>, m: u64, cover: &mut Vec<Range<u64>>) {
-        if id.start >= m {
-            // no part of peak is in m
-            cover.push(id.clone());
-        } else {
-            if id.end <= m {
-                // peak is already in peaks(m)
-                return;
-            } else {
-                // some sub-tree of peak is in peaks(m)
-                let span = id.end - id.start;
-                assert_ne!(
-                    span, 1,
-                    "leaves should be covered 100% by the id.start >= m case"
-                );
-                let mid = id.start + (span / 2);
-                // lhs
-                Self::breakdown_peak_cover(&(id.start..mid), m, cover);
-                // rhs
-                Self::breakdown_peak_cover(&(mid..id.end), m, cover);
-            }
-        }
-    }
+    // fn breakdown_peak_cover(id: &Range<u64>, m: u64, cover: &mut Vec<Range<u64>>) {
+    //     if id.start >= m {
+    //         // no part of peak is in m
+    //         cover.push(id.clone());
+    //     } else {
+    //         if id.end <= m {
+    //             // peak is already in peaks(m)
+    //             return;
+    //         } else {
+    //             // some sub-tree of peak is in peaks(m)
+    //             let span = id.end - id.start;
+    //             assert_ne!(
+    //                 span, 1,
+    //                 "leaves should be covered 100% by the id.start >= m case"
+    //             );
+    //             let mid = id.start + (span / 2);
+    //             // lhs
+    //             Self::breakdown_peak_cover(&(id.start..mid), m, cover);
+    //             // rhs
+    //             Self::breakdown_peak_cover(&(mid..id.end), m, cover);
+    //         }
+    //     }
+    // }
 }
 
 pub trait NodeStore {
@@ -500,5 +541,18 @@ mod test {
         fn lookup_node(&self, id: &Range<u64>) -> Option<Hash256> {
             self.get(id).cloned()
         }
+    }
+
+    #[test]
+    fn test_cover() {
+        print_cover(4, 7);
+        print_cover(2, 12);
+        print_cover(0, 8);
+        print_cover(0, 15);
+    }
+
+    fn print_cover(m: u64, n: u64) {
+        let cover = PrefixProof::cover_ids(m, n);
+        println!("{m} {n} {cover:?}")
     }
 }
