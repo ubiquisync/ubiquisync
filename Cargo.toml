@@ -28,9 +28,10 @@ ubiquisync-postgres = { path = "crates/ubiquisync-postgres", version = "0.0.4" }
 ubiquisync-sqlite = { path = "crates/ubiquisync-sqlite", version = "0.0.4" }
 ubiquisync-tables = { path = "crates/ubiquisync-tables", version = "0.0.4" }
 
-futures = "0.3.32"
-futures-channel = "0.3.32"
-futures-core = "0.3.32"
+futures = "0.3.34"
+futures-channel = "0.3.34"
+futures-core = "0.3.34"
+futures-test = "0.3.34"
 pollster = "0.4.0"
 sea-query = { version = "1.0.1", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "with-uuid"] }
 uuid = { version = "1.23.4", default-features = false }
@@ -39,6 +40,7 @@ rand = "0.10.2"
 
 # macros
 async-trait = "0.1.89"
+async-recursion = "1.1.1"
 bitfield-struct = "0.13.0"
 thiserror = "2.0.18"
 num_enum = "0.7.6"

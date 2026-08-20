@@ -7,8 +7,7 @@ pub struct MmrAccumulator {
     seed: Hash256,
     size: u64,
     peaks: Vec<Node>,
-    // peer_id: PeerId,
-    // container_id: ContainerId,
+    observer: Option<Box<dyn NodeObserver>>,
 }
 
 #[derive(Clone, Default, Debug)]
@@ -42,6 +41,15 @@ pub struct PrefixProof {
     pub cover: Vec<Hash256>,
 }
 
+#[async_trait::async_trait]
+pub trait NodeStore: Send + Sync {
+    async fn lookup_node(&self, id: &Range<u64>) -> Option<Hash256>;
+}
+
+pub trait NodeObserver {
+    fn on_create(&self, id: &Range<u64>, hash: &Hash256);
+}
+
 impl MmrState {
     pub fn validate(&self) -> Result<(), MmrError> {
         let expected = peak_count(self.size);
@@ -73,7 +81,16 @@ impl MmrAccumulator {
             expected: peak_count(size),
             actual: state.peaks.len(),
         })?;
-        Ok(Self { seed, size, peaks })
+        Ok(Self {
+            seed,
+            size,
+            peaks,
+            observer: None,
+        })
+    }
+
+    pub fn set_observer(&mut self, observer: Box<dyn NodeObserver>) {
+        self.observer = Some(observer)
     }
 
     pub fn append(&mut self, leaf: &Hash256) {
@@ -88,6 +105,9 @@ impl MmrAccumulator {
                 .pop()
                 .expect("invalid MMR state: expected a peak");
             node = node_hash(&left, &node);
+            if let Some(ref observer) = self.observer {
+                observer.on_create(&node.id, &node.hash);
+            }
         }
         self.peaks.push(node);
         self.size = self.size.checked_add(1).expect("MMR size overflow");
@@ -344,23 +364,28 @@ impl InclusionProof {
         acc.hash == *root
     }
 
-    pub fn generate(i: u64, size: u64, store: &dyn NodeStore, seed: &Hash256) -> Option<Self> {
+    pub async fn generate(
+        i: u64,
+        size: u64,
+        store: &dyn NodeStore,
+        seed: &Hash256,
+    ) -> Option<Self> {
         let Some(witness_ids) = Self::witness_ids(i, size) else {
             return None;
         };
         let mut witnesses = vec![];
         for id in witness_ids.climb_node_ids.iter() {
-            let node = resolve_node(store, &id)?;
+            let node = resolve_node(store, &id).await?;
             witnesses.push(node.hash);
         }
 
         if let Some(bag_id) = witness_ids.bag_id {
-            let bag = resolve_bag(store, &bag_id, seed)?;
+            let bag = resolve_bag(store, &bag_id, seed).await?;
             witnesses.push(bag.hash);
         }
 
         for id in witness_ids.lhs_peaks.iter() {
-            let node = resolve_node(store, &id)?;
+            let node = resolve_node(store, &id).await?;
             witnesses.push(node.hash);
         }
 
@@ -453,7 +478,7 @@ impl PrefixProof {
         root_bag_n.hash == *root_n
     }
 
-    pub fn generate(m: u64, n: u64, store: &dyn NodeStore) -> Option<Self> {
+    pub async fn generate(m: u64, n: u64, store: &dyn NodeStore) -> Option<Self> {
         if m > n {
             return None;
         }
@@ -461,13 +486,13 @@ impl PrefixProof {
         let peaks_ids_m = peak_ids(m);
         let mut peaks_m = vec![];
         for id in peaks_ids_m {
-            let node = resolve_node(store, &id)?;
+            let node = resolve_node(store, &id).await?;
             peaks_m.push(node.hash);
         }
 
         let mut cover = vec![];
         for id in Self::cover_ids(m, n) {
-            let node = resolve_node(store, &id)?;
+            let node = resolve_node(store, &id).await?;
             cover.push(node.hash);
         }
 
@@ -524,12 +549,9 @@ fn reduce_peaks(peaks: &mut Vec<Node>, mut right: Node) {
     peaks.push(right);
 }
 
-pub trait NodeStore {
-    fn lookup_node(&self, id: &Range<u64>) -> Option<Hash256>;
-}
-
-fn resolve_node(store: &dyn NodeStore, id: &Range<u64>) -> Option<Node> {
-    if let Some(hash) = store.lookup_node(id) {
+#[async_recursion::async_recursion]
+async fn resolve_node(store: &dyn NodeStore, id: &Range<u64>) -> Option<Node> {
+    if let Some(hash) = store.lookup_node(id).await {
         return Some(Node {
             id: id.clone(),
             hash,
@@ -544,16 +566,16 @@ fn resolve_node(store: &dyn NodeStore, id: &Range<u64>) -> Option<Node> {
         return None;
     }
     let m = id.start + span / 2;
-    let lhs = resolve_node(store, &(id.start..m))?;
-    let rhs = resolve_node(store, &(m..id.end))?;
+    let lhs = resolve_node(store, &(id.start..m)).await?;
+    let rhs = resolve_node(store, &(m..id.end)).await?;
     Some(node_hash(&lhs, &rhs))
 }
 
-fn resolve_bag(store: &dyn NodeStore, id: &Range<u64>, seed: &Hash256) -> Option<Bag> {
+async fn resolve_bag(store: &dyn NodeStore, id: &Range<u64>, seed: &Hash256) -> Option<Bag> {
     let mut acc = seed_bag(seed, id.end);
     // lookup all peak ids that are >= id.start for size id.end
     for peak_id in peak_ids_rev(id.end).filter(|p| p.start >= id.start) {
-        let peak = resolve_node(store, &peak_id)?;
+        let peak = resolve_node(store, &peak_id).await?;
         acc = bag_hash(&peak, &acc);
     }
     Some(acc)
@@ -593,8 +615,8 @@ mod test {
         }
     }
 
-    #[test]
-    fn test_inclusion_proofs() {
+    #[futures_test::test]
+    async fn test_inclusion_proofs() {
         let mut seed = [0; 32];
         rand_fill(&mut seed).unwrap();
         let mut acc = MmrAccumulator::new(seed.clone(), MmrState::default()).unwrap();
@@ -616,6 +638,7 @@ mod test {
             let root = acc.root();
             for j in 0..=i {
                 let proof = InclusionProof::generate(j, acc.size(), &node_store, &seed)
+                    .await
                     .expect("valid proof");
                 let leaf = &leaves[j as usize];
                 assert!(proof.verify(leaf, &root, &seed));
@@ -645,8 +668,8 @@ mod test {
         assert_snapshot!(root_snapshot);
     }
 
-    #[test]
-    fn test_prefix_proofs() {
+    #[futures_test::test]
+    async fn test_prefix_proofs() {
         let mut seed = [0; 32];
         rand_fill(&mut seed).unwrap();
         let mut acc = MmrAccumulator::new(seed.clone(), MmrState::default()).unwrap();
@@ -670,7 +693,9 @@ mod test {
             assert_eq!(i + 1, size);
 
             for j in 0..=size {
-                let proof = PrefixProof::generate(j, size, &node_store).expect("valid proof");
+                let proof = PrefixProof::generate(j, size, &node_store)
+                    .await
+                    .expect("valid proof");
                 let root_j = if j == 0 {
                     // this tests proofs that the full tree is rooted to the seed
                     &seed
@@ -684,8 +709,9 @@ mod test {
 
     type TestNodeStore = HashMap<Range<u64>, Hash256>;
 
+    #[async_trait::async_trait]
     impl NodeStore for HashMap<Range<u64>, Hash256> {
-        fn lookup_node(&self, id: &Range<u64>) -> Option<Hash256> {
+        async fn lookup_node(&self, id: &Range<u64>) -> Option<Hash256> {
             self.get(id).cloned()
         }
     }
