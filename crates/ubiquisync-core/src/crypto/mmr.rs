@@ -11,19 +11,19 @@ pub struct MmrAccumulator {
     // container_id: ContainerId,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 pub struct MmrState {
     pub size: u64,
     pub peaks: Vec<Hash256>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct Node {
     id: Range<u64>,
     hash: Hash256,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct Bag {
     id: Range<u64>,
     hash: Hash256,
@@ -323,7 +323,7 @@ impl InclusionProof {
             acc = bag_hash(
                 &Node {
                     hash: self.witnesses[j].clone(),
-                    id: witness_ids.lhs_peaks[j].clone(),
+                    id: witness_ids.lhs_peaks[j - i].clone(),
                 },
                 &acc,
             );
@@ -406,9 +406,11 @@ impl PrefixProof {
         }
 
         let Some(mut peaks) = peaks_to_nodes(self.m, &self.peaks_m) else {
+            println!("wrong number of peaks");
             return false;
         };
         if root_fold(self.m, seed, &peaks).hash != *root_m {
+            println!("root_m hash fails");
             return false;
         }
 
@@ -419,6 +421,7 @@ impl PrefixProof {
         while p < n {
             if i >= cover_len {
                 // bad cover size
+                println!("bad cover size");
                 return false;
             }
             let w = Self::cover_width(p, n);
@@ -437,44 +440,21 @@ impl PrefixProof {
         root_bag_n.hash == *root_n
     }
 
-    // fn reduce_peaks(
-    //     peaks: &mut Vec<Hash256>,
-    //     peak_ids: &mut Vec<Range<u64>>,
-    //     id: Range<u64>,
-    //     node: Hash256,
-    // ) {
-    //     let span = id.end - id.start;
-    //     if let Some(last) = peak_ids.last().cloned() {
-    //         let last_span = last.end - last.start;
-    //         if last_span == span {
-    //             peak_ids.pop();
-    //             let node = tagged_hash_node(
-    //                 TaggedHashDomain::MmrNode,
-    //                 &peaks.pop().expect("non-empty node"),
-    //                 &node,
-    //             );
-    //             peaks.push(node);
-    //             peak_ids.push(last.start..id.end);
-    //         }
-    //     } else {
-    //         peaks.push(node);
-    //         peak_ids.push(id);
-    //     }
-    // }
-
     pub fn generate(m: u64, n: u64, store: &dyn NodeStore) -> Option<Self> {
+        println!("== GENERATE {m} {n} ==");
         let peaks_ids_m = peak_ids(m);
-        let cover_ids = Self::cover_ids(m, n);
         let mut peaks_m = vec![];
         for id in peaks_ids_m.iter() {
-            let node = store.lookup_node(id)?;
-            peaks_m.push(node);
+            println!("peaks_m {id:?} {m} {n}");
+            let node = resolve_node(store, id)?;
+            peaks_m.push(node.hash);
         }
 
         let mut cover = vec![];
-        for id in cover_ids.iter() {
-            let node = store.lookup_node(id)?;
-            cover.push(node);
+        for id in Self::cover_ids(m, n) {
+            println!("cover {id:?} {m} {n}");
+            let node = resolve_node(store, &id)?;
+            cover.push(node.hash);
         }
 
         Some(Self {
@@ -486,17 +466,19 @@ impl PrefixProof {
     }
 
     // assumes we already have peaks(m)
-    fn cover_ids(m: u64, n: u64) -> Vec<Range<u64>> {
+    fn cover_ids(m: u64, n: u64) -> impl Iterator<Item = Range<u64>> {
         assert!(m < n);
-        let mut cover = vec![];
         let mut p = m;
-        while p < n {
-            let cover_width = Self::cover_width(p, n);
-            let end = p + cover_width;
-            cover.push(p..end);
-            p = end;
-        }
-        cover
+        std::iter::from_fn(move || {
+            if p < n {
+                let cover_width = Self::cover_width(p, n);
+                let start = p;
+                p = p + cover_width;
+                Some(start..p)
+            } else {
+                None
+            }
+        })
     }
 
     fn cover_width(p: u64, n: u64) -> u64 {
@@ -626,7 +608,7 @@ mod test {
         let mut acc = MmrAccumulator::new(seed.clone(), MmrState::default()).unwrap();
         let mut node_store = TestNodeStore::default();
         let mut roots = vec![];
-        for i in 0..=64 {
+        for i in 0..64 {
             let mut leaf = [0; 32];
             rand_fill(&mut leaf).unwrap();
             acc.append(&leaf);
@@ -640,11 +622,18 @@ mod test {
 
             let root = acc.root();
             roots.push(root.clone());
+            let size = acc.size();
+            assert_eq!(i + 1, size);
 
-            for j in 0..=i {
-                let proof = PrefixProof::generate(j, acc.size(), &node_store).expect("valid proof");
-                let root_j = &roots[j as usize];
-                assert!(proof.verify(root_j, &root, &seed));
+            for j in 0..size {
+                let proof = PrefixProof::generate(j, size, &node_store).expect("valid proof");
+                let root_j = if j == 0 {
+                    // this tests proofs that the full tree is rooted to the seed
+                    &seed
+                } else {
+                    &roots[(j - 1) as usize]
+                };
+                assert!(proof.verify(root_j, &root, &seed), "m:{j} n:{size}");
             }
         }
     }
@@ -666,7 +655,7 @@ mod test {
     }
 
     fn print_cover(m: u64, n: u64) {
-        let cover = PrefixProof::cover_ids(m, n);
+        let cover = PrefixProof::cover_ids(m, n).collect::<Vec<Range<u64>>>();
         println!("{m} {n} {cover:?}")
     }
 }
