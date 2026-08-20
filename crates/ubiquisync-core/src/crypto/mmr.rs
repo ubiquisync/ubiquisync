@@ -4,8 +4,9 @@ use crate::crypto::{Hash256, Hash256Suite, TaggedHashDomain};
 use thiserror::Error;
 
 pub struct MmrAccumulator {
-    state: MmrState,
     seed: Hash256,
+    size: u64,
+    peaks: Vec<Node>,
     // peer_id: PeerId,
     // container_id: ContainerId,
 }
@@ -14,6 +15,18 @@ pub struct MmrAccumulator {
 pub struct MmrState {
     pub size: u64,
     pub peaks: Vec<Hash256>,
+}
+
+#[derive(Clone)]
+struct Node {
+    id: Range<u64>,
+    hash: Hash256,
+}
+
+#[derive(Clone)]
+struct Bag {
+    id: Range<u64>,
+    hash: Hash256,
 }
 
 pub struct InclusionProof {
@@ -31,23 +44,19 @@ pub struct PrefixProof {
 
 impl MmrState {
     pub fn validate(&self) -> Result<(), MmrError> {
-        let expected = self.size.count_ones();
+        let expected = peak_count(self.size);
         let actual = self.peaks.len();
-        if (expected as usize) != actual {
+        if expected != actual {
             return Err(MmrError::InvalidPeakCount { expected, actual });
         }
         Ok(())
-    }
-
-    pub fn node_ids(&self) -> Vec<Range<u64>> {
-        peak_ids(self.size)
     }
 }
 
 #[derive(Error, Debug)]
 pub enum MmrError {
     #[error("expected {expected} peaks, got {actual}")]
-    InvalidPeakCount { expected: u32, actual: usize },
+    InvalidPeakCount { expected: usize, actual: usize },
 }
 
 const HASH_SUITE: Hash256Suite = Hash256Suite::Sha256;
@@ -59,30 +68,34 @@ impl MmrAccumulator {
         // seed_hasher.update(&peer_id.0);
         // seed_hasher.update(&container_id.0);
         // let seed = seed_hasher.finalize();
-        Ok(Self {
-            seed,
-            state,
-            // container_id: *container_id,
-            // peer_id: *peer_id,
-        })
+        let size = state.size;
+        let peaks = peaks_to_nodes(size, &state.peaks).ok_or(MmrError::InvalidPeakCount {
+            expected: peak_count(size),
+            actual: state.peaks.len(),
+        })?;
+        Ok(Self { seed, size, peaks })
     }
 
     pub fn append(&mut self, leaf: &Hash256) {
-        let mut node = *leaf;
-        for _ in 0..self.state.size.trailing_ones() {
+        let i = self.size;
+        let mut node = Node {
+            hash: *leaf,
+            id: i..i + 1,
+        };
+        for _ in 0..self.size.trailing_ones() {
             let left = self
-                .state
                 .peaks
                 .pop()
                 .expect("invalid MMR state: expected a peak");
-            node = hash_node(TaggedHashDomain::MmrNode, &left, &node);
+            node = node_hash(&left, &node);
         }
-        self.state.peaks.push(node);
-        self.state.size = self.state.size.checked_add(1).expect("MMR size overflow");
+        self.peaks.push(node);
+        self.size = self.size.checked_add(1).expect("MMR size overflow");
     }
 
     pub fn root(&self) -> Hash256 {
-        root_fold(&self.seed, &self.state.peaks)
+        let root_bag = root_fold(self.size, &self.seed, &self.peaks);
+        root_bag.hash
     }
 
     // pub fn sign_bytes(&self) -> Hash256 {
@@ -93,29 +106,100 @@ impl MmrAccumulator {
     //     hasher.update(&self.root());
     //     hasher.finalize().into()
     // }
-
+    //
     pub fn size(&self) -> u64 {
-        self.state.size
+        self.size
     }
 
-    pub fn state(&self) -> &MmrState {
-        &self.state
+    pub fn peaks(&self) -> impl Iterator<Item = &Hash256> {
+        self.peaks.iter().map(|n| &n.hash)
     }
 }
 
-fn hash_node(domain: TaggedHashDomain, left: &Hash256, right: &Hash256) -> Hash256 {
+fn node_hash(left: &Node, right: &Node) -> Node {
+    let left_size = left.size();
+    assert!(left_size >= 1);
+    let right_size = right.size();
+    assert!(right_size >= 1);
+    assert_eq!(left.id.end, right.id.start);
+    let hash = tagged_hash_node(
+        TaggedHashDomain::MmrNode,
+        left_size,
+        &left.hash,
+        right_size,
+        &right.hash,
+    );
+    Node {
+        id: left.id.start..right.id.end,
+        hash,
+    }
+}
+
+fn bag_hash(left: &Node, right: &Bag) -> Bag {
+    let left_size = left.size();
+    assert!(left_size >= 1);
+    let right_size = right.size();
+    // right size can be 0 for seeed
+    assert_eq!(left.id.end, right.id.start);
+    let hash = tagged_hash_node(
+        TaggedHashDomain::MmrBag,
+        left_size,
+        &left.hash,
+        right_size,
+        &right.hash,
+    );
+    Bag {
+        id: left.id.start..right.id.end,
+        hash,
+    }
+}
+
+fn seed_bag(seed: &Hash256, size: u64) -> Bag {
+    Bag {
+        id: size..size,
+        hash: *seed,
+    }
+}
+
+fn tagged_hash_node(
+    domain: TaggedHashDomain,
+    left_size: u64,
+    left: &Hash256,
+    right_size: u64,
+    right: &Hash256,
+) -> Hash256 {
     let mut hasher = HASH_SUITE.new_tagged_hasher(domain);
+    hasher.update(&left_size.to_le_bytes());
     hasher.update(left);
+    hasher.update(&right_size.to_le_bytes());
     hasher.update(right);
     hasher.finalize().into()
 }
 
-fn root_fold(seed: &Hash256, peaks: &[Hash256]) -> Hash256 {
-    let mut acc = *seed;
+fn root_fold(size: u64, seed: &Hash256, peaks: &[Node]) -> Bag {
+    let mut acc = seed_bag(seed, size);
     for peak in peaks.iter().rev() {
-        acc = hash_node(TaggedHashDomain::MmrBag, peak, &acc);
+        acc = bag_hash(peak, &acc);
     }
     acc
+}
+
+impl Node {
+    fn size(&self) -> u64 {
+        self.id
+            .end
+            .checked_sub(self.id.start)
+            .expect("valid node id")
+    }
+}
+
+impl Bag {
+    fn size(&self) -> u64 {
+        self.id
+            .end
+            .checked_sub(self.id.start)
+            .expect("valid node id")
+    }
 }
 
 // #[derive(Debug, Clone, PartialEq, Eq)]
@@ -162,6 +246,22 @@ fn peak_ids(mut size: u64) -> Vec<Range<u64>> {
     ids
 }
 
+fn peaks_to_nodes(size: u64, peaks: &[Hash256]) -> Option<Vec<Node>> {
+    let mut nodes = vec![];
+    let ids = peak_ids(size);
+    if peaks.len() != ids.len() {
+        return None;
+    }
+    // TODO we can find a way to do this without a second allocation (i.e. allocating peak ids, then nodes)
+    for (i, id) in ids.iter().enumerate() {
+        nodes.push(Node {
+            id: id.clone(),
+            hash: peaks[i],
+        })
+    }
+    Some(nodes)
+}
+
 impl InclusionProof {
     pub fn verify(&self, leaf: &Hash256, root: &Hash256, seed: &Hash256) -> bool {
         if self.i >= self.size {
@@ -172,39 +272,64 @@ impl InclusionProof {
         if n != witness_ids.len() {
             return false;
         }
-        let mut cur = *leaf;
-        let mut cur_id = self.i..self.i + 1;
+
+        let mut cur = Node {
+            id: self.i..self.i + 1,
+            hash: *leaf,
+        };
         let mut i = 0;
 
         let climb_node_ids = witness_ids.climb_node_ids;
         while i < climb_node_ids.len() {
             let witness = self.witnesses[i];
             let witness_id = &climb_node_ids[i];
-            let w = cur_id.end - cur_id.start;
-            if (cur_id.start / w) % 2 == 0 {
+            let w = cur.size();
+            if (cur.id.start / w) % 2 == 0 {
                 // even -> cur LHS, witness RHS
-                cur = hash_node(TaggedHashDomain::MmrNode, &cur, &witness);
-                cur_id = cur_id.start..witness_id.end;
+                cur = node_hash(
+                    &cur,
+                    &Node {
+                        id: witness_id.clone(),
+                        hash: witness,
+                    },
+                );
             } else {
                 // odd -> witness LHS, cur RHS
-                cur = hash_node(TaggedHashDomain::MmrNode, &witness, &cur);
-                cur_id = witness_id.start..cur_id.end;
+                cur = node_hash(
+                    &Node {
+                        id: witness_id.clone(),
+                        hash: witness,
+                    },
+                    &cur,
+                );
             }
             i += 1;
         }
 
-        if witness_ids.bag_id.is_some() {
-            cur = hash_node(TaggedHashDomain::MmrBag, &cur, &self.witnesses[i]);
+        let mut acc = if let Some(id) = witness_ids.bag_id {
+            let bag = Bag {
+                id: id.clone(),
+                hash: self.witnesses[i].clone(),
+            };
             i += 1;
+            bag
         } else {
-            cur = hash_node(TaggedHashDomain::MmrBag, &cur, &seed);
-        }
+            seed_bag(&seed, self.size)
+        };
+
+        acc = bag_hash(&cur, &acc);
 
         for j in (i..n).rev() {
-            cur = hash_node(TaggedHashDomain::MmrBag, &self.witnesses[j], &cur);
+            acc = bag_hash(
+                &Node {
+                    hash: self.witnesses[j].clone(),
+                    id: witness_ids.lhs_peaks[j].clone(),
+                },
+                &acc,
+            );
         }
 
-        cur == *root
+        acc.hash == *root
     }
 
     pub fn generate(i: u64, size: u64, store: &dyn NodeStore, seed: &Hash256) -> Option<Self> {
@@ -212,17 +337,17 @@ impl InclusionProof {
         let mut witnesses = vec![];
         for id in witness_ids.climb_node_ids.iter() {
             let node = resolve_node(store, &id)?;
-            witnesses.push(node);
+            witnesses.push(node.hash);
         }
 
         if let Some(bag_id) = witness_ids.bag_id {
             let bag = resolve_bag(store, &bag_id, seed)?;
-            witnesses.push(bag);
+            witnesses.push(bag.hash);
         }
 
         for id in witness_ids.lhs_peaks.iter() {
             let node = resolve_node(store, &id)?;
-            witnesses.push(node);
+            witnesses.push(node.hash);
         }
 
         Some(Self { i, size, witnesses })
@@ -280,68 +405,62 @@ impl PrefixProof {
             return false;
         }
 
-        let peaks_ids_m = peak_ids(self.m);
-        if self.peaks_m.len() != peak_count(self.m) {
+        let Some(mut peaks) = peaks_to_nodes(self.m, &self.peaks_m) else {
             return false;
-        }
-        let cover_ids = Self::cover_ids(self.m, self.n);
-        if cover_ids.len() != self.cover.len() {
-            return false;
-        }
-        if root_fold(seed, &self.peaks_m) != *root_m {
+        };
+        if root_fold(self.m, seed, &peaks).hash != *root_m {
             return false;
         }
 
-        let mut peaks = self.peaks_m.clone();
-        let mut peak_ids = peaks_ids_m.clone();
-        for (i, id) in cover_ids.iter().enumerate() {
-            let span = id.end - id.start;
-
-            if let Some(last) = peak_ids.last().cloned() {
-                let last_span = last.end - last.start;
-                if last_span == span {
-                    peak_ids.pop();
-                    let node = hash_node(
-                        TaggedHashDomain::MmrNode,
-                        &peaks.pop().expect("non-empty node"),
-                        &self.cover[i],
-                    );
-                    peaks.push(node);
-                    peak_ids.push(last.start..id.end);
-                }
-            } else {
-                peaks.push(self.cover[i]);
-                peak_ids.push(id.clone());
+        let mut p = self.m;
+        let n = self.n;
+        let cover_len = self.cover.len();
+        let i = 0;
+        while p < n {
+            if i >= cover_len {
+                // bad cover size
+                return false;
             }
+            let w = Self::cover_width(p, n);
+            let end = p + w;
+            reduce_peaks(
+                &mut peaks,
+                Node {
+                    id: p..end,
+                    hash: self.cover[i],
+                },
+            );
+            p = end;
         }
 
-        root_fold(seed, &peaks) == *root_n
+        let root_bag_n = root_fold(self.n, seed, &peaks);
+        root_bag_n.hash == *root_n
     }
 
-    fn reduce_peaks(
-        peaks: &mut Vec<Hash256>,
-        peak_ids: &mut Vec<Range<u64>>,
-        id: Range<u64>,
-        node: Hash256,
-    ) {
-        let span = id.end - id.start;
-        if let Some(last) = peak_ids.last().cloned() {
-            let last_span = last.end - last.start;
-            if last_span == span {
-                peak_ids.pop();
-                let node = hash_node(
-                    TaggedHashDomain::MmrNode,
-                    &peaks.pop().expect("non-empty node"),
-                    &node,
-                );
-                peaks.push(node);
-                peak_ids.push(last.start..id.end);
-            }
-        } else {
-            peaks.push(node);
-            peak_ids.push(id);
-        }
-    }
+    // fn reduce_peaks(
+    //     peaks: &mut Vec<Hash256>,
+    //     peak_ids: &mut Vec<Range<u64>>,
+    //     id: Range<u64>,
+    //     node: Hash256,
+    // ) {
+    //     let span = id.end - id.start;
+    //     if let Some(last) = peak_ids.last().cloned() {
+    //         let last_span = last.end - last.start;
+    //         if last_span == span {
+    //             peak_ids.pop();
+    //             let node = tagged_hash_node(
+    //                 TaggedHashDomain::MmrNode,
+    //                 &peaks.pop().expect("non-empty node"),
+    //                 &node,
+    //             );
+    //             peaks.push(node);
+    //             peak_ids.push(last.start..id.end);
+    //         }
+    //     } else {
+    //         peaks.push(node);
+    //         peak_ids.push(id);
+    //     }
+    // }
 
     pub fn generate(m: u64, n: u64, store: &dyn NodeStore) -> Option<Self> {
         let peaks_ids_m = peak_ids(m);
@@ -372,56 +491,53 @@ impl PrefixProof {
         let mut cover = vec![];
         let mut p = m;
         while p < n {
-            let mut width = if p == 0 {
-                // this is the largest RHS node that could pair with p
-                u64::MAX
-            } else {
-                1 << p.trailing_zeros()
-            };
-            let remaining = n - p;
-            if width > remaining {
-                // if such a node is too wide to fit within n
-                width = 1 << (63 - remaining.leading_zeros());
-            }
-            let end = p + width;
+            let cover_width = Self::cover_width(p, n);
+            let end = p + cover_width;
             cover.push(p..end);
             p = end;
         }
         cover
     }
 
-    // fn breakdown_peak_cover(id: &Range<u64>, m: u64, cover: &mut Vec<Range<u64>>) {
-    //     if id.start >= m {
-    //         // no part of peak is in m
-    //         cover.push(id.clone());
-    //     } else {
-    //         if id.end <= m {
-    //             // peak is already in peaks(m)
-    //             return;
-    //         } else {
-    //             // some sub-tree of peak is in peaks(m)
-    //             let span = id.end - id.start;
-    //             assert_ne!(
-    //                 span, 1,
-    //                 "leaves should be covered 100% by the id.start >= m case"
-    //             );
-    //             let mid = id.start + (span / 2);
-    //             // lhs
-    //             Self::breakdown_peak_cover(&(id.start..mid), m, cover);
-    //             // rhs
-    //             Self::breakdown_peak_cover(&(mid..id.end), m, cover);
-    //         }
-    //     }
-    // }
+    fn cover_width(p: u64, n: u64) -> u64 {
+        assert!(p < n);
+        let rhs_width = if p == 0 {
+            // this is the largest RHS node that could pair with p
+            u64::MAX
+        } else {
+            1 << p.trailing_zeros()
+        };
+        let remaining = n - p;
+        let fit_width = 1 << (63 - remaining.leading_zeros());
+        std::cmp::min(rhs_width, fit_width)
+    }
+}
+
+fn reduce_peaks(peaks: &mut Vec<Node>, mut right: Node) {
+    loop {
+        if let Some(left) = peaks.last() {
+            if left.size() != right.size() {
+                break;
+            }
+        } else {
+            break;
+        }
+        let left = peaks.pop().expect("non-empty node");
+        right = node_hash(&left, &right);
+    }
+    peaks.push(right);
 }
 
 pub trait NodeStore {
     fn lookup_node(&self, id: &Range<u64>) -> Option<Hash256>;
 }
 
-fn resolve_node(store: &dyn NodeStore, id: &Range<u64>) -> Option<Hash256> {
-    if let Some(node) = store.lookup_node(id) {
-        return Some(node);
+fn resolve_node(store: &dyn NodeStore, id: &Range<u64>) -> Option<Node> {
+    if let Some(hash) = store.lookup_node(id) {
+        return Some(Node {
+            id: id.clone(),
+            hash,
+        });
     }
     let span = id.end.checked_sub(id.start).expect("valid range");
     if span <= 1 {
@@ -434,11 +550,11 @@ fn resolve_node(store: &dyn NodeStore, id: &Range<u64>) -> Option<Hash256> {
     let m = id.start + span / 2;
     let lhs = resolve_node(store, &(id.start..m))?;
     let rhs = resolve_node(store, &(m..id.end))?;
-    Some(hash_node(TaggedHashDomain::MmrNode, &lhs, &rhs))
+    Some(node_hash(&lhs, &rhs))
 }
 
-fn resolve_bag(store: &dyn NodeStore, id: &Range<u64>, seed: &Hash256) -> Option<Hash256> {
-    let mut acc = *seed;
+fn resolve_bag(store: &dyn NodeStore, id: &Range<u64>, seed: &Hash256) -> Option<Bag> {
+    let mut acc = seed_bag(seed, id.end);
     // lookup all peak ids that are >= id.start for size id.end
     for peak_id in peak_ids(id.end)
         .iter()
@@ -446,7 +562,7 @@ fn resolve_bag(store: &dyn NodeStore, id: &Range<u64>, seed: &Hash256) -> Option
         .rev()
     {
         let peak = resolve_node(store, peak_id)?;
-        acc = hash_node(TaggedHashDomain::MmrBag, &peak, &acc);
+        acc = bag_hash(&peak, &acc);
     }
     Some(acc)
 }
@@ -486,11 +602,10 @@ mod test {
             acc.append(&leaf);
             leaves.push(leaf.clone());
             node_store.insert(i..i + 1, leaf.clone());
-            let state = acc.state();
-            assert_eq!(state.peaks.len(), peak_count(state.size));
-            for (i, id) in state.node_ids().iter().enumerate() {
-                if !node_store.contains_key(id) {
-                    node_store.insert(id.clone(), state.peaks[i]);
+            assert_eq!(acc.peaks.len(), peak_count(acc.size));
+            for node in acc.peaks.iter() {
+                if !node_store.contains_key(&node.id) {
+                    node_store.insert(node.id.clone(), node.hash);
                 }
             }
 
@@ -516,11 +631,10 @@ mod test {
             rand_fill(&mut leaf).unwrap();
             acc.append(&leaf);
             node_store.insert(i..i + 1, leaf.clone());
-            let state = acc.state();
-            assert_eq!(state.peaks.len(), peak_count(state.size));
-            for (i, id) in state.node_ids().iter().enumerate() {
-                if !node_store.contains_key(id) {
-                    node_store.insert(id.clone(), state.peaks[i]);
+            assert_eq!(acc.peaks.len(), peak_count(acc.size));
+            for node in acc.peaks.iter() {
+                if !node_store.contains_key(&node.id) {
+                    node_store.insert(node.id.clone(), node.hash);
                 }
             }
 
