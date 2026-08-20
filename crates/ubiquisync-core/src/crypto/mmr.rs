@@ -131,8 +131,8 @@ impl MmrAccumulator {
         self.size
     }
 
-    pub fn peaks(&self) -> impl Iterator<Item = &Hash256> {
-        self.peaks.iter().map(|n| &n.hash)
+    pub fn peaks(&self) -> impl Iterator<Item = Hash256> {
+        self.peaks.iter().map(|n| n.hash)
     }
 }
 
@@ -635,7 +635,7 @@ mod test {
             acc.append(&leaf);
             let root = hex(&acc.root());
             let size = acc.size();
-            let peaks = acc.peaks().map(|h| hex(h)).collect::<Vec<_>>();
+            let peaks = acc.peaks().map(|h| hex(&h)).collect::<Vec<_>>();
             writeln!(root_snapshot, "{size} {root} {peaks:?}").unwrap();
         }
 
@@ -650,15 +650,30 @@ mod test {
         let mut node_store = TestNodeStore::default();
         let mut leaves = vec![];
         for i in 0..=64 {
+            if i % 7 == 0 {
+                // sometimes reset accumulator
+                acc = MmrAccumulator::new(
+                    seed.clone(),
+                    MmrState {
+                        size: acc.size(),
+                        peaks: acc.peaks().collect(),
+                    },
+                )
+                .unwrap();
+            }
+
             let mut leaf = [0; 32];
             rand_fill(&mut leaf).unwrap();
             acc.append(&leaf);
             leaves.push(leaf.clone());
             node_store.insert(i..i + 1, leaf.clone());
             assert_eq!(acc.peaks.len(), peak_count(acc.size));
-            for node in acc.peaks.iter() {
-                if !node_store.contains_key(&node.id) {
-                    node_store.insert(node.id.clone(), node.hash);
+            if i % 5 == 0 {
+                // don't insert all peaks to test how nodes get regenerated
+                for node in acc.peaks.iter() {
+                    if !node_store.contains_key(&node.id) {
+                        node_store.insert(node.id.clone(), node.hash);
+                    }
                 }
             }
 
@@ -714,9 +729,12 @@ mod test {
             acc.append(&leaf);
             node_store.insert(i..i + 1, leaf.clone());
             assert_eq!(acc.peaks.len(), peak_count(acc.size));
-            for node in acc.peaks.iter() {
-                if !node_store.contains_key(&node.id) {
-                    node_store.insert(node.id.clone(), node.hash);
+            if i % 5 == 0 {
+                // don't insert all peaks to test how nodes get regenerated
+                for node in acc.peaks.iter() {
+                    if !node_store.contains_key(&node.id) {
+                        node_store.insert(node.id.clone(), node.hash);
+                    }
                 }
             }
 
