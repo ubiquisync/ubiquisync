@@ -202,12 +202,6 @@ impl Bag {
     }
 }
 
-// #[derive(Debug, Clone, PartialEq, Eq)]
-// enum WitnessId {
-//     Node(Range<u64>),
-//     Bag(Range<u64>),
-// }
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct InclusionProofIds {
     climb_node_ids: Vec<Range<u64>>,
@@ -353,6 +347,7 @@ impl InclusionProof {
         Some(Self { i, size, witnesses })
     }
 
+    // TODO we can probably figure out a way to do this without allocating in the future, maybe with iter::from_fn
     fn witness_ids(i: u64, size: u64) -> InclusionProofIds {
         assert!(i < size);
         let mut climb_node_ids = vec![];
@@ -406,34 +401,31 @@ impl PrefixProof {
         }
 
         let Some(mut peaks) = peaks_to_nodes(self.m, &self.peaks_m) else {
-            println!("wrong number of peaks");
             return false;
         };
         if root_fold(self.m, seed, &peaks).hash != *root_m {
-            println!("root_m hash fails");
             return false;
         }
 
-        let mut p = self.m;
-        let n = self.n;
         let cover_len = self.cover.len();
-        let i = 0;
-        while p < n {
+        let mut i = 0;
+        for id in Self::cover_ids(self.m, self.n) {
             if i >= cover_len {
                 // bad cover size
-                println!("bad cover size");
                 return false;
             }
-            let w = Self::cover_width(p, n);
-            let end = p + w;
             reduce_peaks(
                 &mut peaks,
                 Node {
-                    id: p..end,
+                    id,
                     hash: self.cover[i],
                 },
             );
-            p = end;
+            i += 1;
+        }
+        if i != cover_len {
+            // don't tolerate trailing garbage in the cover
+            return false;
         }
 
         let root_bag_n = root_fold(self.n, seed, &peaks);
@@ -441,18 +433,15 @@ impl PrefixProof {
     }
 
     pub fn generate(m: u64, n: u64, store: &dyn NodeStore) -> Option<Self> {
-        println!("== GENERATE {m} {n} ==");
         let peaks_ids_m = peak_ids(m);
         let mut peaks_m = vec![];
         for id in peaks_ids_m.iter() {
-            println!("peaks_m {id:?} {m} {n}");
             let node = resolve_node(store, id)?;
             peaks_m.push(node.hash);
         }
 
         let mut cover = vec![];
         for id in Self::cover_ids(m, n) {
-            println!("cover {id:?} {m} {n}");
             let node = resolve_node(store, &id)?;
             cover.push(node.hash);
         }
@@ -644,18 +633,5 @@ mod test {
         fn lookup_node(&self, id: &Range<u64>) -> Option<Hash256> {
             self.get(id).cloned()
         }
-    }
-
-    #[test]
-    fn test_cover() {
-        print_cover(4, 7);
-        print_cover(2, 12);
-        print_cover(0, 8);
-        print_cover(0, 15);
-    }
-
-    fn print_cover(m: u64, n: u64) {
-        let cover = PrefixProof::cover_ids(m, n).collect::<Vec<Range<u64>>>();
-        println!("{m} {n} {cover:?}")
     }
 }
