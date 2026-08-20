@@ -402,14 +402,14 @@ impl InclusionProof {
         loop {
             let w = cur.end - cur.start;
             if (cur.start / w) % 2 == 0 {
-                // even -> need RHS
-                let new_end = cur
-                    .end
-                    .checked_add(w)
-                    .expect("proof shouldn't overflow u64");
+                let Some(new_end) = cur.end.checked_add(w) else {
+                    // this would overflow u64 so there can't be a node this big
+                    break;
+                };
                 if new_end > size {
                     break;
                 }
+
                 let rhs = cur.end..new_end;
                 climb_node_ids.push(rhs);
                 cur = cur.start..new_end;
@@ -602,7 +602,7 @@ mod test {
     };
 
     #[test]
-    fn test_peak_id_count() {
+    fn test_peak_ids() {
         for i in 0..=64 {
             let n = peak_count(i);
             let ids = peak_ids(i).collect::<Vec<_>>();
@@ -612,36 +612,10 @@ mod test {
             // reverse and check they're equal
             ids_rev.reverse();
             assert_eq!(ids, ids_rev);
-        }
-    }
 
-    #[futures_test::test]
-    async fn test_inclusion_proofs() {
-        let mut seed = [0; 32];
-        rand_fill(&mut seed).unwrap();
-        let mut acc = MmrAccumulator::new(seed.clone(), MmrState::default()).unwrap();
-        let mut node_store = TestNodeStore::default();
-        let mut leaves = vec![];
-        for i in 0..=64 {
-            let mut leaf = [0; 32];
-            rand_fill(&mut leaf).unwrap();
-            acc.append(&leaf);
-            leaves.push(leaf.clone());
-            node_store.insert(i..i + 1, leaf.clone());
-            assert_eq!(acc.peaks.len(), peak_count(acc.size));
-            for node in acc.peaks.iter() {
-                if !node_store.contains_key(&node.id) {
-                    node_store.insert(node.id.clone(), node.hash);
-                }
-            }
-
-            let root = acc.root();
-            for j in 0..=i {
-                let proof = InclusionProof::generate(j, acc.size(), &node_store, &seed)
-                    .await
-                    .expect("valid proof");
-                let leaf = &leaves[j as usize];
-                assert!(proof.verify(leaf, &root, &seed));
+            if i > 0 {
+                assert_eq!(ids[0].start, 0);
+                assert_eq!(ids[(n - 1) as usize].end, i);
             }
         }
     }
@@ -669,6 +643,65 @@ mod test {
     }
 
     #[futures_test::test]
+    async fn test_inclusion_proofs() {
+        let mut seed = [0; 32];
+        rand_fill(&mut seed).unwrap();
+        let mut acc = MmrAccumulator::new(seed.clone(), MmrState::default()).unwrap();
+        let mut node_store = TestNodeStore::default();
+        let mut leaves = vec![];
+        for i in 0..=64 {
+            let mut leaf = [0; 32];
+            rand_fill(&mut leaf).unwrap();
+            acc.append(&leaf);
+            leaves.push(leaf.clone());
+            node_store.insert(i..i + 1, leaf.clone());
+            assert_eq!(acc.peaks.len(), peak_count(acc.size));
+            for node in acc.peaks.iter() {
+                if !node_store.contains_key(&node.id) {
+                    node_store.insert(node.id.clone(), node.hash);
+                }
+            }
+
+            let root = acc.root();
+            for j in 0..=i {
+                let mut proof = InclusionProof::generate(j, acc.size(), &node_store, &seed)
+                    .await
+                    .expect("valid proof");
+                let leaf = &leaves[j as usize];
+
+                // muck with the args and verify it fails and doesn't panic!
+                assert!(!proof.verify(&muck_bit(leaf), &root, &seed));
+                assert!(!proof.verify(leaf, &muck_bit(&root), &seed));
+                // NOTE: mucking with the seed MAY or MAY NOT corrupt the proof, the seed isn't always used
+                // to prove inclusion of seed, prefix proofs must be used instead!
+
+                // proper args should pass
+                assert!(proof.verify(leaf, &root, &seed));
+
+                // muck with witness bits
+                for i in 0..proof.witnesses.len() {
+                    let w = proof.witnesses[i];
+                    proof.witnesses[i] = muck_bit(&w);
+                    assert!(!proof.verify(leaf, &root, &seed));
+                    proof.witnesses[i] = w;
+                    assert!(proof.verify(leaf, &root, &seed)); // should work again
+                }
+                // muck with u64's
+                let proof_i = proof.i;
+                proof.i = rand_u64();
+                assert!(!proof.verify(leaf, &root, &seed));
+                proof.i = proof_i;
+                assert!(proof.verify(leaf, &root, &seed)); // should work again
+                let proof_size = proof.size;
+                proof.size = rand_u64();
+                assert!(!proof.verify(leaf, &root, &seed));
+                proof.size = proof_size;
+                assert!(proof.verify(leaf, &root, &seed)); // should work again
+            }
+        }
+    }
+
+    #[futures_test::test]
     async fn test_prefix_proofs() {
         let mut seed = [0; 32];
         rand_fill(&mut seed).unwrap();
@@ -693,7 +726,7 @@ mod test {
             assert_eq!(i + 1, size);
 
             for j in 0..=size {
-                let proof = PrefixProof::generate(j, size, &node_store)
+                let mut proof = PrefixProof::generate(j, size, &node_store)
                     .await
                     .expect("valid proof");
                 let root_j = if j == 0 {
@@ -702,9 +735,60 @@ mod test {
                 } else {
                     &roots[(j - 1) as usize]
                 };
+
+                // muck with the args and verify it fails and doesn't panic!
+                assert!(!proof.verify(&muck_bit(root_j), &root, &seed));
+                assert!(!proof.verify(root_j, &muck_bit(&root), &seed));
+                assert!(!proof.verify(root_j, &root, &muck_bit(&seed)));
+
+                // proper args should pass
                 assert!(proof.verify(root_j, &root, &seed), "m:{j} n:{size}");
+
+                // muck with peak bits
+                for i in 0..proof.peaks_m.len() {
+                    let w = proof.peaks_m[i];
+                    proof.peaks_m[i] = muck_bit(&w);
+                    assert!(!proof.verify(root_j, &root, &seed));
+                    proof.peaks_m[i] = w;
+                    assert!(proof.verify(root_j, &root, &seed)); // should work again
+                }
+                // muck with cover bits
+                for i in 0..proof.cover.len() {
+                    let w = proof.cover[i];
+                    proof.cover[i] = muck_bit(&w);
+                    assert!(!proof.verify(root_j, &root, &seed));
+                    proof.cover[i] = w;
+                    assert!(proof.verify(root_j, &root, &seed)); // should work again
+                }
+                // muck with u64's
+                let proof_m = proof.m;
+                proof.m = rand_u64();
+                assert!(!proof.verify(root_j, &root, &seed));
+                proof.m = proof_m;
+                assert!(proof.verify(root_j, &root, &seed)); // should work again
+                let proof_n = proof.n;
+                proof.n = rand_u64();
+                assert!(!proof.verify(root_j, &root, &seed));
+                proof.n = proof_n;
+                assert!(proof.verify(root_j, &root, &seed)); // should work again
             }
         }
+    }
+
+    fn muck_bit(hash: &Hash256) -> Hash256 {
+        let mut hash = *hash;
+        let mut bit = [0; 1];
+        rand_fill(&mut bit).unwrap();
+        let byte = bit[0] / 8;
+        let bit = bit[0] - (byte * 8);
+        hash[byte as usize] ^= 1 << bit;
+        hash
+    }
+
+    fn rand_u64() -> u64 {
+        let mut buf = [0; 8];
+        rand_fill(&mut buf).unwrap();
+        u64::from_le_bytes(buf)
     }
 
     type TestNodeStore = HashMap<Range<u64>, Hash256>;
