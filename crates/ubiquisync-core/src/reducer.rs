@@ -15,6 +15,13 @@ pub trait ReducerResolver {
 pub trait Reducer {
     type Op: Op + Any + 'static;
 
+    // TODO we should pass the async commiter directly to deliver and it must take a status
+    // we should not expose actual indexes to the reducer since there could be many streams per peer
+    // also we should _never_ index and batch with a failed status
+    // batches should succeed/fail atomically (if ops are batchable at all)
+    // so we either index the whole batch or none of it
+    // note that one exception is for ObservePeers/CommitContainers in ctl -
+    // those sorts of observations should never revert so one edge case to think about...
     fn deliver_ops(
         &self,
         container_id: &ContainerId,

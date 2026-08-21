@@ -40,6 +40,7 @@ pub enum GenericLogEntry<Op: std::fmt::Debug, H: std::fmt::Debug> {
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub struct UnknownEntryType {
     idx: Option<u64>,
+
     entry_type: u8,
     bytes: Vec<u8>,
 }
@@ -237,6 +238,7 @@ const ENTRY_TYPE_SIGNATURE: u8 = 0x02;
 const ENTRY_TYPE_EXPUNGED: u8 = 0x03;
 const ENTRY_TYPE_SEAL_BRANCH: u8 = 0x04;
 const ENTRY_TYPE_ACKED_SEAL_BRANCH: u8 = 0x05;
+const MAX_ENTRY_TYPE_V1: u8 = ENTRY_TYPE_ACKED_SEAL_BRANCH;
 
 impl CipherInfo {
     pub fn encode(&self, writer: &mut Writer) {

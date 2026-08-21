@@ -57,3 +57,10 @@ pub enum CommitError {
     BusyUnreachable,
     NeedReplay,
 }
+
+pub enum CommitStatus {
+    Ok,
+    Denied,
+    Pending,
+    Frozen,
+}
