@@ -31,15 +31,13 @@ impl PeerTracker {
             CREATE TABLE peers (
                 peer_id BYTES NOT NULL,
                 genesis_bytes BYTES,
-                genesis_signature BYTES,
                 status BYTES
             ) WITHOUT ROWID;
 
             CREATE TABLE streams (
-                id BIGSERIAL NOT NULL PRIMARY KEY,
+                id BYTES NOT NULL PRIMARY KEY,
                 peer_id BYTES NOT NULL,
                 container_id UUID NOT NULL,
-                branch_id INT DEFAULT 0,
                 parent_id INT NULL REFERENCES id,
                 horizon_info BYTES NULL, -- horizon index + MMR peaks
                 received_idx INT NOT NULL DEFAULT 0,
@@ -48,44 +46,16 @@ impl PeerTracker {
                 processed_idx INT NOT NULL DEFAULT 0,
                 committed_idx INT NOT NULL DEFAULT 0,
                 status BYTES, -- awaiting cipher key, awaiting upgrade (entry type, cipher suite), stalled on hlc skew, other stall (should distinguish waiting vs unrecoverable)
-                UNIQUE(container_id, stream_id)
             );
 
-            CREATE TABLE log_entries (
+            CREATE TABLE segments (
                 stream_id INT NOT NULL,
-                entry_idx INT NOT NULL,
-                type INT NOT NULL,
-                meta BYTES NULL, -- includes expungement info or encrypted header bytes or op count if decrypted (1 byte prefix) or key for UseKey entries
-                leaf_hash BYTES NULL,
-                hlc INT NULL,
-                server_user_id BYTES NULL,
-                PRIMARY KEY(log_id, entry_idx)
+                start_idx INT NOT NULL,
+                size INT NOT NULL
+                encoding INT NOT NULL,
+                body BYTES NOT NULL,
+                PRIMARY KEY(stream_id, start_idx)
             ) WITHOUT ROWID;
-
-            CREATE TABLE log_ops (
-                log_id INT NOT NULL,
-                entry_idx INT NOT NULL,
-                op_idx INT NOT NULL,
-                part_idx INT NOT NULL,
-                key BYTES NULL,
-                value BYTES NULL,
-                meta BYTES NULL, -- includes expungement info or encrypted bytes (1 byte prefix)
-                PRIMARY KEY(log_id, entry_idx, op_idx, part_idx)
-            ) WITHOUT ROWID;
-
-            CREATE TABLE signatures (
-                log_id INT NOT NULL,
-                size INT NOT NULL,
-                signature BYTES NOT NULL,
-                PRIMARY_KEY(log_id, size)
-            ) WITHOUT ROWID;
-
-            CREATE mmr_peak_cache (
-                log_id INT,
-                size INT, -- we'll usually want to retain at some power of 2 multiple, say every 1024 peaks
-                peaks BYTES,
-                PRIMARY KEY(log_id, size)
-            );
             "
         );
         todo!()
