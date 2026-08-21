@@ -2,15 +2,6 @@ use crate::{crypto::VerifyingKey, uuid::Uuid};
 use core::ops::Range;
 
 pub enum Effect {
-    // 64 byte limit on keys and values
-    // internal kv storage for capabilities, claims, pending ops, etc.
-    SetKV {
-        key: Vec<u8>,
-        value: Vec<u8>,
-        // relative to the op's hlc
-        ttl: Option<u64>,
-    },
-    DeleteKV(Vec<u8>),
     AdmitDevice {
         device_id: Uuid,
         user_id: Uuid,
