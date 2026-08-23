@@ -176,6 +176,9 @@ head_acks: reference containers and heads from peer logs or my own logs
 
 ### Phase 1 (Admit) - is the data valid? can i accept it?
 
+- before fetching anything, check membership of user - we do want to detect cases where the sharing peer is
+  publishing data that should not be admissable, though note that with vouches, this is okay so we just need
+  to sequence the checks carefully to see if sharing peer is innocently sharing vouched data or misbehavinga
 - when receiving data from a sharing peer the envelope should contain:
   - entries from the authoring peer
   - idx of last entry
@@ -183,42 +186,46 @@ head_acks: reference containers and heads from peer logs or my own logs
   - signature over idx and root (by the entry author)
   - root & idx of the ctl log head of the sharing peer
   - signature over all of the above from the sharing peer (could be used as evidence if needed, but otherwise transient)
-- if root/idx of the sharing peer's ctl log are out of date, buffer this data and sync sharing peer's ctl log before processing further
-- given the claimed peer id and index (in the envelope), is this data even admissable?
+- if root/idx of my copy of sharing peer's ctl log are behind, buffer fetched data and sync sharing peer's ctl log before processing further
+
+- before checking can i even parse the input?
+  - if we can't parse at all what do we do?
+  - if we encounter unknown versions, entry codes, crypto algorithms, we can stall phase 1 with `NeedsSoftwareUpgrade`
+    - we _should_ only stall here if we encounter unknown signature algorithms that prevent us from verifying root &signature!
+
+1. first verify signature & root - we can't know if any other validations apply without this
+  - is the signature valid for the claimed root hash/size?
+  so signature verification happens before we even parse or construct the MMR root, because the signature is visible from the envelope
+  - validate root hash over input, if we can't compute root hash, this must be a fork, so exchange data with peer to:
+    - prove fork to each other
+    - establish fork point
+    - get mutual confirmation that misbehavior ops have been mutually acked in ctl logs, this op contains:
+      - signatures for two roots with proofs that there are is at least one entry in each tree at the same
+        index with different leaf hashes, or maybe prefix proofs for the entry at the fork height
+      - heads for all the peer's other containers
+      - this op sets the peer's write statuses on all containers to sealed at those observed heads and
+        sets the peer's status to jailed
+      - one peer creates the op, the other peer must ack it in their ctl log containing any heads for containers
+        that they witnessed beyond the first peer's seal points, extending the seal boundary validly
+    - make sure we've created a local fork id (with the parent stream as its prefix) with the proper evidence
+    - exchange missing fork data to arrive at consistent state (only after having validated expunge points in the next step)
+2. given that we know that the data is authentic, is this data even admissable?
   a peers container might have one of these statues:
   - Open - valid admitted user
   - Sealed(n, r) - can admit input up to index n with root r, but no more without a valid witness vouch
   - Denied - user is either unknown or was never permitted write access to this container so no input is valid
-- was the peer required to start with `UseKey` based on a key rotation commitment from acking a removal??
-- is the signature valid for the claimed root hash/size?
-  so signature verification happens before we even parse or construct the MMR root, because the signature is visible from the envelope
-- can i even parse the input?
-  - if we can't parse at all what do we do?
-  - if we encounter unknown versions, entry codes, crypto algorithms, we can stall phase 1 with `NeedsSoftwareUpgrade`
-- validate root hash over input, if we can't compute root hash, this must be a fork, so exchange data with peer to:
-  - prove fork to each other
-  - establish fork point
-  - get mutual confirmation that misbehavior ops have been mutually acked in ctl logs, this op contains:
-    - signatures for two roots with proofs that there are is at least one entry in each tree at the same
-      index with different leaf hashes, or maybe prefix proofs for the entry at the fork height
-    - heads for all the peer's other containers
-    - this op sets the peer's write statuses on all containers to sealed at those observed heads and
-      sets the peer's status to jailed
-    - one peer creates the op, the other peer must ack it in their ctl log containing any heads for containers
-      that they witnessed beyond the first peer's seal points, extending the seal boundary validly
-  - make sure we've created a local fork id (with the parent stream as its prefix) with the proper evidence
-  - exchange missing fork data to arrive at consistent state (only after having validated expunge points in the next step)
-- verify that any expunge entries in the data are authorized
-  - if there is no expunge record, the sharing peer is censoring
-    data (the expunge authorizations _should_ have been in the ctl log that they shared - note this _could_ break down if
-    expunge authorizations themselves were expunged... - weird edge case to consider)
-  - if there is censorship:
-    - issue a misbehavior op containing:
-      - the signed envelope the peer shared with the author's container head and their ctl log head
-      - heads for all the sharing peer's containers
-    - this jails the peer, stop communicating with them other than publishing your own ctl log with this op
-- verify any `UseKey` entries are authorized and don't over-share with an unauthorized audience
-  if they do over-share, that's a permission violation by the author and we shouldn't propagate
+  - was the peer required to start with `UseKey` based on a key rotation commitment from acking a removal??
+  - verify that any expunge entries in the data are authorized
+    - if there is no expunge record, the sharing peer is censoring
+      data (the expunge authorizations _should_ have been in the ctl log that they shared - note this _could_ break down if
+      expunge authorizations themselves were expunged... - weird edge case to consider)
+    - if there is censorship:
+      - issue a misbehavior op containing:
+        - the signed envelope the peer shared with the author's container head and their ctl log head
+        - heads for all the sharing peer's containers
+      - this jails the peer, stop communicating with them other than publishing your own ctl log with this op
+  - verify any `UseKey` entries are authorized and don't over-share with an unauthorized audience
+    if they do over-share, that's a permission violation by the author and we shouldn't propagate
 - as soon as data passes all these gates:
   - make sure it has been stored in our `segments` table and atomically advance phase 1 index for this stream
   - this makes the data available to other peers where we are certifying that we have processed phase 1 properly
@@ -237,6 +244,7 @@ Phase 2a and 2b happen per entry and entries that pass them can directly be deli
 #### 2a (Decrypt)
 - attempt to decrypt any encrypted data
   - if missing a key wrap, the log is stalled in this phase with status `WaitingForKey`
+  - if missing cipher suite or unknown entry types stall with `NeedsSoftwareUpgrade`
 - when encountering `UseKey` ops, update the active cipher for this phase, stalling on missing keys if needed
 - note that the _validity_ of `UseKey` ops with respect to authz permissions should have been checked thoroughly in phase 1
 
