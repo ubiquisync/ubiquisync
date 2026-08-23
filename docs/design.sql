@@ -22,7 +22,9 @@ CREATE TABLE segments (
     stream_id INT NOT NULL,
     start_idx INT NOT NULL,
     size INT NOT NULL
-    encoding INT NOT NULL,
+    root_hash BYTES NOT NULL,
+    last_leaf_hash BYTES, -- the last of the last leaf in this segment (or the prior segment - we should specify which) so that peers can easily check for obvious forks before applying
+    encoding BYTES NOT NULL, -- specifies outer compression & encryption if any
     body BYTES NOT NULL,
     signature BYTES NOT NULL, -- can sit out of segment for quick pre-decode verification
     PRIMARY KEY(stream_id, start_idx)
@@ -39,7 +41,8 @@ CREATE TABLE principals (
 CREATE TABLE membership_edges (
     parent_id UUID NOT NULL,
     child_id UUID NOT NULL,
-    child_kint INT,
+    child_kind INT,
+    permission INT,
     PRIMARY KEY(parent_id, child_id)
 ) WITHOUT ROWID;
 

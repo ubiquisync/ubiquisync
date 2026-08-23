@@ -54,7 +54,12 @@ head_acks: reference containers and heads from peer logs or my own logs
     are set per-stream because the boundary was set per-stream and could ove)
 - SetContainerPermission (Read -> Write):
   - no key wraps or acks needed, just basically lifting the anti-witness flag
-- AdmitDevice:
+- TODO: we should specify container permissions which allow only reading/writing via a server as a web-client
+  and not replication - replication makes it hard to revoke read permissions to old data that was already
+  replicated, it's just basically asking the use to please delete this, but that is up to the user now,
+  and i'm not even sure if the default behavior should be to scrub local data when receiving a removal of
+  read permissions, we should specify this - maybe there can be a removal flag requesting local scrub or something
+- AdmitDevice
   - key wraps needed for the new device but no rotation needed
 - RemoveRecoveryKey:
   - head_acks: do recovery keys have _write_ permission at all??
@@ -162,11 +167,10 @@ head_acks: reference containers and heads from peer logs or my own logs
 
 ## Key Wraps
 
-Q: when wrapping keys should we also encrypt the retired
-key with the new key so that any new members only need
-a single wrap to read the entire history??
-
-
+- when wrapping keys we should also encrypt the retired key with the new key so that any new members only need
+  a single wrap to read the entire history
+- when receiving a wrap, if the receiving party can't read the wrap or fingerprint validation fails (they should specify which),\
+  the should ask another peer to `RewrapKey`
 
 ## Processing
 
@@ -185,6 +189,7 @@ a single wrap to read the entire history??
   - Open - valid admitted user
   - Sealed(n, r) - can admit input up to index n with root r, but no more without a valid witness vouch
   - Denied - user is either unknown or was never permitted write access to this container so no input is valid
+- was the peer required to start with `UseKey` based on a key rotation commitment from acking a removal??
 - is the signature valid for the claimed root hash/size?
   so signature verification happens before we even parse or construct the MMR root, because the signature is visible from the envelope
 - can i even parse the input?
@@ -212,6 +217,8 @@ a single wrap to read the entire history??
       - the signed envelope the peer shared with the author's container head and their ctl log head
       - heads for all the sharing peer's containers
     - this jails the peer, stop communicating with them other than publishing your own ctl log with this op
+- verify any `UseKey` entries are authorized and don't over-share with an unauthorized audience
+  if they do over-share, that's a permission violation by the author and we shouldn't propagate
 - as soon as data passes all these gates:
   - make sure it has been stored in our `segments` table and atomically advance phase 1 index for this stream
   - this makes the data available to other peers where we are certifying that we have processed phase 1 properly
