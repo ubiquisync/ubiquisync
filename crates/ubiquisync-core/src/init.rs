@@ -17,8 +17,10 @@ pub struct InitEntry {
     pub commitment_bytes: Vec<u8>,
     pub peer_id: PeerId,
     pub signature: Signature,
-    /// Opaque server endorsement to be used when server mode is supported.
-    pub server_endorsement: Option<Vec<u8>>,
+    /// Opaque (usually server) endorsement to be used when server mode is supported.
+    /// This is outside the signed payload and signed by the endorser because the
+    /// endorser must know the PeerId first.
+    pub outer_endorsement: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Debug)]
@@ -36,6 +38,15 @@ pub struct InitCommitment {
     /// Note that other layers will allow for joining two peers who were not joined at initialization
     /// but that is outside the scope of [InitCommitment].
     pub workspace_join: Option<PeerId>,
+    // Opaque endorsement bytes. This can be used for using recovery keys or invite codes to mint a new device.
+    // The endorsement itself will usually contain a signature of some sort and then we sign that signature
+    // to "consume" the endorsement. In a p2p system we cannot ensure only once usage of such endorsements,
+    // but the recovery key or invite code would _only_ ever be bound to a single user ID, so using the same
+    // code twice would simply mint two new peers bound to the same user ID, not create some separate user ID
+    // and with network participation the number of usages of such codes could be bounded once usage is observed.
+    // Basically, we can't ensure strict only once in p2p mode, but we can provide some guardrails with this mechanism.
+    // Of course, with strict server mediation we can ensure only once with this method.
+    pub endorsement: Option<Vec<u8>>,
 }
 
 #[bitfield(u8)]
