@@ -174,7 +174,7 @@ head_acks: reference containers and heads from peer logs or my own logs
 
 ## Processing
 
-### Phase 1 - is the data valid? can i accept it?
+### Phase 1 (Admit) - is the data valid? can i accept it?
 
 - when receiving data from a sharing peer the envelope should contain:
   - entries from the authoring peer
@@ -234,12 +234,13 @@ Entries that have passed phase 1 are inserted into the database and present ther
 Phase 2a and 2b happen per entry and entries that pass them can directly be delivered to the reducer (phase3).
 **There is no need to save any indexes for phase 2 unless we hit a stall point (missing key or clock), both of which can trigger retry**
 
-#### 2a
+#### 2a (Decrypt)
 - attempt to decrypt any encrypted data
   - if missing a key wrap, the log is stalled in this phase with status `WaitingForKey`
 - when encountering `UseKey` ops, update the active cipher for this phase, stalling on missing keys if needed
+- note that the _validity_ of `UseKey` ops with respect to authz permissions should have been checked thoroughly in phase 1
 
-#### 2b
+#### 2b (Sequence)
 - as soon as any entry was decrypted and passed HLC validation
  - the phase 2 idx for this 
  - it can be passed to phase 3 (these phases can operate concurrently i believe)
@@ -248,7 +249,7 @@ Phase 2a and 2b happen per entry and entries that pass them can directly be deli
   - if the HLC had too much forward skew (> 1m), the log is `StalledOnClockSkew`:
     - first check the local clock, the forward skew could be our own problem
 
-### Phase 3 - execute the data against the reducer
+### Phase 3 (Apply) - execute the data against the reducer
 - ask the reducer to parse the entry:
   - if it is unparseable, stall the log with status `DataCorrupted`
   - if the reducer can parse enough to decipher a future version or unknown op code, we can stall with `NeedsSoftwareUpdate`
