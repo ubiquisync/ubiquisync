@@ -168,7 +168,6 @@ a single wrap to read the entire history??
 
 
 
-
 ## Processing
 
 ### Phase 1 - is the data valid? can i accept it?
@@ -224,16 +223,23 @@ TODO: where and how do we process `SealBranch` entries? in phase 1 or phase 2???
 
 ### Phase 2 - can i process the data?
 
+Entries that have passed phase 1 are inserted into the database and present there but not processed.
+Phase 2a and 2b happen per entry and entries that pass them can directly be delivered to the reducer (phase3).
+**There is no need to save any indexes for phase 2 unless we hit a stall point (missing key or clock), both of which can trigger retry**
+
+#### 2a
 - attempt to decrypt any encrypted data
   - if missing a key wrap, the log is stalled in this phase with status `WaitingForKey`
+- when encountering `UseKey` ops, update the active cipher for this phase, stalling on missing keys if needed
+
+#### 2b
+- as soon as any entry was decrypted and passed HLC validation
+ - the phase 2 idx for this 
+ - it can be passed to phase 3 (these phases can operate concurrently i believe)
 - for entries that can be decrpypted, verify and ingest the HLC (updating local HLC and the stream's HLC):
   - if the HLC moved backwards, this log is `Frozen`
   - if the HLC had too much forward skew (> 1m), the log is `StalledOnClockSkew`:
     - first check the local clock, the forward skew could be our own problem
-- when encountering `UseKey` ops, update the active cipher for this phase, stalling on missing keys if needed
-- as soon as any entry was decrypted and passed HLC validation
- - the phase 2 idx for this 
- - it can be passed to phase 3 (these phases can operate concurrently i believe)
 
 ### Phase 3 - execute the data against the reducer
 - ask the reducer to parse the entry:
@@ -257,3 +263,42 @@ TODO: where and how do we process `SealBranch` entries? in phase 1 or phase 2???
   - wait for user to click try again (if out of storage for example)
   - software restart (for version errors)
   - the arrival of specific data whose coordinates have been named explicitly by the `Waiting` status
+
+### `SealBranch`
+
+`SealBranch` are sort of a phase of their own because in the general case, whenever a new branch is detected,
+the peer will be jailed so no honest peers will even read their logs.
+So `SealBranch` must come via a separate mechanism sort of.
+Peers could advertise that the head of a branch includes a seal op, but there's a weird thing in the current
+design in that `SealBranch` is unindexed so it could really exist anywhere and for a peer to honestly start
+consuming a peer's logs again based on `SealBranch` they must be able to reference it in their own logs
+as evidence of a vouch (`SealBranch` works like a vouch here essentially).
+The vouching peer either needs to
+1. inject the `SealBranch` op directly into their _own_ branch. (NOTE that the current design is faulty in that it doesn't even name a container!)
+2. inject a hash of `SealBranch` in their own branch and assume other peers can access it through other means (maybe a separate seal branch sharing mechanism)
+3. or we actually make `SealBranch` and indexed op that goes in the branch that survives
+
+The current design doesn't actually name the _valid_ branch so 3 would address that as well, it also makes container identity implicit, it doesn't require a
+separate mechanism for distribution or for peers to potentially duplicate data if multiple peers observe it concurrently.
+The main issue is that it requires peers to read a log that they considered sealed prospectively by a peer that may be malicious without immediate proof.
+That may require processing multiple entries to verify the root hash of this entry before they can verify the signature.
+We could maybe force it to be a ctl log only thing and ctl logs are _supposed_ to be shorter, but this doesn't really accomplish anything.
+
+**`SealBranch` quotas:**
+The ctl layer should probably have a default quota for how many `SealBranch`es can be used by a peer to "get out of jail",
+before we really lock them in. Basically, exceeding that quota would require admin override to unjail the peer.
+Also honest peers that fork might often do that in multiple containers at once due to some system fault, so it might
+be common to fork multiple containers at once and need to seal the forks all at once.
+
+All of this argues for `SealBranch` targetting multiple containers and sitting outside of the normal log structure,
+but if it goes anywhere it should go in ctl.
+But we don't want to have to force some alternative storage requirement besides logs (and genesis) if we don't have to.
+So it may make sense to do both - `SealBranch` should both have its own signature unbound to an MMR root,
+but it should also be stored in the peer's ctl log (in a surviving branch).
+But, for purposes of getting out of jail, it should be distributed out of band to not force ctl reading and processing
+before unjailing.
+Alternatively, we do consider standalone storage. In cloud file sync mode maybe there's an argument for standalone mode.
+It is just a document that could be identified by hash and which would need to be acked in ctl by peers evidencing the
+unjailing and the peer itself...
+If there is an argument for putting it in each log as a free-floating unindeed entry even if we don't have ctl, we
+should vet that before just putting it in ctl. Right now, I can't think of any.
