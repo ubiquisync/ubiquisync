@@ -4,7 +4,9 @@ use thiserror::Error;
 
 use crate::{
     crypto::{CipherError, EntryCipher, Key256Fingerprint},
-    log_entry::{OpaqueBytes, OpaqueLogEntry, PlaintextBytes, PlaintextLogEntry},
+    log_entry::{
+        EntryBody, GenericLogEntry, OpaqueBytes, OpaqueLogEntry, PlaintextBytes, PlaintextLogEntry,
+    },
 };
 
 pub fn to_opaque<'a>(
@@ -46,9 +48,12 @@ pub fn to_plaintext<'a>(
 }
 
 #[derive(Error, Debug)]
-pub enum EntryCipherError {
+pub enum SegmentCipherError {
     #[error("cipher error {0}")]
     CipherError(#[from] CipherError),
+    /// When processing a well-defined "segment", it is an error for the cipher key or suite to change
+    /// mid-segment or to transition from an unencrypted to encrypted segment.
+    /// A plaintext segment should be batch encryptable with a single cipher suite.
     #[error("cipher changed to {0:?} mid-segment")]
     CipherChanged(Key256Fingerprint),
 }
@@ -56,40 +61,41 @@ pub enum EntryCipherError {
 pub fn segment_to_opaque<'a>(
     cipher: Option<&EntryCipher>,
     entries: impl Iterator<Item = PlaintextLogEntry<'a>>,
-) -> impl Iterator<Item = Result<OpaqueLogEntry<'a>, EntryCipherError>> {
+) -> impl Iterator<Item = Result<OpaqueLogEntry<'a>, SegmentCipherError>> {
     entries.map(move |e| {
-        let e2 = to_opaque(&e, cipher)?;
-        check_use_key(cipher, &e2)?;
-        Ok(e2)
+        check_use_key(cipher, &e)?;
+        Ok(to_opaque(&e, cipher)?)
     })
 }
 
 pub fn segment_to_plaintext<'a>(
     cipher: Option<&EntryCipher>,
     entries: impl Iterator<Item = OpaqueLogEntry<'a>>,
-) -> impl Iterator<Item = Result<PlaintextLogEntry<'a>, EntryCipherError>> {
+) -> impl Iterator<Item = Result<PlaintextLogEntry<'a>, SegmentCipherError>> {
     entries.map(move |e| {
         check_use_key(cipher, &e)?;
-        let e2 = to_plaintext(&e, cipher)?;
-        Ok(e2)
+        Ok(to_plaintext(&e, cipher)?)
     })
 }
 
-fn check_use_key(cipher: Option<&EntryCipher>, e: &OpaqueLogEntry) -> Result<(), EntryCipherError> {
-    match e {
-        super::GenericLogEntry::IndexedEntry { entry, .. } => match entry {
-            super::EntryBody::UseKey(cipher_info) => {
-                if let Some(cipher) = cipher {
-                    if &cipher_info.fingerprint != cipher.key_fingerprint() {
-                        return Err(EntryCipherError::CipherChanged(cipher_info.fingerprint));
-                    }
-                } else {
-                    return Err(EntryCipherError::CipherChanged(cipher_info.fingerprint));
-                }
-            }
-            _ => {}
-        },
-        _ => {}
-    }
-    Ok(())
+fn check_use_key<E: std::fmt::Debug, H: std::fmt::Debug>(
+    cipher: Option<&EntryCipher>,
+    e: &GenericLogEntry<E, H>,
+) -> Result<(), SegmentCipherError> {
+    let GenericLogEntry::IndexedEntry {
+        entry: EntryBody::UseKey(cipher_info),
+        ..
+    } = e
+    else {
+        return Ok(());
+    };
+
+    if let Some(cipher) = cipher
+        && &cipher_info.fingerprint == cipher.key_fingerprint()
+        && cipher_info.cipher_suite == cipher.cipher_suite().into()
+    {
+        // only okay if fingerprint and cipher suite match
+        return Ok(());
+    };
+    Err(SegmentCipherError::CipherChanged(cipher_info.fingerprint))
 }

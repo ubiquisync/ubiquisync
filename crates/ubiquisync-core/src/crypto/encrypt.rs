@@ -158,6 +158,10 @@ impl EntryCipher {
     pub fn key_fingerprint(&self) -> &Key256Fingerprint {
         &self.fingerprint
     }
+
+    pub fn cipher_suite(&self) -> CipherSuite {
+        CipherSuite::Aes256GcmSiv
+    }
 }
 
 #[cfg(test)]

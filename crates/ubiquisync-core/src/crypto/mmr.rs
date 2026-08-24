@@ -134,6 +134,33 @@ impl MmrAccumulator {
     pub fn peaks(&self) -> impl Iterator<Item = Hash256> {
         self.peaks.iter().map(|n| n.hash)
     }
+
+    pub(crate) fn advance_with_cover(
+        &self,
+        end: u64,
+        cover: &[Hash256],
+    ) -> Result<(), InvalidCoverError> {
+        let m = self.size();
+        let cover_ids = PrefixProof::cover_ids(m, end).collect::<Vec<_>>();
+        if cover.len() != cover_ids.len() {
+            return Err(InvalidCoverError {
+                m,
+                n: end,
+                expected: cover_ids.len(),
+                actual: cover.len(),
+            });
+        }
+        todo!()
+    }
+}
+
+#[derive(Error, Debug)]
+#[error("invalid cover from {m} to {n}, expected {expected} hashes, got {actual}")]
+pub struct InvalidCoverError {
+    m: u64,
+    n: u64,
+    expected: usize,
+    actual: usize,
 }
 
 fn node_hash(left: &Node, right: &Node) -> Node {
