@@ -136,31 +136,22 @@ impl MmrAccumulator {
     }
 
     pub(crate) fn advance_with_cover(
-        &self,
+        &mut self,
         end: u64,
         cover: &[Hash256],
     ) -> Result<(), InvalidCoverError> {
-        let m = self.size();
-        let cover_ids = PrefixProof::cover_ids(m, end).collect::<Vec<_>>();
-        if cover.len() != cover_ids.len() {
-            return Err(InvalidCoverError {
-                m,
-                n: end,
-                expected: cover_ids.len(),
-                actual: cover.len(),
-            });
-        }
-        todo!()
+        PrefixProof::apply_cover(&mut self.peaks, cover, self.size, end)?;
+        self.size = end;
+        Ok(())
     }
 }
 
 #[derive(Error, Debug)]
-#[error("invalid cover from {m} to {n}, expected {expected} hashes, got {actual}")]
+#[error("invalid cover from {m} to {n}, got {len} hashes")]
 pub struct InvalidCoverError {
     m: u64,
     n: u64,
-    expected: usize,
-    actual: usize,
+    len: usize,
 }
 
 fn node_hash(left: &Node, right: &Node) -> Node {
@@ -468,6 +459,37 @@ impl InclusionProof {
 }
 
 impl PrefixProof {
+    fn apply_cover(
+        peaks: &mut Vec<Node>,
+        cover: &[Hash256],
+        m: u64,
+        n: u64,
+    ) -> Result<(), InvalidCoverError> {
+        let cover_len = cover.len();
+        let mut i = 0;
+        for id in Self::cover_ids(m, n) {
+            if i >= cover_len {
+                // bad cover size
+                return Err(InvalidCoverError {
+                    m,
+                    n,
+                    len: cover_len,
+                });
+            }
+            reduce_peaks(peaks, Node { id, hash: cover[i] });
+            i += 1;
+        }
+        if i != cover_len {
+            // don't tolerate trailing garbage in the cover
+            return Err(InvalidCoverError {
+                m,
+                n,
+                len: cover_len,
+            });
+        }
+        Ok(())
+    }
+
     pub fn verify(&self, root_m: &Hash256, root_n: &Hash256, seed: &Hash256) -> bool {
         if self.m > self.n {
             return false;
@@ -480,26 +502,7 @@ impl PrefixProof {
             return false;
         }
 
-        let cover_len = self.cover.len();
-        let mut i = 0;
-        for id in Self::cover_ids(self.m, self.n) {
-            if i >= cover_len {
-                // bad cover size
-                return false;
-            }
-            reduce_peaks(
-                &mut peaks,
-                Node {
-                    id,
-                    hash: self.cover[i],
-                },
-            );
-            i += 1;
-        }
-        if i != cover_len {
-            // don't tolerate trailing garbage in the cover
-            return false;
-        }
+        Self::apply_cover(&mut peaks, &self.cover, self.m, self.n);
 
         let root_bag_n = root_fold(self.n, seed, &peaks);
         root_bag_n.hash == *root_n
