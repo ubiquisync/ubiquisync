@@ -10,7 +10,6 @@ use thiserror::Error;
 use zeroize::Zeroize;
 use zeroize::ZeroizeOnDrop;
 
-use crate::crypto::Hash256;
 use crate::ids::ContainerId;
 use crate::ids::PeerId;
 
@@ -22,6 +21,7 @@ pub enum CipherSuite {
 }
 
 pub struct EntryCipher {
+    fingerprint: Key256Fingerprint,
     key_hasher: Hasher,
     ad_prefix: Vec<u8>,
 }
@@ -63,13 +63,15 @@ impl EntryCipher {
 
         let mut ad_prefix = vec![];
         ad_prefix.push(suite.into());
-        ad_prefix.extend_from_slice(&key.fingerprint().0[..]);
+        let fingerprint = key.fingerprint();
+        ad_prefix.extend_from_slice(&fingerprint.0[..]);
         ad_prefix.extend_from_slice(&peer_id.0[..]);
         ad_prefix.extend_from_slice(&container_id.0[..]);
         let key_hasher = Hasher::new_keyed(key.0.expose_secret());
         Self {
             ad_prefix,
             key_hasher,
+            fingerprint,
         }
     }
 
@@ -151,6 +153,10 @@ impl EntryCipher {
             .decrypt_in_place(&nonce, &ad, &mut res)
             .map_err(|_| CipherError)?;
         Ok(res)
+    }
+
+    pub fn key_fingerprint(&self) -> &Key256Fingerprint {
+        &self.fingerprint
     }
 }
 

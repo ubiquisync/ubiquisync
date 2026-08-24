@@ -1,4 +1,5 @@
 mod bytes;
+mod cipher;
 mod entry;
 mod error;
 mod hash;

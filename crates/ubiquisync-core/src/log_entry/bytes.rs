@@ -11,6 +11,12 @@ impl<'a> From<&'a [u8]> for OpaqueBytes<'a> {
     }
 }
 
+impl From<Vec<u8>> for OpaqueBytes<'_> {
+    fn from(value: Vec<u8>) -> Self {
+        OpaqueBytes(Cow::Owned(value))
+    }
+}
+
 impl<'a> Borrow<[u8]> for OpaqueBytes<'a> {
     fn borrow(&self) -> &[u8] {
         self.0.borrow()
@@ -43,6 +49,12 @@ pub struct PlaintextBytes<'a>(pub Cow<'a, [u8]>);
 impl<'a> From<&'a [u8]> for PlaintextBytes<'a> {
     fn from(value: &'a [u8]) -> Self {
         PlaintextBytes(Cow::Borrowed(value))
+    }
+}
+
+impl From<Vec<u8>> for PlaintextBytes<'_> {
+    fn from(value: Vec<u8>) -> Self {
+        PlaintextBytes(Cow::Owned(value))
     }
 }
 

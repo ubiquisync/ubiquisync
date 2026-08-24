@@ -3,18 +3,21 @@ use crate::log_entry::{EntryBody, GenericLogEntry, OpBatch, OpOrExpunge};
 impl<O: std::fmt::Debug, H: std::fmt::Debug> OpBatch<O, H> {
     pub fn transform<O2: std::fmt::Debug, H2: std::fmt::Debug, E, F, G>(
         &self,
-        f: F,
-        g: G,
+        entry_idx: u64,
+        transform_header: G,
+        transform_op: F,
     ) -> Result<OpBatch<O2, H2>, E>
     where
-        F: Fn(&O, &H2) -> Result<O2, E>,
-        G: Fn(&H) -> Result<H2, E>,
+        F: Fn(u64, u64, &O, &H2) -> Result<O2, E>,
+        G: Fn(u64, &H) -> Result<H2, E>,
     {
-        let header = g(&self.header)?;
+        let header = transform_header(entry_idx, &self.header)?;
         let mut ops = vec![];
-        for op in self.ops.iter() {
+        for (idx, op) in self.ops.iter().enumerate() {
             ops.push(match op {
-                OpOrExpunge::Op(op) => OpOrExpunge::Op(f(op, &header)?),
+                OpOrExpunge::Op(op) => {
+                    OpOrExpunge::Op(transform_op(entry_idx, idx as u64, op, &header)?)
+                }
                 OpOrExpunge::Expunge(hash) => OpOrExpunge::Expunge(*hash),
             })
         }
@@ -25,18 +28,22 @@ impl<O: std::fmt::Debug, H: std::fmt::Debug> OpBatch<O, H> {
 impl<O: std::fmt::Debug, H: std::fmt::Debug> GenericLogEntry<O, H> {
     pub fn transform<O2: std::fmt::Debug, H2: std::fmt::Debug, E, F, G>(
         &self,
-        f: F,
-        g: G,
+        transform_header: G,
+        transform_op: F,
     ) -> Result<GenericLogEntry<O2, H2>, E>
     where
-        F: Fn(&O, &H2) -> Result<O2, E>,
-        G: Fn(&H) -> Result<H2, E>,
+        F: Fn(u64, u64, &O, &H2) -> Result<O2, E>,
+        G: Fn(u64, &H) -> Result<H2, E>,
     {
         Ok(match self {
             GenericLogEntry::IndexedEntry { idx, entry } => GenericLogEntry::IndexedEntry {
                 idx: *idx,
                 entry: match entry {
-                    EntryBody::OpBatch(op_batch) => EntryBody::OpBatch(op_batch.transform(f, g)?),
+                    EntryBody::OpBatch(op_batch) => EntryBody::OpBatch(op_batch.transform(
+                        *idx,
+                        transform_header,
+                        transform_op,
+                    )?),
                     EntryBody::UseKey(cipher_info) => EntryBody::UseKey(cipher_info.clone()),
                 },
             },
@@ -47,17 +54,6 @@ impl<O: std::fmt::Debug, H: std::fmt::Debug> GenericLogEntry<O, H> {
             GenericLogEntry::Signature { size, signature } => GenericLogEntry::Signature {
                 size: *size,
                 signature: *signature,
-            },
-            GenericLogEntry::SealBranch {
-                signature,
-                start,
-                end,
-                ack_until,
-            } => GenericLogEntry::SealBranch {
-                signature: *signature,
-                start: *start,
-                end: *end,
-                ack_until: *ack_until,
             },
             GenericLogEntry::Unknown(unknown_entry_type) => {
                 GenericLogEntry::Unknown(unknown_entry_type.clone())

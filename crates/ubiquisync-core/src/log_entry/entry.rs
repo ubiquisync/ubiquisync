@@ -27,12 +27,15 @@ pub enum GenericLogEntry<Op: std::fmt::Debug, H: std::fmt::Debug> {
         size: u64,
         signature: Signature,
     },
-    SealBranch {
-        signature: Signature,
-        start: EntryRef,
-        end: EntryRef,
-        ack_until: Option<EntryRef>,
-    },
+    // DelegatePubKey {
+    //     pubkey: VerifyingKey,
+    //     valid_range: Range<u64>,
+    //     signature: Signature,
+    // },
+    // DelegateSignature {
+    //     pubkey: VerifyingKey,
+    //     signature: Signature,
+    // },
     Unknown(UnknownEntryType),
 }
 
@@ -110,23 +113,6 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> GenericLogEntry<B, H> {
                 writer.write_byte(ENTRY_TYPE_SIGNATURE);
                 signature.encode(writer);
             }
-            GenericLogEntry::SealBranch {
-                signature,
-                start,
-                end,
-                ack_until,
-            } => {
-                // NOTE: we don't validate indexes while encoding because it doesn't affect the encoding format
-                if let Some(ack_until) = ack_until {
-                    writer.write_byte(ENTRY_TYPE_ACKED_SEAL_BRANCH);
-                    ack_until.encode(writer);
-                } else {
-                    writer.write_byte(ENTRY_TYPE_SEAL_BRANCH);
-                }
-                start.encode(writer);
-                end.encode(writer);
-                signature.encode(writer);
-            }
             GenericLogEntry::Unknown(unknown_entry_type) => {
                 assert_eq!(
                     unknown_entry_type.idx.is_some(),
@@ -175,24 +161,6 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> GenericLogEntry<B, H> {
                 }
                 Self::Expunged { range, cover }
             }
-            ENTRY_TYPE_SEAL_BRANCH | ENTRY_TYPE_ACKED_SEAL_BRANCH => {
-                let ack_until = if entry_type == ENTRY_TYPE_ACKED_SEAL_BRANCH {
-                    Some(EntryRef::decode(reader)?)
-                } else {
-                    None
-                };
-                let start = EntryRef::decode(reader)?;
-                let end = EntryRef::decode(reader)?;
-                // NOTE: we don't validate the seal range here to prevent invalid seal entries from blocking reading otherwise
-                let signature =
-                    Signature::decode(reader).map_err(LogDecodeError::from_sig_decode_err)?;
-                Self::SealBranch {
-                    signature,
-                    start,
-                    end,
-                    ack_until,
-                }
-            }
             unknown => {
                 let bytes = reader.read_len_prefixed()?;
                 let idx = if unknown & 0x80 != 0 {
@@ -214,7 +182,6 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> GenericLogEntry<B, H> {
             GenericLogEntry::IndexedEntry { idx, .. } => Some(*idx + 1),
             GenericLogEntry::Expunged { range, .. } => Some(range.end),
             GenericLogEntry::Signature { size, .. } => Some(*size),
-            GenericLogEntry::SealBranch { .. } => None,
             GenericLogEntry::Unknown(UnknownEntryType { idx, .. }) => idx.map(|x| x + 1),
         }
     }
@@ -226,7 +193,6 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> GenericLogEntry<B, H> {
             GenericLogEntry::IndexedEntry { idx, .. } => Some(*idx),
             GenericLogEntry::Expunged { range, .. } => Some(range.end),
             GenericLogEntry::Signature { size, .. } => Some(*size),
-            GenericLogEntry::SealBranch { .. } => None,
             GenericLogEntry::Unknown(UnknownEntryType { idx, .. }) => *idx,
         }
     }
@@ -236,9 +202,7 @@ const ENTRY_TYPE_OP_BATCH: u8 = 0x00;
 const ENTRY_TYPE_USE_KEY: u8 = 0x01;
 const ENTRY_TYPE_SIGNATURE: u8 = 0x02;
 const ENTRY_TYPE_EXPUNGED: u8 = 0x03;
-const ENTRY_TYPE_SEAL_BRANCH: u8 = 0x04;
-const ENTRY_TYPE_ACKED_SEAL_BRANCH: u8 = 0x05;
-const MAX_ENTRY_TYPE_V1: u8 = ENTRY_TYPE_ACKED_SEAL_BRANCH;
+const MAX_ENTRY_TYPE_V1: u8 = ENTRY_TYPE_EXPUNGED;
 
 impl CipherInfo {
     pub fn encode(&self, writer: &mut Writer) {
