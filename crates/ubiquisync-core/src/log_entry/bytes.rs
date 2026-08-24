@@ -1,5 +1,10 @@
 use alloc::borrow::{Borrow, Cow};
 
+pub trait ToStatic {
+    type Static: 'static;
+    fn to_static(self) -> Self::Static;
+}
+
 /// A bytes wrapper that indicates that the underlying bytes are either plaintext or encrypted.
 /// Opaque bytes are canonical for hashing!
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,6 +25,16 @@ impl From<Vec<u8>> for OpaqueBytes<'_> {
 impl<'a> Borrow<[u8]> for OpaqueBytes<'a> {
     fn borrow(&self) -> &[u8] {
         self.0.borrow()
+    }
+}
+
+impl<'a> ToStatic for OpaqueBytes<'a> {
+    type Static = OpaqueBytes<'static>;
+    fn to_static(self) -> Self::Static {
+        OpaqueBytes(match self.0 {
+            Cow::Borrowed(b) => Cow::Owned(b.into()),
+            Cow::Owned(v) => Cow::Owned(v),
+        })
     }
 }
 
@@ -61,6 +76,16 @@ impl From<Vec<u8>> for PlaintextBytes<'_> {
 impl<'a> Borrow<[u8]> for PlaintextBytes<'a> {
     fn borrow(&self) -> &[u8] {
         self.0.borrow()
+    }
+}
+
+impl<'a> ToStatic for PlaintextBytes<'a> {
+    type Static = PlaintextBytes<'static>;
+    fn to_static(self) -> Self::Static {
+        PlaintextBytes(match self.0 {
+            Cow::Borrowed(b) => Cow::Owned(b.into()),
+            Cow::Owned(v) => Cow::Owned(v),
+        })
     }
 }
 

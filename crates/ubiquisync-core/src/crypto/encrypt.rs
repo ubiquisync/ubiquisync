@@ -164,6 +164,21 @@ impl EntryCipher {
     }
 }
 
+pub struct SegmentCipher {
+    cipher: Aes256GcmSiv,
+}
+
+impl SegmentCipher {
+    pub fn decrypt_segment(&self, nonce: &[u8], inout: &mut Vec<u8>) -> Result<(), CipherError> {
+        let nonce = Nonce::try_from(nonce).map_err(|_| CipherError)?;
+        // TODO should there be any AD here??
+        self.cipher
+            .decrypt_in_place(&nonce, &[], inout)
+            .map_err(|_| CipherError)?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use secrecy::SecretBox;
