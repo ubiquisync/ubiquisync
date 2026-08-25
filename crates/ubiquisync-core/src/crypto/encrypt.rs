@@ -16,6 +16,7 @@ use crate::crypto::DeriveKeyDomain;
 use crate::crypto::Hash256;
 use crate::crypto::Hash256Suite;
 use crate::ids::LogId;
+use crate::log_entry::CipherInfo;
 use crate::log_entry::OpaqueBytes;
 use crate::log_entry::PlaintextBytes;
 
@@ -223,6 +224,13 @@ impl EntryCipher {
 
     pub fn cipher_suite(&self) -> CipherSuite {
         CipherSuite::Aes256GcmSiv
+    }
+
+    pub fn cipher_info(&self) -> CipherInfo {
+        CipherInfo {
+            cipher_suite: self.cipher_suite().into(),
+            fingerprint: self.fingerprint.clone(),
+        }
     }
 }
 

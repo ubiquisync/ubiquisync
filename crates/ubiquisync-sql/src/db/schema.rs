@@ -1,4 +1,4 @@
-use crate::dialect::SqlDialect;
+use crate::{dialect::SqlDialect, util::quote_ident};
 
 /// An existing table's shape as reported by backend introspection
 /// ([`Db::describe_table`](super::Db::describe_table)). Used by schema
@@ -7,8 +7,7 @@ use crate::dialect::SqlDialect;
 pub struct DbTableDescriptor {
     /// The table's name.
     pub name: String,
-    /// Primary-key columns, in declared key-position order.
-    pub pk_cols: Vec<DbColumnDescription>,
+    pub pk: DbPrimaryKey,
     /// The remaining (non-primary-key) columns.
     pub cols: Vec<DbColumnDescription>,
 }
@@ -23,6 +22,18 @@ pub struct DbColumnDescription {
     pub db_type: DbType,
     /// Whether the column permits SQL NULL.
     pub nullable: bool,
+    pub default: Option<DbColumnDefault>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DbPrimaryKey {
+    AutoId(String),
+    Columns(Vec<DbColumnDescription>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DbColumnDefault {
+    I64Zero,
 }
 
 /// A generic SQL storage class, independent of any data protocol.
@@ -72,6 +83,94 @@ impl DbType {
             (_, DbType::Other) => {
                 unreachable!("DbType::Other is introspection-only and never rendered as DDL")
             }
+        }
+    }
+}
+
+impl DbTableDescriptor {
+    pub fn create_table_sql(&self, dialect: SqlDialect) -> String {
+        let quoted_table_name = quote_ident(&self.name);
+        let mut col_defs = self.pk.create_cols_clauses(dialect);
+        col_defs.append(&mut DbColumnDescription::create_cols_sql(
+            &self.cols, dialect,
+        ));
+        let col_sql = col_defs.join(", ");
+        let pk_clause = self.pk.pk_clause();
+        let rowid_clause = self.pk.rowid_clause(dialect);
+        format!("CREATE TABLE {quoted_table_name} ({col_sql}{pk_clause}){rowid_clause};")
+    }
+}
+
+impl DbPrimaryKey {
+    fn create_cols_clauses(&self, dialect: SqlDialect) -> Vec<String> {
+        match self {
+            DbPrimaryKey::AutoId(name) => {
+                let name_quoted = quote_ident(name);
+                let sql = match dialect {
+                    SqlDialect::Sqlite => {
+                        format!("{name_quoted} INTEGER PRIMARY KEY AUTOINCREMENT")
+                    }
+                    SqlDialect::Postgres => {
+                        format!("{name_quoted} BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY")
+                    }
+                };
+                vec![sql]
+            }
+            DbPrimaryKey::Columns(cols) => DbColumnDescription::create_cols_sql(cols, dialect),
+        }
+    }
+
+    fn pk_clause(&self) -> String {
+        match self {
+            DbPrimaryKey::AutoId(_) => "".into(),
+            DbPrimaryKey::Columns(cols) => {
+                let cols_str = cols
+                    .iter()
+                    .map(|c| quote_ident(&c.name))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(", PRIMARY KEY({cols_str})")
+            }
+        }
+    }
+
+    fn rowid_clause(&self, dialect: SqlDialect) -> &str {
+        match self {
+            DbPrimaryKey::AutoId(_) => "",
+            DbPrimaryKey::Columns(_) => dialect.without_rowid(),
+        }
+    }
+}
+
+impl DbColumnDescription {
+    fn create_col_sql(&self, dialect: SqlDialect) -> String {
+        let quoted_name = quote_ident(&self.name);
+        let sql_type = self.db_type.sql_type(dialect);
+        let mut sql = format!("{quoted_name} {sql_type}");
+        if self.nullable {
+            sql += " NULL";
+        } else {
+            sql += " NOT NULL";
+        }
+
+        if let Some(ref default) = self.default {
+            sql += &format!(" DEFAULT {0}", default.to_str());
+        }
+
+        sql
+    }
+
+    fn create_cols_sql(cols: &[Self], dialect: SqlDialect) -> Vec<String> {
+        cols.iter()
+            .map(|c| c.create_col_sql(dialect))
+            .collect::<Vec<_>>()
+    }
+}
+
+impl DbColumnDefault {
+    fn to_str(&self) -> String {
+        match self {
+            DbColumnDefault::I64Zero => "0".into(),
         }
     }
 }

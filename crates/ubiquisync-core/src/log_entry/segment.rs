@@ -13,6 +13,7 @@ use crate::{
         CipherInfo, GenericLogEntry, LogDecodeError, LogEncodeError, OpaqueLogEntry,
         PlaintextBytes, PlaintextLogEntry, RootInfo, ToStatic,
     },
+    rand::rand_fill,
 };
 
 pub struct SegmentDescriptor {
@@ -88,8 +89,7 @@ impl<'a> SegmentReader<'a> {
                 DecodedSegment::Plaintext(match enc.outer_encryption {
                     Some(c) => {
                         if let Some(cipher) = cipher
-                            && &c.cipher.fingerprint == cipher.key_fingerprint()
-                            && c.cipher.cipher_suite == cipher.cipher_suite().into()
+                            && c.cipher == cipher.cipher_info()
                         {
                             decrypt_decompress_decode_entries(
                                 &cipher,
@@ -106,6 +106,78 @@ impl<'a> SegmentReader<'a> {
             }
         })
     }
+}
+
+pub fn encode_segment_opaque<'a>(
+    range: &Range<u64>,
+    signature: &Signature,
+    last_entry_hash: &Hash256,
+    entries: impl Iterator<Item = OpaqueLogEntry<'a>>,
+) -> Result<Vec<u8>, SegmentEncodeError> {
+    let mut w = Writer::new();
+    let header = SegmentHeader {
+        range: range.clone(),
+        signature: signature.clone(),
+        last_entry_hash: *last_entry_hash,
+        encoding: SegmentEncoding::Opaque,
+    };
+    header.encode(&mut w)?;
+    let range2 = encode_entries(entries, &mut w)?;
+    if range != &range2 {
+        return Err(SegmentEncodeError::RangeMismatch {
+            actual: range2,
+            expected: range.clone(),
+        });
+    }
+    Ok(w.finalize())
+}
+
+pub fn encode_segment_plaintext<'a>(
+    range: &Range<u64>,
+    signature: &Signature,
+    last_entry_hash: &Hash256,
+    cipher: Option<&EntryCipher>,
+    entries: impl Iterator<Item = PlaintextLogEntry<'a>>,
+) -> Result<Vec<u8>, SegmentEncodeError> {
+    let mut w = Writer::new();
+    let (outer_encryption, nonce) = if let Some(cipher) = cipher {
+        let mut nonce = [0; 16];
+        // TODO verify this is a cryptographically secure RNG
+        rand_fill(&mut nonce).map_err(|_| SegmentEncodeError::NonceGenerationError)?;
+        (
+            Some(EncryptionInfo {
+                cipher: cipher.cipher_info(),
+                nonce: nonce,
+            }),
+            Some(nonce),
+        )
+    } else {
+        (None, None)
+    };
+    let encoding = PlaintextSegmentEncoding {
+        outer_encryption,
+        inner_compression: Compression::Zstd,
+    };
+    let header = SegmentHeader {
+        range: range.clone(),
+        signature: signature.clone(),
+        last_entry_hash: *last_entry_hash,
+        encoding: SegmentEncoding::Plaintext(encoding),
+    };
+    header.encode(&mut w)?;
+    let (buf, range2) = if let Some(cipher) = cipher {
+        encode_compress_encrypt_entries(cipher, &nonce.unwrap(), entries)
+    } else {
+        encode_compress_entries(entries)
+    }?;
+    if range != &range2 {
+        return Err(SegmentEncodeError::RangeMismatch {
+            actual: range2,
+            expected: range.clone(),
+        });
+    }
+    w.write_slice(buf.as_slice());
+    Ok(w.finalize())
 }
 
 pub fn decode_entries<'a, E, H>(
@@ -135,12 +207,12 @@ where
 
 pub fn encode_entries<'a, E, H>(
     entries: impl Iterator<Item = GenericLogEntry<E, H>>,
-) -> Result<(Vec<u8>, Range<u64>), LogEncodeError>
+    writer: &mut Writer,
+) -> Result<Range<u64>, LogEncodeError>
 where
     E: Borrow<[u8]> + std::fmt::Debug,
     H: Borrow<[u8]> + std::fmt::Debug,
 {
-    let mut writer = Writer::new();
     let mut start = 0;
     let mut end = 0;
     for e in entries {
@@ -152,9 +224,9 @@ where
             }
             end = idx;
         }
-        e.encode(&mut writer)?;
+        e.encode(writer)?;
     }
-    Ok((writer.finalize(), start..end))
+    Ok(start..end)
 }
 
 #[derive(Error, Debug)]
@@ -165,6 +237,16 @@ pub enum SegmentEncodeError {
     IOError(#[from] std::io::Error),
     #[error("cipher error: {0}")]
     CipherError(#[from] CipherError),
+    #[error("write error: {0}")]
+    WriteError(#[from] WriteError),
+
+    #[error("range mismatch, expected {expected:?}, got {actual:?}")]
+    RangeMismatch {
+        actual: Range<u64>,
+        expected: Range<u64>,
+    },
+    #[error("nonce generation error")]
+    NonceGenerationError,
 }
 
 #[derive(Error, Debug)]
@@ -202,8 +284,9 @@ fn encode_compress_encrypt_entries<'a>(
 fn encode_compress_entries<'a>(
     entries: impl Iterator<Item = PlaintextLogEntry<'a>>,
 ) -> Result<(Vec<u8>, Range<u64>), SegmentEncodeError> {
-    let (buf, r) = encode_entries(entries)?;
-    Ok((zstd::encode_all(buf.as_slice(), 0)?, r))
+    let mut w = Writer::new();
+    let r = encode_entries(entries, &mut w)?;
+    Ok((zstd::encode_all(w.finalize().as_slice(), 0)?, r))
 }
 
 fn decompress_decode_entries(

@@ -46,7 +46,7 @@ pub struct InitCommitment {
     // and with network participation the number of usages of such codes could be bounded once usage is observed.
     // Basically, we can't ensure strict only once in p2p mode, but we can provide some guardrails with this mechanism.
     // Of course, with strict server mediation we can ensure only once with this method.
-    pub endorsement: Option<Vec<u8>>,
+    pub endorsement: Vec<u8>,
 }
 
 #[bitfield(u8)]
@@ -93,7 +93,7 @@ impl InitEntry {
             commitment_bytes,
             peer_id,
             signature,
-            server_endorsement: None,
+            outer_endorsement: None,
         };
         entry.verify(app_magic)?;
         Ok(entry)
@@ -122,6 +122,7 @@ impl InitEntry {
     }
 }
 
+// TODO:
 /// Limits [InitCommitment] entries to 32kb.
 /// Way more than we need now but could accomodate quantum-resistant cryptography in the future.
 pub const MAX_INIT_COMMITMENT_LEN: usize = 32768;
@@ -181,6 +182,7 @@ impl InitCommitment {
         if let Some(workspace_id) = self.workspace_join {
             writer.write_array(&workspace_id.0);
         }
+        writer.write_len_prefixed(&self.endorsement);
     }
 
     pub fn decode(commitment_bytes: &[u8]) -> Result<Self, InitDecodeError> {
@@ -212,6 +214,8 @@ impl InitCommitment {
         } else {
             None
         };
+        let endorsement = reader.read_len_prefixed()?.to_vec();
+
         let remaining = reader.remaining().len();
         if remaining != 0 && version.minor() == 0 {
             // error if we are at the current supported minor version (0) and we have remaining data
@@ -227,6 +231,7 @@ impl InitCommitment {
             encrypt_wrap_key,
             server: flags.server(),
             workspace_join,
+            endorsement,
         })
     }
 }

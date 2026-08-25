@@ -15,3 +15,5 @@ fn verify_head(
     let sign_bytes = head.sign_bytes(log_id);
     key.verify_signature(&sign_bytes, sig)
 }
+
+fn verify_segment(log_id: &LogId, segment: &[u8], key: &VerifyingKey) {}

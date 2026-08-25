@@ -257,8 +257,7 @@ fn check_use_key<E: std::fmt::Debug, H: std::fmt::Debug>(
     };
 
     if let Some(cipher) = cipher
-        && &cipher_info.fingerprint == cipher.key_fingerprint()
-        && cipher_info.cipher_suite == cipher.cipher_suite().into()
+        && cipher_info == &cipher.cipher_info()
     {
         // only okay if fingerprint and cipher suite match
         return Ok(());

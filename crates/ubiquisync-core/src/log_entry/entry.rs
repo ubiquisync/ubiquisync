@@ -103,13 +103,18 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> GenericLogEntry<B, H> {
                     cipher_info.encode(writer);
                 }
             },
-            GenericLogEntry::Expunged { range, cover } => {
+            GenericLogEntry::Expunged {
+                range,
+                cover,
+                last_leaf_hash,
+            } => {
                 writer.write_byte(ENTRY_TYPE_EXPUNGED);
                 writer.write_range(range)?;
                 writer.write_var_usize(cover.len());
                 for h in cover.iter() {
                     writer.write_array(h);
                 }
+                writer.write_array(last_leaf_hash);
             }
             GenericLogEntry::Signature { size: _, signature } => {
                 // NOTE: size is inferred by the last entry, it's the callers responsibility to verify before encoding
@@ -162,7 +167,12 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> GenericLogEntry<B, H> {
                 for _ in 0..cover_len {
                     cover.push(reader.read_array()?);
                 }
-                Self::Expunged { range, cover }
+                let last_leaf_hash = reader.read_array()?;
+                Self::Expunged {
+                    range,
+                    cover,
+                    last_leaf_hash,
+                }
             }
             unknown => {
                 let bytes = reader.read_len_prefixed()?;
