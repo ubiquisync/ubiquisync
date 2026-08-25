@@ -1,3 +1,5 @@
+use std::borrow::Borrow;
+
 use aes_gcm_siv::AeadInOut;
 use aes_gcm_siv::Aes256GcmSiv;
 use aes_gcm_siv::KeyInit;
@@ -11,9 +13,9 @@ use zeroize::Zeroize;
 use zeroize::ZeroizeOnDrop;
 
 use crate::crypto::Hash256;
-use crate::ids::ContainerId;
 use crate::ids::LogId;
-use crate::ids::PeerId;
+use crate::log_entry::OpaqueBytes;
+use crate::log_entry::PlaintextBytes;
 
 #[repr(u8)]
 #[derive(IntoPrimitive, TryFromPrimitive, Clone, Copy, PartialEq, Eq, Debug)]
@@ -76,8 +78,8 @@ impl EntryCipher {
         &self,
         entry_idx: u64,
         prev_hash: &Hash256,
-        header: &[u8],
-    ) -> Result<Vec<u8>, CipherError> {
+        header: &PlaintextBytes,
+    ) -> Result<OpaqueBytes<'static>, CipherError> {
         self.encrypt_slot(entry_idx, 0, prev_hash, header)
     }
 
@@ -86,8 +88,8 @@ impl EntryCipher {
         entry_idx: u64,
         op_index: u64,
         prev_hash: &Hash256,
-        op: &[u8],
-    ) -> Result<Vec<u8>, CipherError> {
+        op: &PlaintextBytes,
+    ) -> Result<OpaqueBytes<'static>, CipherError> {
         self.encrypt_slot(
             entry_idx,
             op_index.checked_add(1).expect("op index overflow"),
@@ -101,14 +103,15 @@ impl EntryCipher {
         entry_idx: u64,
         slot_idx: u64,
         prev_hash: &Hash256,
-        bytes: &[u8],
-    ) -> Result<Vec<u8>, CipherError> {
+        bytes: &PlaintextBytes,
+    ) -> Result<OpaqueBytes<'static>, CipherError> {
         let (ad, cipher, nonce) = self.associated_data_and_key(entry_idx, slot_idx, prev_hash);
+        let bytes: &[u8] = bytes.borrow();
         let mut res = Vec::from(bytes); // we copy the input data to the res vec to encrypt in place
         cipher
             .encrypt_in_place(&nonce, &ad, &mut res)
             .map_err(|_| CipherError)?;
-        Ok(res)
+        Ok(res.into())
     }
 
     fn associated_data_and_key(
@@ -135,8 +138,8 @@ impl EntryCipher {
         &self,
         entry_idx: u64,
         prev_hash: &Hash256,
-        header: &[u8],
-    ) -> Result<Vec<u8>, CipherError> {
+        header: &OpaqueBytes,
+    ) -> Result<PlaintextBytes<'static>, CipherError> {
         self.decrypt_slot(entry_idx, 0, prev_hash, header)
     }
 
@@ -145,8 +148,8 @@ impl EntryCipher {
         entry_idx: u64,
         op_index: u64,
         prev_hash: &Hash256,
-        op: &[u8],
-    ) -> Result<Vec<u8>, CipherError> {
+        op: &OpaqueBytes,
+    ) -> Result<PlaintextBytes<'static>, CipherError> {
         self.decrypt_slot(
             entry_idx,
             op_index.checked_add(1).expect("op index overflow"),
@@ -160,14 +163,15 @@ impl EntryCipher {
         entry_idx: u64,
         slot_idx: u64,
         prev_hash: &Hash256,
-        bytes: &[u8],
-    ) -> Result<Vec<u8>, CipherError> {
+        bytes: &OpaqueBytes,
+    ) -> Result<PlaintextBytes<'static>, CipherError> {
         let (ad, cipher, nonce) = self.associated_data_and_key(entry_idx, slot_idx, prev_hash);
+        let bytes: &[u8] = bytes.borrow();
         let mut res = Vec::from(bytes); // we copy the input data to the res vec to decrypt in place
         cipher
             .decrypt_in_place(&nonce, &ad, &mut res)
             .map_err(|_| CipherError)?;
-        Ok(res)
+        Ok(res.into())
     }
 
     pub fn key_fingerprint(&self) -> &Key256Fingerprint {

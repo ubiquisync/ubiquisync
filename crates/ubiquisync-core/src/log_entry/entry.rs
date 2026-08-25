@@ -48,6 +48,7 @@ pub struct UnknownEntryType {
 
     entry_type: u8,
     bytes: Vec<u8>,
+    // TODO we need some encrypted flag too otherwise we can't verify hashes of encrypted entries!!
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

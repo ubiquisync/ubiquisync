@@ -1,55 +1,105 @@
-use std::borrow::Borrow;
-
 use thiserror::Error;
 
 use crate::{
-    crypto::{CipherError, EntryCipher, Hash256, Key256Fingerprint},
+    crypto::{
+        CipherError, EntryCipher, Hash256, Key256Fingerprint,
+        mmr::{InvalidCoverError, MmrAccumulator},
+    },
     log_entry::{
-        EntryBody, GenericLogEntry, OpaqueBytes, OpaqueLogEntry, PlaintextBytes, PlaintextLogEntry,
+        EntryBody, GenericLogEntry, OpBatchHasher, OpaqueBytes, OpaqueLogEntry, PlaintextBytes,
+        PlaintextLogEntry,
     },
 };
+
+struct OpBatchHashState {
+    entry_idx: u64,
+    hasher: OpBatchHasher,
+    last_hash: Hash256,
+}
 
 pub fn to_opaque<'a>(
     entry: &PlaintextLogEntry<'a>,
     cipher: Option<&EntryCipher>,
+    seed: &Hash256,
     last_entry_hash: &Hash256,
-) -> Result<OpaqueLogEntry<'a>, CipherError> {
+) -> Result<(OpaqueLogEntry<'a>, Option<Hash256>), CipherError> {
     if let Some(cipher) = cipher {
-        entry.transform(
-            |entry_idx, h| {
-                Ok(cipher
-                    .encrypt_header(entry_idx, last_entry_hash, h.borrow())?
-                    .into())
+        let (e2, maybe_hash_state) = entry.transform(
+            |entry_idx, op_batch| {
+                Ok(OpBatchHashState {
+                    entry_idx,
+                    last_hash: *last_entry_hash,
+                    hasher: OpBatchHasher::new(*seed, entry_idx, op_batch.ops.len()),
+                })
             },
-            |entry_idx, op_idx, op, _| {
-                Ok(cipher.encrypt_op(entry_idx, op_idx, op.borrow())?.into())
+            |header, st| {
+                let header_cipher = cipher.encrypt_header(st.entry_idx, &st.last_hash, header)?;
+                st.last_hash = st.hasher.hash_header(&header_cipher);
+                Ok(header_cipher)
             },
-        )
+            |op_idx, op, st| {
+                let op_cipher = cipher.encrypt_op(st.entry_idx, op_idx, &st.last_hash, op)?;
+                st.last_hash = st.hasher.hash_op(op_idx, &op_cipher);
+                Ok(op_cipher)
+            },
+            |op_idx, expunge_hash, st| {
+                st.last_hash = *expunge_hash;
+                st.hasher.hash_expunge(op_idx, expunge_hash);
+                Ok(())
+            },
+        )?;
+        Ok((e2, maybe_hash_state.map(|st| st.hasher.finalize())))
     } else {
-        entry.transform(
-            |_, h| Ok(OpaqueBytes(h.0.clone())),
-            |_, _, op, _| Ok(OpaqueBytes(op.0.clone())),
-        )
+        let (e2, _) = entry.transform(
+            |_, _| Ok(()),
+            |h, _| Ok(OpaqueBytes(h.0.clone())),
+            |_, op, _| Ok(OpaqueBytes(op.0.clone())),
+            |_, _, _| Ok(()),
+        )?;
+        Ok((e2, None))
     }
 }
 
 pub fn to_plaintext<'a>(
     entry: &OpaqueLogEntry<'a>,
     cipher: Option<&EntryCipher>,
-) -> Result<PlaintextLogEntry<'a>, CipherError> {
+    seed: &Hash256,
+    last_entry_hash: &Hash256,
+) -> Result<(PlaintextLogEntry<'a>, Option<Hash256>), CipherError> {
     if let Some(cipher) = cipher {
-        entry.transform(
-            // TODO header and op hashes
-            |entry_idx, h| Ok(cipher.decrypt_header(entry_idx, h.borrow())?.into()),
-            |entry_idx, op_idx, op, _| {
-                Ok(cipher.decrypt_op(entry_idx, op_idx, op.borrow())?.into())
+        let (e2, maybe_hash_state) = entry.transform(
+            |entry_idx, op_batch| {
+                Ok(OpBatchHashState {
+                    entry_idx,
+                    last_hash: *last_entry_hash,
+                    hasher: OpBatchHasher::new(*seed, entry_idx, op_batch.ops.len()),
+                })
             },
-        )
+            |header_cipher, st| {
+                let header = cipher.decrypt_header(st.entry_idx, &st.last_hash, header_cipher)?;
+                st.last_hash = st.hasher.hash_header(header_cipher);
+                Ok(header)
+            },
+            |op_idx, op_cipher, st| {
+                let op = cipher.decrypt_op(st.entry_idx, op_idx, &st.last_hash, op_cipher)?;
+                st.last_hash = st.hasher.hash_op(op_idx, op_cipher);
+                Ok(op)
+            },
+            |op_idx, expunge_hash, st| {
+                st.last_hash = *expunge_hash;
+                st.hasher.hash_expunge(op_idx, expunge_hash);
+                Ok(())
+            },
+        )?;
+        Ok((e2, maybe_hash_state.map(|st| st.hasher.finalize())))
     } else {
-        entry.transform(
-            |_, h| Ok(PlaintextBytes(h.0.clone())),
-            |_, _, op, _| Ok(PlaintextBytes(op.0.clone())),
-        )
+        let (e2, _) = entry.transform(
+            |_, _| Ok(()),
+            |h, _| Ok(PlaintextBytes(h.0.clone())),
+            |_, op, _| Ok(PlaintextBytes(op.0.clone())),
+            |_, _, _| Ok(()),
+        )?;
+        Ok((e2, None))
     }
 }
 
@@ -57,30 +107,159 @@ pub fn to_plaintext<'a>(
 pub enum SegmentCipherError {
     #[error("cipher error {0}")]
     CipherError(#[from] CipherError),
+
     /// When processing a well-defined "segment", it is an error for the cipher key or suite to change
     /// mid-segment or to transition from an unencrypted to encrypted segment.
     /// A plaintext segment should be batch encryptable with a single cipher suite.
     #[error("cipher changed to {0:?} mid-segment")]
     CipherChanged(Key256Fingerprint),
+
+    #[error("invalid expunge cover: {0}")]
+    InvalidExpungeCover(#[from] InvalidCoverError),
 }
 
 pub fn segment_to_opaque<'a>(
     cipher: Option<&EntryCipher>,
     entries: impl Iterator<Item = PlaintextLogEntry<'a>>,
+    seed: Hash256,
+    last_entry_hash: &Hash256,
 ) -> impl Iterator<Item = Result<OpaqueLogEntry<'a>, SegmentCipherError>> {
+    scan_only_entries(segment_to_opaque_and_hashes(
+        cipher,
+        entries,
+        seed,
+        last_entry_hash,
+    ))
+}
+
+pub fn segment_to_opaque_with_mmr<'a>(
+    cipher: Option<&EntryCipher>,
+    entries: impl Iterator<Item = PlaintextLogEntry<'a>>,
+    last_entry_hash: &Hash256,
+    mmr: &mut MmrAccumulator,
+) -> impl Iterator<Item = Result<OpaqueLogEntry<'a>, SegmentCipherError>> {
+    scan_with_mmr(
+        segment_to_opaque_and_hashes(cipher, entries, *mmr.seed(), last_entry_hash),
+        mmr,
+    )
+}
+
+fn segment_to_opaque_and_hashes<'a>(
+    cipher: Option<&EntryCipher>,
+    entries: impl Iterator<Item = PlaintextLogEntry<'a>>,
+    seed: Hash256,
+    last_entry_hash: &Hash256,
+) -> impl Iterator<Item = Result<(OpaqueLogEntry<'a>, Option<Hash256>), SegmentCipherError>> {
+    let mut last_entry_hash = *last_entry_hash;
     entries.map(move |e| {
         check_use_key(cipher, &e)?;
-        Ok(to_opaque(&e, cipher)?)
+        let (e2, maybe_hash) = to_opaque(&e, cipher, &seed, &last_entry_hash)?;
+        let maybe_hash = maybe_hash.or_else(|| e2.hash(&seed)); // get the hash for UseKey entries too
+        if let Some(hash) = maybe_hash {
+            last_entry_hash = hash;
+        }
+        Ok((e2, maybe_hash))
     })
 }
 
 pub fn segment_to_plaintext<'a>(
     cipher: Option<&EntryCipher>,
     entries: impl Iterator<Item = OpaqueLogEntry<'a>>,
+    seed: Hash256,
+    last_entry_hash: &Hash256,
 ) -> impl Iterator<Item = Result<PlaintextLogEntry<'a>, SegmentCipherError>> {
+    scan_only_entries(segment_to_plaintext_and_hashes(
+        cipher,
+        entries,
+        seed,
+        last_entry_hash,
+    ))
+}
+
+pub fn segment_to_plaintext_with_mmr<'a>(
+    cipher: Option<&EntryCipher>,
+    entries: impl Iterator<Item = OpaqueLogEntry<'a>>,
+    last_entry_hash: &Hash256,
+    mmr: &mut MmrAccumulator,
+) -> impl Iterator<Item = Result<PlaintextLogEntry<'a>, SegmentCipherError>> {
+    scan_with_mmr(
+        segment_to_plaintext_and_hashes(cipher, entries, *mmr.seed(), last_entry_hash),
+        mmr,
+    )
+}
+
+fn segment_to_plaintext_and_hashes<'a>(
+    cipher: Option<&EntryCipher>,
+    entries: impl Iterator<Item = OpaqueLogEntry<'a>>,
+    seed: Hash256,
+    last_entry_hash: &Hash256,
+) -> impl Iterator<Item = Result<(PlaintextLogEntry<'a>, Option<Hash256>), SegmentCipherError>> {
+    let mut last_entry_hash = *last_entry_hash;
     entries.map(move |e| {
         check_use_key(cipher, &e)?;
-        Ok(to_plaintext(&e, cipher)?)
+        let (e2, maybe_hash) = to_plaintext(&e, cipher, &seed, &last_entry_hash)?;
+        let maybe_hash = maybe_hash.or_else(|| e.hash(&seed)); // get the hash for UseKey entries too
+        if let Some(hash) = maybe_hash {
+            last_entry_hash = hash;
+        }
+        Ok((e2, maybe_hash))
+    })
+}
+
+fn scan_only_entries<E>(
+    it: impl Iterator<Item = Result<(E, Option<Hash256>), SegmentCipherError>>,
+) -> impl Iterator<Item = Result<E, SegmentCipherError>> {
+    it.scan(false, |failed, r| {
+        if *failed {
+            return None;
+        }
+        match r {
+            Ok((e2, _)) => Some(Ok(e2)),
+            Err(e) => {
+                *failed = true;
+                Some(Err(e))
+            }
+        }
+    })
+}
+
+fn scan_with_mmr<O: std::fmt::Debug, H: std::fmt::Debug>(
+    it: impl Iterator<Item = Result<(GenericLogEntry<O, H>, Option<Hash256>), SegmentCipherError>>,
+    mmr: &mut MmrAccumulator,
+) -> impl Iterator<Item = Result<GenericLogEntry<O, H>, SegmentCipherError>> {
+    it.scan(false, move |failed, r| {
+        if *failed {
+            return None;
+        }
+        match r {
+            Ok((
+                GenericLogEntry::Expunged {
+                    range,
+                    cover,
+                    last_leaf_hash,
+                },
+                _,
+            )) => match mmr.advance_with_cover(range.end, cover.as_slice()) {
+                Ok(_) => Some(Ok(GenericLogEntry::Expunged {
+                    range,
+                    cover,
+                    last_leaf_hash,
+                })),
+                Err(e) => {
+                    *failed = true;
+                    Some(Err(SegmentCipherError::InvalidExpungeCover(e)))
+                }
+            },
+            Ok((e2, Some(ref h))) => {
+                mmr.append(h);
+                Some(Ok(e2))
+            }
+            Ok((e2, None)) => Some(Ok(e2)),
+            Err(e) => {
+                *failed = true;
+                Some(Err(e))
+            }
+        }
     })
 }
 

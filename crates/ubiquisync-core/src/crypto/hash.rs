@@ -40,8 +40,7 @@ pub enum TaggedHashDomain {
     PeerInitCommitment,
     LogEntryOpBatch,
     LogEntryUseKey,
-    OpBatchOp,
-    OpBatchHeader,
+    OpBatchSlot,
 }
 
 #[derive(IntoStaticStr, EnumIter, Debug, Clone, Copy, PartialEq, Eq)]
