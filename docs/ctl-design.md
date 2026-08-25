@@ -318,3 +318,18 @@ It is just a document that could be identified by hash and which would need to b
 unjailing and the peer itself...
 If there is an argument for putting it in each log as a free-floating unindeed entry even if we don't have ctl, we
 should vet that before just putting it in ctl. Right now, I can't think of any.
+
+## Folder Mode Processing
+
+### Phase 1: Admit/Receive
+
+- receive descriptor (peer, container, start, end, root)
+  - check if end > my current local end, if not ignore
+  - note we shouldn't even receive segments where start > local end!
+- read segment header which should contain signature, last leaf hash, & encoding info
+  - first verify signature against claimed root/end, if fails, ignore
+  - if segment overlaps with local end, then iterate until we reach the leaf that
+    matches our current local end, but what if we have multiple streams open??
+    this could happen if a peer sealed forks and then we are pulling up to the ack point
+
+  

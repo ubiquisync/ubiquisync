@@ -173,72 +173,13 @@ impl EntryCipher {
         Ok(res.into())
     }
 
-    pub fn key_fingerprint(&self) -> &Key256Fingerprint {
-        &self.fingerprint
-    }
-
-    pub fn cipher_suite(&self) -> CipherSuite {
-        CipherSuite::Aes256GcmSiv
-    }
-}
-
-// pub struct SegmentCipher {
-//     cipher: Aes256GcmSiv,
-// }
-
-// impl SegmentCipher {
-//     pub fn decrypt_segment(&self, nonce: &[u8], inout: &mut Vec<u8>) -> Result<(), CipherError> {
-//         let nonce = Nonce::try_from(nonce).map_err(|_| CipherError)?;
-//         // TODO should there be any AD here??
-//         self.cipher
-//             .decrypt_in_place(&nonce, &[], inout)
-//             .map_err(|_| CipherError)?;
-//         Ok(())
-//     }
-
-//     fn associated_data_and_key(
-//         &self,
-//         entry_idx: u64,
-//         slot_idx: u64,
-//         prev_hash: &Hash256,
-//     ) -> (Vec<u8>, Aes256GcmSiv, Nonce) {
-//         // TODO derive subkey
-//         let mut ad = Vec::new();
-//         const AD_LEN: usize = 1 + 32 + 16 + 16 + 8 + 8;
-//         ad.reserve_exact(AD_LEN);
-//         ad.extend_from_slice(self.ad_prefix.as_slice());
-//         ad.extend_from_slice(&entry_idx.to_le_bytes());
-//         ad.extend_from_slice(&slot_idx.to_le_bytes());
-//         let mut key_hasher = self.key_hasher.clone();
-//         key_hasher.update(&ad);
-//         key_hasher.update(&prev_hash[..]);
-//         let cipher = Aes256GcmSiv::new(key_hasher.finalize().as_bytes().into());
-//         (ad, cipher, [0; 12].into()) // since we derive every key based on coordinates, we can use a zero nonce
-//     }
-// }
-
-pub struct SegmentCipher {
-    key: Key256,
-}
-
-impl SegmentCipher {
-    pub fn new(suite: CipherSuite, key: Key256) -> Self {
-        assert_eq!(
-            suite,
-            CipherSuite::Aes256GcmSiv,
-            "if this gets triggered it means we need to support new cipher suites",
-        );
-        Self { key }
-    }
-
     pub fn decrypt_segment(
         &self,
-        log_id: &LogId,
         range: &Range<u64>,
-        nonce: [u8; 16],
+        nonce: &[u8; 16],
         inout: &mut Vec<u8>,
     ) -> Result<(), CipherError> {
-        let (ad, cipher, nonce) = self.segment_ad_and_cipher(log_id, range, nonce);
+        let (ad, cipher, nonce) = self.segment_ad_and_cipher(range, nonce);
         cipher
             .decrypt_in_place(&nonce, &ad, inout)
             .map_err(|_| CipherError)?;
@@ -247,12 +188,11 @@ impl SegmentCipher {
 
     pub fn encrypt_segment(
         &self,
-        log_id: &LogId,
         range: &Range<u64>,
-        nonce: [u8; 16],
+        nonce: &[u8; 16],
         inout: &mut Vec<u8>,
     ) -> Result<(), CipherError> {
-        let (ad, cipher, nonce) = self.segment_ad_and_cipher(log_id, range, nonce);
+        let (ad, cipher, nonce) = self.segment_ad_and_cipher(range, nonce);
         cipher
             .encrypt_in_place(&nonce, &ad, inout)
             .map_err(|_| CipherError)?;
@@ -261,21 +201,28 @@ impl SegmentCipher {
 
     fn segment_ad_and_cipher(
         &self,
-        log_id: &LogId,
         range: &Range<u64>,
-        nonce: [u8; 16],
+        nonce: &[u8; 16],
     ) -> (Vec<u8>, Aes256GcmSiv, Nonce) {
         let mut ad = Vec::new();
-        ad.extend_from_slice(&log_id.peer_id.0);
-        ad.extend_from_slice(&log_id.container_id.0);
+        ad.extend_from_slice(self.ad_prefix.as_slice());
         ad.extend_from_slice(&range.start.to_le_bytes());
         ad.extend_from_slice(&range.end.to_le_bytes());
+        // TODO do we need end in AD too?
         let mut key_info = ad.clone();
-        key_info.extend_from_slice(&nonce);
+        key_info.extend_from_slice(nonce);
         let key =
             Hash256Suite::Sha256.derive_key(DeriveKeyDomain::EntryCipher, &self.key, &key_info);
         let cipher = Aes256GcmSiv::new(key.0.expose_secret().into());
         (ad, cipher, [0; 12].into()) // since we derive every key based on coordinates, we can use a zero nonce
+    }
+
+    pub fn key_fingerprint(&self) -> &Key256Fingerprint {
+        &self.fingerprint
+    }
+
+    pub fn cipher_suite(&self) -> CipherSuite {
+        CipherSuite::Aes256GcmSiv
     }
 }
 
