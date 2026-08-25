@@ -13,15 +13,10 @@ use crate::{
     },
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RootInfo {
     pub root_hash: Hash256,
     pub size: u64,
-}
-
-pub fn root_info(mmr: &MmrAccumulator) -> RootInfo {
-    let root_hash = mmr.root();
-    let size = mmr.size();
-    RootInfo { root_hash, size }
 }
 
 pub fn mmr_seed(log_id: &LogId) -> Hash256 {
@@ -32,6 +27,12 @@ pub fn mmr_seed(log_id: &LogId) -> Hash256 {
 }
 
 impl RootInfo {
+    pub fn from_mmr(mmr: &MmrAccumulator) -> Self {
+        let root_hash = mmr.root();
+        let size = mmr.size();
+        Self { root_hash, size }
+    }
+
     pub fn sign_bytes(&self, log_id: &LogId) -> Hash256 {
         let mut hasher = HASH_SUITE.new_tagged_hasher(TaggedHashDomain::MmrSignBytes);
         hasher.update(&log_id.peer_id.0);

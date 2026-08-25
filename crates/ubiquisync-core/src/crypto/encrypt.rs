@@ -1,10 +1,10 @@
 use std::borrow::Borrow;
+use std::ops::Range;
 
 use aes_gcm_siv::AeadInOut;
 use aes_gcm_siv::Aes256GcmSiv;
 use aes_gcm_siv::KeyInit;
 use aes_gcm_siv::Nonce;
-use blake3::Hasher;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use secrecy::ExposeSecret;
 use secrecy::SecretBox;
@@ -12,7 +12,9 @@ use thiserror::Error;
 use zeroize::Zeroize;
 use zeroize::ZeroizeOnDrop;
 
+use crate::crypto::DeriveKeyDomain;
 use crate::crypto::Hash256;
+use crate::crypto::Hash256Suite;
 use crate::ids::LogId;
 use crate::log_entry::OpaqueBytes;
 use crate::log_entry::PlaintextBytes;
@@ -26,7 +28,7 @@ pub enum CipherSuite {
 
 pub struct EntryCipher {
     fingerprint: Key256Fingerprint,
-    key_hasher: Hasher,
+    key: Key256,
     ad_prefix: Vec<u8>,
 }
 
@@ -66,10 +68,9 @@ impl EntryCipher {
         ad_prefix.extend_from_slice(&fingerprint.0[..]);
         ad_prefix.extend_from_slice(&log_id.peer_id.0[..]);
         ad_prefix.extend_from_slice(&log_id.container_id.0[..]);
-        let key_hasher = Hasher::new_keyed(key.0.expose_secret());
         Self {
             ad_prefix,
-            key_hasher,
+            key,
             fingerprint,
         }
     }
@@ -120,17 +121,15 @@ impl EntryCipher {
         slot_idx: u64,
         prev_hash: &Hash256,
     ) -> (Vec<u8>, Aes256GcmSiv, Nonce) {
-        // TODO derive subkey
         let mut ad = Vec::new();
-        const AD_LEN: usize = 1 + 32 + 16 + 16 + 8 + 8;
-        ad.reserve_exact(AD_LEN);
         ad.extend_from_slice(self.ad_prefix.as_slice());
         ad.extend_from_slice(&entry_idx.to_le_bytes());
         ad.extend_from_slice(&slot_idx.to_le_bytes());
-        let mut key_hasher = self.key_hasher.clone();
-        key_hasher.update(&ad);
-        key_hasher.update(&prev_hash[..]);
-        let cipher = Aes256GcmSiv::new(key_hasher.finalize().as_bytes().into());
+        let mut key_info = ad.clone();
+        key_info.extend_from_slice(&prev_hash[..]);
+        let key =
+            Hash256Suite::Sha256.derive_key(DeriveKeyDomain::EntryCipher, &self.key, &key_info);
+        let cipher = Aes256GcmSiv::new(key.0.expose_secret().into());
         (ad, cipher, [0; 12].into()) // since we derive every key based on coordinates, we can use a zero nonce
     }
 
@@ -183,18 +182,100 @@ impl EntryCipher {
     }
 }
 
+// pub struct SegmentCipher {
+//     cipher: Aes256GcmSiv,
+// }
+
+// impl SegmentCipher {
+//     pub fn decrypt_segment(&self, nonce: &[u8], inout: &mut Vec<u8>) -> Result<(), CipherError> {
+//         let nonce = Nonce::try_from(nonce).map_err(|_| CipherError)?;
+//         // TODO should there be any AD here??
+//         self.cipher
+//             .decrypt_in_place(&nonce, &[], inout)
+//             .map_err(|_| CipherError)?;
+//         Ok(())
+//     }
+
+//     fn associated_data_and_key(
+//         &self,
+//         entry_idx: u64,
+//         slot_idx: u64,
+//         prev_hash: &Hash256,
+//     ) -> (Vec<u8>, Aes256GcmSiv, Nonce) {
+//         // TODO derive subkey
+//         let mut ad = Vec::new();
+//         const AD_LEN: usize = 1 + 32 + 16 + 16 + 8 + 8;
+//         ad.reserve_exact(AD_LEN);
+//         ad.extend_from_slice(self.ad_prefix.as_slice());
+//         ad.extend_from_slice(&entry_idx.to_le_bytes());
+//         ad.extend_from_slice(&slot_idx.to_le_bytes());
+//         let mut key_hasher = self.key_hasher.clone();
+//         key_hasher.update(&ad);
+//         key_hasher.update(&prev_hash[..]);
+//         let cipher = Aes256GcmSiv::new(key_hasher.finalize().as_bytes().into());
+//         (ad, cipher, [0; 12].into()) // since we derive every key based on coordinates, we can use a zero nonce
+//     }
+// }
+
 pub struct SegmentCipher {
-    cipher: Aes256GcmSiv,
+    key: Key256,
 }
 
 impl SegmentCipher {
-    pub fn decrypt_segment(&self, nonce: &[u8], inout: &mut Vec<u8>) -> Result<(), CipherError> {
-        let nonce = Nonce::try_from(nonce).map_err(|_| CipherError)?;
-        // TODO should there be any AD here??
-        self.cipher
-            .decrypt_in_place(&nonce, &[], inout)
+    pub fn new(suite: CipherSuite, key: Key256) -> Self {
+        assert_eq!(
+            suite,
+            CipherSuite::Aes256GcmSiv,
+            "if this gets triggered it means we need to support new cipher suites",
+        );
+        Self { key }
+    }
+
+    pub fn decrypt_segment(
+        &self,
+        log_id: &LogId,
+        range: &Range<u64>,
+        nonce: [u8; 16],
+        inout: &mut Vec<u8>,
+    ) -> Result<(), CipherError> {
+        let (ad, cipher, nonce) = self.segment_ad_and_cipher(log_id, range, nonce);
+        cipher
+            .decrypt_in_place(&nonce, &ad, inout)
             .map_err(|_| CipherError)?;
         Ok(())
+    }
+
+    pub fn encrypt_segment(
+        &self,
+        log_id: &LogId,
+        range: &Range<u64>,
+        nonce: [u8; 16],
+        inout: &mut Vec<u8>,
+    ) -> Result<(), CipherError> {
+        let (ad, cipher, nonce) = self.segment_ad_and_cipher(log_id, range, nonce);
+        cipher
+            .encrypt_in_place(&nonce, &ad, inout)
+            .map_err(|_| CipherError)?;
+        Ok(())
+    }
+
+    fn segment_ad_and_cipher(
+        &self,
+        log_id: &LogId,
+        range: &Range<u64>,
+        nonce: [u8; 16],
+    ) -> (Vec<u8>, Aes256GcmSiv, Nonce) {
+        let mut ad = Vec::new();
+        ad.extend_from_slice(&log_id.peer_id.0);
+        ad.extend_from_slice(&log_id.container_id.0);
+        ad.extend_from_slice(&range.start.to_le_bytes());
+        ad.extend_from_slice(&range.end.to_le_bytes());
+        let mut key_info = ad.clone();
+        key_info.extend_from_slice(&nonce);
+        let key =
+            Hash256Suite::Sha256.derive_key(DeriveKeyDomain::EntryCipher, &self.key, &key_info);
+        let cipher = Aes256GcmSiv::new(key.0.expose_secret().into());
+        (ad, cipher, [0; 12].into()) // since we derive every key based on coordinates, we can use a zero nonce
     }
 }
 

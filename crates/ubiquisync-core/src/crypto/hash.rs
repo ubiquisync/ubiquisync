@@ -46,7 +46,8 @@ pub enum TaggedHashDomain {
 #[derive(IntoStaticStr, EnumIter, Debug, Clone, Copy, PartialEq, Eq)]
 #[strum(prefix = "ubiquisync/v1/kdf/")]
 pub enum DeriveKeyDomain {
-    EncryptionKey,
+    EntryCipher,
+    SegmentCipher,
 }
 
 #[derive(IntoStaticStr, EnumIter, Debug, Clone, Copy, PartialEq, Eq)]

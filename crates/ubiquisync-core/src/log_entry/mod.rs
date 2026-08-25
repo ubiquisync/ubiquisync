@@ -6,7 +6,7 @@ mod hash;
 mod header;
 mod op;
 mod ops;
-mod segment;
+pub mod segment;
 mod transform;
 
 pub use bytes::*;
@@ -16,4 +16,3 @@ pub use hash::*;
 pub use header::*;
 pub use op::*;
 pub use ops::*;
-pub use transform::*;
