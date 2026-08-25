@@ -144,6 +144,10 @@ impl MmrAccumulator {
         self.size = end;
         Ok(())
     }
+
+    pub(crate) fn seed(&self) -> &Hash256 {
+        &self.seed
+    }
 }
 
 #[derive(Error, Debug)]

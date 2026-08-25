@@ -10,7 +10,9 @@ use thiserror::Error;
 use zeroize::Zeroize;
 use zeroize::ZeroizeOnDrop;
 
+use crate::crypto::Hash256;
 use crate::ids::ContainerId;
+use crate::ids::LogId;
 use crate::ids::PeerId;
 
 #[repr(u8)]
@@ -49,12 +51,7 @@ const DOMAIN_KEY_FINGERPRINT: &str = "ubiquisync/v1/key-fingerprint";
 pub struct CipherError;
 
 impl EntryCipher {
-    pub fn new(
-        suite: CipherSuite,
-        key: Key256,
-        peer_id: &PeerId,
-        container_id: &ContainerId,
-    ) -> Self {
+    pub fn new(suite: CipherSuite, key: Key256, log_id: &LogId) -> Self {
         assert_eq!(
             suite,
             CipherSuite::Aes256GcmSiv,
@@ -65,8 +62,8 @@ impl EntryCipher {
         ad_prefix.push(suite.into());
         let fingerprint = key.fingerprint();
         ad_prefix.extend_from_slice(&fingerprint.0[..]);
-        ad_prefix.extend_from_slice(&peer_id.0[..]);
-        ad_prefix.extend_from_slice(&container_id.0[..]);
+        ad_prefix.extend_from_slice(&log_id.peer_id.0[..]);
+        ad_prefix.extend_from_slice(&log_id.container_id.0[..]);
         let key_hasher = Hasher::new_keyed(key.0.expose_secret());
         Self {
             ad_prefix,
@@ -75,19 +72,26 @@ impl EntryCipher {
         }
     }
 
-    pub fn encrypt_header(&self, entry_idx: u64, header: &[u8]) -> Result<Vec<u8>, CipherError> {
-        self.encrypt_slot(entry_idx, 0, header)
+    pub fn encrypt_header(
+        &self,
+        entry_idx: u64,
+        prev_hash: &Hash256,
+        header: &[u8],
+    ) -> Result<Vec<u8>, CipherError> {
+        self.encrypt_slot(entry_idx, 0, prev_hash, header)
     }
 
     pub fn encrypt_op(
         &self,
         entry_idx: u64,
         op_index: u64,
+        prev_hash: &Hash256,
         op: &[u8],
     ) -> Result<Vec<u8>, CipherError> {
         self.encrypt_slot(
             entry_idx,
             op_index.checked_add(1).expect("op index overflow"),
+            prev_hash,
             op,
         ) // convert to 1-based index, 0 for header
     }
@@ -96,9 +100,10 @@ impl EntryCipher {
         &self,
         entry_idx: u64,
         slot_idx: u64,
+        prev_hash: &Hash256,
         bytes: &[u8],
     ) -> Result<Vec<u8>, CipherError> {
-        let (ad, cipher, nonce) = self.associated_data_and_key(entry_idx, slot_idx);
+        let (ad, cipher, nonce) = self.associated_data_and_key(entry_idx, slot_idx, prev_hash);
         let mut res = Vec::from(bytes); // we copy the input data to the res vec to encrypt in place
         cipher
             .encrypt_in_place(&nonce, &ad, &mut res)
@@ -110,6 +115,7 @@ impl EntryCipher {
         &self,
         entry_idx: u64,
         slot_idx: u64,
+        prev_hash: &Hash256,
     ) -> (Vec<u8>, Aes256GcmSiv, Nonce) {
         // TODO derive subkey
         let mut ad = Vec::new();
@@ -120,23 +126,31 @@ impl EntryCipher {
         ad.extend_from_slice(&slot_idx.to_le_bytes());
         let mut key_hasher = self.key_hasher.clone();
         key_hasher.update(&ad);
+        key_hasher.update(&prev_hash[..]);
         let cipher = Aes256GcmSiv::new(key_hasher.finalize().as_bytes().into());
         (ad, cipher, [0; 12].into()) // since we derive every key based on coordinates, we can use a zero nonce
     }
 
-    pub fn decrypt_header(&self, entry_idx: u64, header: &[u8]) -> Result<Vec<u8>, CipherError> {
-        self.decrypt_slot(entry_idx, 0, header)
+    pub fn decrypt_header(
+        &self,
+        entry_idx: u64,
+        prev_hash: &Hash256,
+        header: &[u8],
+    ) -> Result<Vec<u8>, CipherError> {
+        self.decrypt_slot(entry_idx, 0, prev_hash, header)
     }
 
     pub fn decrypt_op(
         &self,
         entry_idx: u64,
         op_index: u64,
+        prev_hash: &Hash256,
         op: &[u8],
     ) -> Result<Vec<u8>, CipherError> {
         self.decrypt_slot(
             entry_idx,
             op_index.checked_add(1).expect("op index overflow"),
+            prev_hash,
             op,
         ) // convert to 1-based index, 0 for header
     }
@@ -145,9 +159,10 @@ impl EntryCipher {
         &self,
         entry_idx: u64,
         slot_idx: u64,
+        prev_hash: &Hash256,
         bytes: &[u8],
     ) -> Result<Vec<u8>, CipherError> {
-        let (ad, cipher, nonce) = self.associated_data_and_key(entry_idx, slot_idx);
+        let (ad, cipher, nonce) = self.associated_data_and_key(entry_idx, slot_idx, prev_hash);
         let mut res = Vec::from(bytes); // we copy the input data to the res vec to decrypt in place
         cipher
             .decrypt_in_place(&nonce, &ad, &mut res)
@@ -216,4 +231,6 @@ mod tests {
             assert_eq!(slot_bytes, decrypted);
         }
     }
+
+    // TODO snapshot tests
 }

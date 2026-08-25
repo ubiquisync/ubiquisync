@@ -1,3 +1,4 @@
+mod admit;
 mod ctl;
 mod decrypt;
 mod error;

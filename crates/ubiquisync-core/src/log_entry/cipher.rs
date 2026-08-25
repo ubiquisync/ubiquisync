@@ -3,7 +3,7 @@ use std::borrow::Borrow;
 use thiserror::Error;
 
 use crate::{
-    crypto::{CipherError, EntryCipher, Key256Fingerprint},
+    crypto::{CipherError, EntryCipher, Hash256, Key256Fingerprint},
     log_entry::{
         EntryBody, GenericLogEntry, OpaqueBytes, OpaqueLogEntry, PlaintextBytes, PlaintextLogEntry,
     },
@@ -12,10 +12,15 @@ use crate::{
 pub fn to_opaque<'a>(
     entry: &PlaintextLogEntry<'a>,
     cipher: Option<&EntryCipher>,
+    last_entry_hash: &Hash256,
 ) -> Result<OpaqueLogEntry<'a>, CipherError> {
     if let Some(cipher) = cipher {
         entry.transform(
-            |entry_idx, h| Ok(cipher.encrypt_header(entry_idx, h.borrow())?.into()),
+            |entry_idx, h| {
+                Ok(cipher
+                    .encrypt_header(entry_idx, last_entry_hash, h.borrow())?
+                    .into())
+            },
             |entry_idx, op_idx, op, _| {
                 Ok(cipher.encrypt_op(entry_idx, op_idx, op.borrow())?.into())
             },
@@ -34,6 +39,7 @@ pub fn to_plaintext<'a>(
 ) -> Result<PlaintextLogEntry<'a>, CipherError> {
     if let Some(cipher) = cipher {
         entry.transform(
+            // TODO header and op hashes
             |entry_idx, h| Ok(cipher.decrypt_header(entry_idx, h.borrow())?.into()),
             |entry_idx, op_idx, op, _| {
                 Ok(cipher.decrypt_op(entry_idx, op_idx, op.borrow())?.into())

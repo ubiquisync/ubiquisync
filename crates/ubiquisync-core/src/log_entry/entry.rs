@@ -22,6 +22,8 @@ pub enum GenericLogEntry<Op: std::fmt::Debug, H: std::fmt::Debug> {
     Expunged {
         range: Range<u64>,
         cover: Vec<Hash256>,
+        // needed if we ever want to support a non-MRAE cipher
+        last_leaf_hash: Hash256,
     },
     Signature {
         size: u64,
