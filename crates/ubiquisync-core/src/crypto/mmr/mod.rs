@@ -72,10 +72,6 @@ const HASH_SUITE: Hash256Suite = Hash256Suite::Sha256;
 impl MmrAccumulator {
     pub fn new(seed: Hash256, state: MmrState) -> Result<Self, MmrError> {
         state.validate()?;
-        // let mut seed_hasher = HASH_SUITE.new_tagged_hasher(super::TaggedHashDomain::MmrSeed);
-        // seed_hasher.update(&peer_id.0);
-        // seed_hasher.update(&container_id.0);
-        // let seed = seed_hasher.finalize();
         let size = state.size;
         let peaks = peaks_to_nodes(size, &state.peaks).ok_or(MmrError::InvalidPeakCount {
             expected: peak_count(size),
@@ -117,15 +113,6 @@ impl MmrAccumulator {
         let root_bag = root_fold(self.size, &self.seed, &self.peaks);
         root_bag.hash
     }
-
-    // pub fn sign_bytes(&self) -> Hash256 {
-    //     let mut hasher = HASH_SUITE.new_tagged_hasher(TaggedHashDomain::MmrSignBytes);
-    //     hasher.update(&self.peer_id.0);
-    //     hasher.update(&self.container_id.0);
-    //     hasher.update(&self.state.size.to_le_bytes());
-    //     hasher.update(&self.root());
-    //     hasher.finalize().into()
-    // }
 
     pub fn size(&self) -> u64 {
         self.size

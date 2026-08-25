@@ -66,13 +66,22 @@ fn mmr_append_entry(
     acc: &mut MmrAccumulator,
     entry: &OpaqueLogEntry,
 ) -> Result<(), MmrUpdateError> {
+    mmr_append_entry_hashed(acc, entry, entry.hash(acc.seed()))
+}
+
+pub(crate) fn mmr_append_entry_hashed<O: std::fmt::Debug, H: std::fmt::Debug>(
+    acc: &mut MmrAccumulator,
+    entry: &GenericLogEntry<O, H>,
+    maybe_hash: Option<Hash256>,
+) -> Result<(), MmrUpdateError> {
     match entry {
-        GenericLogEntry::IndexedEntry { idx, entry } => {
+        GenericLogEntry::IndexedEntry { idx, .. } => {
             let size = acc.size();
             if *idx != size {
                 return Err(MmrUpdateError::OutOfOrderEntry { size, idx: *idx });
             }
-            let leaf = entry.hash(acc.seed(), *idx);
+            let leaf =
+                maybe_hash.expect("state machine error, caller should have produced a hash here");
             acc.append(&leaf);
         }
         GenericLogEntry::Expunged { range, cover, .. } => {

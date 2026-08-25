@@ -1,13 +1,10 @@
 use thiserror::Error;
 
 use crate::{
-    crypto::{
-        CipherError, EntryCipher, Hash256, Key256Fingerprint,
-        mmr::{InvalidCoverError, MmrAccumulator},
-    },
+    crypto::{CipherError, EntryCipher, Hash256, Key256Fingerprint, mmr::MmrAccumulator},
     log_entry::{
-        EntryBody, GenericLogEntry, OpBatchHasher, OpaqueBytes, OpaqueLogEntry, PlaintextBytes,
-        PlaintextLogEntry,
+        EntryBody, GenericLogEntry, MmrUpdateError, OpBatchHasher, OpaqueBytes, OpaqueLogEntry,
+        PlaintextBytes, PlaintextLogEntry, mmr_append_entry_hashed,
     },
 };
 
@@ -114,8 +111,8 @@ pub enum SegmentCipherError {
     #[error("cipher changed to {0:?} mid-segment")]
     CipherChanged(Key256Fingerprint),
 
-    #[error("invalid expunge cover: {0}")]
-    InvalidExpungeCover(#[from] InvalidCoverError),
+    #[error("MMR update error: {0}")]
+    MmrUpdateError(#[from] MmrUpdateError),
 }
 
 pub fn segment_to_opaque<'a>(
@@ -232,29 +229,13 @@ fn scan_with_mmr<O: std::fmt::Debug, H: std::fmt::Debug>(
             return None;
         }
         match r {
-            Ok((
-                GenericLogEntry::Expunged {
-                    range,
-                    cover,
-                    last_leaf_hash,
-                },
-                _,
-            )) => match mmr.advance_with_cover(range.end, cover.as_slice()) {
-                Ok(_) => Some(Ok(GenericLogEntry::Expunged {
-                    range,
-                    cover,
-                    last_leaf_hash,
-                })),
+            Ok((e2, maybe_hash)) => match mmr_append_entry_hashed(mmr, &e2, maybe_hash) {
+                Ok(_) => Some(Ok(e2)),
                 Err(e) => {
                     *failed = true;
-                    Some(Err(SegmentCipherError::InvalidExpungeCover(e)))
+                    Some(Err(SegmentCipherError::MmrUpdateError(e)))
                 }
             },
-            Ok((e2, Some(ref h))) => {
-                mmr.append(h);
-                Some(Ok(e2))
-            }
-            Ok((e2, None)) => Some(Ok(e2)),
             Err(e) => {
                 *failed = true;
                 Some(Err(e))
