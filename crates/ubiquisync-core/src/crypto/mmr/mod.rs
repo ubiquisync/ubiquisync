@@ -493,7 +493,9 @@ impl PrefixProof {
             return false;
         }
 
-        Self::apply_cover(&mut peaks, &self.cover, self.m, self.n);
+        if let Err(_) = Self::apply_cover(&mut peaks, &self.cover, self.m, self.n) {
+            return false;
+        }
 
         let root_bag_n = root_fold(self.n, seed, &peaks);
         root_bag_n.hash == *root_n
