@@ -10,6 +10,7 @@ pub struct DbTableDescriptor {
     pub pk: DbPrimaryKey,
     /// The remaining (non-primary-key) columns.
     pub cols: Vec<DbColumnDescription>,
+    pub unique: Vec<Vec<String>>,
 }
 
 /// One column of an introspected table (see [`DbTableDescriptor`]).
@@ -88,22 +89,6 @@ impl DbType {
 }
 
 impl DbTableDescriptor {
-    pub fn new(name: &str, pk: &[DbColumnDescription], cols: &[DbColumnDescription]) -> Self {
-        Self {
-            name: name.into(),
-            pk: DbPrimaryKey::Columns(pk.into()),
-            cols: cols.into(),
-        }
-    }
-
-    pub fn new_auto_id(name: &str, id: &str, cols: &[DbColumnDescription]) -> Self {
-        Self {
-            name: name.into(),
-            pk: DbPrimaryKey::AutoId(id.into()),
-            cols: cols.into(),
-        }
-    }
-
     pub fn create_table_sql(&self, dialect: SqlDialect) -> String {
         let quoted_table_name = quote_ident(&self.name);
         let mut col_defs = self.pk.create_cols_clauses(dialect);
@@ -114,6 +99,12 @@ impl DbTableDescriptor {
         let pk_clause = self.pk.pk_clause();
         let rowid_clause = self.pk.rowid_clause(dialect);
         format!("CREATE TABLE {quoted_table_name} ({col_sql}{pk_clause}){rowid_clause};")
+    }
+
+    pub fn with_unique(mut self, cols: &[&str]) -> Self {
+        self.unique
+            .push(cols.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        self
     }
 }
 
@@ -182,12 +173,12 @@ impl DbColumnDescription {
             .collect::<Vec<_>>()
     }
 
-    pub fn with_nullable(mut self) -> Self {
+    pub fn nullable(mut self) -> Self {
         self.nullable = true;
         self
     }
 
-    pub fn with_default_zero(mut self) -> Self {
+    pub fn default_zero(mut self) -> Self {
         debug_assert_eq!(self.db_type, DbType::Integer);
         self.nullable = true;
         self
@@ -199,6 +190,28 @@ impl DbColumnDefault {
         match self {
             DbColumnDefault::I64Zero => "0".into(),
         }
+    }
+}
+
+pub fn table(
+    name: &str,
+    pk: &[DbColumnDescription],
+    cols: &[DbColumnDescription],
+) -> DbTableDescriptor {
+    DbTableDescriptor {
+        name: name.into(),
+        pk: DbPrimaryKey::Columns(pk.into()),
+        cols: cols.into(),
+        unique: vec![],
+    }
+}
+
+pub fn table_with_auto_id(name: &str, id: &str, cols: &[DbColumnDescription]) -> DbTableDescriptor {
+    DbTableDescriptor {
+        name: name.into(),
+        pk: DbPrimaryKey::AutoId(id.into()),
+        cols: cols.into(),
+        unique: vec![],
     }
 }
 
@@ -237,13 +250,13 @@ mod tests {
 
     #[test]
     fn test_create_table() {
-        let user = DbTableDescriptor::new("user", &[col("id", DbType::Uuid)], &[]);
-        let user_device = DbTableDescriptor::new(
+        let user = table("user", &[col("id", DbType::Uuid)], &[]);
+        let user_device = table(
             "user",
             &[col("user", DbType::Uuid), col("device", DbType::Uuid)],
             &[],
         );
-        let entry = DbTableDescriptor::new_auto_id(
+        let entry = table_with_auto_id(
             "entry",
             "id",
             &[col("bytes", DbType::Blob), col("ts", DbType::Integer)],

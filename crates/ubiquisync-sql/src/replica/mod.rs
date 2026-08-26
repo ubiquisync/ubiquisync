@@ -1,1 +1,2 @@
 mod replica;
+mod schema;
