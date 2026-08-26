@@ -239,7 +239,8 @@ mod tests {
     use secrecy::SecretBox;
     use test_strategy::proptest;
 
-    use crate::ids::ContainerId;
+    use crate::ids::{ContainerId, LogId};
+    use crate::log_entry::PlaintextBytes;
     use crate::{
         crypto::{CipherSuite, EntryCipher, Key256},
         ids::PeerId,
@@ -250,24 +251,33 @@ mod tests {
         key: [u8; 32],
         peer_id: [u8; 32],
         container_id: [u8; 16],
+        last_hash: [u8; 32],
         entry_idx: u64,
         op_or_header: Option<u64>,
         slot_bytes: Vec<u8>,
     ) {
         let key = Key256(SecretBox::new(Box::new(key)));
-        let cipher = EntryCipher::new(
-            CipherSuite::Aes256GcmSiv,
-            key,
-            &PeerId(peer_id),
-            &ContainerId(container_id),
-        );
+        let log_id = LogId {
+            peer_id: PeerId(peer_id),
+            container_id: ContainerId(container_id),
+        };
+        let cipher = EntryCipher::new(CipherSuite::Aes256GcmSiv, key, &log_id);
+        let slot_bytes = PlaintextBytes(slot_bytes.into());
         if let Some(idx) = op_or_header {
-            let encrypted = cipher.encrypt_op(entry_idx, idx, &slot_bytes).unwrap();
-            let decrypted = cipher.decrypt_op(entry_idx, idx, &encrypted).unwrap();
+            let encrypted = cipher
+                .encrypt_op(entry_idx, idx, &last_hash, &slot_bytes)
+                .unwrap();
+            let decrypted = cipher
+                .decrypt_op(entry_idx, idx, &last_hash, &encrypted)
+                .unwrap();
             assert_eq!(slot_bytes, decrypted);
         } else {
-            let encrypted = cipher.encrypt_header(entry_idx, &slot_bytes).unwrap();
-            let decrypted = cipher.decrypt_header(entry_idx, &encrypted).unwrap();
+            let encrypted = cipher
+                .encrypt_header(entry_idx, &last_hash, &slot_bytes)
+                .unwrap();
+            let decrypted = cipher
+                .decrypt_header(entry_idx, &last_hash, &encrypted)
+                .unwrap();
             assert_eq!(slot_bytes, decrypted);
         }
     }

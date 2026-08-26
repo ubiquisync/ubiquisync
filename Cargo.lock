@@ -1443,6 +1443,7 @@ dependencies = [
  "async-trait",
  "blake3",
  "futures",
+ "insta",
  "thiserror",
  "ubiquisync-core",
 ]

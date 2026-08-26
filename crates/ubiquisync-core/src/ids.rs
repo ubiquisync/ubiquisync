@@ -12,45 +12,27 @@ pub struct LogId {
 #[derive(Clone, Copy, Debug)]
 pub struct PeerId(pub [u8; 32]);
 
-const DOMAIN_PEER_ID: &str = "ubiquisync/v1/peer-id";
-
 #[derive(Clone, Copy, Debug)]
 pub struct ContainerId(pub [u8; 16]);
 
+#[derive(Clone, Copy, Debug)]
+pub struct AudienceId(pub [u8; 15]);
+
 impl ContainerId {
-    pub fn generate(app_type: u8, is_encrypted: bool) -> Result<Self, rand::Error> {
-        let mut buf = [0; 16];
-        if is_encrypted {
-            buf[0] |= 0x1; // set encrypted flag
-            // other flags in byte 0 are reserved for futre flags
-        }
-        buf[1] = app_type;
-        rand_fill(&mut buf[2..])?;
-        Ok(Self(buf))
+    pub fn new(audience: &AudienceId, commit_unit: u8) -> Self {
+        let mut id = [0; 16];
+        id[..15].copy_from_slice(&audience.0);
+        id[15] = commit_unit;
+        Self(id)
     }
 
-    pub fn is_encrypted(&self) -> bool {
-        return self.0[0] & 0x1 == 0x1;
+    pub fn audience(&self) -> AudienceId {
+        let mut id = [0; 15];
+        id.copy_from_slice(&self.0);
+        AudienceId(id)
     }
 
-    pub fn app_type(&self) -> u8 {
-        return self.0[1];
-    }
-}
-
-#[cfg(test)]
-pub mod tests {
-    use test_strategy::proptest;
-
-    #[cfg(test)]
-    use crate::ids::ContainerId;
-
-    #[proptest]
-    fn test_container_id(app_type: u8, is_encrypted: bool) {
-        let container_id = ContainerId::generate(app_type, is_encrypted).unwrap();
-        assert_eq!(container_id.is_encrypted(), is_encrypted);
-        assert_eq!(container_id.app_type(), app_type);
-        // check that other flag bits are unset
-        assert_eq!(container_id.0[0] & !0x1, 0x0);
+    pub fn commit_unit(&self) -> u8 {
+        self.0[15]
     }
 }

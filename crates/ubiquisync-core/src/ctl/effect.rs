@@ -2,27 +2,13 @@ use crate::{crypto::VerifyingKey, uuid::Uuid};
 use core::ops::Range;
 
 pub enum Effect {
+    AddUser(Uuid),
     AdmitDevice {
         device_id: Uuid,
         user_id: Uuid,
     },
     RemoveUser(Uuid),
     RemoveDevice(Uuid),
-    // union join permission, not deny
-    // first set is a shrinking of permission - containers default to workspace read/write
-    SetContainerPermission {
-        container_id: Uuid,
-        principal: Principal,
-        permission: Permission,
-    },
-    AddEdge {
-        parent: Parent,
-        child: Child,
-    },
-    RemoveEdge {
-        parent: Parent,
-        child: Child,
-    },
     SetServerScope {
         server_id: Uuid,
         scope: ServerScope,

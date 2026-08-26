@@ -1,0 +1,5 @@
+---
+source: crates/ubiquisync-sql/src/db/schema.rs
+expression: "user.create_table_sql(SqlDialect::Postgres)"
+---
+CREATE TABLE "user" ("id" UUID NOT NULL, PRIMARY KEY("id"));

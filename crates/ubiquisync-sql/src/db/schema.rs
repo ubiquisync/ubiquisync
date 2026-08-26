@@ -88,6 +88,22 @@ impl DbType {
 }
 
 impl DbTableDescriptor {
+    pub fn new(name: &str, pk: &[DbColumnDescription], cols: &[DbColumnDescription]) -> Self {
+        Self {
+            name: name.into(),
+            pk: DbPrimaryKey::Columns(pk.into()),
+            cols: cols.into(),
+        }
+    }
+
+    pub fn new_auto_id(name: &str, id: &str, cols: &[DbColumnDescription]) -> Self {
+        Self {
+            name: name.into(),
+            pk: DbPrimaryKey::AutoId(id.into()),
+            cols: cols.into(),
+        }
+    }
+
     pub fn create_table_sql(&self, dialect: SqlDialect) -> String {
         let quoted_table_name = quote_ident(&self.name);
         let mut col_defs = self.pk.create_cols_clauses(dialect);
@@ -165,6 +181,17 @@ impl DbColumnDescription {
             .map(|c| c.create_col_sql(dialect))
             .collect::<Vec<_>>()
     }
+
+    pub fn with_nullable(mut self) -> Self {
+        self.nullable = true;
+        self
+    }
+
+    pub fn with_default_zero(mut self) -> Self {
+        debug_assert_eq!(self.db_type, DbType::Integer);
+        self.nullable = true;
+        self
+    }
 }
 
 impl DbColumnDefault {
@@ -175,8 +202,19 @@ impl DbColumnDefault {
     }
 }
 
+pub fn col(name: &str, db_type: DbType) -> DbColumnDescription {
+    DbColumnDescription {
+        name: name.into(),
+        db_type,
+        nullable: false,
+        default: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use insta::assert_snapshot;
+
     use super::*;
 
     #[test]
@@ -195,5 +233,34 @@ mod tests {
         assert_eq!(DbType::Text.sql_type(SqlDialect::Postgres), "TEXT");
         assert_eq!(DbType::Blob.sql_type(SqlDialect::Postgres), "BYTEA");
         assert_eq!(DbType::Uuid.sql_type(SqlDialect::Postgres), "UUID");
+    }
+
+    #[test]
+    fn test_create_table() {
+        let user = DbTableDescriptor::new("user", &[col("id", DbType::Uuid)], &[]);
+        let user_device = DbTableDescriptor::new(
+            "user",
+            &[col("user", DbType::Uuid), col("device", DbType::Uuid)],
+            &[],
+        );
+        let entry = DbTableDescriptor::new_auto_id(
+            "entry",
+            "id",
+            &[col("bytes", DbType::Blob), col("ts", DbType::Integer)],
+        );
+
+        assert_snapshot!("user.sqlite", user.create_table_sql(SqlDialect::Sqlite));
+        assert_snapshot!(
+            "user_device.sqlite",
+            user_device.create_table_sql(SqlDialect::Sqlite)
+        );
+        assert_snapshot!("entry.sqlite", entry.create_table_sql(SqlDialect::Sqlite));
+
+        assert_snapshot!("user.pg", user.create_table_sql(SqlDialect::Postgres));
+        assert_snapshot!(
+            "user_device.pg",
+            user_device.create_table_sql(SqlDialect::Postgres)
+        );
+        assert_snapshot!("entry.pg", entry.create_table_sql(SqlDialect::Postgres));
     }
 }
