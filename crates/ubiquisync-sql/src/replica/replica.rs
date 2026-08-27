@@ -1,7 +1,9 @@
 use ubiquisync_core::{crypto::credentials::Credentials, ids::PeerId};
 
-pub struct Replica<D> {
+use crate::db::Db;
+
+pub struct Replica {
     self_id: PeerId,
     credentials: Box<dyn Credentials>,
-    db: D,
+    db: Box<dyn Db>,
 }
