@@ -30,12 +30,11 @@ CREATE TABLE logs (
 CREATE UNIQUE INDEX logs_root ON logs(peer_id, container_id) WHERE parent_id IS NULL;
 
 CREATE TABLE segments (
-    id INT AUTOINCREMENT PRIMARY KEY,
     log_id INT NOT NULL REFERENCES logs(id),
     start_idx INT NOT NULL,
     end_idx INT NOT NULL,
     end_hash BYTES NOT NULL,
     body BYTES NOT NULL,
+    PRIMARY KEY (log_id, end_idx)
+    -- NOTE: this is a large table and we might want a rowid, although if it's dominated by small bodies we should do without rowid, no surrogate id either
 );
-
-CREATE INDEX ON segment_log_end segments(log_id, end_idx);
