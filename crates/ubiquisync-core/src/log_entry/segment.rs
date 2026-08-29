@@ -24,7 +24,7 @@ pub struct SegmentDescriptor {
 pub struct SegmentHeader {
     pub range: Range<u64>,
     pub signature: Signature,
-    pub last_entry_hash: Hash256,
+    pub prev_chain_hash: Hash256,
     pub encoding: SegmentEncoding,
 }
 
@@ -111,14 +111,14 @@ impl<'a> SegmentReader<'a> {
 pub fn encode_segment_opaque<'a>(
     range: &Range<u64>,
     signature: &Signature,
-    last_entry_hash: &Hash256,
+    prev_chain_hash: &Hash256,
     entries: impl Iterator<Item = OpaqueLogEntry<'a>>,
 ) -> Result<Vec<u8>, SegmentEncodeError> {
     let mut w = Writer::new();
     let header = SegmentHeader {
         range: range.clone(),
         signature: signature.clone(),
-        last_entry_hash: *last_entry_hash,
+        prev_chain_hash: *prev_chain_hash,
         encoding: SegmentEncoding::Opaque,
     };
     header.encode(&mut w)?;
@@ -135,7 +135,7 @@ pub fn encode_segment_opaque<'a>(
 pub fn encode_segment_plaintext<'a>(
     range: &Range<u64>,
     signature: &Signature,
-    last_entry_hash: &Hash256,
+    prev_chain_hash: &Hash256,
     cipher: Option<&EntryCipher>,
     entries: impl Iterator<Item = PlaintextLogEntry<'a>>,
 ) -> Result<Vec<u8>, SegmentEncodeError> {
@@ -161,7 +161,7 @@ pub fn encode_segment_plaintext<'a>(
     let header = SegmentHeader {
         range: range.clone(),
         signature: signature.clone(),
-        last_entry_hash: *last_entry_hash,
+        prev_chain_hash: *prev_chain_hash,
         encoding: SegmentEncoding::Plaintext(encoding),
     };
     header.encode(&mut w)?;
@@ -317,7 +317,7 @@ impl SegmentHeader {
     pub fn encode(&self, w: &mut Writer) -> Result<(), WriteError> {
         w.write_range(&self.range)?;
         self.signature.encode(w);
-        w.write_array(&self.last_entry_hash);
+        w.write_array(&self.prev_chain_hash);
         self.encoding.encode(w);
         Ok(())
     }
@@ -325,12 +325,12 @@ impl SegmentHeader {
     pub fn decode(r: &mut Reader) -> Result<Self, SegmentDecodeError> {
         let range = r.read_range()?;
         let signature = Signature::decode(r).map_err(SegmentDecodeError::from_sig_decode_err)?;
-        let last_entry_hash: Hash256 = r.read_array()?;
+        let prev_chain_hash: Hash256 = r.read_array()?;
         let encoding = SegmentEncoding::decode(r)?;
         Ok(Self {
             range,
             signature,
-            last_entry_hash,
+            prev_chain_hash,
             encoding,
         })
     }

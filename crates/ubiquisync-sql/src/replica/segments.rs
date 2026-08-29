@@ -1,17 +1,22 @@
+use sea_query::Query;
 use ubiquisync_core::{
     crypto::Hash256,
     ids::{LogId, PeerId},
 };
 
-use crate::{db::DbError, replica::replica::Replica};
+use crate::{
+    db::DbError,
+    replica::{replica::Replica, schema::Segments},
+};
 
 impl Replica {
-    async fn lookup_leaf(&self, log_id: &LogId, idx: u64) -> Result<Vec<LeafCandidate>, DbError> {
-        todo!()
+    async fn insert_segment_local(&self) {
+        Query::insert().into_table(Segments::Table).columns(
+            Segments::LogId,
+            Segments::StartIdx,
+            Segments::EndIdx,
+            Segments::EndHash,
+            Segments::Body,
+        )
     }
-}
-
-struct LeafCandidate {
-    leaf_hash: Hash256,
-    branch_id: Vec<u8>,
 }

@@ -1,7 +1,9 @@
 use thiserror::Error;
 
 use crate::{
-    crypto::{CipherError, EntryCipher, Hash256, Key256Fingerprint, mmr::MmrAccumulator},
+    crypto::{
+        CipherError, EntryCipher, Hash256, Hash256Suite, Key256Fingerprint, mmr::MmrAccumulator,
+    },
     log_entry::{
         EntryBody, GenericLogEntry, MmrUpdateError, OpBatchHasher, OpaqueBytes, OpaqueLogEntry,
         PlaintextBytes, PlaintextLogEntry, mmr_append_entry_hashed,
@@ -18,14 +20,14 @@ pub fn to_opaque<'a>(
     entry: &PlaintextLogEntry<'a>,
     cipher: Option<&EntryCipher>,
     seed: &Hash256,
-    last_entry_hash: &Hash256,
+    prev_chain_hash: &Hash256,
 ) -> Result<(OpaqueLogEntry<'a>, Option<Hash256>), CipherError> {
     if let Some(cipher) = cipher {
         let (e2, maybe_hash_state) = entry.transform(
             |entry_idx, op_batch| {
                 Ok(OpBatchHashState {
                     entry_idx,
-                    last_hash: *last_entry_hash,
+                    last_hash: *prev_chain_hash,
                     hasher: OpBatchHasher::new(*seed, entry_idx, op_batch.ops.len()),
                 })
             },
@@ -45,7 +47,17 @@ pub fn to_opaque<'a>(
                 Ok(())
             },
         )?;
-        Ok((e2, maybe_hash_state.map(|st| st.hasher.finalize())))
+        Ok((
+            e2,
+            maybe_hash_state.map(|st| {
+                let leaf_hash = st.hasher.finalize();
+                let mut chain_hasher = Hash256Suite::Sha256
+                    .new_tagged_hasher(crate::crypto::TaggedHashDomain::ChainHash);
+                chain_hasher.update(prev_chain_hash);
+                chain_hasher.update(&leaf_hash);
+                chain_hasher.finalize()
+            }),
+        ))
     } else {
         let (e2, _) = entry.transform(
             |_, _| Ok(()),

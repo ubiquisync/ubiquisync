@@ -19,7 +19,7 @@ pub struct RootInfo {
     pub size: u64,
 }
 
-pub fn mmr_seed(log_id: &LogId) -> Hash256 {
+pub fn seed_hash(log_id: &LogId) -> Hash256 {
     let mut hasher = HASH_SUITE.new_tagged_hasher(TaggedHashDomain::MmrSeed);
     hasher.update(&log_id.peer_id.0);
     hasher.update(&log_id.container_id.0);
@@ -27,12 +27,6 @@ pub fn mmr_seed(log_id: &LogId) -> Hash256 {
 }
 
 impl RootInfo {
-    pub fn from_mmr(mmr: &MmrAccumulator) -> Self {
-        let root_hash = mmr.root();
-        let size = mmr.size();
-        Self { root_hash, size }
-    }
-
     pub fn sign_bytes(&self, log_id: &LogId) -> Hash256 {
         let mut hasher = HASH_SUITE.new_tagged_hasher(TaggedHashDomain::MmrSignBytes);
         hasher.update(&log_id.peer_id.0);

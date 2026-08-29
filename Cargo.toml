@@ -33,7 +33,7 @@ futures-channel = "0.3.34"
 futures-core = "0.3.34"
 futures-test = "0.3.34"
 pollster = "0.4.0"
-sea-query = { version = "1.0.1", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "with-uuid"] }
+sea-query = { version = "1.0.2", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "with-uuid"] }
 uuid = { version = "1.23.4", default-features = false }
 getrandom = "0.4.3"
 rand = "0.10.2"
