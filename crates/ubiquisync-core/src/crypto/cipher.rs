@@ -218,7 +218,7 @@ impl EntryCipher {
         let mut key_info = ad.clone();
         key_info.extend_from_slice(nonce);
         let key =
-            Hash256Suite::Sha256.derive_key(DeriveKeyDomain::EntryCipher, &self.key, &key_info);
+            Hash256Suite::Sha256.derive_key(DeriveKeyDomain::SegmentCipher, &self.key, &key_info);
         let cipher = Aes256GcmSiv::new(key.0.expose_secret().into());
         (ad, cipher, [0; 12].into()) // since we derive every key based on coordinates, we can use a zero nonce
     }
