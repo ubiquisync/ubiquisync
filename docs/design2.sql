@@ -10,11 +10,11 @@ CREATE TABLE containers (
     container_id UUID NOT NULL UNIQUE
 );
 
-CREATE TABLE logs (
+CREATE TABLE streams (
     id INT AUTOINCREMENT PRIMARY KEY,
     peer_id INT NOT NULL REFERENCES peers(id),
     container_id INT NOT NULL REFERENCES containers(id),
-    parent_id INT NULL REFERENCES logs(id),
+    parent_id INT NULL REFERENCES streams(id),
     fork_idx INT NULL,
     fork_hash BYTES NULL,
     ready_idx INT NULL,
@@ -27,14 +27,14 @@ CREATE TABLE logs (
     CHECK((parent_id IS NOT NULL) OR (fork_idx IS NULL))
 );
 
-CREATE UNIQUE INDEX logs_root ON logs(peer_id, container_id) WHERE parent_id IS NULL;
+CREATE UNIQUE INDEX streams_root ON streams(peer_id, container_id) WHERE parent_id IS NULL;
 
 CREATE TABLE segments (
-    log_id INT NOT NULL REFERENCES logs(id),
+    stream_id INT NOT NULL REFERENCES stream(id),
     start_idx INT NOT NULL,
     end_idx INT NOT NULL,
     end_hash BYTES NOT NULL,
     body BYTES NOT NULL,
-    PRIMARY KEY (log_id, end_idx)
+    PRIMARY KEY (stream_id, end_idx)
     -- NOTE: this is a large table and we might want a rowid, although if it's dominated by small bodies we should do without rowid, no surrogate id either
 );
