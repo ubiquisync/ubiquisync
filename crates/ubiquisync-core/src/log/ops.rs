@@ -6,13 +6,58 @@ use crate::{
     log::LogEncodeError,
 };
 
+/// A batch of one or more operations in an op vocabulary.
+///
+/// This structure allows batching multiple operations into a single log entry
+/// which should be executed atomically by the log processor, but multiple
+/// operations should ONLY be used when the log processor supports this.
+/// When a processor does not support this explicitly only a single operation
+/// should be included.
+/// Note that op backends may supporting batching multiple operations at the
+/// op vocabularly level so the usefulness of the structure provided here
+/// is mostly to allow for expunging a single operation in an atomic batch
+/// if such functionality is desired by the op vocabularly.
+/// This is a rare edge case, but is supported nevertheless because the
+/// real immediate value we get from separating ops from headers here
+/// is to enable non-MRAE cipher suites to be used without leaking operation data.
+/// Essentially, the hash of the encrypted header serves as an encryption nonce for
+/// each successive operation. While each entry and operation should have a unique
+/// coordinate derived nonce (based on peer id, container id, entry index and slot index)
+/// if a log writer inadvertantly forked (wrote the same entry at the same index - which
+/// could happen due to restore from backup scenarioes), this would leak entries
+/// when non-MRAE cipher suites are used.
+/// To prevent this we use the last chain hash for nonce randomness for each successive
+/// entry. But even this strategy could leak the first forked entry.
+/// By encrypted the header first and then using the hash of its encrypted body
+/// for nonce randomness, forking would only leak the header in non-malicious fork scenarios
+/// and leaking the header only leaks the timestamp and server attested user id which don't
+/// reveal much on their own and the all of the op bodies would be protected.
+/// Of course, in a malicious scenario, the same header could be used, but if the writer
+/// is really malicious it would just leak the whole cipher - this behavior is to
+/// prevent honest writers from leaking cipher edge cases.
+/// Note that currently we only support AES-GCM-SIV which is misuse resistant already,
+/// so this is a bit of a non-issue for the current cipher suite, but the rust implementation
+/// for this is relatively new and other cipher suites that have a longer track record
+/// aren't misuse resistant and we want to ensure they _could_ be used if needed for other
+/// motivating reasons (such as FIPS compliance).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub struct OpBatch<Op: alloc::fmt::Debug, H: alloc::fmt::Debug> {
+    /// The header, always semantically [OpHeader], but we
+    /// usually include the plaintext or opaque bytes here when verifying hashes and signatures,
+    /// and converting to/from ciphertext.
     pub header: H,
+    /// The operations in the batch, usually only 1.
     pub ops: Vec<OpOrExpunge<Op>>,
 }
 
+/// Represents an operation or that operation's hash in the case it has been expunged on a per-slot basis.
+/// Generally per-slot expunge shouldn't be used, there should only be one operation in a batch and if
+/// we want to expunge that entry, we can just use [LogEntry::Expunged].
+/// A few scenarios where per-slot expungement _could_ be useful where conceived of when this
+/// structure was created, but not implemented. Now it mainly serves to separate op header and body
+/// for hashing and then encryption, but the possibility of multiple ops with per-slot expungement
+/// was retained because it is otherwise cheap and would be expensive to add back later.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub enum OpOrExpunge<Op> {
