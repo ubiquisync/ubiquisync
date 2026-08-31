@@ -170,7 +170,7 @@ fn bag_hash(left: &Node, right: &Bag) -> Bag {
     let left_size = left.size();
     assert!(left_size >= 1);
     let right_size = right.size();
-    // right size can be 0 for seeed
+    // right size can be 0 for seed
     assert_eq!(left.id.end, right.id.start);
     let hash = tagged_hash_node(
         TaggedHashDomain::MmrBag,

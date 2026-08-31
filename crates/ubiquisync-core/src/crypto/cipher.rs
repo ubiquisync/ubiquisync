@@ -20,6 +20,7 @@ use crate::codec::Writer;
 use crate::crypto::DeriveKeyDomain;
 use crate::crypto::Hash256;
 use crate::crypto::Hash256Suite;
+use crate::crypto::KeyFingerprintDomain;
 use crate::ids::LogId;
 
 #[repr(u8)]
@@ -47,18 +48,13 @@ pub struct Key256(pub SecretBox<[u8; 32]>);
 
 impl Key256 {
     pub fn fingerprint(&self) -> Key256Fingerprint {
-        Key256Fingerprint(blake3::derive_key(
-            DOMAIN_KEY_FINGERPRINT,
-            self.0.expose_secret(),
-        ))
+        Hash256Suite::Sha256.key_fingerprint(KeyFingerprintDomain::EncryptionKey, self)
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub struct Key256Fingerprint(pub [u8; 32]);
-
-const DOMAIN_KEY_FINGERPRINT: &str = "ubiquisync/v1/key-fingerprint";
 
 #[derive(Error, Debug)]
 #[error("cipher error")]

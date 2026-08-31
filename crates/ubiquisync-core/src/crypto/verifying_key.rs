@@ -42,7 +42,7 @@ impl VerifyingKey {
                     .map_err(|_| SignatureVerificationError::SignatureVerificationFailed)?;
             }
             VerifyingKey::P256(key) => {
-                use ed25519_dalek::Verifier;
+                use p256::ecdsa::signature::Verifier;
                 let sig = match signature {
                     Signature::P256(sig) => sig,
                     Signature::Ed25519(_) => {

@@ -56,7 +56,7 @@ impl proptest::arbitrary::Arbitrary for OpaqueBytes<'static> {
 /// A bytes wrapper that indicates that the underlying bytes are plaintext and not encrypted.
 /// Plaintext bytes are ONLY canonical for hashing if the container is NOT encrypted.
 /// If the container is encrypted ONLY encrypted bytes are canonical for hashing.
-/// [OpaqueBytes] MUST always be used for hasing.
+/// [OpaqueBytes] MUST always be used for hashing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 
 pub struct PlaintextBytes<'a>(pub Cow<'a, [u8]>);

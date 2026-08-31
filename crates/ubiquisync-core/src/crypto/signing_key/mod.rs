@@ -33,7 +33,7 @@ impl SigningKey for ed25519_dalek::SigningKey {
 #[cfg(test)]
 impl SigningKey for p256::ecdsa::SigningKey {
     fn sign(&self, message: &[u8]) -> Result<Signature, SigningError> {
-        use ed25519_dalek::Signer;
+        use p256::ecdsa::signature::Signer;
         let sig: p256::ecdsa::Signature = self.try_sign(message).map_err(|_| SigningError)?;
         Ok(Signature::P256(sig.normalize_s().to_bytes().into()))
     }
