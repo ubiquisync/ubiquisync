@@ -19,6 +19,10 @@ where
             .prepare(self.db.as_ref(), &op)
             .await
             .map_err(ExecError::Reducer)?;
+        // somewhere in here maybe prepare, for ctl ops
+        // we need to enrich them with observe & key wrap ops when needed
+        // and also return a stall condition if waiting on another ctl
+        // log from another peer
         let (container, wire_bytes) = op.encode();
 
         todo!()

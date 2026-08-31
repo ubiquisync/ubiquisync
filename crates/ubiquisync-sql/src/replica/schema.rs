@@ -1,53 +1,59 @@
-use pastey::paste;
 use sea_query::Iden;
 
-use crate::db::{DbTableDescriptor, DbType::*, col, table, table_with_auto_id};
+use crate::db::{CreateTableDef, DbType::*, col, table, table_with_auto_id};
 
-fn table_schemas() -> Vec<DbTableDescriptor> {
+fn table_schemas() -> Vec<CreateTableDef> {
     vec![
         table_with_auto_id(
-            "peer",
-            "id",
+            &Peers::Table,
+            &Peers::Id,
             &[
-                col("peer_id", Blob),
-                col("commitment", Blob),
-                col("signature", Blob),
+                col(&Peers::PeerId, Blob),
+                col(&Peers::Commitment, Blob),
+                col(&Peers::Signature, Blob),
             ],
         )
         .with_unique(&["peer_id"]),
-        table_with_auto_id("containers", "id", &[col("container_id", Uuid)])
-            .with_unique(&["container_id"]),
         table_with_auto_id(
-            "streams",
-            "id",
+            &Containers::Table,
+            &Containers::Id,
+            &[col(&Containers::ContainerId, Uuid)],
+        )
+        .with_unique(&["container_id"]),
+        table_with_auto_id(
+            &Streams::Table,
+            &Streams::Id,
             &[
-                col("peer_id", Integer),
-                col("container_id", Integer),
-                col("parent_id", Integer).nullable(),
-                col("fork_idx", Integer).nullable(),
-                col("fork_hash", Blob).nullable(),
-                col("ready_idx", Integer).default_zero(),
-                col("ready_status", Integer).default_zero(),
-                col("ready_status_data", Blob).default_zero(),
-                col("commit_idx", Integer).default_zero(),
-                col("commit_status", Integer).default_zero(),
-                col("commit_status_data", Blob).default_zero(),
+                col(&Streams::PeerId, Integer),
+                col(&Streams::ContainerId, Integer),
+                col(&Streams::ParentId, Integer).nullable(),
+                col(&Streams::ForkIdx, Integer).nullable(),
+                col(&Streams::ForkHash, Blob).nullable(),
+                col(&Streams::ReadyIdx, Integer).default_zero(),
+                col(&Streams::ReadyStatus, Integer).default_zero(),
+                col(&Streams::ReadyStatusData, Blob).default_zero(),
+                col(&Streams::CommitIdx, Integer).default_zero(),
+                col(&Streams::CommitStatus, Integer).default_zero(),
+                col(&Streams::CommitStatusData, Blob).default_zero(),
             ],
         ),
         table(
-            "segments",
-            &[col("log_id", Integer), col("end_idx", Integer)],
+            &Segments::Table,
             &[
-                col("start_idx", Integer),
-                col("end_hash", Blob),
-                col("body", Blob),
+                col(&Segments::LogId, Integer),
+                col(&Segments::EndIdx, Integer),
+            ],
+            &[
+                col(&Segments::StartIdx, Integer),
+                col(&Segments::EndHash, Blob),
+                col(&Segments::Body, Blob),
             ],
         ),
     ]
 }
 
 #[derive(Iden)]
-pub enum Peer {
+pub enum Peers {
     Table,
     Id,
     PeerId,
@@ -56,7 +62,7 @@ pub enum Peer {
 }
 
 #[derive(Iden)]
-pub enum Container {
+pub enum Containers {
     Table,
     Id,
     ContainerId,
@@ -68,6 +74,15 @@ pub enum Streams {
     Id,
     PeerId,
     ContainerId,
+    ParentId,
+    ForkIdx,
+    ForkHash, // is this even needed if we know the parent id definitively?
+    ReadyIdx,
+    ReadyStatus,
+    ReadyStatusData,
+    CommitIdx,
+    CommitStatus,
+    CommitStatusData,
 }
 
 #[derive(Iden)]
@@ -79,24 +94,3 @@ pub enum Segments {
     EndHash,
     Body,
 }
-
-// macro_rules! table {
-//     (
-//         $name:ident
-//         ( $($pk_name:ident),+ )
-//         => { $($col_name:ident),* }
-//     ) => {
-//         paste! {
-//             #[derive(sea_query::Iden)]
-//             pub enum [< $name:camel >] {
-//                 Table,
-//                 $( [< $pk_name:camel >] ),+
-//                 $( [< $col_name:camel >] ),*
-//             }
-//         }
-//     }
-// }
-
-// table!(
-//     peer (id) => { peer_id, commitment, signature }
-// );

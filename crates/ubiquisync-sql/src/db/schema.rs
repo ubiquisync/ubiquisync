@@ -1,3 +1,5 @@
+use sea_query::Iden;
+
 use crate::{dialect::SqlDialect, util::quote_ident};
 
 /// An existing table's shape as reported by backend introspection
@@ -7,10 +9,9 @@ use crate::{dialect::SqlDialect, util::quote_ident};
 pub struct DbTableDescriptor {
     /// The table's name.
     pub name: String,
-    pub pk: DbPrimaryKey,
+    pub pk: Vec<DbColumnDescription>,
     /// The remaining (non-primary-key) columns.
     pub cols: Vec<DbColumnDescription>,
-    pub unique: Vec<Vec<String>>,
 }
 
 /// One column of an introspected table (see [`DbTableDescriptor`]).
@@ -23,18 +24,35 @@ pub struct DbColumnDescription {
     pub db_type: DbType,
     /// Whether the column permits SQL NULL.
     pub nullable: bool,
-    pub default: Option<DbColumnDefault>,
 }
 
+/// Data for constructing a CREATE TABLE statement.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DbPrimaryKey {
+pub struct CreateTableDef {
+    pub name: String,
+    pub pk: CreatePrimaryKeyDef,
+    pub cols: Vec<CreateColDef>,
+    pub unique: Vec<Vec<String>>,
+}
+
+/// Data for constructing the column definitions in a CREATE TABLE statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateColDef {
+    /// The column's name.
+    pub name: String,
+    /// The column's storage class, mapped from the backend's native type
+    /// (or [`DbType::Other`] if it falls outside the engine's vocabulary).
+    pub db_type: DbType,
+    /// Whether the column permits SQL NULL.
+    pub nullable: bool,
+    pub default_zero: bool,
+}
+
+/// Data for constructing the primary key in a CREATE TABLE statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CreatePrimaryKeyDef {
     AutoId(String),
-    Columns(Vec<DbColumnDescription>),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DbColumnDefault {
-    I64Zero,
+    Columns(Vec<CreateColDef>),
 }
 
 /// A generic SQL storage class, independent of any data protocol.
@@ -88,13 +106,11 @@ impl DbType {
     }
 }
 
-impl DbTableDescriptor {
+impl CreateTableDef {
     pub fn create_table_sql(&self, dialect: SqlDialect) -> String {
         let quoted_table_name = quote_ident(&self.name);
         let mut col_defs = self.pk.create_cols_clauses(dialect);
-        col_defs.append(&mut DbColumnDescription::create_cols_sql(
-            &self.cols, dialect,
-        ));
+        col_defs.append(&mut CreateColDef::create_cols_sql(&self.cols, dialect));
         let col_sql = col_defs.join(", ");
         let pk_clause = self.pk.pk_clause();
         let rowid_clause = self.pk.rowid_clause(dialect);
@@ -102,16 +118,19 @@ impl DbTableDescriptor {
     }
 
     pub fn with_unique(mut self, cols: &[&str]) -> Self {
-        self.unique
-            .push(cols.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        self.unique.push(
+            cols.iter()
+                .map(|s| ToString::to_string(&s))
+                .collect::<Vec<_>>(),
+        );
         self
     }
 }
 
-impl DbPrimaryKey {
+impl CreatePrimaryKeyDef {
     fn create_cols_clauses(&self, dialect: SqlDialect) -> Vec<String> {
         match self {
-            DbPrimaryKey::AutoId(name) => {
+            CreatePrimaryKeyDef::AutoId(name) => {
                 let name_quoted = quote_ident(name);
                 let sql = match dialect {
                     SqlDialect::Sqlite => {
@@ -123,14 +142,14 @@ impl DbPrimaryKey {
                 };
                 vec![sql]
             }
-            DbPrimaryKey::Columns(cols) => DbColumnDescription::create_cols_sql(cols, dialect),
+            CreatePrimaryKeyDef::Columns(cols) => CreateColDef::create_cols_sql(cols, dialect),
         }
     }
 
     fn pk_clause(&self) -> String {
         match self {
-            DbPrimaryKey::AutoId(_) => "".into(),
-            DbPrimaryKey::Columns(cols) => {
+            CreatePrimaryKeyDef::AutoId(_) => "".into(),
+            CreatePrimaryKeyDef::Columns(cols) => {
                 let cols_str = cols
                     .iter()
                     .map(|c| quote_ident(&c.name))
@@ -143,13 +162,13 @@ impl DbPrimaryKey {
 
     fn rowid_clause(&self, dialect: SqlDialect) -> &str {
         match self {
-            DbPrimaryKey::AutoId(_) => "",
-            DbPrimaryKey::Columns(_) => dialect.without_rowid(),
+            CreatePrimaryKeyDef::AutoId(_) => "",
+            CreatePrimaryKeyDef::Columns(_) => dialect.without_rowid(),
         }
     }
 }
 
-impl DbColumnDescription {
+impl CreateColDef {
     fn create_col_sql(&self, dialect: SqlDialect) -> String {
         let quoted_name = quote_ident(&self.name);
         let sql_type = self.db_type.sql_type(dialect);
@@ -160,8 +179,8 @@ impl DbColumnDescription {
             sql += " NOT NULL";
         }
 
-        if let Some(ref default) = self.default {
-            sql += &format!(" DEFAULT {0}", default.to_str());
+        if self.default_zero {
+            sql += " DEFAULT 0";
         }
 
         sql
@@ -185,42 +204,30 @@ impl DbColumnDescription {
     }
 }
 
-impl DbColumnDefault {
-    fn to_str(&self) -> String {
-        match self {
-            DbColumnDefault::I64Zero => "0".into(),
-        }
-    }
-}
-
-pub fn table(
-    name: &str,
-    pk: &[DbColumnDescription],
-    cols: &[DbColumnDescription],
-) -> DbTableDescriptor {
-    DbTableDescriptor {
-        name: name.into(),
-        pk: DbPrimaryKey::Columns(pk.into()),
+pub fn table(name: &dyn Iden, pk: &[CreateColDef], cols: &[CreateColDef]) -> CreateTableDef {
+    CreateTableDef {
+        name: name.to_string(),
+        pk: CreatePrimaryKeyDef::Columns(pk.into()),
         cols: cols.into(),
         unique: vec![],
     }
 }
 
-pub fn table_with_auto_id(name: &str, id: &str, cols: &[DbColumnDescription]) -> DbTableDescriptor {
-    DbTableDescriptor {
-        name: name.into(),
-        pk: DbPrimaryKey::AutoId(id.into()),
+pub fn table_with_auto_id(name: &dyn Iden, id: &dyn Iden, cols: &[CreateColDef]) -> CreateTableDef {
+    CreateTableDef {
+        name: name.to_string(),
+        pk: CreatePrimaryKeyDef::AutoId(id.to_string()),
         cols: cols.into(),
         unique: vec![],
     }
 }
 
-pub fn col(name: &str, db_type: DbType) -> DbColumnDescription {
-    DbColumnDescription {
-        name: name.into(),
+pub fn col(name: &dyn Iden, db_type: DbType) -> CreateColDef {
+    CreateColDef {
+        name: name.to_string(),
         db_type,
         nullable: false,
-        default: None,
+        default_zero: false,
     }
 }
 
@@ -250,16 +257,16 @@ mod tests {
 
     #[test]
     fn test_create_table() {
-        let user = table("user", &[col("id", DbType::Uuid)], &[]);
+        let user = table(&"user", &[col(&"id", DbType::Uuid)], &[]);
         let user_device = table(
-            "user",
-            &[col("user", DbType::Uuid), col("device", DbType::Uuid)],
+            &"user",
+            &[col(&"user", DbType::Uuid), col(&"device", DbType::Uuid)],
             &[],
         );
         let entry = table_with_auto_id(
-            "entry",
-            "id",
-            &[col("bytes", DbType::Blob), col("ts", DbType::Integer)],
+            &"entry",
+            &"id",
+            &[col(&"bytes", DbType::Blob), col(&"ts", DbType::Integer)],
         );
 
         assert_snapshot!("user.sqlite", user.create_table_sql(SqlDialect::Sqlite));
