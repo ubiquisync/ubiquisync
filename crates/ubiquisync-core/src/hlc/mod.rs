@@ -14,9 +14,9 @@
 //!   backed by [`HlcStorage`].
 
 mod clock;
-mod service;
+//mod service;
 mod timestamp;
 
-pub use clock::{wall_ms, Hlc, SkewError, MAX_SKEW_MS};
-pub use service::{HlcError, HlcService, HlcStorage};
+pub use clock::{Hlc, MAX_SKEW_MS, SkewError, wall_ms};
+//pub use service::{HlcError, HlcService, HlcStorage};
 pub use timestamp::Timestamp;

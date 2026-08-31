@@ -1,0 +1,5 @@
+---
+source: crates/ubiquisync-sql/src/db/schema.rs
+expression: "user.create_table_sql(SqlDialect::Sqlite)"
+---
+CREATE TABLE "user" ("id" BLOB NOT NULL, PRIMARY KEY("id")) WITHOUT ROWID;
