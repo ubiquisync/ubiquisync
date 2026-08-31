@@ -17,9 +17,12 @@
 //! facade crate rather than this crate directly.
 
 pub mod codec;
+pub mod crypto;
 pub mod event;
 pub mod hlc;
+pub mod ids;
 pub mod log_entry;
+pub(crate) mod rand;
 pub mod store;
-pub mod sync;
+//pub mod sync;
 pub mod uuid;

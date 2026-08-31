@@ -1,0 +1,18 @@
+---
+source: crates/ubiquisync-core/src/crypto/hash.rs
+expression: "test_domain_regression(Hash256Suite::Blake3)"
+---
+Blake3
+ubiquisync/v1/hash/MmrNode = bba50ac00bccb98816350a689b3d3246c05aa6760b908260ca5a249419adfa1a
+ubiquisync/v1/hash/MmrSeed = cfc7b923cc24e2c54bd1fbcbdb7420b87c84e085125fe45600d767142b197073
+ubiquisync/v1/hash/MmrBag = 939d66bf95de8d8090906bed5483ad949aae087c30bb72edddd1a806d5c1fa7b
+ubiquisync/v1/hash/MmrSignBytes = 1185e366e5e2b976dc1c696d8575edd82a55494baf812ce99c932ee6692c7eec
+ubiquisync/v1/hash/PeerInitCommitment = bd2795c05a381b43d5914f88594873e74ea6a3ed47c37cc10eeef7a18003739c
+ubiquisync/v1/hash/LogEntryOpBatch = f552046031efc298669d06d81fd1ad248dcf2655cbac440cadab3a4fd791baf8
+ubiquisync/v1/hash/LogEntryUseKey = 4f2f8a100b9b672810e850d7e5faaf4a2a47b6b63685b9d3113fb129e26b8d96
+ubiquisync/v1/hash/OpBatchSlot = f562c38c7fef29dfde4bd72bf6e4223172e03b83e148b366a8a8f953f331aacb
+ubiquisync/v1/kdf/EntryCipher = 074bd4e2dc7eaa61e36fb6be485f2ae251fc56a3ac0c18ffe9f1551294f15fca
+ubiquisync/v1/kdf/EntryCipher / xyz = 31ab7e245eb58c98421b86ed00993372e1bcd38c0013eff5f402ba3aabf8796d
+ubiquisync/v1/kdf/SegmentCipher = 485767ffdd67f557032aea3e1c768f47ef122489b37e847b6e874b940bf8e7c6
+ubiquisync/v1/kdf/SegmentCipher / xyz = c7568877e070e7998b78e17ecf3b9e9209178f2adc28f6923d65b0d4d9a9c1a7
+ubiquisync/v1/fingerprint/EncryptionKey = 9f55f8bec4ddf679ad69051f8212ed00a388b73ff32717a09d8b8ffc3832a067

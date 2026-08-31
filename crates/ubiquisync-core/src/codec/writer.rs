@@ -1,163 +1,114 @@
-use std::collections::HashMap;
+use std::ops::Range;
 
-use crate::{codec::error::CodecError, uuid::Uuid};
+use thiserror::Error;
 
-/// Encodes one log entry's body: accumulates bytes while feeding a rolling
-/// blake3 hash, and deduplicates UUIDs against a dictionary shared across the
-/// segment's entries.
-pub struct EntryBufferWriter<'a> {
-    buf: HashWriter,
-    uuid_dict: &'a mut HashMap<Uuid, u32>,
+use crate::codec::varint::{
+    MAX_VAR_U64_SIZE, MAX_ZIGZAG_I64_SIZE, encode_var_u64, encode_zigzag_i64,
+};
+
+#[derive(Default)]
+pub struct Writer {
+    buf: Vec<u8>,
 }
 
-impl<'a> EntryBufferWriter<'a> {
-    /// Create a writer that shares `uuid_dict` for UUID dictionary compression
-    /// across the entries of one segment.
-    pub fn new(uuid_dict: &'a mut HashMap<Uuid, u32>) -> Self {
-        Self {
-            buf: HashWriter::new(),
-            uuid_dict,
+#[derive(Error, Debug)]
+pub enum WriteError {
+    #[error("invalid range {0:?}")]
+    EmptyRange(Range<u64>),
+}
+
+impl Writer {
+    pub fn new() -> Self {
+        Default::default()
+    }
+
+    pub fn write_slice(&mut self, bytes: &[u8]) {
+        self.buf.extend_from_slice(bytes);
+    }
+
+    pub fn write_array<const N: usize>(&mut self, array: &[u8; N]) {
+        self.buf.extend_from_slice(&array[..]);
+    }
+
+    pub fn write_len_prefixed(&mut self, bytes: &[u8]) {
+        self.write_var_u64(bytes.len() as u64);
+        self.write_slice(bytes);
+    }
+
+    pub fn write_byte(&mut self, x: u8) {
+        self.buf.push(x)
+    }
+
+    pub fn write_var_u64(&mut self, x: u64) {
+        let mut buf = [0; MAX_VAR_U64_SIZE];
+        let res = encode_var_u64(x, &mut buf);
+        self.write_slice(res)
+    }
+
+    /// Write a usize as a var u64 (exists to match read_var_usize).
+    pub fn write_var_usize(&mut self, x: usize) {
+        self.write_var_u64(x as u64)
+    }
+
+    pub fn write_le_u64(&mut self, x: u64) {
+        self.write_slice(&x.to_le_bytes()[..])
+    }
+
+    pub fn write_zigzag_i64(&mut self, x: i64) {
+        let mut buf = [0; MAX_ZIGZAG_I64_SIZE];
+        let res = encode_zigzag_i64(x, &mut buf);
+        self.write_slice(res)
+    }
+
+    pub fn write_range(&mut self, range: &Range<u64>) -> Result<(), WriteError> {
+        if range.is_empty() {
+            return Err(WriteError::EmptyRange(range.clone()));
         }
-    }
-
-    /// Append a single raw byte.
-    pub fn write_byte(&mut self, b: u8) {
-        self.buf.append(&[b]);
-    }
-
-    /// Append `v` as an unsigned varint (7 data bits per byte, little-endian).
-    pub fn write_varint(&mut self, mut v: u64) {
-        loop {
-            let byte = (v & 0x7f) as u8;
-            v >>= 7;
-            if v == 0 {
-                self.write_byte(byte);
-                break;
-            } else {
-                self.write_byte(byte | 0x80);
-            }
-        }
-    }
-
-    /// Append a length-prefixed byte string: a varint length, then the bytes.
-    pub fn write_blob(&mut self, data: &[u8]) {
-        self.write_varint(data.len() as u64);
-        self.buf.append(data);
-    }
-
-    /// Append a `u16` in little-endian order.
-    pub fn write_u16_le(&mut self, v: u16) {
-        self.buf.append(&v.to_le_bytes());
-    }
-
-    /// Append a signed integer as a zigzag-encoded varint.
-    pub fn write_zigzag(&mut self, n: i64) {
-        let encoded = ((n << 1) ^ (n >> 63)) as u64;
-        self.write_varint(encoded);
-    }
-
-    /// Write a UUID using dictionary compression. The canonical hash
-    /// always sees the raw 16 bytes regardless of whether the buffer
-    /// gets a dict reference or an inline literal.
-    pub fn write_uuid(&mut self, data: &Uuid) {
-        // Hash the raw UUID bytes — canonical content identity must be
-        // independent of dictionary state.
-        self.buf._hash_without_append(data);
-
-        if let Some(id) = self.uuid_dict.get(data) {
-            // Known UUID — write dict reference varint to buf only.
-            self._write_varint_without_hash(*id as u64);
-        } else {
-            // First occurrence — write 0 sentinel + raw bytes to buf,
-            // and register in the dictionary for future references.
-            self.buf._append_without_hash(&[0]);
-            self.buf._append_without_hash(data);
-            let id = self.uuid_dict.len() as u32 + 1; // IDs start at 1; 0 is the inline sentinel.
-            self.uuid_dict.insert(*data, id);
-        }
-    }
-
-    fn _write_varint_without_hash(&mut self, mut v: u64) {
-        loop {
-            let byte = (v & 0x7f) as u8;
-            v >>= 7;
-            if v == 0 {
-                self.buf._append_without_hash(&[byte]);
-                break;
-            } else {
-                self.buf._append_without_hash(&[byte | 0x80]);
-            }
-        }
-    }
-
-    /// Write a delta-encoded timestamp. Timestamps within a segment must
-    /// be monotonically non-decreasing.
-    pub fn write_delta(&mut self, current: u64, last: u64) -> Result<(), CodecError> {
-        if current < last {
-            return Err(CodecError::NonMonotonicDelta);
-        }
-        let delta = current - last;
-        self.buf._hash_without_append(&current.to_le_bytes());
-        self._write_varint_without_hash(delta);
+        self.write_var_u64(range.start);
+        let span = range.end - range.start; // already checked with range.is_empty()
+        self.write_var_u64(span);
         Ok(())
     }
 
-    /// Finalize the entry: appends truncated blake3 hash as integrity
-    /// check bytes and returns the encoded buffer plus the full hash.
-    pub fn finalize(self) -> (Vec<u8>, blake3::Hash) {
-        self.buf.finalize()
-    }
-
-    /// Return just the encoded body, **without** the truncated-hash integrity
-    /// trailer that [`finalize`](Self::finalize) appends. Used by callers that
-    /// reuse the wire encoding for storage and supply their own framing — e.g.
-    /// the SQL op-log index codec, which stores the raw `key`/`value` bytes and
-    /// has no use for a per-blob integrity hash.
-    pub fn into_bytes(self) -> Vec<u8> {
-        self.buf.into_bytes()
-    }
-}
-
-struct HashWriter {
-    buf: Vec<u8>,
-    hasher: blake3::Hasher,
-}
-
-impl HashWriter {
-    fn new() -> Self {
-        Self {
-            buf: Vec::new(),
-            hasher: blake3::Hasher::new(),
-        }
-    }
-
-    fn append(&mut self, data: &[u8]) {
-        self.buf.extend_from_slice(data);
-        self.hasher.update(data);
-    }
-
-    /// Write to buf only — skips the hasher. Used for dictionary-compressed
-    /// encodings where the canonical hash sees different bytes than the buf.
-    fn _append_without_hash(&mut self, data: &[u8]) {
-        self.buf.extend_from_slice(data);
-    }
-
-    /// Update the hasher only — skips the buf. Used to feed canonical
-    /// content (e.g. raw UUID bytes) into the hash without writing them.
-    fn _hash_without_append(&mut self, data: &[u8]) {
-        self.hasher.update(data);
-    }
-
-    fn finalize(self) -> (Vec<u8>, blake3::Hash) {
-        let hash = self.hasher.finalize();
-        // append first 4 bytes of the blake3 hash as a truncated-hash integrity check
-        let mut buf = self.buf;
-        buf.extend_from_slice(&hash.as_bytes()[..4]);
-        (buf, hash)
-    }
-
-    /// Return the accumulated buffer without computing or appending the hash.
-    fn into_bytes(self) -> Vec<u8> {
+    pub fn finalize(self) -> Vec<u8> {
         self.buf
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use test_strategy::proptest;
+
+    use crate::codec::{reader::Reader, writer::Writer};
+
+    // Round trips some random data with all encodings Reader & Writer support.
+    #[proptest]
+    fn test_roundtrip(a: Vec<u8>, b: u8, c: u64, d: u64, e: Vec<u8>, f: i64, g: [u8; 16]) {
+        let mut w = Writer::new();
+
+        w.write_len_prefixed(&a);
+        w.write_byte(b);
+        w.write_var_u64(c);
+        w.write_le_u64(d);
+        w.write_len_prefixed(&e);
+        w.write_zigzag_i64(f);
+        w.write_array(&g);
+
+        let res = w.finalize();
+        let mut r = Reader::new(&res);
+
+        assert_eq!(a.as_slice(), r.read_len_prefixed().unwrap());
+        assert_eq!(b, r.read_byte().unwrap());
+        assert_eq!(c, r.read_var_u64().unwrap());
+        assert_eq!(d, r.read_le_u64().unwrap());
+        assert_eq!(e.as_slice(), r.read_len_prefixed().unwrap());
+        assert_eq!(f, r.read_zigzag_i64().unwrap());
+        assert_eq!(g, r.read_array::<16>().unwrap());
+
+        assert!(r.is_empty());
+        assert_eq!(0, r.remaining().len());
+        assert_eq!(0, r.into_remaining().len())
+    }
+
+    // TODO test the failure path
 }
