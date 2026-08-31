@@ -20,7 +20,7 @@ pub enum EncapsulationKey {
 }
 
 #[derive(Error, Debug)]
-#[error("TODO: better error")]
+#[error("KEM error")]
 pub struct KemError;
 
 #[repr(u8)]
