@@ -6,7 +6,7 @@ use crate::{
     bytes::OpaqueBytes,
     crypto::{CipherInfo, Hash256, Hasher, TaggedHashDomain, new_tagged_hasher},
     ids::LogId,
-    log::{EntryBody, LogEntry, OpBatch, OpOrExpunge, OpaqueLogEntry, UnknownEntry},
+    log::{EntryBody, LogEntry, OpBatch, OpOrExpunge, OpaqueLogEntry},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,21 +90,6 @@ impl ChainHash {
             LogEntry::Signature { .. } => {
                 // not hashed
             }
-            LogEntry::Unknown(unknown_entry) => match unknown_entry {
-                super::UnknownEntry::Indexed { idx, .. } => {
-                    let size = self.size;
-                    if *idx != size {
-                        return Err(ChainHashError::OutOfOrderEntry { size, idx: *idx });
-                    }
-                    let entry_hash = precomputed_hash.unwrap_or_else(|| {
-                        unknown_entry.hash(&self.seed).expect("indexed entry hash")
-                    });
-                    self.add_one_entry(&entry_hash);
-                }
-                super::UnknownEntry::Unindexed { .. } => {
-                    // not hashed
-                }
-            },
         }
         Ok(())
     }
@@ -145,25 +130,6 @@ impl<'a> OpBatch<OpaqueBytes<'a>, OpaqueBytes<'a>> {
             }
         }
         hasher.finalize()
-    }
-}
-
-impl UnknownEntry {
-    // NOTE: must only be called on opaque entries!!
-    fn hash(&self, seed: &Hash256) -> Option<Hash256> {
-        match self {
-            UnknownEntry::Indexed { idx, bytes, .. } => {
-                let mut hasher = new_tagged_hasher(TaggedHashDomain::LogEntryNew);
-                hasher.update(seed);
-                hasher.update(&[self.entry_byte()]);
-                hasher.update(&idx.to_le_bytes());
-                let len = bytes.len() as u64;
-                hasher.update(&len.to_le_bytes());
-                hasher.update(bytes);
-                Some(hasher.finalize())
-            }
-            UnknownEntry::Unindexed { .. } => None,
-        }
     }
 }
 

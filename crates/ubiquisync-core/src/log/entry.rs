@@ -14,24 +14,6 @@ pub enum LogEntry<Op: std::fmt::Debug, H: std::fmt::Debug> {
     IndexedEntry { idx: u64, entry: EntryBody<Op, H> },
     Expunged { end_size: u64, end_hash: Hash256 },
     Signature { size: u64, signature: Signature },
-    Unknown(UnknownEntry),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(test, derive(test_strategy::Arbitrary))]
-pub enum UnknownEntry {
-    Indexed {
-        idx: u64,
-        #[cfg_attr(test, strategy(0..=0x1Fu8))]
-        entry_type: u8,
-        bytes: Vec<u8>,
-        encrypted: bool,
-    },
-    Unindexed {
-        #[cfg_attr(test, strategy(0..=0x3Fu8))]
-        entry_type: u8,
-        bytes: Vec<u8>,
-    },
 }
 
 /// Log entry where op and header are encoded as canonical hash bytes (may be encrypted)
@@ -80,9 +62,6 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> LogEntry<B, H> {
                 writer.write_byte(ENTRY_TYPE_SIGNATURE);
                 signature.encode(writer);
             }
-            LogEntry::Unknown(unknown) => {
-                unknown.encode(writer);
-            }
         }
         Ok(())
     }
@@ -117,12 +96,7 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> LogEntry<B, H> {
                 Self::Expunged { end_size, end_hash }
             }
             unknown => {
-                if unknown & 0x80 == 0x80 {
-                    // entry is "forward-compatible" so we can at least transparently hash and encrypt it
-                    Self::Unknown(UnknownEntry::decode(unknown, reader, next_entry_index)?)
-                } else {
-                    return Err(LogDecodeError::UndecodableEntryType(unknown));
-                }
+                return Err(LogDecodeError::UndecodableEntryType(unknown));
             }
         })
     }
@@ -132,8 +106,6 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> LogEntry<B, H> {
             LogEntry::IndexedEntry { idx, .. } => Some(*idx + 1),
             LogEntry::Expunged { end_size, .. } => Some(*end_size),
             LogEntry::Signature { size, .. } => Some(*size),
-            LogEntry::Unknown(UnknownEntry::Indexed { idx, .. }) => Some(*idx + 1),
-            _ => None,
         }
     }
 
@@ -144,72 +116,7 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> LogEntry<B, H> {
             LogEntry::IndexedEntry { idx, .. } => Some(*idx),
             LogEntry::Expunged { end_size, .. } => Some(*end_size),
             LogEntry::Signature { size, .. } => Some(*size),
-            LogEntry::Unknown(UnknownEntry::Indexed { idx, .. }) => Some(*idx),
-            _ => None,
         }
-    }
-}
-
-impl UnknownEntry {
-    fn encode(&self, writer: &mut Writer) {
-        writer.write_byte(self.entry_byte());
-        match self {
-            UnknownEntry::Indexed { bytes, .. } => {
-                writer.write_len_prefixed(bytes);
-            }
-            UnknownEntry::Unindexed { bytes, .. } => {
-                writer.write_len_prefixed(bytes);
-            }
-        }
-    }
-
-    pub(crate) fn entry_byte(&self) -> u8 {
-        match self {
-            UnknownEntry::Indexed {
-                entry_type,
-                encrypted,
-                ..
-            } => {
-                let mut entry_type = *entry_type | 0x80; // forward-compatible flag
-                if *encrypted {
-                    entry_type |= 0x20; // encrypted flag
-                }
-                entry_type
-            }
-            UnknownEntry::Unindexed { entry_type, .. } => {
-                let mut entry_type = *entry_type | 0x80; // forward-compatible flag
-                entry_type |= 0x40; // unindexed flag
-                entry_type
-            }
-        }
-    }
-
-    // NOTE: does not read the entry type byte but expects it to be passed in by the caller
-    fn decode<'a>(
-        mut entry_type: u8,
-        reader: &mut Reader<'a>,
-        next_entry_index: u64,
-    ) -> Result<Self, LogDecodeError> {
-        assert_eq!(entry_type & 0x80, 0x80);
-        let bytes = reader.read_len_prefixed()?;
-        Ok(if entry_type & 0x40 == 0x40 {
-            entry_type &= 0x3F; // clear top 2 flag bits
-            // unindexed
-            Self::Unindexed {
-                entry_type,
-                bytes: bytes.into(),
-            }
-        } else {
-            // indexed
-            let encrypted = entry_type & 0x20 == 0x20;
-            entry_type &= 0x1F; // clear top 3 flag bits
-            Self::Indexed {
-                idx: next_entry_index,
-                entry_type,
-                bytes: bytes.into(),
-                encrypted,
-            }
-        })
     }
 }
 

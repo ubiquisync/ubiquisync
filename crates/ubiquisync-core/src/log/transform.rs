@@ -1,7 +1,7 @@
 use crate::{
     bytes::ToStatic,
     crypto::Hash256,
-    log::{EntryBody, LogEntry, OpBatch, OpOrExpunge, UnknownEntry},
+    log::{EntryBody, LogEntry, OpBatch, OpOrExpunge},
 };
 
 impl<O: std::fmt::Debug, H: std::fmt::Debug> OpBatch<O, H> {
@@ -47,22 +47,18 @@ impl<O: std::fmt::Debug, H: std::fmt::Debug> LogEntry<O, H> {
     /// `transform_op` is called when an op is transformed with the op index, op, and mutable state.
     /// It must return a transformed op.
     /// `on_expunge_op` is called when an op-level expunge is encountered with the op index, hash and mutable state.
-    /// `transform_unknown` is called when a forward-compatible unknown up is encountered, basically so that it can be
-    /// hashed and encrypted.
-    pub fn transform<O2: std::fmt::Debug, H2: std::fmt::Debug, A, B, C, D, U, S, E>(
+    pub fn transform<O2: std::fmt::Debug, H2: std::fmt::Debug, A, B, C, D, S, E>(
         &self,
         init_state: A,
         transform_header: B,
         transform_op: C,
         on_expunge_op: D,
-        transform_unknown: U,
     ) -> Result<(LogEntry<O2, H2>, Option<S>), E>
     where
         A: Fn(u64, &OpBatch<O, H>) -> Result<S, E>,
         B: Fn(&H, &mut S) -> Result<H2, E>,
         C: Fn(u64, &O, &mut S) -> Result<O2, E>,
         D: Fn(u64, &Hash256, &mut S) -> Result<(), E>,
-        U: Fn(&mut UnknownEntry, &mut S) -> Result<(), E>,
     {
         Ok(match self {
             LogEntry::IndexedEntry { idx, entry } => match entry {
@@ -104,10 +100,6 @@ impl<O: std::fmt::Debug, H: std::fmt::Debug> LogEntry<O, H> {
                 },
                 None,
             ),
-            LogEntry::Unknown(unknown_entry_type) => {
-                let mut unknown = unknown_entry_type.clone();
-                trans(LogEntry::Unknown(unknown_entry_type.clone()), None)
-            }
         })
     }
 }
@@ -153,7 +145,6 @@ where
             LogEntry::Expunged { end_size, end_hash } => LogEntry::Expunged { end_size, end_hash },
 
             LogEntry::Signature { size, signature } => LogEntry::Signature { size, signature },
-            LogEntry::Unknown(unknown_entry_type) => LogEntry::Unknown(unknown_entry_type),
         }
     }
 }
