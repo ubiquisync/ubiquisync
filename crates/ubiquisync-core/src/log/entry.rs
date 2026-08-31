@@ -14,24 +14,24 @@ pub enum LogEntry<Op: std::fmt::Debug, H: std::fmt::Debug> {
     IndexedEntry { idx: u64, entry: EntryBody<Op, H> },
     Expunged { end_size: u64, end_hash: Hash256 },
     Signature { size: u64, signature: Signature },
-    Unknown(UnknownEntryType),
+    Unknown(UnknownEntry),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]
-pub struct UnknownEntryType {
-    idx: Option<u64>,
-
-    entry_type: u8,
-    bytes: Vec<u8>,
-    // TODO we need some encrypted flag too otherwise we can't verify hashes of encrypted entries!!
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(test, derive(test_strategy::Arbitrary))]
-pub struct EntryRef {
-    pub hash: Hash256,
-    pub index: u64,
+pub enum UnknownEntry {
+    Indexed {
+        idx: u64,
+        #[cfg_attr(test, strategy(MAX_ENTRY_TYPE_V1..0x3Fu8))]
+        entry_type: u8,
+        bytes: Vec<u8>,
+        encrypted: bool,
+    },
+    Unindexed {
+        #[cfg_attr(test, strategy(MAX_ENTRY_TYPE_V1..0x3Fu8))]
+        entry_type: u8,
+        bytes: Vec<u8>,
+    },
 }
 
 /// Log entry where op and header are encoded as canonical hash bytes (may be encrypted)
@@ -143,7 +143,8 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> LogEntry<B, H> {
             LogEntry::IndexedEntry { idx, .. } => Some(*idx + 1),
             LogEntry::Expunged { end_size, .. } => Some(*end_size),
             LogEntry::Signature { size, .. } => Some(*size),
-            LogEntry::Unknown(UnknownEntryType { idx, .. }) => idx.map(|x| x + 1),
+            LogEntry::Unknown(UnknownEntry::Indexed { idx, .. }) => Some(*idx + 1),
+            _ => None,
         }
     }
 
@@ -154,8 +155,59 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> LogEntry<B, H> {
             LogEntry::IndexedEntry { idx, .. } => Some(*idx),
             LogEntry::Expunged { end_size, .. } => Some(*end_size),
             LogEntry::Signature { size, .. } => Some(*size),
-            LogEntry::Unknown(UnknownEntryType { idx, .. }) => *idx,
+            LogEntry::Unknown(UnknownEntry::Indexed { idx, .. }) => Some(*idx),
+            _ => None,
         }
+    }
+}
+
+impl UnknownEntry {
+    fn encode(&self, writer: &mut Writer) {
+        match self {
+            UnknownEntry::Indexed {
+                entry_type,
+                bytes,
+                encrypted,
+                ..
+            } => {
+                let mut entry_type = *entry_type;
+                if *encrypted {
+                    entry_type &= 0x40; // encrypted flag
+                }
+                writer.write_byte(entry_type);
+                writer.write_len_prefixed(bytes);
+            }
+            UnknownEntry::Unindexed { entry_type, bytes } => {
+                let entry_type = *entry_type & 0x80; // unindexed flag
+                writer.write_byte(entry_type);
+                writer.write_len_prefixed(bytes);
+            }
+        }
+    }
+
+    fn decode<'a>(
+        entry_type: u8,
+        reader: &mut Reader<'a>,
+        next_entry_index: u64,
+    ) -> Result<Self, LogDecodeError> {
+        assert!(entry_type > MAX_ENTRY_TYPE_V1);
+        let bytes = reader.read_len_prefixed()?;
+        Ok(if entry_type & 0x80 == 0x80 {
+            // unindexed
+            Self::Unindexed {
+                entry_type,
+                bytes: bytes.into(),
+            }
+        } else {
+            // indexed
+            let encrypted = entry_type & 0x40 == 0x40;
+            Self::Indexed {
+                idx: next_entry_index,
+                entry_type,
+                bytes: bytes.into(),
+                encrypted,
+            }
+        })
     }
 }
 
@@ -164,21 +216,6 @@ const ENTRY_TYPE_USE_KEY: u8 = 0x01;
 const ENTRY_TYPE_SIGNATURE: u8 = 0x02;
 const ENTRY_TYPE_EXPUNGED: u8 = 0x03;
 const MAX_ENTRY_TYPE_V1: u8 = ENTRY_TYPE_EXPUNGED;
-
-impl EntryRef {
-    pub fn encode(&self, writer: &mut Writer) {
-        writer.write_var_u64(self.index);
-        writer.write_array(&self.hash);
-    }
-
-    pub fn decode(reader: &mut Reader) -> Result<Self, ReadError> {
-        let index = reader.read_var_u64()?;
-        Ok(Self {
-            index,
-            hash: reader.read_array()?,
-        })
-    }
-}
 
 #[cfg(test)]
 mod tests {
