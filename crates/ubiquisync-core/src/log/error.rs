@@ -21,6 +21,8 @@ pub enum LogDecodeError {
     U64AddOverflow(u64, u64),
     #[error("unknown signature algorithm: {0}")]
     UnknownSignatureAlgorithm(u8),
+    #[error("unhandled entry type: {0}")]
+    UndecodableEntryType(u8),
 }
 
 impl LogDecodeError {
