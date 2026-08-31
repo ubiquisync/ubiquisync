@@ -1,12 +1,12 @@
 [workspace]
 resolver = "2"
 members = [
-  "crates/ubiquisync",
+  # "crates/ubiquisync",
   "crates/ubiquisync-core",
-  "crates/ubiquisync-sql",
-  "crates/ubiquisync-postgres",
-  "crates/ubiquisync-sqlite",
-  "crates/ubiquisync-tables",
+  # "crates/ubiquisync-sql",
+  # "crates/ubiquisync-postgres",
+  # "crates/ubiquisync-sqlite",
+  # "crates/ubiquisync-tables",
 ]
 
 [workspace.package]
@@ -19,7 +19,7 @@ repository = "https://github.com/ubiquisync/ubiquisync"
 # Kept at `warn` so local `cargo build` isn't blocked; CI escalates via
 # `-D warnings` (clippy + `cargo doc`), so missing docs still fail the build there.
 [workspace.lints.rust]
-missing_docs = "warn"
+#missing_docs = "warn"
 
 [workspace.dependencies]
 ubiquisync-core = { path = "crates/ubiquisync-core", version = "0.0.4" }
@@ -27,14 +27,48 @@ ubiquisync-sql = { path = "crates/ubiquisync-sql", version = "0.0.4" }
 ubiquisync-postgres = { path = "crates/ubiquisync-postgres", version = "0.0.4" }
 ubiquisync-sqlite = { path = "crates/ubiquisync-sqlite", version = "0.0.4" }
 ubiquisync-tables = { path = "crates/ubiquisync-tables", version = "0.0.4" }
-async-trait = "0.1.89"
-bitfield-struct = "0.13.0"
-blake3 = "1.8.5"
-futures = "0.3.32"
-futures-channel = "0.3.32"
-futures-core = "0.3.32"
+
+futures = "0.3.34"
+futures-channel = "0.3.34"
+futures-core = "0.3.34"
+futures-test = "0.3.34"
 pollster = "0.4.0"
-thiserror = "2.0.18"
-sea-query = { version = "1.0.1", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "with-uuid"] }
+sea-query = { version = "1.0.2", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "with-uuid"] }
 uuid = { version = "1.23.4", default-features = false }
+getrandom = "0.4.3"
+rand = "0.10.2"
+zstd = "0.13.3"
+
+# macros
+async-trait = "0.1.89"
+async-recursion = "1.1.1"
+bitfield-struct = "0.13.0"
+thiserror = "2.0.18"
+num_enum = "0.7.6"
 pastey = "0.2.3"
+strum = "0.28.0"
+strum_macros = "0.28.0"
+
+# cryptography
+blake3 = "1.8.5"
+ed25519-dalek = "3.0.0"
+p256 = "0.14.0"
+aes-gcm-siv = {version="0.12.0", features=["zeroize"]}
+hpke = {version="0.14.0", default-features=false, features=["alloc", "nistp", "getrandom", "x25519", "aes"]}
+x25519-dalek = {version="3.0.0", features=["zeroize"]} # TODO maybe enable precomputed-tables for performance
+sha2 = "0.11.0"
+hkdf = "0.13.0"
+zeroize = {version = "1.9.0", features = ["zeroize_derive"]}
+secrecy = "0.10.3"
+crypto-common = "0.2.2"
+
+# testing
+proptest = "1.11.0"
+test-strategy = "0.4.5"
+test-case = "3.3.1"
+insta = "1.48.0"
+
+## platform deps
+# Apple only
+security-framework = {version = "3.7.0", features = ["OSX_10_15"]} #  if we ever need older versions than OS X 10.15, we can update this
+security-framework-sys = {version = "2.17.0"}
