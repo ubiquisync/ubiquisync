@@ -53,7 +53,7 @@ impl EncapsulationKey {
                     ciphertext: ciphertext.try_into().map_err(|_| KemError)?,
                 })
             }
-            EncapsulationKey::P256(_) => Err(KemError),
+            EncapsulationKey::P256(_) => todo!("implement p256 key encapsulation"),
         }
     }
 

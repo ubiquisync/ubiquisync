@@ -95,6 +95,9 @@ impl MmrAccumulator {
             hash: *leaf,
             id: i..i + 1,
         };
+        if let Some(ref observer) = self.observer {
+            observer.on_create(&node.id, &node.hash);
+        }
         for _ in 0..self.size.trailing_ones() {
             let left = self
                 .peaks
@@ -140,11 +143,11 @@ impl MmrAccumulator {
 }
 
 #[derive(Error, Debug)]
-#[error("invalid cover from {m} to {n}, got {len} hashes")]
-pub struct InvalidCoverError {
-    m: u64,
-    n: u64,
-    len: usize,
+pub enum InvalidCoverError {
+    #[error("invalid cover from {m} to {n}, got {len} hashes")]
+    BadCover { m: u64, n: u64, len: usize },
+    #[error("invalid cover range {m} to {n}")]
+    BadCoverRange { m: u64, n: u64 },
 }
 
 fn node_hash(left: &Node, right: &Node) -> Node {
@@ -458,10 +461,10 @@ impl PrefixProof {
     ) -> Result<(), InvalidCoverError> {
         let cover_len = cover.len();
         let mut i = 0;
-        for id in Self::cover_ids(m, n) {
+        for id in Self::cover_ids(m, n)? {
             if i >= cover_len {
                 // bad cover size
-                return Err(InvalidCoverError {
+                return Err(InvalidCoverError::BadCover {
                     m,
                     n,
                     len: cover_len,
@@ -472,7 +475,7 @@ impl PrefixProof {
         }
         if i != cover_len {
             // don't tolerate trailing garbage in the cover
-            return Err(InvalidCoverError {
+            return Err(InvalidCoverError::BadCover {
                 m,
                 n,
                 len: cover_len,
@@ -514,7 +517,10 @@ impl PrefixProof {
         }
 
         let mut cover = vec![];
-        for id in Self::cover_ids(m, n) {
+        let Ok(cover_ids) = Self::cover_ids(m, n) else {
+            return None;
+        };
+        for id in cover_ids {
             let node = resolve_node(store, &id).await?;
             cover.push(node.hash);
         }
@@ -528,10 +534,12 @@ impl PrefixProof {
     }
 
     // assumes we already have peaks(m)
-    fn cover_ids(m: u64, n: u64) -> impl Iterator<Item = Range<u64>> {
-        assert!(m <= n);
+    fn cover_ids(m: u64, n: u64) -> Result<impl Iterator<Item = Range<u64>>, InvalidCoverError> {
+        if m > n {
+            return Err(InvalidCoverError::BadCoverRange { m, n });
+        }
         let mut p = m;
-        std::iter::from_fn(move || {
+        Ok(std::iter::from_fn(move || {
             if p < n {
                 let cover_width = Self::cover_width(p, n);
                 let start = p;
@@ -540,7 +548,7 @@ impl PrefixProof {
             } else {
                 None
             }
-        })
+        }))
     }
 
     fn cover_width(p: u64, n: u64) -> u64 {

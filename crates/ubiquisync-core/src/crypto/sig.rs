@@ -12,6 +12,7 @@ pub enum Signature {
 
 impl Signature {
     pub fn encode(&self, writer: &mut Writer) {
+        // TODO: should we normalize signatures here?
         let s = match self {
             Signature::Ed25519(s) => {
                 writer.write_byte(SIG_ALGO_ED25519);
@@ -26,6 +27,7 @@ impl Signature {
     }
 
     pub fn decode(reader: &mut Reader) -> Result<Self, CryptoDecodeError> {
+        // TODO: should we enforce normalized signatures? currently we do not sign signatures, so this may be a non-issue
         let algo = reader.read_byte()?;
         Ok(match algo {
             SIG_ALGO_ED25519 => Signature::Ed25519(reader.read_array()?),

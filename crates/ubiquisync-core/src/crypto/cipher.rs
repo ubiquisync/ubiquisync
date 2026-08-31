@@ -33,6 +33,10 @@ pub enum CipherSuite {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub struct CipherInfo {
+    /// The raw decoded cipher suite. We retain unknown cipher suites to indicate
+    /// that the ciphertext may be from a newer client using a cipher suite we
+    /// don't know about - such a scenario would indicate a software upgrade may
+    /// be needed.
     pub cipher_suite: u8,
     pub fingerprint: Key256Fingerprint,
 }

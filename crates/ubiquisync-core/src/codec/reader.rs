@@ -75,6 +75,9 @@ impl<'a> Reader<'a> {
     pub fn read_range(&mut self) -> Result<Range<u64>, ReadError> {
         let start = self.read_var_u64()?;
         let span = self.read_var_u64()?;
+        if span == 0 {
+            return Err(ReadError::InvalidRange { start, span });
+        }
         let end = start
             .checked_add(span)
             .ok_or(ReadError::InvalidRange { start, span })?;

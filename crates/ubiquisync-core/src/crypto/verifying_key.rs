@@ -53,7 +53,6 @@ impl VerifyingKey {
                     .map_err(|_| SignatureVerificationError::InvalidSignature)?;
                 let verifying_key = p256::ecdsa::VerifyingKey::from_sec1_bytes(&key[..])
                     .map_err(|_| SignatureVerificationError::InvalidKey)?;
-                // TODO check that s is normalized
                 verifying_key
                     .verify(message, &sig)
                     .map_err(|_| SignatureVerificationError::SignatureVerificationFailed)?;

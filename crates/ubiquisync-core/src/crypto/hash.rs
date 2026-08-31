@@ -47,7 +47,7 @@ pub enum TaggedHashDomain {
 #[derive(IntoStaticStr, EnumIter, Debug, Clone, Copy, PartialEq, Eq)]
 #[strum(prefix = "ubiquisync/v1/kdf/")]
 pub enum DeriveKeyDomain {
-    /// Used for per-entry opaque encyrption which is canonical for hashing.
+    /// Used for per-entry opaque encryption which is canonical for hashing.
     EntryCipher,
     /// Used when encoding a segment (multiple entries) using a nonce in the segment header.
     SegmentCipher,
