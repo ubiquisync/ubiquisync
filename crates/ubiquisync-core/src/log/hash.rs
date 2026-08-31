@@ -6,7 +6,7 @@ use crate::{
     bytes::OpaqueBytes,
     crypto::{CipherInfo, Hash256, Hasher, TaggedHashDomain, new_tagged_hasher},
     ids::LogId,
-    log::{EntryBody, LogEntry, OpBatch, OpOrExpunge, OpaqueLogEntry},
+    log::{EntryBody, LogEntry, OpBatch, OpOrExpunge, OpaqueLogEntry, UnknownEntry},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +53,14 @@ impl ChainHash {
         hasher.finalize()
     }
 
+    fn add_one_entry(&mut self, entry_hash: &Hash256) {
+        let mut hasher = new_tagged_hasher(TaggedHashDomain::ChainHash);
+        hasher.update(&self.hash);
+        hasher.update(entry_hash);
+        self.hash = hasher.finalize();
+        self.size += 1;
+    }
+
     /// Updates the chain has with the next entry and a possibly already computed hash (from encryption/decryption processing).
     pub(crate) fn update(
         &mut self,
@@ -61,19 +69,16 @@ impl ChainHash {
     ) -> Result<(), ChainHashError> {
         match entry {
             LogEntry::IndexedEntry { idx, entry } => {
-                let size = self.size();
+                let size = self.size;
                 if *idx != size {
                     return Err(ChainHashError::OutOfOrderEntry { size, idx: *idx });
                 }
                 let entry_hash = precomputed_hash.unwrap_or_else(|| entry.hash(&self.seed, *idx));
-                let mut hasher = new_tagged_hasher(TaggedHashDomain::ChainHash);
-                hasher.update(&self.hash);
-                hasher.update(&entry_hash);
-                self.hash = hasher.finalize()
+                self.add_one_entry(&entry_hash);
             }
             LogEntry::Expunged { end_size, end_hash } => {
                 let size = self.size;
-                if *end_size <= size {
+                if *end_size <= self.size {
                     return Err(ChainHashError::InvalidExpunge {
                         size,
                         expunge_size: *end_size,
@@ -82,7 +87,24 @@ impl ChainHash {
                 self.size = *end_size;
                 self.hash = *end_hash;
             }
-            _ => {}
+            LogEntry::Signature { .. } => {
+                // not hashed
+            }
+            LogEntry::Unknown(unknown_entry) => match unknown_entry {
+                super::UnknownEntry::Indexed { idx, .. } => {
+                    let size = self.size;
+                    if *idx != size {
+                        return Err(ChainHashError::OutOfOrderEntry { size, idx: *idx });
+                    }
+                    let entry_hash = precomputed_hash.unwrap_or_else(|| {
+                        unknown_entry.hash(&self.seed).expect("indexed entry hash")
+                    });
+                    self.add_one_entry(&entry_hash);
+                }
+                super::UnknownEntry::Unindexed { .. } => {
+                    // not hashed
+                }
+            },
         }
         Ok(())
     }
@@ -97,15 +119,6 @@ impl ChainHash {
 
     pub fn seed(&self) -> &Hash256 {
         &self.seed
-    }
-}
-
-impl<'a> OpaqueLogEntry<'a> {
-    pub fn hash(&self, seed: &Hash256) -> Option<Hash256> {
-        match self {
-            LogEntry::IndexedEntry { idx, entry } => Some(entry.hash(seed, *idx)),
-            _ => None,
-        }
     }
 }
 
@@ -132,6 +145,25 @@ impl<'a> OpBatch<OpaqueBytes<'a>, OpaqueBytes<'a>> {
             }
         }
         hasher.finalize()
+    }
+}
+
+impl UnknownEntry {
+    // NOTE: must only be called on opaque entries!!
+    fn hash(&self, seed: &Hash256) -> Option<Hash256> {
+        match self {
+            UnknownEntry::Indexed { idx, bytes, .. } => {
+                let mut hasher = new_tagged_hasher(TaggedHashDomain::LogEntryNew);
+                hasher.update(seed);
+                hasher.update(&[self.entry_byte()]);
+                hasher.update(&idx.to_le_bytes());
+                let len = bytes.len() as u64;
+                hasher.update(&len.to_le_bytes());
+                hasher.update(bytes);
+                Some(hasher.finalize())
+            }
+            UnknownEntry::Unindexed { .. } => None,
+        }
     }
 }
 

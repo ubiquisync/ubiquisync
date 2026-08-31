@@ -32,6 +32,7 @@ pub enum TaggedHashDomain {
     LogEntryOpBatch,
     LogEntryUseKey,
     OpBatchSlot,
+    LogEntryNew,
 }
 
 #[derive(IntoStaticStr, EnumIter, Debug, Clone, Copy, PartialEq, Eq)]

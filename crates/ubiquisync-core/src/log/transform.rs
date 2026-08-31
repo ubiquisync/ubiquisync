@@ -1,18 +1,13 @@
 use crate::{
     bytes::ToStatic,
     crypto::Hash256,
-    log::{EntryBody, LogEntry, OpBatch, OpOrExpunge},
+    log::{EntryBody, LogEntry, OpBatch, OpOrExpunge, UnknownEntry},
 };
 
 impl<O: std::fmt::Debug, H: std::fmt::Debug> OpBatch<O, H> {
     /// Transforms an OpBatch based on the provided transformer functions.
     /// This is useful for encoding/decoding while also performing hashing.
-    /// `init_state` is called at the start and its state is threaded through the remaining functions.
-    /// `transform_header` is called when the header is transformed with the header and mutable state.
-    /// It must return a transformed header.
-    /// `transform_op` is called when an op is transformed with the op index, op, and mutable state.
-    /// It must return a transformed op.
-    /// `on_expunge_op` is called when an op-level expunge is encountered with the op index, hash and mutable state.
+    /// See [LogEntry::transform] for argument descriptions.
     pub fn transform<O2: std::fmt::Debug, H2: std::fmt::Debug, A, B, C, D, S, E>(
         &self,
         entry_idx: u64,
@@ -46,19 +41,28 @@ impl<O: std::fmt::Debug, H: std::fmt::Debug> OpBatch<O, H> {
 impl<O: std::fmt::Debug, H: std::fmt::Debug> LogEntry<O, H> {
     /// Transforms an Entry based on the provided transformer functions.
     /// This is useful for encoding/decoding while also performing hashing.
-    /// See [OpBatch::transform] for argument descriptions.
-    pub fn transform<O2: std::fmt::Debug, H2: std::fmt::Debug, A, B, C, D, S, E>(
+    /// `init_state` is called at the start and its state is threaded through the remaining functions.
+    /// `transform_header` is called when the header is transformed with the header and mutable state.
+    /// It must return a transformed header.
+    /// `transform_op` is called when an op is transformed with the op index, op, and mutable state.
+    /// It must return a transformed op.
+    /// `on_expunge_op` is called when an op-level expunge is encountered with the op index, hash and mutable state.
+    /// `transform_unknown` is called when a forward-compatible unknown up is encountered, basically so that it can be
+    /// hashed and encrypted.
+    pub fn transform<O2: std::fmt::Debug, H2: std::fmt::Debug, A, B, C, D, U, S, E>(
         &self,
         init_state: A,
         transform_header: B,
         transform_op: C,
         on_expunge_op: D,
+        transform_unknown: U,
     ) -> Result<(LogEntry<O2, H2>, Option<S>), E>
     where
         A: Fn(u64, &OpBatch<O, H>) -> Result<S, E>,
         B: Fn(&H, &mut S) -> Result<H2, E>,
         C: Fn(u64, &O, &mut S) -> Result<O2, E>,
         D: Fn(u64, &Hash256, &mut S) -> Result<(), E>,
+        U: Fn(&mut UnknownEntry, &mut S) -> Result<(), E>,
     {
         Ok(match self {
             LogEntry::IndexedEntry { idx, entry } => match entry {
@@ -101,7 +105,8 @@ impl<O: std::fmt::Debug, H: std::fmt::Debug> LogEntry<O, H> {
                 None,
             ),
             LogEntry::Unknown(unknown_entry_type) => {
-                (LogEntry::Unknown(unknown_entry_type.clone()), None)
+                let mut unknown = unknown_entry_type.clone();
+                trans(LogEntry::Unknown(unknown_entry_type.clone()), None)
             }
         })
     }

@@ -152,10 +152,21 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> LogEntry<B, H> {
 
 impl UnknownEntry {
     fn encode(&self, writer: &mut Writer) {
+        writer.write_byte(self.entry_byte());
+        match self {
+            UnknownEntry::Indexed { bytes, .. } => {
+                writer.write_len_prefixed(bytes);
+            }
+            UnknownEntry::Unindexed { bytes, .. } => {
+                writer.write_len_prefixed(bytes);
+            }
+        }
+    }
+
+    pub(crate) fn entry_byte(&self) -> u8 {
         match self {
             UnknownEntry::Indexed {
                 entry_type,
-                bytes,
                 encrypted,
                 ..
             } => {
@@ -163,14 +174,12 @@ impl UnknownEntry {
                 if *encrypted {
                     entry_type |= 0x20; // encrypted flag
                 }
-                writer.write_byte(entry_type);
-                writer.write_len_prefixed(bytes);
+                entry_type
             }
-            UnknownEntry::Unindexed { entry_type, bytes } => {
+            UnknownEntry::Unindexed { entry_type, .. } => {
                 let mut entry_type = *entry_type | 0x80; // forward-compatible flag
                 entry_type |= 0x40; // unindexed flag
-                writer.write_byte(entry_type);
-                writer.write_len_prefixed(bytes);
+                entry_type
             }
         }
     }
