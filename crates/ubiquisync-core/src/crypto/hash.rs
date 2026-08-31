@@ -23,21 +23,19 @@ pub enum Hash256Suite {
 pub struct Hasher(Sha256);
 
 #[derive(IntoStaticStr, EnumIter, Debug, Clone, Copy, PartialEq, Eq)]
-#[strum(prefix = "ubiquisync/v1/hash/")]
+#[strum(prefix = "ubq/v1/hash/")]
 pub enum TaggedHashDomain {
-    MmrNode,
-    MmrSeed,
-    MmrBag,
-    MmrSignBytes,
+    ChainSeed,
+    ChainHash,
+    LogSignBytes,
     PeerInitCommitment,
     LogEntryOpBatch,
     LogEntryUseKey,
     OpBatchSlot,
-    ChainHash,
 }
 
 #[derive(IntoStaticStr, EnumIter, Debug, Clone, Copy, PartialEq, Eq)]
-#[strum(prefix = "ubiquisync/v1/kdf/")]
+#[strum(prefix = "ubq/v1/kdf/")]
 pub enum DeriveKeyDomain {
     /// Used for per-entry opaque encryption which is canonical for hashing.
     EntryCipher,
@@ -46,7 +44,7 @@ pub enum DeriveKeyDomain {
 }
 
 #[derive(IntoStaticStr, EnumIter, Debug, Clone, Copy, PartialEq, Eq)]
-#[strum(prefix = "ubiquisync/v1/fingerprint/")]
+#[strum(prefix = "ubq/v1/fingerprint/")]
 pub enum KeyFingerprintDomain {
     EncryptionKey,
 }

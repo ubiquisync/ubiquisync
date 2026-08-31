@@ -4,9 +4,9 @@ use thiserror::Error;
 
 use crate::{
     bytes::OpaqueBytes,
-    crypto::{Hash256, Hasher, TaggedHashDomain, new_tagged_hasher},
+    crypto::{CipherInfo, Hash256, Hasher, TaggedHashDomain, new_tagged_hasher},
     ids::LogId,
-    log::{CipherInfo, EntryBody, LogEntry, OpBatch, OpOrExpunge, OpaqueLogEntry},
+    log::{EntryBody, LogEntry, OpBatch, OpOrExpunge, OpaqueLogEntry},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,10 +53,11 @@ impl ChainHash {
         hasher.finalize()
     }
 
-    pub(crate) fn update<O: std::fmt::Debug, H: std::fmt::Debug>(
+    /// Updates the chain has with the next entry and a possibly already computed hash (from encryption/decryption processing).
+    pub(crate) fn update(
         &mut self,
-        entry: &LogEntry<O, H>,
-        maybe_hash: Option<Hash256>,
+        entry: &OpaqueLogEntry,
+        precomputed_hash: Option<Hash256>,
     ) -> Result<(), ChainHashError> {
         match entry {
             LogEntry::IndexedEntry { idx, entry } => {
@@ -64,23 +65,22 @@ impl ChainHash {
                 if *idx != size {
                     return Err(ChainHashError::OutOfOrderEntry { size, idx: *idx });
                 }
-                let entry_hash = maybe_hash
-                    .expect("state machine error, caller should have produced a hash here");
+                let entry_hash = precomputed_hash.unwrap_or_else(|| entry.hash(&self.seed, *idx));
                 let mut hasher = new_tagged_hasher(TaggedHashDomain::ChainHash);
-                hasher.update(self.hash);
-                hasher.update(entry_hash);
+                hasher.update(&self.hash);
+                hasher.update(&entry_hash);
                 self.hash = hasher.finalize()
             }
             LogEntry::Expunged { end_size, end_hash } => {
                 let size = self.size;
-                if end_size <= size {
+                if *end_size <= size {
                     return Err(ChainHashError::InvalidExpunge {
                         size,
-                        expunge_size: end_size,
+                        expunge_size: *end_size,
                     });
                 }
-                self.size = end_size;
-                self.hash = end_hash;
+                self.size = *end_size;
+                self.hash = *end_hash;
             }
             _ => {}
         }
@@ -99,23 +99,6 @@ impl ChainHash {
         &self.seed
     }
 }
-
-// pub fn update_mmr<'a>(
-//     acc: &mut MmrAccumulator,
-//     entries: impl Iterator<Item = OpaqueLogEntry<'a>>,
-// ) -> Result<(), MmrUpdateError> {
-//     for e in entries {
-//         mmr_append_entry(acc, &e)?;
-//     }
-//     Ok(())
-// }
-
-// fn mmr_append_entry(
-//     acc: &mut MmrAccumulator,
-//     entry: &OpaqueLogEntry,
-// ) -> Result<(), MmrUpdateError> {
-//     mmr_append_entry_hashed(acc, entry, entry.hash(acc.seed()))
-// }
 
 impl<'a> OpaqueLogEntry<'a> {
     pub fn hash(&self, seed: &Hash256) -> Option<Hash256> {
@@ -177,7 +160,7 @@ impl OpBatchHasher {
     }
 
     pub(crate) fn hash_op(&mut self, op_idx: u64, o: &OpaqueBytes) -> Hash256 {
-        self.hash_slot((op_idx + 1) as u64, o)
+        self.hash_slot(op_idx + 1, o)
     }
 
     pub(crate) fn hash_expunge(&mut self, _op_idx: u64, h: &Hash256) {
@@ -200,10 +183,11 @@ impl OpBatchHasher {
     }
 }
 
+// TODO should we anchor this with seed too?
 fn hash_use_key(entry_index: u64, cipher_info: &CipherInfo) -> Hash256 {
     let mut hasher = new_tagged_hasher(TaggedHashDomain::LogEntryUseKey);
     hasher.update(&entry_index.to_le_bytes());
     hasher.update(&[cipher_info.cipher_suite]);
     hasher.update(&cipher_info.fingerprint.0);
-    hasher.finalize().into()
+    hasher.finalize()
 }

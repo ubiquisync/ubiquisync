@@ -1,7 +1,12 @@
 use alloc::borrow::{Borrow, Cow};
 
+/// Converts a value to a fully-owned version of itself with 'static lifetime.
+/// This is useful for converting types which contain Cow's into
+/// a fully owned version with no borrowed data.
 pub trait ToStatic {
+    /// The fully-owned version of self.
     type Static: 'static;
+    /// Converts self to its fully-owned representation.
     fn to_static(self) -> Self::Static;
 }
 

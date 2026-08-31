@@ -3,7 +3,7 @@ use alloc::borrow::Borrow;
 use crate::{
     bytes::{OpaqueBytes, PlaintextBytes},
     codec::{ReadError, Reader, Writer},
-    crypto::{Hash256, Key256Fingerprint, Signature},
+    crypto::{CipherInfo, Hash256, Signature},
     log::{LogDecodeError, LogEncodeError, OpBatch},
 };
 
@@ -51,13 +51,6 @@ pub enum EntryBody<Op: std::fmt::Debug, H: std::fmt::Debug> {
     /// this point forward until the next UseKey op changes the key.
     /// MUST NOT be expunged.
     UseKey(CipherInfo),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(test, derive(test_strategy::Arbitrary))]
-pub struct CipherInfo {
-    pub cipher_suite: u8,
-    pub fingerprint: Key256Fingerprint,
 }
 
 impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> LogEntry<B, H> {
@@ -171,21 +164,6 @@ const ENTRY_TYPE_USE_KEY: u8 = 0x01;
 const ENTRY_TYPE_SIGNATURE: u8 = 0x02;
 const ENTRY_TYPE_EXPUNGED: u8 = 0x03;
 const MAX_ENTRY_TYPE_V1: u8 = ENTRY_TYPE_EXPUNGED;
-
-impl CipherInfo {
-    pub fn encode(&self, writer: &mut Writer) {
-        writer.write_byte(self.cipher_suite);
-        writer.write_array(&self.fingerprint.0);
-    }
-
-    pub fn decode<'a>(reader: &mut Reader<'a>) -> Result<Self, ReadError> {
-        let cipher_suite = reader.read_byte()?;
-        Ok(CipherInfo {
-            cipher_suite,
-            fingerprint: Key256Fingerprint(reader.read_array()?),
-        })
-    }
-}
 
 impl EntryRef {
     pub fn encode(&self, writer: &mut Writer) {

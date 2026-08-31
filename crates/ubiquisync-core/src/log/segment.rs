@@ -4,13 +4,10 @@ use num_enum::{IntoPrimitive, TryFromPrimitive};
 use thiserror::Error;
 
 use crate::{
-    bytes::PlaintextBytes,
+    bytes::{PlaintextBytes, ToStatic},
     codec::{ReadError, Reader, WriteError, Writer},
-    crypto::{Cipher, CipherError, CryptoDecodeError, Hash256, Signature},
-    log::{
-        ChainHash, CipherInfo, LogDecodeError, LogEncodeError, LogEntry, OpaqueLogEntry,
-        PlaintextLogEntry,
-    },
+    crypto::{Cipher, CipherError, CipherInfo, CryptoDecodeError, Hash256, Signature},
+    log::{ChainHash, LogDecodeError, LogEncodeError, LogEntry, OpaqueLogEntry, PlaintextLogEntry},
 };
 
 pub struct SegmentDescriptor {
@@ -86,7 +83,7 @@ impl<'a> SegmentReader<'a> {
                             && c.cipher == cipher.cipher_info()
                         {
                             decrypt_decompress_decode_entries(
-                                &cipher,
+                                cipher,
                                 &self.header.range,
                                 &c.nonce,
                                 buf,
@@ -111,7 +108,7 @@ pub fn encode_segment_opaque<'a>(
     let mut w = Writer::new();
     let header = SegmentHeader {
         range: range.clone(),
-        signature: signature.clone(),
+        signature: *signature,
         prev_chain_hash: *prev_chain_hash,
         encoding: SegmentEncoding::Opaque,
     };
@@ -154,7 +151,7 @@ pub fn encode_segment_plaintext<'a>(
     };
     let header = SegmentHeader {
         range: range.clone(),
-        signature: signature.clone(),
+        signature: *signature,
         prev_chain_hash: *prev_chain_hash,
         encoding: SegmentEncoding::Plaintext(encoding),
     };
@@ -189,17 +186,17 @@ where
             None
         } else {
             let e = LogEntry::decode(&mut reader, next_entry_index);
-            if let Ok(ref e) = e {
-                if let Some(idx) = e.next_entry_index() {
-                    next_entry_index = idx;
-                }
+            if let Ok(ref e) = e
+                && let Some(idx) = e.next_entry_index()
+            {
+                next_entry_index = idx;
             }
             Some(e)
         }
     })
 }
 
-pub fn encode_entries<'a, E, H>(
+pub fn encode_entries<E, H>(
     entries: impl Iterator<Item = LogEntry<E, H>>,
     writer: &mut Writer,
 ) -> Result<Range<u64>, LogEncodeError>
@@ -211,10 +208,8 @@ where
     let mut end = 0;
     for e in entries {
         if let Some(idx) = e.next_entry_index() {
-            if start == 0 {
-                if idx > 0 {
-                    start = idx - 1;
-                }
+            if start == 0 && idx > 0 {
+                start = idx - 1;
             }
             end = idx;
         }

@@ -5,6 +5,14 @@ use crate::{
 };
 
 impl<O: std::fmt::Debug, H: std::fmt::Debug> OpBatch<O, H> {
+    /// Transforms an OpBatch based on the provided transformer functions.
+    /// This is useful for encoding/decoding while also performing hashing.
+    /// `init_state` is called at the start and its state is threaded through the remaining functions.
+    /// `transform_header` is called when the header is transformed with the header and mutable state.
+    /// It must return a transformed header.
+    /// `transform_op` is called when an op is transformed with the op index, op, and mutable state.
+    /// It must return a transformed op.
+    /// `on_expunge_op` is called when an op-level expunge is encountered with the op index, hash and mutable state.
     pub fn transform<O2: std::fmt::Debug, H2: std::fmt::Debug, A, B, C, D, S, E>(
         &self,
         entry_idx: u64,
@@ -36,6 +44,9 @@ impl<O: std::fmt::Debug, H: std::fmt::Debug> OpBatch<O, H> {
 }
 
 impl<O: std::fmt::Debug, H: std::fmt::Debug> LogEntry<O, H> {
+    /// Transforms an Entry based on the provided transformer functions.
+    /// This is useful for encoding/decoding while also performing hashing.
+    /// See [OpBatch::transform] for argument descriptions.
     pub fn transform<O2: std::fmt::Debug, H2: std::fmt::Debug, A, B, C, D, S, E>(
         &self,
         init_state: A,
@@ -69,7 +80,7 @@ impl<O: std::fmt::Debug, H: std::fmt::Debug> LogEntry<O, H> {
                 }
                 EntryBody::UseKey(cipher_info) => (
                     LogEntry::IndexedEntry {
-                        entry: EntryBody::UseKey(cipher_info.clone()),
+                        entry: EntryBody::UseKey(*cipher_info),
                         idx: *idx,
                     },
                     None,

@@ -45,18 +45,18 @@ impl OpHeader {
         let server_user_id_bytes = reader.into_remaining();
         let n = server_user_id_bytes.len();
         if n == 0 {
-            return Ok(OpHeader {
+            Ok(OpHeader {
                 server_attested_user_id: None,
                 timestamp,
-            });
+            })
         } else if n != 16 {
             // for now only handle UUIDs
-            return Err(HeaderDecodeError::InvalidServerAttestedId { length: n });
+            Err(HeaderDecodeError::InvalidServerAttestedId { length: n })
         } else {
-            return Ok(OpHeader {
+            Ok(OpHeader {
                 server_attested_user_id: Some(server_user_id_bytes.try_into().unwrap()), // length already checked above
                 timestamp,
-            });
+            })
         }
     }
 

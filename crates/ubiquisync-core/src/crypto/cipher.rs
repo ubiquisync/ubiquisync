@@ -65,23 +65,6 @@ pub struct Key256Fingerprint(pub [u8; 32]);
 #[error("cipher error")]
 pub struct CipherError;
 
-pub trait EntryCipher<I, O> {
-    fn cipher_header(
-        &self,
-        entry_idx: u64,
-        prev_hash: &Hash256,
-        header: &I,
-    ) -> Result<O, CipherError>;
-
-    fn cipher_op(
-        &self,
-        entry_idx: u64,
-        op_index: u64,
-        prev_hash: &Hash256,
-        op: &I,
-    ) -> Result<O, CipherError>;
-}
-
 impl Cipher {
     pub fn new(suite: CipherSuite, key: Key256, log_id: &LogId) -> Self {
         assert_eq!(
@@ -109,9 +92,41 @@ impl Cipher {
         prev_hash: &Hash256,
         header: &PlaintextBytes,
     ) -> Result<OpaqueBytes<'static>, CipherError> {
+        self.encrypt_slot(entry_idx, 0, prev_hash, header)
     }
 
-    fn slot_associated_data_and_key(
+    pub fn encrypt_op(
+        &self,
+        entry_idx: u64,
+        op_index: u64,
+        prev_hash: &Hash256,
+        op: &PlaintextBytes,
+    ) -> Result<OpaqueBytes<'static>, CipherError> {
+        self.encrypt_slot(
+            entry_idx,
+            op_index.checked_add(1).expect("op index overflow"),
+            prev_hash,
+            op,
+        ) // convert to 1-based index, 0 for header
+    }
+
+    fn encrypt_slot(
+        &self,
+        entry_idx: u64,
+        slot_idx: u64,
+        prev_hash: &Hash256,
+        bytes: &PlaintextBytes,
+    ) -> Result<OpaqueBytes<'static>, CipherError> {
+        let (ad, cipher, nonce) = self.associated_data_and_key(entry_idx, slot_idx, prev_hash);
+        let bytes: &[u8] = bytes.borrow();
+        let mut res = Vec::from(bytes); // we copy the input data to the res vec to encrypt in place
+        cipher
+            .encrypt_in_place(&nonce, &ad, &mut res)
+            .map_err(|_| CipherError)?;
+        Ok(res.into())
+    }
+
+    fn associated_data_and_key(
         &self,
         entry_idx: u64,
         slot_idx: u64,
@@ -128,6 +143,30 @@ impl Cipher {
         (ad, cipher, [0; 12].into()) // since we derive every key based on coordinates, we can use a zero nonce
     }
 
+    pub fn decrypt_header(
+        &self,
+        entry_idx: u64,
+        prev_hash: &Hash256,
+        header: &OpaqueBytes,
+    ) -> Result<PlaintextBytes<'static>, CipherError> {
+        self.decrypt_slot(entry_idx, 0, prev_hash, header)
+    }
+
+    pub fn decrypt_op(
+        &self,
+        entry_idx: u64,
+        op_index: u64,
+        prev_hash: &Hash256,
+        op: &OpaqueBytes,
+    ) -> Result<PlaintextBytes<'static>, CipherError> {
+        self.decrypt_slot(
+            entry_idx,
+            op_index.checked_add(1).expect("op index overflow"),
+            prev_hash,
+            op,
+        ) // convert to 1-based index, 0 for header
+    }
+
     fn decrypt_slot(
         &self,
         entry_idx: u64,
@@ -135,7 +174,7 @@ impl Cipher {
         prev_hash: &Hash256,
         bytes: &OpaqueBytes,
     ) -> Result<PlaintextBytes<'static>, CipherError> {
-        let (ad, cipher, nonce) = self.slot_associated_data_and_key(entry_idx, slot_idx, prev_hash);
+        let (ad, cipher, nonce) = self.associated_data_and_key(entry_idx, slot_idx, prev_hash);
         let bytes: &[u8] = bytes.borrow();
         let mut res = Vec::from(bytes); // we copy the input data to the res vec to decrypt in place
         cipher
@@ -200,58 +239,6 @@ impl Cipher {
             cipher_suite: self.cipher_suite().into(),
             fingerprint: self.fingerprint,
         }
-    }
-}
-
-impl<'a> EntryCipher<PlaintextBytes<'a>, OpaqueBytes<'static>> for Cipher {
-    fn cipher_header(
-        &self,
-        entry_idx: u64,
-        prev_hash: &Hash256,
-        header: &PlaintextBytes<'a>,
-    ) -> Result<OpaqueBytes<'static>, CipherError> {
-        self.encrypt_slot(entry_idx, 0, prev_hash, header)
-    }
-
-    fn cipher_op(
-        &self,
-        entry_idx: u64,
-        op_index: u64,
-        prev_hash: &Hash256,
-        op: &PlaintextBytes,
-    ) -> Result<OpaqueBytes<'static>, CipherError> {
-        self.encrypt_slot(
-            entry_idx,
-            op_index.checked_add(1).expect("op index overflow"),
-            prev_hash,
-            op,
-        ) // convert to 1-based index, 0 for header
-    }
-}
-
-impl<'a> EntryCipher<OpaqueBytes<'a>, PlaintextBytes<'static>> for Cipher {
-    fn cipher_header(
-        &self,
-        entry_idx: u64,
-        prev_hash: &Hash256,
-        header: &OpaqueBytes<'a>,
-    ) -> Result<PlaintextBytes<'static>, CipherError> {
-        self.decrypt_slot(entry_idx, 0, prev_hash, header)
-    }
-
-    fn cipher_op(
-        &self,
-        entry_idx: u64,
-        op_index: u64,
-        prev_hash: &Hash256,
-        op: &OpaqueBytes,
-    ) -> Result<PlaintextBytes<'static>, CipherError> {
-        self.decrypt_slot(
-            entry_idx,
-            op_index.checked_add(1).expect("op index overflow"),
-            prev_hash,
-            op,
-        ) // convert to 1-based index, 0 for header
     }
 }
 
