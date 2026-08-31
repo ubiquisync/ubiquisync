@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 use strum_macros::{EnumIter, IntoStaticStr};
 
 use crate::{
-    codec::{reader::Reader, writer::Writer},
+    codec::{Reader, Writer},
     crypto::{CryptoDecodeError, Key256, Key256Fingerprint},
 };
 

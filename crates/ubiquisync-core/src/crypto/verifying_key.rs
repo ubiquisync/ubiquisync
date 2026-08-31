@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 use crate::{
-    codec::{reader::Reader, writer::Writer},
+    codec::{Reader, Writer},
     crypto::{CryptoDecodeError, SIG_ALGO_ED25519, SIG_ALGO_P256, Signature},
 };
 

@@ -8,7 +8,7 @@ use secrecy::ExposeSecret;
 use thiserror::Error;
 
 use crate::{
-    codec::{reader::Reader, writer::Writer},
+    codec::{Reader, Writer},
     crypto::{CryptoDecodeError, Key256},
 };
 

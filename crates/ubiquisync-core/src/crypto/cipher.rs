@@ -12,19 +12,28 @@ use thiserror::Error;
 use zeroize::Zeroize;
 use zeroize::ZeroizeOnDrop;
 
+use crate::bytes::OpaqueBytes;
+use crate::bytes::PlaintextBytes;
+use crate::codec::ReadError;
+use crate::codec::Reader;
+use crate::codec::Writer;
 use crate::crypto::DeriveKeyDomain;
 use crate::crypto::Hash256;
 use crate::crypto::Hash256Suite;
 use crate::ids::LogId;
-use crate::log_entry::CipherInfo;
-use crate::log_entry::OpaqueBytes;
-use crate::log_entry::PlaintextBytes;
 
 #[repr(u8)]
 #[derive(IntoPrimitive, TryFromPrimitive, Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub enum CipherSuite {
     Aes256GcmSiv = 0,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(test, derive(test_strategy::Arbitrary))]
+pub struct CipherInfo {
+    pub cipher_suite: u8,
+    pub fingerprint: Key256Fingerprint,
 }
 
 pub struct EntryCipher {
@@ -234,13 +243,29 @@ impl EntryCipher {
     }
 }
 
+impl CipherInfo {
+    pub fn encode(&self, writer: &mut Writer) {
+        writer.write_byte(self.cipher_suite);
+        writer.write_array(&self.fingerprint.0);
+    }
+
+    pub fn decode<'a>(reader: &mut Reader<'a>) -> Result<Self, ReadError> {
+        let cipher_suite = reader.read_byte()?;
+        Ok(CipherInfo {
+            cipher_suite,
+            fingerprint: Key256Fingerprint(reader.read_array()?),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use secrecy::SecretBox;
     use test_strategy::proptest;
 
+    #[cfg(test)]
+    use crate::bytes::PlaintextBytes;
     use crate::ids::{ContainerId, LogId};
-    use crate::log_entry::PlaintextBytes;
     use crate::{
         crypto::{CipherSuite, EntryCipher, Key256},
         ids::PeerId,

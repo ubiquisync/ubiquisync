@@ -1,5 +1,3 @@
-use crate::rand::{self, rand_fill};
-
 #[derive(Clone, Copy, Debug)]
 pub struct AppId(pub [u8; 16]);
 

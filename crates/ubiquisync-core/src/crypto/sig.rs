@@ -1,5 +1,5 @@
 use crate::{
-    codec::{reader::Reader, writer::Writer},
+    codec::{Reader, Writer},
     crypto::CryptoDecodeError,
 };
 

@@ -3,7 +3,7 @@ resolver = "2"
 members = [
   # "crates/ubiquisync",
   "crates/ubiquisync-core",
-  "crates/ubiquisync-sql",
+  # "crates/ubiquisync-sql",
   # "crates/ubiquisync-postgres",
   # "crates/ubiquisync-sqlite",
   # "crates/ubiquisync-tables",

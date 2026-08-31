@@ -1,6 +1,5 @@
-pub mod credentials;
-mod encapsulation_key;
 mod cipher;
+pub mod credentials;
 mod error;
 mod hash;
 pub mod kem;
@@ -9,8 +8,7 @@ mod sig;
 mod signing_key;
 mod verifying_key;
 
-pub use encapsulation_key::*;
-pub use encrypt::*;
+pub use cipher::*;
 pub use error::*;
 pub use hash::*;
 pub use sig::*;

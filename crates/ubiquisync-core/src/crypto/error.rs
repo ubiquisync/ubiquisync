@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::codec::reader::ReadError;
+use crate::codec::ReadError;
 
 #[derive(Error, Debug)]
 pub enum CryptoDecodeError {
