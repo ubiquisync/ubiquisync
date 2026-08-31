@@ -30,9 +30,9 @@ pub enum SegmentCipherError {
 /// The provided [Cipher] MUST match whatever cipher was declared by the latest `UseKey` entry in the log (if any).
 /// It is an error for the segment to change its cipher mid-stream. Cipher changes MUST result in separate
 /// segments with respect to encryption/decryption
-pub fn segment_to_opaque<'a>(
+pub fn segment_to_opaque<'a: 'b, 'b>(
     cipher: Option<&Cipher>,
-    entries: impl Iterator<Item = PlaintextLogEntry<'a>>,
+    entries: impl Iterator<Item = &'b PlaintextLogEntry<'a>>,
     chain_hash: &mut ChainHash,
 ) -> impl Iterator<Item = Result<OpaqueLogEntry<'a>, SegmentCipherError>> {
     entries.scan(false, move |failed, e| {
@@ -40,8 +40,8 @@ pub fn segment_to_opaque<'a>(
             return None;
         }
         let res = (|| {
-            check_use_key(cipher, &e)?;
-            let (e2, maybe_hash) = to_opaque(&e, cipher, chain_hash)?;
+            check_use_key(cipher, e)?;
+            let (e2, maybe_hash) = to_opaque(e, cipher, chain_hash)?;
             chain_hash.update(&e2, maybe_hash)?;
             Ok(e2)
         })();
@@ -55,9 +55,9 @@ pub fn segment_to_opaque<'a>(
 /// Converts a segment of log entries from opaque (possibly encrypted) to plaintext (not encrypted)
 /// while updating the chain hash along the way.
 /// This function has the same behavior as [segment_to_plaintext] with regards to ciphers.
-pub fn segment_to_plaintext<'a>(
+pub fn segment_to_plaintext<'a: 'b, 'b>(
     cipher: Option<&Cipher>,
-    entries: impl Iterator<Item = OpaqueLogEntry<'a>>,
+    entries: impl Iterator<Item = &'b OpaqueLogEntry<'a>>,
     chain_hash: &mut ChainHash,
 ) -> impl Iterator<Item = Result<PlaintextLogEntry<'a>, SegmentCipherError>> {
     entries.scan(false, move |failed, e| {
@@ -65,9 +65,9 @@ pub fn segment_to_plaintext<'a>(
             return None;
         }
         let res = (|| {
-            let (e2, maybe_hash) = to_plaintext(&e, cipher, chain_hash)?;
+            let (e2, maybe_hash) = to_plaintext(e, cipher, chain_hash)?;
             check_use_key(cipher, &e2)?;
-            chain_hash.update(&e, maybe_hash)?;
+            chain_hash.update(e, maybe_hash)?;
             Ok(e2)
         })();
         if res.is_err() {
@@ -194,11 +194,15 @@ mod tests {
     use test_strategy::proptest;
 
     use crate::bytes::PlaintextBytes;
+    #[cfg(test)]
+    use crate::crypto::Hash256;
     use crate::crypto::{Cipher, CipherSuite, Key256};
     use crate::ids::LogId;
-    use crate::log::ChainHash;
-    use crate::log::LogEntry;
     use crate::log::cipher::{to_opaque, to_plaintext};
+    #[cfg(test)]
+    use crate::log::segment::tests::LogEntries;
+    use crate::log::{ChainHash, segment_to_opaque};
+    use crate::log::{LogEntry, segment_to_plaintext};
 
     #[proptest]
     fn test_entry_cipher(
@@ -221,5 +225,35 @@ mod tests {
             let hash = batch.hash(chain_hash.seed(), idx);
             assert_eq!(hash, hash1.unwrap());
         }
+    }
+
+    #[proptest]
+    fn test_segment_cipher(entries: LogEntries, key: [u8; 32], log_id: LogId, prev_hash: Hash256) {
+        let key = Key256(SecretBox::new(Box::new(key)));
+        let cipher = Cipher::new(CipherSuite::Aes256GcmSiv, key, &log_id);
+        let mut start_idx = entries.start_index;
+        let mut entries = entries.entries;
+        if start_idx > 0 {
+            // if we're not at the very start, inject a UseKey entry at the beginning with our cipher to test this case
+            // random UseKey entries in other places are not valid
+            start_idx -= 1;
+            entries.insert(
+                0,
+                LogEntry::IndexedEntry {
+                    idx: start_idx,
+                    entry: crate::log::EntryBody::UseKey(cipher.cipher_info()),
+                },
+            )
+        }
+        let mut chain_hash = ChainHash::from_existing(&log_id, start_idx, prev_hash);
+        let opaque = segment_to_opaque(Some(&cipher), entries.iter(), &mut chain_hash)
+            .map(|e| e.unwrap())
+            .collect::<Vec<_>>();
+        let mut chain_hash2 = ChainHash::from_existing(&log_id, start_idx, prev_hash);
+        let plaintext = segment_to_plaintext(Some(&cipher), opaque.iter(), &mut chain_hash2)
+            .map(|e| e.unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(chain_hash, chain_hash2);
+        assert_eq!(entries, plaintext);
     }
 }

@@ -401,18 +401,21 @@ const SEGMENT_ENCODING_OPAQUE: u8 = 0;
 const SEGMENT_ENCODING_PLAINTEXT: u8 = 1;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use proptest::strategy::{BoxedStrategy, Strategy};
     use test_strategy::Arbitrary;
 
     use crate::{
         bytes::PlaintextBytes,
         crypto::{Hash256, Signature},
-        log::{EntryBody, LogEntry, PlaintextLogEntry},
+        log::{EntryBody, LogEntry, OpBatch, PlaintextLogEntry},
     };
 
     #[derive(Debug)]
-    pub(crate) struct LogEntries(Vec<PlaintextLogEntry<'static>>);
+    pub(crate) struct LogEntries {
+        pub start_index: u64,
+        pub entries: Vec<PlaintextLogEntry<'static>>,
+    }
 
     impl proptest::arbitrary::Arbitrary for LogEntries {
         type Parameters = ();
@@ -423,8 +426,9 @@ mod tests {
                 (0u64..1 << 24),
                 proptest::collection::vec(proptest::arbitrary::any::<GeneratedEntry>(), 1..=256),
             )
-                .prop_map(|(next_entry_idx, entries)| {
-                    LogEntries(GeneratedEntry::to_entries(entries, next_entry_idx).collect())
+                .prop_map(|(start_index, entries)| LogEntries {
+                    start_index,
+                    entries: GeneratedEntry::to_entries(entries, start_index).collect(),
                 })
                 .boxed()
         }
@@ -432,8 +436,12 @@ mod tests {
 
     #[derive(Arbitrary, Debug)]
     pub(crate) enum GeneratedEntry {
-        Body(EntryBody<PlaintextBytes<'static>, PlaintextBytes<'static>>),
-        Expunged { span: u64, hash: Hash256 },
+        Ops(OpBatch<PlaintextBytes<'static>, PlaintextBytes<'static>>),
+        Expunged {
+            #[strategy(1u64..1<<24)]
+            span: u64,
+            hash: Hash256,
+        },
         Signature(Signature),
     }
 
@@ -443,10 +451,10 @@ mod tests {
             mut next_entry_index: u64,
         ) -> impl Iterator<Item = PlaintextLogEntry<'static>> {
             entries.into_iter().map(move |e| match e {
-                GeneratedEntry::Body(entry) => {
+                GeneratedEntry::Ops(ops) => {
                     let e = LogEntry::IndexedEntry {
                         idx: next_entry_index,
-                        entry,
+                        entry: EntryBody::OpBatch(ops),
                     };
                     next_entry_index += 1;
                     e
