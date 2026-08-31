@@ -3,7 +3,6 @@ pub mod credentials;
 mod error;
 mod hash;
 pub mod kem;
-pub mod mmr;
 mod sig;
 mod signing_key;
 mod verifying_key;

@@ -23,7 +23,7 @@ pub mod crypto;
 pub mod event;
 pub mod hlc;
 pub mod ids;
-pub mod log_entry;
+pub mod log;
 pub mod store;
 //pub mod sync;
 pub mod bytes;
