@@ -14,6 +14,10 @@ pub enum LogEntry<Op: std::fmt::Debug, H: std::fmt::Debug> {
     IndexedEntry { idx: u64, entry: EntryBody<Op, H> },
     Expunged { end_size: u64, end_hash: Hash256 },
     Signature { size: u64, signature: Signature },
+    // TODO we could consider adding some explicit forward-compatible support for unknown entries
+    // where if an entry type byte has specific flags set we can hash and encrypt it and verify
+    // signatures on top of it without actually being able to process it.
+    // Should get addressed pre-v1.
 }
 
 /// Log entry where op and header are encoded as canonical hash bytes (may be encrypted)

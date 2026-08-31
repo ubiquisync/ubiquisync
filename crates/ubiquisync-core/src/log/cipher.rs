@@ -187,3 +187,35 @@ fn check_use_key<E: std::fmt::Debug, H: std::fmt::Debug>(
     };
     Err(SegmentCipherError::CipherChanged(cipher_info.fingerprint))
 }
+
+#[cfg(test)]
+mod tests {
+    use secrecy::SecretBox;
+    use test_strategy::proptest;
+
+    use crate::bytes::PlaintextBytes;
+    use crate::crypto::{Cipher, CipherSuite, Key256};
+    use crate::ids::LogId;
+    use crate::log::ChainHash;
+    use crate::log::LogEntry;
+    use crate::log::cipher::{to_opaque, to_plaintext};
+
+    #[proptest]
+    fn test_entry_cipher(
+        entry: LogEntry<PlaintextBytes<'static>, PlaintextBytes<'static>>,
+        key: [u8; 32],
+        log_id: LogId,
+    ) {
+        let key = Key256(SecretBox::new(Box::new(key)));
+        let cipher = Cipher::new(CipherSuite::Aes256GcmSiv, key, &log_id);
+        let chain_hash = ChainHash::new_seed(&log_id);
+        let (opaque, hash1) = to_opaque(&entry, Some(&cipher), &chain_hash).unwrap();
+        let (plaintext, hash2) = to_plaintext(&opaque, Some(&cipher), &chain_hash).unwrap();
+        assert_eq!(entry, plaintext);
+        assert_eq!(hash1, hash2);
+        if let LogEntry::IndexedEntry { idx, entry } = opaque {
+            let hash = entry.hash(chain_hash.seed(), idx);
+            assert_eq!(hash, hash1.unwrap());
+        }
+    }
+}
