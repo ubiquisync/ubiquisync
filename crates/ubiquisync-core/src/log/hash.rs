@@ -110,7 +110,7 @@ impl ChainHash {
 impl<'a> EntryBody<OpaqueBytes<'a>, OpaqueBytes<'a>> {
     pub fn hash(&self, seed: &Hash256, entry_index: u64) -> Hash256 {
         match self {
-            EntryBody::OpBatch(op_batch) => op_batch.hash(*seed, entry_index),
+            EntryBody::OpBatch(op_batch) => op_batch.hash(seed, entry_index),
             // TODO should we add LogId coordinates to hash_use_key?
             EntryBody::UseKey(cipher_info) => hash_use_key(entry_index, cipher_info),
         }
@@ -118,8 +118,8 @@ impl<'a> EntryBody<OpaqueBytes<'a>, OpaqueBytes<'a>> {
 }
 
 impl<'a> OpBatch<OpaqueBytes<'a>, OpaqueBytes<'a>> {
-    pub fn hash(&self, seed: Hash256, entry_idx: u64) -> Hash256 {
-        let mut hasher = OpBatchHasher::new(seed, entry_idx, self.ops.len());
+    pub fn hash(&self, seed: &Hash256, entry_idx: u64) -> Hash256 {
+        let mut hasher = OpBatchHasher::new(*seed, entry_idx, self.ops.len());
         hasher.hash_header(&self.header);
         for (i, e) in self.ops.iter().enumerate() {
             match e {

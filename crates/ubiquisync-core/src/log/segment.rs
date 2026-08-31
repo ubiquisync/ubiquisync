@@ -399,3 +399,70 @@ impl SegmentDecodeError {
 
 const SEGMENT_ENCODING_OPAQUE: u8 = 0;
 const SEGMENT_ENCODING_PLAINTEXT: u8 = 1;
+
+#[cfg(test)]
+mod tests {
+    use proptest::strategy::{BoxedStrategy, Strategy};
+    use test_strategy::Arbitrary;
+
+    use crate::{
+        bytes::PlaintextBytes,
+        crypto::{Hash256, Signature},
+        log::{EntryBody, LogEntry, PlaintextLogEntry},
+    };
+
+    #[derive(Debug)]
+    pub(crate) struct LogEntries(Vec<PlaintextLogEntry<'static>>);
+
+    impl proptest::arbitrary::Arbitrary for LogEntries {
+        type Parameters = ();
+        type Strategy = BoxedStrategy<Self>;
+
+        fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
+            (
+                (0u64..1 << 24),
+                proptest::collection::vec(proptest::arbitrary::any::<GeneratedEntry>(), 1..=256),
+            )
+                .prop_map(|(next_entry_idx, entries)| {
+                    LogEntries(GeneratedEntry::to_entries(entries, next_entry_idx).collect())
+                })
+                .boxed()
+        }
+    }
+
+    #[derive(Arbitrary, Debug)]
+    pub(crate) enum GeneratedEntry {
+        Body(EntryBody<PlaintextBytes<'static>, PlaintextBytes<'static>>),
+        Expunged { span: u64, hash: Hash256 },
+        Signature(Signature),
+    }
+
+    impl GeneratedEntry {
+        pub(crate) fn to_entries(
+            entries: Vec<Self>,
+            mut next_entry_index: u64,
+        ) -> impl Iterator<Item = PlaintextLogEntry<'static>> {
+            entries.into_iter().map(move |e| match e {
+                GeneratedEntry::Body(entry) => {
+                    let e = LogEntry::IndexedEntry {
+                        idx: next_entry_index,
+                        entry,
+                    };
+                    next_entry_index += 1;
+                    e
+                }
+                GeneratedEntry::Expunged { span, hash } => {
+                    next_entry_index += span;
+                    LogEntry::Expunged {
+                        end_size: next_entry_index,
+                        end_hash: hash,
+                    }
+                }
+                GeneratedEntry::Signature(signature) => LogEntry::Signature {
+                    size: next_entry_index,
+                    signature,
+                },
+            })
+        }
+    }
+}

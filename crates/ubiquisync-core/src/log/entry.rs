@@ -7,12 +7,51 @@ use crate::{
     log::{LogDecodeError, LogEncodeError, OpBatch},
 };
 
-/// One decoded entry: a live log entry or an expunged-entry marker.
+/// Represents a single entry in a stream of logs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub enum LogEntry<Op: std::fmt::Debug, H: std::fmt::Debug> {
+    /// Represents an indexed entry which contributes to the chain hash.
+    ///
+    /// Note that the `idx` parameter is computed and not decoded from the stream.
+    /// It is included in the type to ensure consumers are processing the correct index.
     IndexedEntry { idx: u64, entry: EntryBody<Op, H> },
+    /// Expunges a range of indexed entries and tells the verifier to advance the end chain size and hash
+    /// immediately to the provided values
+    ///
+    /// Expunging entries SHOULD be used extremely rarely as a last line of defense.
+    /// It is included primarily to ensure there is a exit hatch for deleting just one thing
+    /// when needed for compliance or privacy reasons.
+    /// Expunging entries may make the log stream basically unusable if not done correctly.
+    /// For instance, it is an irrecoverable error to expunge a `UseKey` entry because this
+    /// will make all following entries indecipherable.
+    /// Different op vocabs may fail in similarly spectacular ways - expunging an op that
+    /// has some downstream dependency (such as a YDoc update that other updates depend on)
+    /// may result essential "bricked" state.
+    /// For this reason, expunging an entry should be gated as an admin-only operation wherever
+    /// possible. It SHOULD NOT be considered trivially safe to let client's expunge their own
+    /// entries - having authored an entry does not absolve a peer of the dependency other peers
+    /// may have placed on that entry. To allow "full-deletion" of user content, apps should
+    /// generally prefer another cheaper mechanism which is to make a "log container" the unit
+    /// of deletable content. For instance, if a document is represented by a single log container,
+    /// it is much cheaper to delete the whole bundle of logs associated with that document rather
+    /// than expunge individual entries.
+    /// Exceptions can be made by op vocabularies where it is safe - for instance, it generally wouldj
+    /// be safe to to allow users to expunge individual entries from a chat thread and this would
+    /// be the preferred behavior for such content. Even though other chat entries do reference
+    /// one another, _usually_ the entries do not introduce causal dependencies in the way a
+    /// document CRDT would. So a chat op vocabulary, _could_ choose to make expunging a routine
+    /// mechanism for deleting individual user entries for that vocabulary.
+    /// So the important operative is to use with care.
+    /// Whenever possible, log processors should never accept expunged entry from untrusted peers
+    /// without some sort of signed authorization proving that the expunge operation is permitted.
+    /// Expunging could be abused as a mechanism for censoring data from specific peers.
+    /// So generally, expunge must be used with per op-vocabulary rules, and all peers should know
+    /// the rules and abide by them.
     Expunged { end_size: u64, end_hash: Hash256 },
+    /// A signature over the chain hash of indexed entries up to this point.
+    ///
+    /// The size parameter is not encoded on the wire, but rather inferred from prior entry indexes.
     Signature { size: u64, signature: Signature },
     // TODO we could consider adding some explicit forward-compatible support for unknown entries
     // where if an entry type byte has specific flags set we can hash and encrypt it and verify
@@ -29,12 +68,15 @@ pub type PlaintextLogEntry<'a> = LogEntry<PlaintextBytes<'a>, PlaintextBytes<'a>
 
 pub type PlaintextOpBatch<'a> = OpBatch<PlaintextBytes<'a>, PlaintextBytes<'a>>;
 
+/// The content of signed and indexed log entries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub enum EntryBody<Op: std::fmt::Debug, H: std::fmt::Debug> {
+    /// An operation batch in the app's op vocabulary.
     OpBatch(OpBatch<Op, H>),
     /// Declares the fingerprint for the encryption key being used from
     /// this point forward until the next UseKey op changes the key.
+    ///
     /// MUST NOT be expunged.
     UseKey(CipherInfo),
 }

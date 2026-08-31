@@ -213,8 +213,12 @@ mod tests {
         let (plaintext, hash2) = to_plaintext(&opaque, Some(&cipher), &chain_hash).unwrap();
         assert_eq!(entry, plaintext);
         assert_eq!(hash1, hash2);
-        if let LogEntry::IndexedEntry { idx, entry } = opaque {
-            let hash = entry.hash(chain_hash.seed(), idx);
+        if let LogEntry::IndexedEntry {
+            idx,
+            entry: crate::log::EntryBody::OpBatch(batch),
+        } = opaque
+        {
+            let hash = batch.hash(chain_hash.seed(), idx);
             assert_eq!(hash, hash1.unwrap());
         }
     }
