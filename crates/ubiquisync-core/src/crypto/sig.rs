@@ -30,7 +30,7 @@ impl Signature {
         Ok(match algo {
             SIG_ALGO_ED25519 => Signature::Ed25519(reader.read_array()?),
             SIG_ALGO_P256 => Signature::P256(reader.read_array()?),
-            _ => return Err(CryptoDecodeError::UnknownAlgorithm(algo).into()),
+            _ => return Err(CryptoDecodeError::UnknownAlgorithm(algo)),
         })
     }
 }
@@ -43,7 +43,7 @@ mod tests {
     use std::assert_matches;
     use test_strategy::proptest;
 
-    use crate::codec::{reader::Reader, writer::Writer};
+    use crate::codec::{Reader, Writer};
     use crate::crypto::{CryptoDecodeError, Signature};
 
     #[proptest]

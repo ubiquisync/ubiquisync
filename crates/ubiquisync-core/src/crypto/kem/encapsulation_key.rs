@@ -49,7 +49,7 @@ impl EncapsulationKey {
                     )
                     .map_err(|_| KemError)?;
                 Ok(KeyWrap::X25519HkdfSha256AesGcm256 {
-                    enc: encapped_key.to_bytes().try_into().map_err(|_| KemError)?,
+                    enc: encapped_key.to_bytes().into(),
                     ciphertext: ciphertext.try_into().map_err(|_| KemError)?,
                 })
             }

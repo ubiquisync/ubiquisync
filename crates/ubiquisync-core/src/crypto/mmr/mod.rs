@@ -122,6 +122,7 @@ impl MmrAccumulator {
         self.peaks.iter().map(|n| n.hash)
     }
 
+    #[allow(dead_code)]
     pub(crate) fn advance_with_cover(
         &mut self,
         end: u64,
@@ -132,6 +133,7 @@ impl MmrAccumulator {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub(crate) fn seed(&self) -> &Hash256 {
         &self.seed
     }
@@ -202,7 +204,7 @@ fn tagged_hash_node(
     hasher.update(left);
     hasher.update(&right_size.to_le_bytes());
     hasher.update(right);
-    hasher.finalize().into()
+    hasher.finalize()
 }
 
 fn root_fold(size: u64, seed: &Hash256, peaks: &[Node]) -> Bag {
@@ -325,7 +327,7 @@ impl InclusionProof {
             let witness = self.witnesses[i];
             let witness_id = &climb_node_ids[i];
             let w = cur.size();
-            if (cur.id.start / w) % 2 == 0 {
+            if (cur.id.start / w).is_multiple_of(2) {
                 // even -> cur LHS, witness RHS
                 cur = node_hash(
                     &cur,
@@ -350,12 +352,12 @@ impl InclusionProof {
         let mut acc = if let Some(id) = witness_ids.bag_id {
             let bag = Bag {
                 id: id.clone(),
-                hash: self.witnesses[i].clone(),
+                hash: self.witnesses[i],
             };
             i += 1;
             bag
         } else {
-            seed_bag(&seed, self.size)
+            seed_bag(seed, self.size)
         };
 
         acc = bag_hash(&cur, &acc);
@@ -363,7 +365,7 @@ impl InclusionProof {
         for j in (i..n).rev() {
             acc = bag_hash(
                 &Node {
-                    hash: self.witnesses[j].clone(),
+                    hash: self.witnesses[j],
                     id: witness_ids.lhs_peaks[j - i].clone(),
                 },
                 &acc,
@@ -379,12 +381,10 @@ impl InclusionProof {
         store: &dyn NodeStore,
         seed: &Hash256,
     ) -> Option<Self> {
-        let Some(witness_ids) = Self::witness_ids(i, size) else {
-            return None;
-        };
+        let witness_ids = Self::witness_ids(i, size)?;
         let mut witnesses = vec![];
         for id in witness_ids.climb_node_ids.iter() {
-            let node = resolve_node(store, &id).await?;
+            let node = resolve_node(store, id).await?;
             witnesses.push(node.hash);
         }
 
@@ -394,7 +394,7 @@ impl InclusionProof {
         }
 
         for id in witness_ids.lhs_peaks.iter() {
-            let node = resolve_node(store, &id).await?;
+            let node = resolve_node(store, id).await?;
             witnesses.push(node.hash);
         }
 
@@ -493,7 +493,7 @@ impl PrefixProof {
             return false;
         }
 
-        if let Err(_) = Self::apply_cover(&mut peaks, &self.cover, self.m, self.n) {
+        if Self::apply_cover(&mut peaks, &self.cover, self.m, self.n).is_err() {
             return false;
         }
 
@@ -535,7 +535,7 @@ impl PrefixProof {
             if p < n {
                 let cover_width = Self::cover_width(p, n);
                 let start = p;
-                p = p + cover_width;
+                p += cover_width;
                 Some(start..p)
             } else {
                 None
@@ -558,12 +558,8 @@ impl PrefixProof {
 }
 
 fn reduce_peaks(peaks: &mut Vec<Node>, mut right: Node) {
-    loop {
-        if let Some(left) = peaks.last() {
-            if left.size() != right.size() {
-                break;
-            }
-        } else {
+    while let Some(left) = peaks.last() {
+        if left.size() != right.size() {
             break;
         }
         let left = peaks.pop().expect("non-empty node");
@@ -613,15 +609,12 @@ mod test {
     use sha2::{Digest, Sha256};
 
     use crate::crypto::tests::hex;
-    use crate::{
-        crypto::{
-            Hash256,
-            mmr::{
-                InclusionProof, MmrAccumulator, MmrState, NodeStore, PrefixProof, peak_count,
-                peak_ids, peak_ids_rev,
-            },
+    use crate::crypto::{
+        Hash256,
+        mmr::{
+            InclusionProof, MmrAccumulator, MmrState, NodeStore, PrefixProof, peak_count, peak_ids,
+            peak_ids_rev,
         },
-        rand::rand_fill,
     };
 
     #[test]
@@ -638,20 +631,20 @@ mod test {
 
             if i > 0 {
                 assert_eq!(ids[0].start, 0);
-                assert_eq!(ids[(n - 1) as usize].end, i);
+                assert_eq!(ids[n - 1].end, i);
             }
         }
     }
 
     fn deterministic_hash(i: u64) -> Hash256 {
-        Sha256::digest(&i.to_be_bytes()).into()
+        Sha256::digest(i.to_be_bytes()).into()
     }
 
     // ensures that our hashes are deterministic and that there is no regression in root hashes or peaks
     #[test]
     fn test_regression() {
         let seed = deterministic_hash(0);
-        let mut acc = MmrAccumulator::new(seed.clone(), MmrState::default()).unwrap();
+        let mut acc = MmrAccumulator::new(seed, MmrState::default()).unwrap();
         let mut root_snapshot = String::new();
         for i in 0..64 {
             let leaf = deterministic_hash(i + 1);
@@ -668,15 +661,15 @@ mod test {
     #[futures_test::test]
     async fn test_inclusion_proofs() {
         let mut seed = [0; 32];
-        rand_fill(&mut seed).unwrap();
-        let mut acc = MmrAccumulator::new(seed.clone(), MmrState::default()).unwrap();
+        getrandom::fill(&mut seed).unwrap();
+        let mut acc = MmrAccumulator::new(seed, MmrState::default()).unwrap();
         let mut node_store = TestNodeStore::default();
         let mut leaves = vec![];
         for i in 0..=64 {
             if i % 7 == 0 {
                 // sometimes reset accumulator
                 acc = MmrAccumulator::new(
-                    seed.clone(),
+                    seed,
                     MmrState {
                         size: acc.size(),
                         peaks: acc.peaks().collect(),
@@ -686,10 +679,10 @@ mod test {
             }
 
             let mut leaf = [0; 32];
-            rand_fill(&mut leaf).unwrap();
+            getrandom::fill(&mut leaf).unwrap();
             acc.append(&leaf);
-            leaves.push(leaf.clone());
-            node_store.insert(i..i + 1, leaf.clone());
+            leaves.push(leaf);
+            node_store.insert(i..i + 1, leaf);
             assert_eq!(acc.peaks.len(), peak_count(acc.size));
             if i % 5 == 0 {
                 // don't insert all peaks to test how nodes get regenerated
@@ -742,15 +735,15 @@ mod test {
     #[futures_test::test]
     async fn test_prefix_proofs() {
         let mut seed = [0; 32];
-        rand_fill(&mut seed).unwrap();
-        let mut acc = MmrAccumulator::new(seed.clone(), MmrState::default()).unwrap();
+        getrandom::fill(&mut seed).unwrap();
+        let mut acc = MmrAccumulator::new(seed, MmrState::default()).unwrap();
         let mut node_store = TestNodeStore::default();
         let mut roots = vec![];
         for i in 0..64 {
             let mut leaf = [0; 32];
-            rand_fill(&mut leaf).unwrap();
+            getrandom::fill(&mut leaf).unwrap();
             acc.append(&leaf);
-            node_store.insert(i..i + 1, leaf.clone());
+            node_store.insert(i..i + 1, leaf);
             assert_eq!(acc.peaks.len(), peak_count(acc.size));
             if i % 5 == 0 {
                 // don't insert all peaks to test how nodes get regenerated
@@ -762,7 +755,7 @@ mod test {
             }
 
             let root = acc.root();
-            roots.push(root.clone());
+            roots.push(root);
             let size = acc.size();
             assert_eq!(i + 1, size);
 
@@ -819,7 +812,7 @@ mod test {
     fn muck_bit(hash: &Hash256) -> Hash256 {
         let mut hash = *hash;
         let mut bit = [0; 1];
-        rand_fill(&mut bit).unwrap();
+        getrandom::fill(&mut bit).unwrap();
         let byte = bit[0] / 8;
         let bit = bit[0] - (byte * 8);
         hash[byte as usize] ^= 1 << bit;
@@ -828,7 +821,7 @@ mod test {
 
     fn rand_u64() -> u64 {
         let mut buf = [0; 8];
-        rand_fill(&mut buf).unwrap();
+        getrandom::fill(&mut buf).unwrap();
         u64::from_le_bytes(buf)
     }
 

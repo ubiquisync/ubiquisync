@@ -27,7 +27,7 @@ pub struct Hasher(HasherInternal);
 enum HasherInternal {
     // TODO feature flags for supported hashes at build time
     Sha256(Sha256),
-    Blake3(blake3::Hasher),
+    Blake3(Box<blake3::Hasher>),
 }
 
 #[derive(IntoStaticStr, EnumIter, Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,13 +89,13 @@ impl Hash256Suite {
             // TODO feature flags for supported hashes at build time
             Hash256Suite::Sha256 => {
                 let mut hasher = Sha256::new();
-                hasher.update(&[len]);
+                hasher.update([len]);
                 hasher.update(domain);
                 HasherInternal::Sha256(hasher)
             }
             Hash256Suite::Blake3 => {
                 let hasher = blake3::Hasher::new_derive_key(domain);
-                HasherInternal::Blake3(hasher)
+                HasherInternal::Blake3(Box::new(hasher))
             }
         })
     }

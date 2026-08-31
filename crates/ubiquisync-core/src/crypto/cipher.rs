@@ -238,7 +238,7 @@ impl EntryCipher {
     pub fn cipher_info(&self) -> CipherInfo {
         CipherInfo {
             cipher_suite: self.cipher_suite().into(),
-            fingerprint: self.fingerprint.clone(),
+            fingerprint: self.fingerprint,
         }
     }
 }

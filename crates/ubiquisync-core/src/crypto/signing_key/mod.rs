@@ -19,7 +19,7 @@ impl SigningKey for ed25519_dalek::SigningKey {
     fn sign(&self, message: &[u8]) -> Result<Signature, SigningError> {
         use ed25519_dalek::Signer;
 
-        let sig = self.try_sign(&message).map_err(|_| SigningError)?;
+        let sig = self.try_sign(message).map_err(|_| SigningError)?;
         Ok(Signature::Ed25519(sig.to_bytes()))
     }
 
@@ -34,7 +34,7 @@ impl SigningKey for ed25519_dalek::SigningKey {
 impl SigningKey for p256::ecdsa::SigningKey {
     fn sign(&self, message: &[u8]) -> Result<Signature, SigningError> {
         use ed25519_dalek::Signer;
-        let sig: p256::ecdsa::Signature = self.try_sign(&message).map_err(|_| SigningError)?;
+        let sig: p256::ecdsa::Signature = self.try_sign(message).map_err(|_| SigningError)?;
         Ok(Signature::P256(sig.normalize_s().to_bytes().into()))
     }
 

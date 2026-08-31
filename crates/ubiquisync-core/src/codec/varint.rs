@@ -18,7 +18,7 @@ pub fn encode_var_u64(v: u64, buf: &mut [u8; 9]) -> &[u8] {
             buf[i] = byte | 0x80;
         }
     }
-    return buf;
+    buf
 }
 
 /// Encodes an i64 using zigzag encoding to at most 9 bytes.
@@ -83,7 +83,7 @@ mod tests {
         let mut buf = [0; 9];
         let encoded = encode_var_u64(x, &mut buf);
         let mut data = vec![];
-        data.extend_from_slice(&encoded);
+        data.extend_from_slice(encoded);
         data.extend_from_slice(tail.as_slice());
         let res = decode_var_u64(data.as_slice());
         assert_matches!(res, Ok(_), "encoded: {encoded:?}");
@@ -110,14 +110,14 @@ mod tests {
     #[test_case(&[0xFF, 0]; "0x7F")]
     #[test_case(&[0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0]; "0 expressed in 8 bytes")]
     fn non_minimal_varints_fail(buf: &[u8]) {
-        assert_matches!(decode_var_u64(&buf), Err(ReadError::NonMinimalVarint))
+        assert_matches!(decode_var_u64(buf), Err(ReadError::NonMinimalVarint))
     }
 
     #[test_case(&[0x80])]
     #[test_case(&[0xFF, 0x80])]
     #[test_case(&[]; "empty")]
     fn truncated_varints_eof(buf: &[u8]) {
-        assert_matches!(decode_var_u64(&buf), Err(ReadError::UnexpectedEof))
+        assert_matches!(decode_var_u64(buf), Err(ReadError::UnexpectedEof))
     }
 
     #[proptest]
@@ -135,7 +135,7 @@ mod tests {
     fn zigzags_round_trip(x: i64) {
         let mut buf = [0; 9];
         let encoded = encode_zigzag_i64(x, &mut buf);
-        let res = decode_zigzag_i64(&encoded);
+        let res = decode_zigzag_i64(encoded);
         assert_matches!(res, Ok(_), "encoded: {encoded:?}");
         let (decoded, rest) = res.unwrap();
         assert_eq!(x, decoded, "encoded: {encoded:?}, rest: {rest:?}");
