@@ -5,7 +5,6 @@ use ubiquisync_core::event::RoutableEvent;
 use crate::{
     db::{DbError, DbRow, DbValue},
     dialect::SqlDialect,
-    processor::{BoxError, ProcessorError},
 };
 
 /// A [`Store`](ubiquisync_core::store::Store) backed by SQL, adding ad-hoc reads.

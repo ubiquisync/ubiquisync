@@ -1,4 +1,6 @@
-use crate::dialect::SqlDialect;
+use sea_query::Iden;
+
+use crate::{dialect::SqlDialect, util::quote_ident};
 
 /// An existing table's shape as reported by backend introspection
 /// ([`Db::describe_table`](super::Db::describe_table)). Used by schema
@@ -7,8 +9,7 @@ use crate::dialect::SqlDialect;
 pub struct DbTableDescriptor {
     /// The table's name.
     pub name: String,
-    /// Primary-key columns, in declared key-position order.
-    pub pk_cols: Vec<DbColumnDescription>,
+    pub pk: Vec<DbColumnDescription>,
     /// The remaining (non-primary-key) columns.
     pub cols: Vec<DbColumnDescription>,
 }
@@ -23,6 +24,35 @@ pub struct DbColumnDescription {
     pub db_type: DbType,
     /// Whether the column permits SQL NULL.
     pub nullable: bool,
+}
+
+/// Data for constructing a CREATE TABLE statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateTableDef {
+    pub name: String,
+    pub pk: CreatePrimaryKeyDef,
+    pub cols: Vec<CreateColDef>,
+    pub unique: Vec<Vec<String>>,
+}
+
+/// Data for constructing the column definitions in a CREATE TABLE statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateColDef {
+    /// The column's name.
+    pub name: String,
+    /// The column's storage class, mapped from the backend's native type
+    /// (or [`DbType::Other`] if it falls outside the engine's vocabulary).
+    pub db_type: DbType,
+    /// Whether the column permits SQL NULL.
+    pub nullable: bool,
+    pub default_zero: bool,
+}
+
+/// Data for constructing the primary key in a CREATE TABLE statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CreatePrimaryKeyDef {
+    AutoId(String),
+    Columns(Vec<CreateColDef>),
 }
 
 /// A generic SQL storage class, independent of any data protocol.
@@ -76,8 +106,135 @@ impl DbType {
     }
 }
 
+impl CreateTableDef {
+    pub fn create_table_sql(&self, dialect: SqlDialect) -> String {
+        let quoted_table_name = quote_ident(&self.name);
+        let mut col_defs = self.pk.create_cols_clauses(dialect);
+        col_defs.append(&mut CreateColDef::create_cols_sql(&self.cols, dialect));
+        let col_sql = col_defs.join(", ");
+        let pk_clause = self.pk.pk_clause();
+        let rowid_clause = self.pk.rowid_clause(dialect);
+        format!("CREATE TABLE {quoted_table_name} ({col_sql}{pk_clause}){rowid_clause};")
+    }
+
+    pub fn with_unique(mut self, cols: &[&str]) -> Self {
+        self.unique.push(
+            cols.iter()
+                .map(|s| ToString::to_string(&s))
+                .collect::<Vec<_>>(),
+        );
+        self
+    }
+}
+
+impl CreatePrimaryKeyDef {
+    fn create_cols_clauses(&self, dialect: SqlDialect) -> Vec<String> {
+        match self {
+            CreatePrimaryKeyDef::AutoId(name) => {
+                let name_quoted = quote_ident(name);
+                let sql = match dialect {
+                    SqlDialect::Sqlite => {
+                        format!("{name_quoted} INTEGER PRIMARY KEY AUTOINCREMENT")
+                    }
+                    SqlDialect::Postgres => {
+                        format!("{name_quoted} BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY")
+                    }
+                };
+                vec![sql]
+            }
+            CreatePrimaryKeyDef::Columns(cols) => CreateColDef::create_cols_sql(cols, dialect),
+        }
+    }
+
+    fn pk_clause(&self) -> String {
+        match self {
+            CreatePrimaryKeyDef::AutoId(_) => "".into(),
+            CreatePrimaryKeyDef::Columns(cols) => {
+                let cols_str = cols
+                    .iter()
+                    .map(|c| quote_ident(&c.name))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(", PRIMARY KEY({cols_str})")
+            }
+        }
+    }
+
+    fn rowid_clause(&self, dialect: SqlDialect) -> &str {
+        match self {
+            CreatePrimaryKeyDef::AutoId(_) => "",
+            CreatePrimaryKeyDef::Columns(_) => dialect.without_rowid(),
+        }
+    }
+}
+
+impl CreateColDef {
+    fn create_col_sql(&self, dialect: SqlDialect) -> String {
+        let quoted_name = quote_ident(&self.name);
+        let sql_type = self.db_type.sql_type(dialect);
+        let mut sql = format!("{quoted_name} {sql_type}");
+        if self.nullable {
+            sql += " NULL";
+        } else {
+            sql += " NOT NULL";
+        }
+
+        if self.default_zero {
+            sql += " DEFAULT 0";
+        }
+
+        sql
+    }
+
+    fn create_cols_sql(cols: &[Self], dialect: SqlDialect) -> Vec<String> {
+        cols.iter()
+            .map(|c| c.create_col_sql(dialect))
+            .collect::<Vec<_>>()
+    }
+
+    pub fn nullable(mut self) -> Self {
+        self.nullable = true;
+        self
+    }
+
+    pub fn default_zero(mut self) -> Self {
+        debug_assert_eq!(self.db_type, DbType::Integer);
+        self.nullable = true;
+        self
+    }
+}
+
+pub fn table(name: &dyn Iden, pk: &[CreateColDef], cols: &[CreateColDef]) -> CreateTableDef {
+    CreateTableDef {
+        name: name.to_string(),
+        pk: CreatePrimaryKeyDef::Columns(pk.into()),
+        cols: cols.into(),
+        unique: vec![],
+    }
+}
+
+pub fn table_with_auto_id(name: &dyn Iden, id: &dyn Iden, cols: &[CreateColDef]) -> CreateTableDef {
+    CreateTableDef {
+        name: name.to_string(),
+        pk: CreatePrimaryKeyDef::AutoId(id.to_string()),
+        cols: cols.into(),
+        unique: vec![],
+    }
+}
+
+pub fn col(name: &dyn Iden, db_type: DbType) -> CreateColDef {
+    CreateColDef {
+        name: name.to_string(),
+        db_type,
+        nullable: false,
+        default_zero: false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use insta::assert_snapshot;
+
     use super::*;
 
     #[test]
@@ -96,5 +253,34 @@ mod tests {
         assert_eq!(DbType::Text.sql_type(SqlDialect::Postgres), "TEXT");
         assert_eq!(DbType::Blob.sql_type(SqlDialect::Postgres), "BYTEA");
         assert_eq!(DbType::Uuid.sql_type(SqlDialect::Postgres), "UUID");
+    }
+
+    #[test]
+    fn test_create_table() {
+        let user = table(&"user", &[col(&"id", DbType::Uuid)], &[]);
+        let user_device = table(
+            &"user",
+            &[col(&"user", DbType::Uuid), col(&"device", DbType::Uuid)],
+            &[],
+        );
+        let entry = table_with_auto_id(
+            &"entry",
+            &"id",
+            &[col(&"bytes", DbType::Blob), col(&"ts", DbType::Integer)],
+        );
+
+        assert_snapshot!("user.sqlite", user.create_table_sql(SqlDialect::Sqlite));
+        assert_snapshot!(
+            "user_device.sqlite",
+            user_device.create_table_sql(SqlDialect::Sqlite)
+        );
+        assert_snapshot!("entry.sqlite", entry.create_table_sql(SqlDialect::Sqlite));
+
+        assert_snapshot!("user.pg", user.create_table_sql(SqlDialect::Postgres));
+        assert_snapshot!(
+            "user_device.pg",
+            user_device.create_table_sql(SqlDialect::Postgres)
+        );
+        assert_snapshot!("entry.pg", entry.create_table_sql(SqlDialect::Postgres));
     }
 }

@@ -1,0 +1,5 @@
+---
+source: crates/ubiquisync-sql/src/db/schema.rs
+expression: "entry.create_table_sql(SqlDialect::Postgres)"
+---
+CREATE TABLE "entry" ("id" BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, "bytes" BYTEA NOT NULL, "ts" BIGINT NOT NULL);
