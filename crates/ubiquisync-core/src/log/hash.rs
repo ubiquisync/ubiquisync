@@ -11,94 +11,77 @@ use crate::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChainHash {
-    seed: Hash256,
-    hash: Hash256,
-    size: u64,
+    pub hash: Hash256,
+    pub size: u64,
 }
 
 #[derive(Error, Debug)]
 pub enum ChainHashError {
     #[error("expected entry {size}, got {idx}")]
     OutOfOrderEntry { size: u64, idx: u64 },
-    #[error("invalid expunge size {expunge_size} at {size}")]
-    InvalidExpunge { size: u64, expunge_size: u64 },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChainSeed(Hash256);
+
 impl ChainHash {
-    pub fn new_seed(log_id: &LogId) -> Self {
-        let mut hasher = new_tagged_hasher(TaggedHashDomain::ChainSeed);
-        hasher.update(&log_id.peer_id.0);
-        hasher.update(&log_id.container_id.0);
-        let seed = hasher.finalize();
+    pub fn empty(seed: &ChainSeed) -> Self {
         Self {
-            seed,
-            hash: seed,
+            hash: seed.0,
             size: 0,
         }
     }
 
-    pub fn from_existing(log_id: &LogId, size: u64, hash: Hash256) -> Self {
-        let mut res = Self::new_seed(log_id);
-        res.size = size;
-        res.hash = hash;
-        res
-    }
-
-    pub fn sign_bytes(&self, log_id: &LogId) -> Hash256 {
-        let mut hasher = new_tagged_hasher(TaggedHashDomain::LogSignBytes);
-        hasher.update(&log_id.peer_id.0);
-        hasher.update(&log_id.container_id.0);
-        hasher.update(&self.size.to_le_bytes());
-        hasher.update(&self.hash);
-        hasher.finalize()
-    }
-
-    fn add_one_entry(&mut self, entry_hash: &Hash256) {
+    fn add_one(&self, entry_hash: &Hash256) -> Self {
         let mut hasher = new_tagged_hasher(TaggedHashDomain::ChainHash);
         hasher.update(&self.hash);
         hasher.update(entry_hash);
-        self.hash = hasher.finalize();
-        self.size += 1;
+        let hash = hasher.finalize();
+        let size = self.size + 1;
+        Self { hash, size }
     }
 
     /// Updates the chain has with the next entry and a possibly already computed hash (from encryption/decryption processing).
-    // TODO: better to have this mut as is or just generate a new result for every entry with a shared seed?
-    pub(crate) fn update(
-        &mut self,
+    pub(crate) fn next(
+        &self,
         entry: &OpaqueLogEntry,
         precomputed_hash: Option<Hash256>,
-    ) -> Result<(), ChainHashError> {
+        seed: &ChainSeed,
+    ) -> Result<ChainHash, ChainHashError> {
         match entry {
             LogEntry::IndexedEntry { idx, entry } => {
                 let size = self.size;
                 if *idx != size {
                     return Err(ChainHashError::OutOfOrderEntry { size, idx: *idx });
                 }
-                let entry_hash = precomputed_hash.unwrap_or_else(|| entry.hash(&self.seed, *idx));
-                self.add_one_entry(&entry_hash);
+                let entry_hash = precomputed_hash.unwrap_or_else(|| entry.hash(seed, *idx));
+                Ok(self.add_one(&entry_hash))
             }
-            LogEntry::Signature { .. } => {
-                // not hashed
-            }
+            LogEntry::Signature { .. } => Ok(*self),
         }
-        Ok(())
     }
 
-    pub fn size(&self) -> u64 {
-        self.size
+    pub fn sign_bytes(&self, seed: &ChainSeed) -> Hash256 {
+        let mut hasher = new_tagged_hasher(TaggedHashDomain::LogSignBytes);
+        hasher.update(&seed.0);
+        hasher.update(&self.size.to_le_bytes());
+        hasher.update(&self.hash);
+        hasher.finalize()
     }
+}
 
-    pub fn hash(&self) -> &Hash256 {
-        &self.hash
-    }
-
-    pub fn seed(&self) -> &Hash256 {
-        &self.seed
+impl ChainSeed {
+    pub fn new(log_id: &LogId) -> Self {
+        let mut hasher = new_tagged_hasher(TaggedHashDomain::ChainSeed);
+        hasher.update(&log_id.peer_id.0);
+        hasher.update(&log_id.container_id.0);
+        let seed = hasher.finalize();
+        Self(seed)
     }
 }
 
 impl<'a> EntryBody<OpaqueBytes<'a>> {
-    pub fn hash(&self, seed: &Hash256, entry_index: u64) -> Hash256 {
+    pub fn hash(&self, seed: &ChainSeed, entry_index: u64) -> Hash256 {
         match self {
             EntryBody::OpBatch(op_batch) => op_batch.hash(seed, entry_index),
             // TODO should we add LogId coordinates to hash_use_key?
@@ -109,8 +92,8 @@ impl<'a> EntryBody<OpaqueBytes<'a>> {
 }
 
 impl<'a> OpBatch<OpaqueBytes<'a>> {
-    pub fn hash(&self, seed: &Hash256, entry_idx: u64) -> Hash256 {
-        let mut hasher = OpBatchHasher::new(*seed, entry_idx, self.ops.len());
+    pub fn hash(&self, seed: &ChainSeed, entry_idx: u64) -> Hash256 {
+        let mut hasher = OpBatchHasher::new(seed, entry_idx, self.ops.len());
         hasher.hash_slot(&self.timestamp);
         if self.server_attested_user_id.0.len() > 0 {
             hasher.hash_slot(&self.server_attested_user_id);
@@ -130,21 +113,21 @@ impl<'a> OpBatch<OpaqueBytes<'a>> {
 pub(crate) struct OpBatchHasher {
     hasher: Hasher,
     entry_idx: u64,
-    seed: Hash256,
+    seed: ChainSeed,
     slot_idx: u64,
 }
 
 impl OpBatchHasher {
-    pub(crate) fn new(seed: Hash256, entry_idx: u64, num_ops: usize) -> Self {
+    pub(crate) fn new(seed: &ChainSeed, entry_idx: u64, num_ops: usize) -> Self {
         let mut hasher = new_tagged_hasher(TaggedHashDomain::LogEntryOpBatch);
-        hasher.update(&seed[..]);
+        hasher.update(&seed.0);
         hasher.update(&entry_idx.to_le_bytes());
         let num_ops = num_ops as u64;
         hasher.update(&num_ops.to_le_bytes());
         Self {
             hasher,
             entry_idx,
-            seed,
+            seed: *seed,
             slot_idx: 0,
         }
     }
@@ -156,7 +139,7 @@ impl OpBatchHasher {
 
     pub(crate) fn hash_slot(&mut self, bytes: &OpaqueBytes) -> Hash256 {
         let mut slot_hasher = new_tagged_hasher(TaggedHashDomain::OpBatchSlot);
-        slot_hasher.update(&self.seed);
+        slot_hasher.update(&self.seed.0);
         slot_hasher.update(&self.entry_idx.to_le_bytes());
         slot_hasher.update(&self.slot_idx.to_le_bytes());
         slot_hasher.update(bytes.borrow());
