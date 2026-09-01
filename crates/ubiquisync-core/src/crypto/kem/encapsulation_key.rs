@@ -4,12 +4,13 @@ use hpke::{
     kdf::HkdfSha256,
     kem::{Kem, X25519HkdfSha256},
 };
-use secrecy::ExposeSecret;
+use secrecy::{ExposeSecret, SecretBox};
 use thiserror::Error;
 
 use crate::{
     codec::{Reader, Writer},
-    crypto::{CryptoDecodeError, Key256},
+    crypto::CryptoDecodeError,
+    ids::ContainerId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,10 +32,22 @@ pub enum KeyWrap {
     DhP256HkdfSha256ChaCha20Poly1305 { enc: [u8; 33], ciphertext: [u8; 48] },
 }
 
+pub struct ScopedKeyWrap {
+    pub wrap: KeyWrap,
+    pub scope: KeyScope,
+}
+
+pub enum KeyScope {
+    Root,
+    Container(ContainerId),
+}
+
 pub const DOMAIN_KEY_WRAP: &[u8] = b"ubiquisync/v1/key-wrap";
 
 impl EncapsulationKey {
-    pub fn wrap_key(&self, key: &Key256) -> Result<KeyWrap, KemError> {
+    // pub fn wrap_key(&self, key: &SecretBox<[u8; 32]>) -> Result<KeyWrap, KemError> {}
+
+    fn do_wrap_key(&self, key: &SecretBox<[u8; 32]>) -> Result<KeyWrap, KemError> {
         match self {
             EncapsulationKey::X25519(pubkey) => {
                 let pubkey = <X25519HkdfSha256 as Kem>::PublicKey::from_bytes(pubkey)
@@ -44,7 +57,7 @@ impl EncapsulationKey {
                         &hpke::OpModeS::Base,
                         &pubkey,
                         DOMAIN_KEY_WRAP,
-                        key.0.expose_secret(),
+                        key.expose_secret(),
                         &[],
                     )
                     .map_err(|_| KemError)?;

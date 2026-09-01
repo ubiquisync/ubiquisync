@@ -62,6 +62,7 @@ impl ChainHash {
     }
 
     /// Updates the chain has with the next entry and a possibly already computed hash (from encryption/decryption processing).
+    // TODO: better to have this mut as is or just generate a new result for every entry with a shared seed?
     pub(crate) fn update(
         &mut self,
         entry: &OpaqueLogEntry,

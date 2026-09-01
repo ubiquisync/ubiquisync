@@ -1,12 +1,10 @@
-use hkdf::Hkdf;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
-use secrecy::{ExposeSecret, SecretBox};
 use sha2::{Digest, Sha256};
 use strum_macros::{EnumIter, IntoStaticStr};
 
 use crate::{
     codec::{Reader, Writer},
-    crypto::{CryptoDecodeError, Key256, Key256Fingerprint},
+    crypto::CryptoDecodeError,
 };
 
 pub type Hash256 = [u8; 32];
@@ -32,21 +30,6 @@ pub enum TaggedHashDomain {
     LogEntryOpBatch,
     LogEntryUseKey,
     OpBatchSlot,
-}
-
-#[derive(IntoStaticStr, EnumIter, Debug, Clone, Copy, PartialEq, Eq)]
-#[strum(prefix = "ubq/v1/kdf/")]
-pub enum DeriveKeyDomain {
-    /// Used for per-entry opaque encryption which is canonical for hashing.
-    EntryCipher,
-    /// Used when encoding a segment (multiple entries) using a nonce in the segment header.
-    SegmentCipher,
-}
-
-#[derive(IntoStaticStr, EnumIter, Debug, Clone, Copy, PartialEq, Eq)]
-#[strum(prefix = "ubq/v1/fingerprint/")]
-pub enum KeyFingerprintDomain {
-    EncryptionKey,
 }
 
 impl Hash256Suite {
@@ -84,25 +67,6 @@ fn new_tagged_hasher_internal(domain: &str) -> Hasher {
     Hasher(hasher)
 }
 
-pub fn derive_key(domain: DeriveKeyDomain, key: &Key256, info: &[u8]) -> Key256 {
-    Key256(SecretBox::<[u8; 32]>::init_with_mut(|output| {
-        kdf(domain.into(), key, info, output)
-    }))
-}
-
-pub fn key_fingerprint(domain: KeyFingerprintDomain, key: &Key256) -> Key256Fingerprint {
-    let mut output = [0; 32];
-    kdf(domain.into(), key, &[], &mut output);
-    Key256Fingerprint(output)
-}
-
-fn kdf(domain: &str, key: &Key256, info: &[u8], output: &mut [u8; 32]) {
-    let len: u8 = domain_len(domain);
-    let hk = Hkdf::<Sha256>::from_prk(key.0.expose_secret()).expect("32 byte key");
-    hk.expand_multi_info(&[&[len], domain.as_bytes(), info], output)
-        .expect("valid lengths");
-}
-
 fn domain_len(domain: &str) -> u8 {
     domain
         .len()
@@ -123,27 +87,12 @@ impl Hasher {
 #[cfg(test)]
 pub(crate) mod tests {
     use insta::assert_snapshot;
-    use secrecy::{ExposeSecret, SecretBox};
     use std::fmt::Write;
     use strum::IntoEnumIterator;
 
     use crate::crypto::{
-        DeriveKeyDomain, Hash256Suite, Key256, KeyFingerprintDomain, TaggedHashDomain, derive_key,
-        hash::{kdf, tagged_hash_internal},
-        key_fingerprint, new_tagged_hasher, tagged_hash,
+        Hash256Suite, TaggedHashDomain, hash::tagged_hash_internal, new_tagged_hasher, tagged_hash,
     };
-
-    #[test]
-    fn test_kdf_len_prefixed() {
-        let key = Key256(SecretBox::new(Box::new([1; 32])));
-        let mut x = [0; 32];
-        let mut y = [0; 32];
-        kdf("a", &key, b"bc", &mut x);
-        kdf("ab", &key, b"c", &mut y);
-        assert_ne!(x, [0; 32]);
-        assert_ne!(y, [0; 32]);
-        assert_ne!(x, y);
-    }
 
     #[test]
     fn test_tagged_hash_len_prefixed() {
@@ -156,7 +105,6 @@ pub(crate) mod tests {
     fn test_sha256_domain_regression() {
         let suite = Hash256Suite::Sha256;
         let mut out = format!("{suite:?}\n");
-        let key = Key256(SecretBox::new(Box::new([1; 32])));
 
         for domain in TaggedHashDomain::iter() {
             let h = tagged_hash(domain, b"abcdefg");
@@ -171,36 +119,12 @@ pub(crate) mod tests {
             assert_eq!(h, h2);
         }
 
-        for domain in DeriveKeyDomain::iter() {
-            let d: &str = domain.into();
-            let k = derive_key(domain, &key, b"");
-            writeln!(&mut out, "{0} = {1}", d, hex(k.0.expose_secret())).unwrap();
-
-            let k2 = derive_key(domain, &key, b"xyz");
-            writeln!(&mut out, "{0} / xyz = {1}", d, hex(k2.0.expose_secret())).unwrap();
-        }
-
-        for domain in KeyFingerprintDomain::iter() {
-            let f = key_fingerprint(domain, &key);
-            let d: &str = domain.into();
-            writeln!(&mut out, "{0} = {1}", d, hex(&f.0)).unwrap();
-        }
         assert_snapshot!(out)
     }
 
     #[test]
     fn test_domain_lengths() {
         for domain in TaggedHashDomain::iter() {
-            let s: &str = domain.into();
-            assert!(s.len() <= 255);
-        }
-
-        for domain in DeriveKeyDomain::iter() {
-            let s: &str = domain.into();
-            assert!(s.len() <= 255);
-        }
-
-        for domain in KeyFingerprintDomain::iter() {
             let s: &str = domain.into();
             assert!(s.len() <= 255);
         }

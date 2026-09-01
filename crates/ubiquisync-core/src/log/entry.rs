@@ -48,6 +48,7 @@ pub enum LogEntry<Op: std::fmt::Debug, H: std::fmt::Debug> {
     /// Expunging could be abused as a mechanism for censoring data from specific peers.
     /// So generally, expunge must be used with per op-vocabulary rules, and all peers should know
     /// the rules and abide by them.
+    // TODO: without an MMR cover, we can only expunge leaf by leaf
     Expunged { end_size: u64, end_hash: Hash256 },
     /// A signature over the chain hash of indexed entries up to this point.
     ///

@@ -2,7 +2,7 @@ use thiserror::Error;
 
 use crate::{
     bytes::{OpaqueBytes, PlaintextBytes},
-    crypto::{CipherError, EntryCipher, Hash256, Key256Fingerprint},
+    crypto::{CipherError, EntryCipher, Hash256, RootKey256Fingerprint, SlotCipher},
     log::{
         ChainHash, ChainHashError, EntryBody, LogEntry, OpBatchHasher, OpaqueLogEntry,
         PlaintextLogEntry,
@@ -18,7 +18,7 @@ pub enum SegmentCipherError {
     /// mid-segment or to transition from an unencrypted to encrypted segment.
     /// A plaintext segment should be batch encryptable with a single cipher suite.
     #[error("cipher changed to {0:?} mid-segment")]
-    CipherChanged(Key256Fingerprint),
+    CipherChanged(RootKey256Fingerprint),
 
     #[error("chain update error: {0}")]
     ChainHashError(#[from] ChainHashError),
@@ -78,8 +78,8 @@ pub fn segment_to_plaintext<'a: 'b, 'b>(
 }
 
 struct OpBatchHashState {
-    entry_idx: u64,
     hasher: OpBatchHasher,
+    slot_cipher: SlotCipher,
     last_hash: Hash256,
 }
 
@@ -92,18 +92,18 @@ fn to_opaque<'a>(
         let (e2, maybe_hash_state) = entry.transform(
             |entry_idx, op_batch| {
                 Ok(OpBatchHashState {
-                    entry_idx,
                     last_hash: *chain_hash.hash(),
                     hasher: OpBatchHasher::new(*chain_hash.seed(), entry_idx, op_batch.ops.len()),
+                    slot_cipher: cipher.slot_cipher(entry_idx),
                 })
             },
             |header, st| {
-                let header_cipher = cipher.encrypt_header(st.entry_idx, &st.last_hash, header)?;
+                let header_cipher = st.slot_cipher.encrypt_slot(&st.last_hash, header)?;
                 st.last_hash = st.hasher.hash_header(&header_cipher);
                 Ok(header_cipher)
             },
             |op_idx, op, st| {
-                let op_cipher = cipher.encrypt_op(st.entry_idx, op_idx, &st.last_hash, op)?;
+                let op_cipher = st.slot_cipher.encrypt_slot(&st.last_hash, op)?;
                 st.last_hash = st.hasher.hash_op(op_idx, &op_cipher);
                 Ok(op_cipher)
             },
@@ -134,18 +134,18 @@ fn to_plaintext<'a>(
         let (e2, maybe_hash_state) = entry.transform(
             |entry_idx, op_batch| {
                 Ok(OpBatchHashState {
-                    entry_idx,
                     last_hash: *chain_hash.hash(),
                     hasher: OpBatchHasher::new(*chain_hash.seed(), entry_idx, op_batch.ops.len()),
+                    slot_cipher: cipher.slot_cipher(entry_idx),
                 })
             },
             |header_cipher, st| {
-                let header = cipher.decrypt_header(st.entry_idx, &st.last_hash, header_cipher)?;
+                let header = st.slot_cipher.decrypt_slot(&st.last_hash, header_cipher)?;
                 st.last_hash = st.hasher.hash_header(header_cipher);
                 Ok(header)
             },
             |op_idx, op_cipher, st| {
-                let op = cipher.decrypt_op(st.entry_idx, op_idx, &st.last_hash, op_cipher)?;
+                let op = st.slot_cipher.decrypt_slot(&st.last_hash, op_cipher)?;
                 st.last_hash = st.hasher.hash_op(op_idx, op_cipher);
                 Ok(op)
             },
@@ -167,6 +167,7 @@ fn to_plaintext<'a>(
     }
 }
 
+// TODO: we actually should be able to accomodate key changes mid segment
 fn check_use_key<E: std::fmt::Debug, H: std::fmt::Debug>(
     cipher: &Option<EntryCipher>,
     e: &LogEntry<E, H>,
@@ -196,7 +197,7 @@ mod tests {
     use crate::bytes::PlaintextBytes;
     #[cfg(test)]
     use crate::crypto::Hash256;
-    use crate::crypto::{EntryCipher, EntryCipherSuite, Key256};
+    use crate::crypto::{EntryCipher, EntryCipherSuite, RootKey256};
     use crate::ids::LogId;
     use crate::log::cipher::{to_opaque, to_plaintext};
     #[cfg(test)]
@@ -211,8 +212,13 @@ mod tests {
         log_id: LogId,
     ) {
         let cipher = if let Some(key) = key {
-            let key = Key256(SecretBox::new(Box::new(key)));
-            Some(EntryCipher::new(EntryCipherSuite::ChaCha20, key, &log_id))
+            let key = RootKey256::new(SecretBox::new(Box::new(key)));
+            let container_key = key.container_key(&log_id.container_id);
+            Some(EntryCipher::new(
+                EntryCipherSuite::ChaCha20,
+                container_key,
+                &log_id,
+            ))
         } else {
             None
         };
@@ -242,8 +248,9 @@ mod tests {
         let mut start_idx = entries.start_index;
         let mut entries = entries.entries;
         let cipher = if let Some(key) = key {
-            let key = Key256(SecretBox::new(Box::new(key)));
-            let cipher = EntryCipher::new(EntryCipherSuite::ChaCha20, key, &log_id);
+            let key = RootKey256::new(SecretBox::new(Box::new(key)));
+            let container_key = key.container_key(&log_id.container_id);
+            let cipher = EntryCipher::new(EntryCipherSuite::ChaCha20, container_key, &log_id);
             if start_idx > 0 {
                 // if we're not at the very start, inject a UseKey entry at the beginning with our cipher to test this case
                 // random UseKey entries in other places are not valid
