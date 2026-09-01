@@ -37,11 +37,13 @@ use crate::log::ChainHash;
 ///    peer can realistically reuse a sub-key is in the first header of a fork.
 ///    As long as the timestamp of the header is different from the timestamp at that
 ///    entry before the fork, the sub-key used for the actual entry body will be distinct
-///    because it is derived from the encrypted hash of that header.
+///    because it is derived from the hash of encrypted header slots.
 ///    Only a rare clock issue could cause the header bytes to be identical
 ///    or intentional misuse.
 /// 3. For blind relays which can't compress entries, tag overhead (32-48 bytes/entry because of per-slot encryption)
 ///    is relatively large compared to many realistic entry payloads (ex. keystroke edits).
+///
+/// See [crate::log::OpBatch] for additional details on how this works.
 #[repr(u8)]
 #[derive(IntoPrimitive, TryFromPrimitive, Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]
