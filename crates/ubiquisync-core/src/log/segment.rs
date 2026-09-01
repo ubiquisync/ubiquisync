@@ -7,14 +7,10 @@ use crate::{
     bytes::{BytesWrapper, PlaintextBytes, ToStatic},
     codec::{ReadError, Reader, WriteError, Writer},
     crypto::{CipherError, CipherInfo, CryptoDecodeError, Hash256, SegmentCipher, Signature},
-    log::{ChainHash, LogDecodeError, LogEncodeError, LogEntry, OpaqueLogEntry, PlaintextLogEntry},
+    log::{LogDecodeError, LogEncodeError, LogEntry, OpaqueLogEntry, PlaintextLogEntry},
 };
 
-pub struct SegmentDescriptor {
-    pub start: u64,
-    pub root_info: ChainHash,
-}
-
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SegmentHeader {
     pub range: Range<u64>,
     pub signature: Signature,
@@ -22,16 +18,19 @@ pub struct SegmentHeader {
     pub encoding: SegmentEncoding,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SegmentEncoding {
     Opaque,
     Plaintext(PlaintextSegmentEncoding),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaintextSegmentEncoding {
     pub outer_encryption: Option<EncryptionInfo>,
     pub inner_compression: Compression,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncryptionInfo {
     pub cipher: CipherInfo,
     pub nonce: [u8; 16],
@@ -106,7 +105,7 @@ pub fn encode_segment_opaque<'a>(
     range: &Range<u64>,
     signature: &Signature,
     prev_chain_hash: &Hash256,
-    entries: impl Iterator<Item = OpaqueLogEntry<'a>>,
+    entries: impl Iterator<Item = &'a OpaqueLogEntry<'a>>,
 ) -> Result<Vec<u8>, SegmentEncodeError> {
     let mut w = Writer::new();
     let header = SegmentHeader {
@@ -131,7 +130,7 @@ pub fn encode_segment_plaintext<'a>(
     signature: &Signature,
     prev_chain_hash: &Hash256,
     cipher: &Option<SegmentCipher>,
-    entries: impl Iterator<Item = PlaintextLogEntry<'a>>,
+    entries: impl Iterator<Item = &'a PlaintextLogEntry<'a>>,
 ) -> Result<Vec<u8>, SegmentEncodeError> {
     let mut w = Writer::new();
     let (outer_encryption, nonce) = if let Some(cipher) = cipher {
@@ -189,30 +188,32 @@ where
         } else {
             let e = LogEntry::decode(&mut reader, next_entry_index);
             if let Ok(ref e) = e
-                && let Some(idx) = e.next_entry_index()
+                && let Some(idx) = e.entry_index()
             {
-                next_entry_index = idx;
+                next_entry_index = idx + 1;
             }
             Some(e)
         }
     })
 }
 
-pub fn encode_entries<E>(
-    entries: impl Iterator<Item = LogEntry<E>>,
+pub fn encode_entries<'a, E>(
+    entries: impl Iterator<Item = &'a LogEntry<E>>,
     writer: &mut Writer,
 ) -> Result<Range<u64>, LogEncodeError>
 where
-    E: BytesWrapper,
+    E: BytesWrapper + 'a,
 {
+    let mut have_start = false;
     let mut start = 0;
     let mut end = 0;
     for e in entries {
-        if let Some(idx) = e.next_entry_index() {
-            if start == 0 && idx > 0 {
-                start = idx - 1;
+        if let Some(idx) = e.entry_index() {
+            if !have_start {
+                start = idx;
+                have_start = true;
             }
-            end = idx;
+            end = idx + 1;
         }
         e.encode(writer)?;
     }
@@ -264,7 +265,7 @@ pub enum SegmentDecodeError {
 fn encode_compress_encrypt_entries<'a>(
     segment_cipher: &SegmentCipher,
     nonce: &[u8; 16],
-    entries: impl Iterator<Item = PlaintextLogEntry<'a>>,
+    entries: impl Iterator<Item = &'a PlaintextLogEntry<'a>>,
 ) -> Result<(Vec<u8>, Range<u64>), SegmentEncodeError> {
     let (mut inout, range) = encode_compress_entries(entries)?;
     segment_cipher.encrypt_segment(&range, nonce, &mut inout)?;
@@ -272,7 +273,7 @@ fn encode_compress_encrypt_entries<'a>(
 }
 
 fn encode_compress_entries<'a>(
-    entries: impl Iterator<Item = PlaintextLogEntry<'a>>,
+    entries: impl Iterator<Item = &'a PlaintextLogEntry<'a>>,
 ) -> Result<(Vec<u8>, Range<u64>), SegmentEncodeError> {
     let mut w = Writer::new();
     let r = encode_entries(entries, &mut w)?;
@@ -401,15 +402,44 @@ impl SegmentDecodeError {
 const SEGMENT_ENCODING_OPAQUE: u8 = 0;
 const SEGMENT_ENCODING_PLAINTEXT: u8 = 1;
 
+/// Computes the index range of the segment. Returns 0..0 if the segment has no indexed entries.
+pub fn compute_segment_range<'a, B: std::fmt::Debug + 'a>(
+    entries: impl Iterator<Item = &'a LogEntry<B>>,
+) -> Range<u64> {
+    let mut have_start = false;
+    let mut start = 0;
+    let mut end = 0;
+    for entry in entries {
+        if let Some(idx) = entry.entry_index() {
+            if !have_start {
+                start = idx;
+                have_start = true;
+            }
+            end = idx + 1;
+        }
+    }
+    start..end
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use proptest::strategy::{BoxedStrategy, Strategy};
-    use test_strategy::Arbitrary;
+    use test_strategy::{Arbitrary, proptest};
 
+    #[cfg(test)]
+    use crate::log::segment::SegmentReader;
     use crate::{
         bytes::PlaintextBytes,
         crypto::Signature,
-        log::{EntryBody, LogEntry, OpBatch, PlaintextLogEntry},
+        ids::LogId,
+        log::{
+            ChainHash, EntryBody, LogEntry, OpBatch, PlaintextLogEntry,
+            segment::{
+                SegmentEncoding, compute_segment_range, encode_segment_opaque,
+                encode_segment_plaintext,
+            },
+            segment_to_opaque,
+        },
     };
 
     #[derive(Debug)]
@@ -460,6 +490,60 @@ pub(crate) mod tests {
                     signature,
                 },
             })
+        }
+    }
+
+    #[proptest(cases = 10)]
+    fn test_segments_no_cipher(entries: LogEntries, log_id: LogId) {
+        let range = compute_segment_range(entries.entries.iter());
+        assert_eq!(range.start, entries.start_index);
+        let mut chain_hash = ChainHash::from_existing(&log_id, range.start, [3; 32]);
+        let sig = Signature::Ed25519([2; 64]);
+
+        // test opaque encoding
+        {
+            let opaque = segment_to_opaque(&None, entries.entries.iter(), &mut chain_hash)
+                .map(|r| r.unwrap())
+                .collect::<Vec<_>>();
+            let segment =
+                encode_segment_opaque(&range, &sig, chain_hash.seed(), opaque.iter()).unwrap();
+            let reader = SegmentReader::start(&segment).unwrap();
+            let header = reader.header();
+            assert_eq!(sig, header.signature);
+            assert_eq!(range, header.range);
+            assert_eq!(*chain_hash.seed(), header.prev_chain_hash);
+            assert_eq!(header.encoding, SegmentEncoding::Opaque);
+            let decoded = reader.read(&None).unwrap();
+            match decoded {
+                crate::log::segment::DecodedSegment::Opaque(items) => {
+                    assert_eq!(opaque, items);
+                }
+                crate::log::segment::DecodedSegment::Plaintext(_) => unreachable!(),
+            }
+        }
+
+        // test plaintext encoding (basically just compression)
+        {
+            let segment = encode_segment_plaintext(
+                &range,
+                &sig,
+                chain_hash.seed(),
+                &None,
+                entries.entries.iter(),
+            )
+            .unwrap();
+            let reader = SegmentReader::start(&segment).unwrap();
+            let header = reader.header();
+            assert_eq!(sig, header.signature);
+            assert_eq!(range, header.range);
+            assert_eq!(*chain_hash.seed(), header.prev_chain_hash);
+            let decoded = reader.read(&None).unwrap();
+            match decoded {
+                crate::log::segment::DecodedSegment::Plaintext(items) => {
+                    assert_eq!(entries.entries, items);
+                }
+                crate::log::segment::DecodedSegment::Opaque(_) => unreachable!(),
+            }
         }
     }
 }

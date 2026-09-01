@@ -138,10 +138,10 @@ impl<B: alloc::fmt::Debug> LogEntry<B> {
         })
     }
 
-    pub(crate) fn next_entry_index(&self) -> Option<u64> {
+    pub(crate) fn entry_index(&self) -> Option<u64> {
         match self {
-            LogEntry::IndexedEntry { idx, .. } => Some(*idx + 1),
-            LogEntry::Signature { size, .. } => Some(*size),
+            LogEntry::IndexedEntry { idx, .. } => Some(*idx),
+            _ => None,
         }
     }
 
