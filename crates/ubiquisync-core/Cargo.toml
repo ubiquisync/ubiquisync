@@ -8,11 +8,9 @@ repository.workspace = true
 
 [dependencies]
 async-trait = { workspace = true }
-blake3 = { workspace = true }
 futures-channel = { workspace = true }
 futures-core = { workspace = true }
 thiserror = { workspace = true }
-aes-gcm-siv = { workspace = true }
 num_enum = { workspace = true }
 ed25519-dalek = { workspace = true }
 p256 = { workspace = true }
@@ -24,10 +22,14 @@ x25519-dalek = { workspace = true }
 bitfield-struct = { workspace = true }
 sha2 = { workspace = true }
 hkdf = { workspace = true }
+hmac = { workspace = true }
 strum = { workspace = true }
 strum_macros = { workspace = true }
 async-recursion = { workspace = true }
 zstd = { workspace = true }
+chacha20 = { workspace = true }
+chacha20poly1305 = { workspace = true }
+crypto-common = { workspace = true }
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 security-framework =  { workspace = true }
@@ -39,8 +41,12 @@ futures-test = { workspace = true }
 proptest = { workspace = true }
 test-strategy = { workspace = true }
 test-case = { workspace = true }
-crypto-common = { workspace = true }
 insta = { workspace = true }
+divan = { workspace = true }
 
 [lints]
 workspace = true
+
+[[bench]]
+name = "bench"
+harness = false

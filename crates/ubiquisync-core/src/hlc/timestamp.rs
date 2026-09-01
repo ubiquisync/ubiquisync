@@ -7,6 +7,7 @@
 /// `LogEntry.timestamp` value. Plain numeric comparison on the raw u64
 /// preserves causal order (wall dominates, counter tie-breaks).
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
+#[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub struct Timestamp {
     data: u64,
 }
