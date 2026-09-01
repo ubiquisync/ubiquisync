@@ -40,7 +40,7 @@ use crate::log::ChainHash;
 ///    because it is derived from the encrypted hash of that header.
 ///    Only a rare clock issue could cause the header bytes to be identical
 ///    or intentional misuse.
-/// 3. For blind relays which can't compress entries, tag overhead (32 bytes/entry)
+/// 3. For blind relays which can't compress entries, tag overhead (32-48 bytes/entry because of per-slot encryption)
 ///    is relatively large compared to many realistic entry payloads (ex. keystroke edits).
 #[repr(u8)]
 #[derive(IntoPrimitive, TryFromPrimitive, Clone, Copy, PartialEq, Eq, Debug)]

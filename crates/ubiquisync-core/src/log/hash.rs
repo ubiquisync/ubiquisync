@@ -17,8 +17,8 @@ pub struct ChainHash {
 }
 
 #[derive(Error, Debug)]
-#[error("chain hash error")]
 pub enum ChainHashError {
+    #[error("chain size overflowed u64")]
     SizeOverflow,
 }
 
