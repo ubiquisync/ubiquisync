@@ -1,44 +1,54 @@
 use crate::{
-    bytes::ToStatic,
+    bytes::{BytesWrapper, ToStatic},
     crypto::Hash256,
     log::{EntryBody, LogEntry, OpBatch, OpOrExpunge},
 };
 
-impl<O: std::fmt::Debug, H: std::fmt::Debug> OpBatch<O, H> {
+impl<X: BytesWrapper> OpBatch<X> {
     /// Transforms an OpBatch based on the provided transformer functions.
     /// This is useful for encoding/decoding while also performing hashing.
     /// See [LogEntry::transform] for argument descriptions.
-    pub fn transform<O2: std::fmt::Debug, H2: std::fmt::Debug, A, B, C, D, S, E>(
+    pub fn transform<X2: BytesWrapper, A, B, C, S, Err>(
         &self,
         entry_idx: u64,
         init_state: A,
-        transform_header: B,
-        transform_op: C,
-        on_expunge_op: D,
-    ) -> Result<(OpBatch<O2, H2>, S), E>
+        transform_slot: B,
+        on_expunge_op: C,
+    ) -> Result<(OpBatch<X2>, S), Err>
     where
-        A: Fn(u64, &OpBatch<O, H>) -> Result<S, E>,
-        B: Fn(&H, &mut S) -> Result<H2, E>,
-        C: Fn(u64, &O, &mut S) -> Result<O2, E>,
-        D: Fn(u64, &Hash256, &mut S) -> Result<(), E>,
+        A: Fn(u64, &OpBatch<X>) -> Result<S, Err>,
+        B: Fn(&X, &mut S) -> Result<X2, Err>,
+        C: Fn(&Hash256, &mut S) -> Result<(), Err>,
     {
         let mut state = init_state(entry_idx, self)?;
-        let header = transform_header(&self.header, &mut state)?;
+        let timestamp = transform_slot(&self.timestamp, &mut state)?;
+        let server_attested_user_id = if !self.server_attested_user_id.is_empty() {
+            transform_slot(&self.server_attested_user_id, &mut state)?
+        } else {
+            Default::default()
+        };
         let mut ops = vec![];
-        for (idx, op) in self.ops.iter().enumerate() {
+        for op in self.ops.iter() {
             ops.push(match op {
-                OpOrExpunge::Op(op) => OpOrExpunge::Op(transform_op(idx as u64, op, &mut state)?),
+                OpOrExpunge::Op(op) => OpOrExpunge::Op(transform_slot(op, &mut state)?),
                 OpOrExpunge::Expunge(hash) => {
-                    on_expunge_op(idx as u64, hash, &mut state)?;
+                    on_expunge_op(hash, &mut state)?;
                     OpOrExpunge::Expunge(*hash)
                 }
             })
         }
-        Ok((OpBatch { header, ops }, state))
+        Ok((
+            OpBatch {
+                timestamp,
+                server_attested_user_id,
+                ops,
+            },
+            state,
+        ))
     }
 }
 
-impl<O: std::fmt::Debug, H: std::fmt::Debug> LogEntry<O, H> {
+impl<X: BytesWrapper> LogEntry<X> {
     /// Transforms an Entry based on the provided transformer functions.
     /// This is useful for encoding/decoding while also performing hashing.
     /// `init_state` is called at the start and its state is threaded through the remaining functions.
@@ -47,29 +57,22 @@ impl<O: std::fmt::Debug, H: std::fmt::Debug> LogEntry<O, H> {
     /// `transform_op` is called when an op is transformed with the op index, op, and mutable state.
     /// It must return a transformed op.
     /// `on_expunge_op` is called when an op-level expunge is encountered with the op index, hash and mutable state.
-    pub fn transform<O2: std::fmt::Debug, H2: std::fmt::Debug, A, B, C, D, S, E>(
+    pub fn transform<X2: BytesWrapper, A, B, C, S, Err>(
         &self,
         init_state: A,
-        transform_header: B,
-        transform_op: C,
-        on_expunge_op: D,
-    ) -> Result<(LogEntry<O2, H2>, Option<S>), E>
+        transform_slot: B,
+        on_expunge_op: C,
+    ) -> Result<(LogEntry<X2>, Option<S>), Err>
     where
-        A: Fn(u64, &OpBatch<O, H>) -> Result<S, E>,
-        B: Fn(&H, &mut S) -> Result<H2, E>,
-        C: Fn(u64, &O, &mut S) -> Result<O2, E>,
-        D: Fn(u64, &Hash256, &mut S) -> Result<(), E>,
+        A: Fn(u64, &OpBatch<X>) -> Result<S, Err>,
+        B: Fn(&X, &mut S) -> Result<X2, Err>,
+        C: Fn(&Hash256, &mut S) -> Result<(), Err>,
     {
         Ok(match self {
             LogEntry::IndexedEntry { idx, entry } => match entry {
                 EntryBody::OpBatch(op_batch) => {
-                    let (op_batch2, state) = op_batch.transform(
-                        *idx,
-                        init_state,
-                        transform_header,
-                        transform_op,
-                        on_expunge_op,
-                    )?;
+                    let (op_batch2, state) =
+                        op_batch.transform(*idx, init_state, transform_slot, on_expunge_op)?;
                     (
                         LogEntry::IndexedEntry {
                             entry: EntryBody::OpBatch(op_batch2),
@@ -85,14 +88,14 @@ impl<O: std::fmt::Debug, H: std::fmt::Debug> LogEntry<O, H> {
                     },
                     None,
                 ),
+                EntryBody::Expunged(hash) => (
+                    LogEntry::IndexedEntry {
+                        entry: EntryBody::Expunged(*hash),
+                        idx: *idx,
+                    },
+                    None,
+                ),
             },
-            LogEntry::Expunged { end_size, end_hash } => (
-                LogEntry::Expunged {
-                    end_size: *end_size,
-                    end_hash: *end_hash,
-                },
-                None,
-            ),
             LogEntry::Signature { size, signature } => (
                 LogEntry::Signature {
                     size: *size,
@@ -104,12 +107,11 @@ impl<O: std::fmt::Debug, H: std::fmt::Debug> LogEntry<O, H> {
     }
 }
 
-impl<O: ToStatic + std::fmt::Debug, H: ToStatic + std::fmt::Debug> ToStatic for OpBatch<O, H>
+impl<B: ToStatic + std::fmt::Debug> ToStatic for OpBatch<B>
 where
-    O::Static: std::fmt::Debug,
-    H::Static: std::fmt::Debug,
+    B::Static: std::fmt::Debug,
 {
-    type Static = OpBatch<O::Static, H::Static>;
+    type Static = OpBatch<B::Static>;
 
     fn to_static(self) -> Self::Static {
         let mut ops = vec![];
@@ -120,18 +122,18 @@ where
             });
         }
         OpBatch {
-            header: self.header.to_static(),
+            timestamp: self.timestamp.to_static(),
+            server_attested_user_id: self.server_attested_user_id.to_static(),
             ops,
         }
     }
 }
 
-impl<O: ToStatic + std::fmt::Debug, H: ToStatic + std::fmt::Debug> ToStatic for LogEntry<O, H>
+impl<B: ToStatic + std::fmt::Debug> ToStatic for LogEntry<B>
 where
-    O::Static: std::fmt::Debug,
-    H::Static: std::fmt::Debug,
+    B::Static: std::fmt::Debug,
 {
-    type Static = LogEntry<O::Static, H::Static>;
+    type Static = LogEntry<B::Static>;
 
     fn to_static(self) -> Self::Static {
         match self {
@@ -140,10 +142,9 @@ where
                 entry: match entry {
                     EntryBody::OpBatch(op_batch) => EntryBody::OpBatch(op_batch.to_static()),
                     EntryBody::UseKey(cipher_info) => EntryBody::UseKey(cipher_info),
+                    EntryBody::Expunged(hash) => EntryBody::Expunged(hash),
                 },
             },
-            LogEntry::Expunged { end_size, end_hash } => LogEntry::Expunged { end_size, end_hash },
-
             LogEntry::Signature { size, signature } => LogEntry::Signature { size, signature },
         }
     }

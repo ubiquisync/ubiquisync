@@ -38,13 +38,11 @@ use crate::{
 /// prevent honest writers from leaking cipher edge cases.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]
-pub struct OpBatch<Op: alloc::fmt::Debug, H: alloc::fmt::Debug> {
-    /// The header, always semantically [OpHeader], but we
-    /// usually include the plaintext or opaque bytes here when verifying hashes and signatures,
-    /// and converting to/from ciphertext.
-    pub header: H,
+pub struct OpBatch<B: alloc::fmt::Debug> {
+    pub timestamp: B,
+    pub server_attested_user_id: B,
     /// The operations in the batch, usually only 1.
-    pub ops: Vec<OpOrExpunge<Op>>,
+    pub ops: Vec<OpOrExpunge<B>>,
 }
 
 /// Represents an operation or that operation's hash in the case it has been expunged on a per-slot basis.
@@ -61,13 +59,13 @@ pub enum OpOrExpunge<Op> {
     Expunge(Hash256),
 }
 
-impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> OpBatch<B, H> {
+impl<B: alloc::fmt::Debug> OpBatch<B> {
     pub fn encode(&self, writer: &mut Writer) -> Result<(), LogEncodeError>
     where
         B: Borrow<[u8]>,
-        H: Borrow<[u8]>,
     {
-        writer.write_len_prefixed(self.header.borrow());
+        writer.write_len_prefixed(self.timestamp.borrow());
+        writer.write_len_prefixed(self.server_attested_user_id.borrow());
         writer.write_var_usize(self.ops.len());
         for o in self.ops.iter() {
             o.encode(writer)?
@@ -78,9 +76,9 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> OpBatch<B, H> {
     pub fn decode<'a>(reader: &mut Reader<'a>) -> Result<Self, ReadError>
     where
         B: From<&'a [u8]>,
-        H: From<&'a [u8]>,
     {
-        let header: H = reader.read_len_prefixed()?.into();
+        let timestamp = reader.read_len_prefixed()?.into();
+        let server_attested_user_id = reader.read_len_prefixed()?.into();
         let n = reader.read_var_usize()?;
         // NOTE: we intentionally DO NOT reserve size in the vec to prevent out-of-memory attacks!
         let mut ops = vec![];
@@ -88,7 +86,11 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> OpBatch<B, H> {
             let op = OpOrExpunge::decode(reader)?;
             ops.push(op);
         }
-        Ok(Self { header, ops })
+        Ok(Self {
+            timestamp,
+            server_attested_user_id,
+            ops,
+        })
     }
 }
 
@@ -144,14 +146,14 @@ mod tests {
     };
 
     #[proptest]
-    fn test_roundtrip(op_batch: OpBatch<OpaqueBytes<'static>, OpaqueBytes<'static>>) {
+    fn test_roundtrip(op_batch: OpBatch<OpaqueBytes<'static>>) {
         // TODO we only test for opaque and that should be equivalent to plaintext otherwise,
         // but if we wanted we could use a macro to duplicate - the generic lifetimes make it really hard with just generics
         let mut w = Writer::new();
         op_batch.encode(&mut w).unwrap();
         let res = w.finalize();
         let mut r = Reader::new(&res);
-        let decoded = OpBatch::<OpaqueBytes, OpaqueBytes>::decode(&mut r).unwrap();
+        let decoded = OpBatch::<OpaqueBytes>::decode(&mut r).unwrap();
         assert_eq!(op_batch, decoded);
     }
 

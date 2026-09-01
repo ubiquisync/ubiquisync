@@ -10,14 +10,39 @@ use crate::{
 /// Represents a single entry in a stream of logs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]
-pub enum LogEntry<Op: std::fmt::Debug, H: std::fmt::Debug> {
+pub enum LogEntry<B: std::fmt::Debug> {
     /// Represents an indexed entry which contributes to the chain hash.
     ///
     /// Note that the `idx` parameter is computed and not decoded from the stream.
     /// It is included in the type to ensure consumers are processing the correct index.
-    IndexedEntry { idx: u64, entry: EntryBody<Op, H> },
-    /// Expunges a range of indexed entries and tells the verifier to advance the end chain size and hash
-    /// immediately to the provided values
+    IndexedEntry { idx: u64, entry: EntryBody<B> },
+    /// A signature over the chain hash of indexed entries up to this point.
+    ///
+    /// The size parameter is not encoded on the wire, but rather inferred from prior entry indexes.
+    Signature { size: u64, signature: Signature },
+    // TODO we could consider adding some explicit forward-compatible support for unknown entries
+    // where if an entry type byte has specific flags set we can hash and encrypt it and verify
+    // signatures on top of it without actually being able to process it.
+    // Should get addressed pre-v1.
+}
+
+/// Log entry where op and header are encoded as canonical hash bytes (may be encrypted)
+pub type OpaqueLogEntry<'a> = LogEntry<OpaqueBytes<'a>>;
+
+pub type PlaintextLogEntry<'a> = LogEntry<PlaintextBytes<'a>>;
+
+/// The content of signed and indexed log entries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(test, derive(test_strategy::Arbitrary))]
+pub enum EntryBody<B: std::fmt::Debug> {
+    /// An operation batch in the app's op vocabulary.
+    OpBatch(OpBatch<B>),
+    /// Declares the fingerprint for the encryption key being used from
+    /// this point forward until the next UseKey op changes the key.
+    ///
+    /// MUST NOT be expunged.
+    UseKey(CipherInfo),
+    /// Expunges a single entry.
     ///
     /// Expunging entries SHOULD be used extremely rarely as a last line of defense.
     /// It is included primarily to ensure there is a exit hatch for deleting just one thing
@@ -48,45 +73,13 @@ pub enum LogEntry<Op: std::fmt::Debug, H: std::fmt::Debug> {
     /// Expunging could be abused as a mechanism for censoring data from specific peers.
     /// So generally, expunge must be used with per op-vocabulary rules, and all peers should know
     /// the rules and abide by them.
-    // TODO: without an MMR cover, we can only expunge leaf by leaf
-    Expunged { end_size: u64, end_hash: Hash256 },
-    /// A signature over the chain hash of indexed entries up to this point.
-    ///
-    /// The size parameter is not encoded on the wire, but rather inferred from prior entry indexes.
-    Signature { size: u64, signature: Signature },
-    // TODO we could consider adding some explicit forward-compatible support for unknown entries
-    // where if an entry type byte has specific flags set we can hash and encrypt it and verify
-    // signatures on top of it without actually being able to process it.
-    // Should get addressed pre-v1.
+    Expunged(Hash256),
 }
 
-/// Log entry where op and header are encoded as canonical hash bytes (may be encrypted)
-pub type OpaqueLogEntry<'a> = LogEntry<OpaqueBytes<'a>, OpaqueBytes<'a>>;
-
-pub type OpaqueOpBatch<'a> = OpBatch<OpaqueBytes<'a>, OpaqueBytes<'a>>;
-
-pub type PlaintextLogEntry<'a> = LogEntry<PlaintextBytes<'a>, PlaintextBytes<'a>>;
-
-pub type PlaintextOpBatch<'a> = OpBatch<PlaintextBytes<'a>, PlaintextBytes<'a>>;
-
-/// The content of signed and indexed log entries.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(test, derive(test_strategy::Arbitrary))]
-pub enum EntryBody<Op: std::fmt::Debug, H: std::fmt::Debug> {
-    /// An operation batch in the app's op vocabulary.
-    OpBatch(OpBatch<Op, H>),
-    /// Declares the fingerprint for the encryption key being used from
-    /// this point forward until the next UseKey op changes the key.
-    ///
-    /// MUST NOT be expunged.
-    UseKey(CipherInfo),
-}
-
-impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> LogEntry<B, H> {
+impl<B: alloc::fmt::Debug> LogEntry<B> {
     pub fn encode(&self, writer: &mut Writer) -> Result<(), LogEncodeError>
     where
         B: Borrow<[u8]>,
-        H: Borrow<[u8]>,
     {
         match self {
             LogEntry::IndexedEntry { idx: _, entry } => match entry {
@@ -98,12 +91,11 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> LogEntry<B, H> {
                     writer.write_byte(ENTRY_TYPE_USE_KEY);
                     cipher_info.encode(writer);
                 }
+                EntryBody::Expunged(hash) => {
+                    writer.write_byte(ENTRY_TYPE_EXPUNGED);
+                    writer.write_array(hash);
+                }
             },
-            LogEntry::Expunged { end_size, end_hash } => {
-                writer.write_byte(ENTRY_TYPE_EXPUNGED);
-                writer.write_var_u64(*end_size);
-                writer.write_array(end_hash);
-            }
             LogEntry::Signature { size: _, signature } => {
                 // NOTE: size is inferred by the last entry, it's the callers responsibility to verify before encoding
                 writer.write_byte(ENTRY_TYPE_SIGNATURE);
@@ -119,7 +111,6 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> LogEntry<B, H> {
     ) -> Result<Self, LogDecodeError>
     where
         B: From<&'a [u8]>,
-        H: From<&'a [u8]>,
     {
         let entry_type = reader.read_byte()?;
         Ok(match entry_type {
@@ -137,11 +128,10 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> LogEntry<B, H> {
                 idx: next_entry_index,
                 entry: EntryBody::UseKey(CipherInfo::decode(reader)?),
             },
-            ENTRY_TYPE_EXPUNGED => {
-                let end_size = reader.read_var_u64()?;
-                let end_hash = reader.read_array()?;
-                Self::Expunged { end_size, end_hash }
-            }
+            ENTRY_TYPE_EXPUNGED => Self::IndexedEntry {
+                idx: next_entry_index,
+                entry: EntryBody::Expunged(reader.read_array()?),
+            },
             unknown => {
                 return Err(LogDecodeError::UndecodableEntryType(unknown));
             }
@@ -151,7 +141,6 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> LogEntry<B, H> {
     pub(crate) fn next_entry_index(&self) -> Option<u64> {
         match self {
             LogEntry::IndexedEntry { idx, .. } => Some(*idx + 1),
-            LogEntry::Expunged { end_size, .. } => Some(*end_size),
             LogEntry::Signature { size, .. } => Some(*size),
         }
     }
@@ -161,7 +150,6 @@ impl<B: alloc::fmt::Debug, H: alloc::fmt::Debug> LogEntry<B, H> {
     fn end_index(&self) -> Option<u64> {
         match self {
             LogEntry::IndexedEntry { idx, .. } => Some(*idx),
-            LogEntry::Expunged { end_size, .. } => Some(*end_size),
             LogEntry::Signature { size, .. } => Some(*size),
         }
     }
@@ -184,7 +172,7 @@ mod tests {
     };
 
     #[proptest]
-    fn test_round_trip(entry: LogEntry<OpaqueBytes<'static>, OpaqueBytes<'static>>) {
+    fn test_round_trip(entry: LogEntry<OpaqueBytes<'static>>) {
         let mut w = Writer::new();
         entry.encode(&mut w).unwrap();
         let res = w.finalize();

@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 use crate::{
-    bytes::{OpaqueBytes, PlaintextBytes},
+    bytes::{BytesWrapper, OpaqueBytes, PlaintextBytes},
     crypto::{CipherError, EntryCipher, Hash256, RootKey256Fingerprint, SlotCipher},
     log::{
         ChainHash, ChainHashError, EntryBody, LogEntry, OpBatchHasher, OpaqueLogEntry,
@@ -97,19 +97,14 @@ fn to_opaque<'a>(
                     slot_cipher: cipher.slot_cipher(entry_idx),
                 })
             },
-            |header, st| {
-                let header_cipher = st.slot_cipher.encrypt_slot(&st.last_hash, header)?;
-                st.last_hash = st.hasher.hash_header(&header_cipher);
-                Ok(header_cipher)
+            |slot, st| {
+                let slot_cipher = st.slot_cipher.encrypt_slot(&st.last_hash, slot)?;
+                st.last_hash = st.hasher.hash_slot(&slot_cipher);
+                Ok(slot_cipher)
             },
-            |op_idx, op, st| {
-                let op_cipher = st.slot_cipher.encrypt_slot(&st.last_hash, op)?;
-                st.last_hash = st.hasher.hash_op(op_idx, &op_cipher);
-                Ok(op_cipher)
-            },
-            |op_idx, expunge_hash, st| {
+            |expunge_hash, st| {
                 st.last_hash = *expunge_hash;
-                st.hasher.hash_expunge(op_idx, expunge_hash);
+                st.hasher.hash_expunge(expunge_hash);
                 Ok(())
             },
         )?;
@@ -117,9 +112,8 @@ fn to_opaque<'a>(
     } else {
         let (e2, _) = entry.transform(
             |_, _| Ok(()),
-            |h, _| Ok(OpaqueBytes(h.0.clone())),
-            |_, op, _| Ok(OpaqueBytes(op.0.clone())),
-            |_, _, _| Ok(()),
+            |s, _| Ok(OpaqueBytes(s.0.clone())),
+            |_, _| Ok(()),
         )?;
         Ok((e2, None))
     }
@@ -139,19 +133,14 @@ fn to_plaintext<'a>(
                     slot_cipher: cipher.slot_cipher(entry_idx),
                 })
             },
-            |header_cipher, st| {
-                let header = st.slot_cipher.decrypt_slot(&st.last_hash, header_cipher)?;
-                st.last_hash = st.hasher.hash_header(header_cipher);
-                Ok(header)
-            },
-            |op_idx, op_cipher, st| {
-                let op = st.slot_cipher.decrypt_slot(&st.last_hash, op_cipher)?;
-                st.last_hash = st.hasher.hash_op(op_idx, op_cipher);
+            |slot_cipher, st| {
+                let op = st.slot_cipher.decrypt_slot(&st.last_hash, slot_cipher)?;
+                st.last_hash = st.hasher.hash_slot(slot_cipher);
                 Ok(op)
             },
-            |op_idx, expunge_hash, st| {
+            |expunge_hash, st| {
                 st.last_hash = *expunge_hash;
-                st.hasher.hash_expunge(op_idx, expunge_hash);
+                st.hasher.hash_expunge(expunge_hash);
                 Ok(())
             },
         )?;
@@ -159,18 +148,17 @@ fn to_plaintext<'a>(
     } else {
         let (e2, _) = entry.transform(
             |_, _| Ok(()),
-            |h, _| Ok(PlaintextBytes(h.0.clone())),
-            |_, op, _| Ok(PlaintextBytes(op.0.clone())),
-            |_, _, _| Ok(()),
+            |s, _| Ok(PlaintextBytes(s.0.clone())),
+            |_, _| Ok(()),
         )?;
         Ok((e2, None))
     }
 }
 
 // TODO: we actually should be able to accomodate key changes mid segment
-fn check_use_key<E: std::fmt::Debug, H: std::fmt::Debug>(
+fn check_use_key<E: BytesWrapper>(
     cipher: &Option<EntryCipher>,
-    e: &LogEntry<E, H>,
+    e: &LogEntry<E>,
 ) -> Result<(), SegmentCipherError> {
     let LogEntry::IndexedEntry {
         entry: EntryBody::UseKey(cipher_info),
@@ -207,7 +195,7 @@ mod tests {
 
     #[proptest]
     fn test_entry_cipher(
-        entry: LogEntry<PlaintextBytes<'static>, PlaintextBytes<'static>>,
+        entry: LogEntry<PlaintextBytes<'static>>,
         key: Option<[u8; 32]>,
         log_id: LogId,
     ) {

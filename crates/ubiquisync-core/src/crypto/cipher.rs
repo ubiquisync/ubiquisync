@@ -142,6 +142,16 @@ impl RootKey256 {
     }
 }
 
+/// We always use per-container derived keys before any other key derivation so
+/// that a workspace could have a security policy where a single key is used
+/// to encrypt multiple containers which all have the same security audience,
+/// but which could allow them to rotate the keys for a subset of the containers
+/// when the audience/container alignment changes. When rotating encryption keys,
+/// it would be standard practice to encrypt the old encryption key with the new key.
+/// But if the key is shared across containers and container membership changes
+/// we don't want to leak the root key which covered all containers.
+/// Instead we can safely share per-contained derived sub-keys without leaking
+/// the root key.
 pub struct ContainerKey256 {
     root_fingerprint: RootKey256Fingerprint,
     key: SecretBox<[u8; 32]>,
@@ -184,86 +194,6 @@ impl EntryCipher {
         kdf.update(&entry_idx.to_le_bytes());
         SlotCipher { kdf, slot_index: 0 }
     }
-
-    // pub fn encrypt_header(
-    //     &self,
-    //     entry_idx: u64,
-    //     prev_hash: &Hash256,
-    //     header: &PlaintextBytes,
-    // ) -> Result<OpaqueBytes<'static>, CipherError> {
-    //     Ok(self
-    //         .cipher_slot(entry_idx, 0, prev_hash, header.borrow())
-    //         .into())
-    // }
-
-    // pub fn encrypt_op(
-    //     &self,
-    //     entry_idx: u64,
-    //     op_index: u64,
-    //     prev_hash: &Hash256,
-    //     op: &PlaintextBytes,
-    // ) -> Result<OpaqueBytes<'static>, CipherError> {
-    //     Ok(self
-    //         .cipher_slot(
-    //             entry_idx,
-    //             op_index.checked_add(1).expect("op index overflow"),
-    //             prev_hash,
-    //             op.borrow(),
-    //         )
-    //         .into()) // convert to 1-based index, 0 for header
-    // }
-
-    // fn derive_key(&self, entry_idx: u64, slot_idx: u64, prev_hash: &Hash256) -> ChaCha20 {
-    //     let kdf = self.kdf.clone();
-    //     kdf.update(data);
-    //     key_info.extend_from_slice(&entry_idx.to_le_bytes());
-    //     key_info.extend_from_slice(&slot_idx.to_le_bytes());
-    //     key_info.extend_from_slice(&prev_hash[..]);
-    //     let key = derive_key(RootKeyDomain::EntryCipher, &self.base.key, &key_info);
-    //     let nonce = [0; 12]; // since we derive the key we can use a zero nonce
-    //     ChaCha20::new(key.0.expose_secret().into(), &nonce.into())
-    // }
-
-    // pub fn decrypt_header(
-    //     &self,
-    //     entry_idx: u64,
-    //     prev_hash: &Hash256,
-    //     header: &OpaqueBytes,
-    // ) -> Result<PlaintextBytes<'static>, CipherError> {
-    //     Ok(self
-    //         .cipher_slot(entry_idx, 0, prev_hash, header.borrow())
-    //         .into())
-    // }
-
-    // pub fn decrypt_op(
-    //     &self,
-    //     entry_idx: u64,
-    //     op_index: u64,
-    //     prev_hash: &Hash256,
-    //     op: &OpaqueBytes,
-    // ) -> Result<PlaintextBytes<'static>, CipherError> {
-    //     Ok(self
-    //         .cipher_slot(
-    //             entry_idx,
-    //             op_index.checked_add(1).expect("op index overflow"),
-    //             prev_hash,
-    //             op.borrow(),
-    //         )
-    //         .into()) // convert to 1-based index, 0 for header
-    // }
-
-    // fn cipher_slot(
-    //     &self,
-    //     entry_idx: u64,
-    //     slot_idx: u64,
-    //     prev_hash: &Hash256,
-    //     bytes: &[u8],
-    // ) -> Vec<u8> {
-    //     let mut cipher = self.derive_key(entry_idx, slot_idx, prev_hash);
-    //     let mut res = Vec::from(bytes); // we copy the input data to the res vec to decrypt in place
-    //     cipher.apply_keystream(res.as_mut_slice());
-    //     res
-    // }
 
     pub fn key_fingerprint(&self) -> &RootKey256Fingerprint {
         &self.base.key.root_fingerprint

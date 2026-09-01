@@ -77,17 +77,6 @@ impl ChainHash {
                 let entry_hash = precomputed_hash.unwrap_or_else(|| entry.hash(&self.seed, *idx));
                 self.add_one_entry(&entry_hash);
             }
-            LogEntry::Expunged { end_size, end_hash } => {
-                let size = self.size;
-                if *end_size <= self.size {
-                    return Err(ChainHashError::InvalidExpunge {
-                        size,
-                        expunge_size: *end_size,
-                    });
-                }
-                self.size = *end_size;
-                self.hash = *end_hash;
-            }
             LogEntry::Signature { .. } => {
                 // not hashed
             }
@@ -108,26 +97,30 @@ impl ChainHash {
     }
 }
 
-impl<'a> EntryBody<OpaqueBytes<'a>, OpaqueBytes<'a>> {
+impl<'a> EntryBody<OpaqueBytes<'a>> {
     pub fn hash(&self, seed: &Hash256, entry_index: u64) -> Hash256 {
         match self {
             EntryBody::OpBatch(op_batch) => op_batch.hash(seed, entry_index),
             // TODO should we add LogId coordinates to hash_use_key?
             EntryBody::UseKey(cipher_info) => hash_use_key(entry_index, cipher_info),
+            EntryBody::Expunged(hash) => *hash,
         }
     }
 }
 
-impl<'a> OpBatch<OpaqueBytes<'a>, OpaqueBytes<'a>> {
+impl<'a> OpBatch<OpaqueBytes<'a>> {
     pub fn hash(&self, seed: &Hash256, entry_idx: u64) -> Hash256 {
         let mut hasher = OpBatchHasher::new(*seed, entry_idx, self.ops.len());
-        hasher.hash_header(&self.header);
-        for (i, e) in self.ops.iter().enumerate() {
+        hasher.hash_slot(&self.timestamp);
+        if self.server_attested_user_id.0.len() > 0 {
+            hasher.hash_slot(&self.server_attested_user_id);
+        }
+        for e in self.ops.iter() {
             match e {
                 OpOrExpunge::Op(e) => {
-                    hasher.hash_op(i as u64, e);
+                    hasher.hash_slot(e);
                 }
-                OpOrExpunge::Expunge(h) => hasher.hash_expunge(i as u64, h),
+                OpOrExpunge::Expunge(h) => hasher.hash_expunge(h),
             }
         }
         hasher.finalize()
@@ -138,6 +131,7 @@ pub(crate) struct OpBatchHasher {
     hasher: Hasher,
     entry_idx: u64,
     seed: Hash256,
+    slot_idx: u64,
 }
 
 impl OpBatchHasher {
@@ -151,28 +145,23 @@ impl OpBatchHasher {
             hasher,
             entry_idx,
             seed,
+            slot_idx: 0,
         }
     }
 
-    pub(crate) fn hash_header(&mut self, bytes: &OpaqueBytes) -> Hash256 {
-        self.hash_slot(0, bytes)
-    }
-
-    pub(crate) fn hash_op(&mut self, op_idx: u64, o: &OpaqueBytes) -> Hash256 {
-        self.hash_slot(op_idx + 1, o)
-    }
-
-    pub(crate) fn hash_expunge(&mut self, _op_idx: u64, h: &Hash256) {
+    pub(crate) fn hash_expunge(&mut self, h: &Hash256) {
+        self.slot_idx += 1;
         self.hasher.update(h);
     }
 
-    fn hash_slot(&mut self, slot_idx: u64, bytes: &OpaqueBytes) -> Hash256 {
+    pub(crate) fn hash_slot(&mut self, bytes: &OpaqueBytes) -> Hash256 {
         let mut slot_hasher = new_tagged_hasher(TaggedHashDomain::OpBatchSlot);
         slot_hasher.update(&self.seed);
         slot_hasher.update(&self.entry_idx.to_le_bytes());
-        slot_hasher.update(&slot_idx.to_le_bytes());
+        slot_hasher.update(&self.slot_idx.to_le_bytes());
         slot_hasher.update(bytes.borrow());
         let h = slot_hasher.finalize();
+        self.slot_idx += 1;
         self.hasher.update(&h);
         h
     }

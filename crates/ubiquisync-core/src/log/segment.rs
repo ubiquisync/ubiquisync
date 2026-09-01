@@ -1,10 +1,10 @@
-use std::{borrow::Borrow, ops::Range};
+use std::ops::Range;
 
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use thiserror::Error;
 
 use crate::{
-    bytes::{PlaintextBytes, ToStatic},
+    bytes::{BytesWrapper, PlaintextBytes, ToStatic},
     codec::{ReadError, Reader, WriteError, Writer},
     crypto::{CipherError, CipherInfo, CryptoDecodeError, Hash256, SegmentCipher, Signature},
     log::{ChainHash, LogDecodeError, LogEncodeError, LogEntry, OpaqueLogEntry, PlaintextLogEntry},
@@ -174,13 +174,12 @@ pub fn encode_segment_plaintext<'a>(
     Ok(w.finalize())
 }
 
-pub fn decode_entries<'a, E, H>(
+pub fn decode_entries<'a, E>(
     start: u64,
     bytes: &'a [u8],
-) -> impl Iterator<Item = Result<LogEntry<E, H>, LogDecodeError>>
+) -> impl Iterator<Item = Result<LogEntry<E>, LogDecodeError>>
 where
-    E: From<&'a [u8]> + std::fmt::Debug,
-    H: From<&'a [u8]> + std::fmt::Debug,
+    E: From<&'a [u8]> + BytesWrapper,
 {
     let mut reader = Reader::new(bytes);
     let mut next_entry_index = start;
@@ -199,13 +198,12 @@ where
     })
 }
 
-pub fn encode_entries<E, H>(
-    entries: impl Iterator<Item = LogEntry<E, H>>,
+pub fn encode_entries<E>(
+    entries: impl Iterator<Item = LogEntry<E>>,
     writer: &mut Writer,
 ) -> Result<Range<u64>, LogEncodeError>
 where
-    E: Borrow<[u8]> + std::fmt::Debug,
-    H: Borrow<[u8]> + std::fmt::Debug,
+    E: BytesWrapper,
 {
     let mut start = 0;
     let mut end = 0;
@@ -286,7 +284,7 @@ fn decompress_decode_entries(
     buf: &[u8],
 ) -> Result<Vec<PlaintextLogEntry<'static>>, SegmentDecodeError> {
     let buf = zstd::decode_all(buf)?;
-    let it = decode_entries::<PlaintextBytes, PlaintextBytes>(start, buf.as_slice());
+    let it = decode_entries::<PlaintextBytes>(start, buf.as_slice());
     let mut res = vec![];
     for e in it {
         res.push(e?.to_static());
@@ -410,7 +408,7 @@ pub(crate) mod tests {
 
     use crate::{
         bytes::PlaintextBytes,
-        crypto::{Hash256, Signature},
+        crypto::Signature,
         log::{EntryBody, LogEntry, OpBatch, PlaintextLogEntry},
     };
 
@@ -439,12 +437,7 @@ pub(crate) mod tests {
 
     #[derive(Arbitrary, Debug)]
     pub(crate) enum GeneratedEntry {
-        Ops(OpBatch<PlaintextBytes<'static>, PlaintextBytes<'static>>),
-        Expunged {
-            #[strategy(1u64..1<<24)]
-            span: u64,
-            hash: Hash256,
-        },
+        Ops(OpBatch<PlaintextBytes<'static>>),
         Signature(Signature),
     }
 
@@ -461,13 +454,6 @@ pub(crate) mod tests {
                     };
                     next_entry_index += 1;
                     e
-                }
-                GeneratedEntry::Expunged { span, hash } => {
-                    next_entry_index += span;
-                    LogEntry::Expunged {
-                        end_size: next_entry_index,
-                        end_hash: hash,
-                    }
                 }
                 GeneratedEntry::Signature(signature) => LogEntry::Signature {
                     size: next_entry_index,
