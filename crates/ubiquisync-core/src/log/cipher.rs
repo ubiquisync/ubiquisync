@@ -105,6 +105,7 @@ fn to_opaque<'a>(
             |expunge_hash, st| {
                 st.last_hash = *expunge_hash;
                 st.hasher.hash_expunge(expunge_hash);
+                st.slot_cipher.skip_slot();
                 Ok(())
             },
         )?;
@@ -141,6 +142,7 @@ fn to_plaintext<'a>(
             |expunge_hash, st| {
                 st.last_hash = *expunge_hash;
                 st.hasher.hash_expunge(expunge_hash);
+                st.slot_cipher.skip_slot();
                 Ok(())
             },
         )?;
@@ -183,12 +185,10 @@ mod tests {
     use test_strategy::proptest;
 
     use crate::bytes::PlaintextBytes;
-    #[cfg(test)]
     use crate::crypto::Hash256;
     use crate::crypto::{EntryCipher, EntryCipherSuite, RootKey256};
     use crate::ids::LogId;
     use crate::log::cipher::{to_opaque, to_plaintext};
-    #[cfg(test)]
     use crate::log::segment::tests::LogEntries;
     use crate::log::{ChainHash, segment_to_opaque};
     use crate::log::{LogEntry, segment_to_plaintext};

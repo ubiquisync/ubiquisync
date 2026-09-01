@@ -17,6 +17,7 @@ use secrecy::SecretBox;
 use sha2::Sha256;
 use sha2::digest::FixedOutput;
 use thiserror::Error;
+use zeroize::Zeroizing;
 
 use crate::bytes::OpaqueBytes;
 use crate::bytes::PlaintextBytes;
@@ -80,7 +81,6 @@ const DERIVE_PREFIX_LEN: usize = 1 + 32 + 32 + 16;
 
 struct CipherBase {
     key: ContainerKey256,
-    // TODO: instead of allocating a Vec can we just have a Hasher here that we clone when needed?
     derive_prefix: [u8; DERIVE_PREFIX_LEN],
 }
 
@@ -106,7 +106,7 @@ impl CipherBase {
         derive_prefix[0] = suite;
         derive_prefix[1..33].copy_from_slice(&key.root_fingerprint.0[..]);
         derive_prefix[33..65].copy_from_slice(&log_id.peer_id.0[..]);
-        derive_prefix[65..].copy_from_slice(&log_id.container_id.0[..]); // TODO we still need container ID if using container scoped keys?
+        derive_prefix[65..].copy_from_slice(&log_id.container_id.0[..]);
         Self { key, derive_prefix }
     }
 }
@@ -192,7 +192,7 @@ impl EntryCipher {
         let mut kdf = <Hmac<Sha256> as KeyInit>::new_from_slice(key.key.expose_secret())
             .expect("32 byte key");
         let base = CipherBase::new(suite.into(), key, log_id);
-        kdf.update(&[KDF_DOMAIN_LOG_ENTRY.len() as u8]); // TODO we do we even need this len here?
+        kdf.update(&[KDF_DOMAIN_LOG_ENTRY.len() as u8]);
         kdf.update(KDF_DOMAIN_LOG_ENTRY.as_bytes());
         kdf.update(&base.derive_prefix);
         Self { kdf, base }
@@ -227,10 +227,10 @@ impl SlotCipher {
         self.slot_index += 1;
         kdf.update(&slot_index.to_le_bytes());
         kdf.update(prev_hash);
-        kdf.update(&[1u8]);
+        kdf.update(&[1u8]); // to make this consistent with HKDF
         // output is Array which should implement zeroize already
-        let okm = kdf.finalize_fixed();
-        let mut cipher = ChaCha20::new(&okm, &[0; 12].into());
+        let okm: Zeroizing<[u8; 32]> = Zeroizing::new(kdf.finalize_fixed().into());
+        let mut cipher = ChaCha20::new((&*okm).into(), &[0; 12].into());
         cipher.apply_keystream(buf);
     }
 
@@ -246,6 +246,11 @@ impl SlotCipher {
         bytes: &PlaintextBytes,
     ) -> Result<OpaqueBytes<'static>, CipherError> {
         Ok(self.cipher_slot(prev_hash, bytes.borrow()).into())
+    }
+
+    /// Advances the slot index without doing any encryption/decryption. ONLY to be used when skipping over expunged slots.
+    pub fn skip_slot(&mut self) {
+        self.slot_index += 1;
     }
 
     pub fn decrypt_slot(
@@ -266,10 +271,9 @@ impl SegmentCipher {
         );
 
         let base = CipherBase::new(suite.into(), key, log_id);
-        // TODO should we get this off the stack?
-        let mut key = [0; 32];
+        let mut key = Zeroizing::new([0; 32]);
         kdf(KDF_DOMAIN_LOG_SEGMENT, &base.key.key, &[], &mut key);
-        let cipher = XChaCha20Poly1305::new(&key.into());
+        let cipher = XChaCha20Poly1305::new((&*key).into());
         Self { base, cipher }
     }
 
