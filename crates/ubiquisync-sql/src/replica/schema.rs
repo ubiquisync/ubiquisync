@@ -26,15 +26,18 @@ fn table_schemas() -> Vec<CreateTableDef> {
             &[
                 col(&Streams::PeerId, Integer),
                 col(&Streams::ContainerId, Integer),
-                col(&Streams::ParentId, Integer).nullable(),
-                col(&Streams::ForkIdx, Integer).nullable(),
-                col(&Streams::ForkHash, Blob).nullable(),
+                col(&Streams::HeadIdx, Integer).default_zero(),
+                col(&Streams::HeadHash, Blob).default_zero(),
+                col(&Streams::HeadCipher, Blob).nullable(),
                 col(&Streams::ReadyIdx, Integer).default_zero(),
                 col(&Streams::ReadyStatus, Integer).default_zero(),
                 col(&Streams::ReadyStatusData, Blob).default_zero(),
                 col(&Streams::CommitIdx, Integer).default_zero(),
                 col(&Streams::CommitStatus, Integer).default_zero(),
                 col(&Streams::CommitStatusData, Blob).default_zero(),
+                col(&Streams::ParentId, Integer).nullable(),
+                col(&Streams::ForkIdx, Integer).nullable(),
+                col(&Streams::ForkHash, Blob).nullable(),
             ],
         ),
         table(
@@ -74,15 +77,18 @@ pub enum Streams {
     Id,
     PeerId,
     ContainerId,
-    ParentId,
-    ForkIdx,
-    ForkHash, // is this even needed if we know the parent id definitively?
+    HeadIdx,
+    HeadHash,
+    HeadCipher,
     ReadyIdx,
     ReadyStatus,
     ReadyStatusData,
     CommitIdx,
     CommitStatus,
     CommitStatusData,
+    ParentId,
+    ForkIdx,
+    ForkHash, // is this even needed if we know the parent id definitively?
 }
 
 #[derive(Iden)]

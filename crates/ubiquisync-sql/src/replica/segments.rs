@@ -9,14 +9,14 @@ use crate::{
     replica::{replica::Replica, schema::Segments},
 };
 
-impl Replica {
+impl<R> Replica<R> {
     async fn insert_segment_local(&self) {
-        Query::insert().into_table(Segments::Table).columns(
-            Segments::LogId,
-            Segments::StartIdx,
-            Segments::EndIdx,
-            Segments::EndHash,
-            Segments::Body,
-        )
+        // Query::insert().into_table(Segments::Table).columns(
+        //     Segments::LogId,
+        //     Segments::StartIdx,
+        //     Segments::EndIdx,
+        //     Segments::EndHash,
+        //     Segments::Body,
+        // )
     }
 }
