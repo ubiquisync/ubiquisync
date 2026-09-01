@@ -291,8 +291,8 @@ impl SlotCipher {
         kdf.update(&[1u8]);
         // output is Array which should implement zeroize already
         let okm = kdf.finalize_fixed();
-        let mut cipher = ChaCha20::new(&okm.into(), &[0; 12].into());
-        cipher.write_keystream(buf);
+        let mut cipher = ChaCha20::new(&okm, &[0; 12].into());
+        cipher.apply_keystream(buf);
     }
 
     fn cipher_slot(&mut self, prev_hash: &Hash256, bytes: &[u8]) -> Vec<u8> {
@@ -445,6 +445,7 @@ mod tests {
         for slot in slots.iter() {
             encrypted.push(slot_cipher.encrypt_slot(&last_hash, slot).unwrap())
         }
+        let mut slot_cipher = cipher.slot_cipher(entry_idx);
         let mut decrypted = vec![];
         for slot in encrypted.iter() {
             decrypted.push(slot_cipher.decrypt_slot(&last_hash, slot).unwrap())
