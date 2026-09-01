@@ -22,20 +22,23 @@ use crate::{
 /// is to enable encryption keys to be used with coordinate derived subkeys
 /// with key reuse only occuring in the rare case that an honest peer forks,
 /// in which case only a single header would reuse the same sub-key.
-/// Essentially, the hash of the encrypted header serves as an encryption nonce for
-/// each successive operation. While each entry and operation should have a unique
-/// coordinate derived nonce (based on peer id, container id, entry index and slot index)
-/// if a log writer inadvertantly forked (wrote the same entry at the same index - which
-/// could happen due to restore from backup scenarioes).
+/// Essentially, the hash of the encrypted timestamp (and then optional server attested user id)
+/// serve as an encryption nonce for each successive operation. While each entry and operation
+/// should have a unique coordinate derived nonce already (based on peer id, container id,
+/// entry index and slot index) if a log writer inadvertantly forked (wrote the same entry
+/// at the same index - which could happen due to restore from backup scenarioes).
 /// To prevent this we use the last chain hash for nonce randomness for each successive
 /// entry. But even this strategy could leak the first forked entry.
-/// By encrypted the header first and then using the hash of its encrypted body
-/// for nonce randomness, forking would only leak the header in non-malicious fork scenarios
-/// and leaking the header only leaks the timestamp and server attested user id which don't
-/// reveal much on their own and the all of the op bodies would be protected.
-/// Of course, in a malicious scenario, the same header could be used, but if the writer
-/// is really malicious it would just leak the whole cipher - this behavior is to
-/// prevent honest writers from leaking cipher edge cases.
+/// By encrypted the timestamp first and then using the hash of its ciphertext
+/// for nonce randomness, forking would only leak the timestamp in non-malicious fork scenarios
+/// Of course, in a malicious scenario, the same timestamp could be used intentionally,
+/// but if the writer is really malicious it would just leak the whole cipher -
+/// this behavior is to prevent honest writers from leaking encrypted material in edge cases.
+/// (You could argue there are rare edge cases where a timestamp collision could occur on
+/// a non-malicious device, but given the way HLC's work this would require a very specific
+/// sequence events on a device with a non-functional clock. In that case, the leakage would
+/// extend to the server attested user id or first divergent op slot, and then its hash
+/// would be input to key derivation for future entrying keeping their contents protected.)
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub struct OpBatch<B: alloc::fmt::Debug> {

@@ -38,7 +38,7 @@ use crate::ids::LogId;
 ///    As long as the timestamp of the header is different from the timestamp at that
 ///    entry before the fork, the sub-key used for the actual entry body will be distinct
 ///    because it is derived from the encrypted hash of that header.
-///    Only an extremely rare clock issue could cause the header bytes to be identical
+///    Only a rare clock issue could cause the header bytes to be identical
 ///    or intentional misuse.
 /// 3. For blind relays which can't compress entries, tag overhead (32 bytes/entry)
 ///    is relatively large compared to many realistic entry payloads (ex. keystroke edits).
@@ -228,7 +228,6 @@ impl SlotCipher {
         kdf.update(&slot_index.to_le_bytes());
         kdf.update(prev_hash);
         kdf.update(&[1u8]); // to make this consistent with HKDF
-        // output is Array which should implement zeroize already
         let okm: Zeroizing<[u8; 32]> = Zeroizing::new(kdf.finalize_fixed().into());
         let mut cipher = ChaCha20::new((&*okm).into(), &[0; 12].into());
         cipher.apply_keystream(buf);
