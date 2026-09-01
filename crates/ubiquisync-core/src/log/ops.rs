@@ -19,13 +19,14 @@ use crate::{
 /// if such functionality is desired by the op vocabularly.
 /// This is a rare edge case, but is supported nevertheless because the
 /// real immediate value we get from separating ops from headers here
-/// is to enable non-MRAE cipher suites to be used without leaking operation data.
+/// is to enable encryption keys to be used with coordinate derived subkeys
+/// with key reuse only occuring in the rare case that an honest peer forks,
+/// in which case only a single header would reuse the same sub-key.
 /// Essentially, the hash of the encrypted header serves as an encryption nonce for
 /// each successive operation. While each entry and operation should have a unique
 /// coordinate derived nonce (based on peer id, container id, entry index and slot index)
 /// if a log writer inadvertantly forked (wrote the same entry at the same index - which
-/// could happen due to restore from backup scenarioes), this would leak entries
-/// when non-MRAE cipher suites are used.
+/// could happen due to restore from backup scenarioes).
 /// To prevent this we use the last chain hash for nonce randomness for each successive
 /// entry. But even this strategy could leak the first forked entry.
 /// By encrypted the header first and then using the hash of its encrypted body
@@ -35,11 +36,6 @@ use crate::{
 /// Of course, in a malicious scenario, the same header could be used, but if the writer
 /// is really malicious it would just leak the whole cipher - this behavior is to
 /// prevent honest writers from leaking cipher edge cases.
-/// Note that currently we only support AES-GCM-SIV which is misuse resistant already,
-/// so this is a bit of a non-issue for the current cipher suite, but the rust implementation
-/// for this is relatively new and other cipher suites that have a longer track record
-/// aren't misuse resistant and we want to ensure they _could_ be used if needed for other
-/// motivating reasons (such as FIPS compliance).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub struct OpBatch<Op: alloc::fmt::Debug, H: alloc::fmt::Debug> {

@@ -13,46 +13,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aes"
-version = "0.9.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "35f0f96ce78e38c3dc6d8948aa8163d06385be74000f3c7a95bf1eef35d3ea32"
-dependencies = [
- "cipher",
- "cpubits",
- "cpufeatures",
-]
-
-[[package]]
-name = "aes-gcm"
-version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f2b8006a0c83f52b62ba44a97b58bf76fe2f70a329e588f67f89691d93d498f"
-dependencies = [
- "aead",
- "aes",
- "cipher",
- "ctr",
- "ctutils",
- "ghash",
-]
-
-[[package]]
-name = "aes-gcm-siv"
-version = "0.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c32325128cb24de2a2d14d92da7569dae7073f9e47334521d494747fa94d902"
-dependencies = [
- "aead",
- "aes",
- "cipher",
- "ctr",
- "ctutils",
- "polyval",
- "zeroize",
-]
-
-[[package]]
 name = "anstyle"
 version = "1.0.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -166,6 +126,18 @@ dependencies = [
  "cfg-if",
  "cipher",
  "cpufeatures",
+]
+
+[[package]]
+name = "chacha20poly1305"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b89e1c441e926b9c82a8d023f6e1b7ae0adcfaa7d621814e4d60789bac751cb"
+dependencies = [
+ "aead",
+ "chacha20",
+ "cipher",
+ "poly1305",
 ]
 
 [[package]]
@@ -290,15 +262,6 @@ dependencies = [
  "getrandom 0.4.3",
  "hybrid-array",
  "rand_core 0.10.1",
-]
-
-[[package]]
-name = "ctr"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "baaca1c4b237092596f64d571e9db6ce4109c4ef9742e27590f1709594461f21"
-dependencies = [
- "cipher",
 ]
 
 [[package]]
@@ -642,15 +605,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ghash"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2eecf2d5dc9b66b732b97707a0210906b1d30523eb773193ab777c0c84b3e8d5"
-dependencies = [
- "polyval",
-]
-
-[[package]]
 name = "group"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -698,7 +652,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd5130e119706b4d8c2180da6126f7e60b6c38c2d340d539219f57051f0a7af7"
 dependencies = [
  "aead",
- "aes-gcm",
+ "chacha20poly1305",
  "getrandom 0.4.3",
  "hkdf",
  "hybrid-array",
@@ -908,12 +862,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 
 [[package]]
-name = "polyval"
-version = "0.7.3"
+name = "poly1305"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0fa31d631f2b2cb2a544d0aa321ce847a94764d701ca2becc411138b93d49cd"
+checksum = "6e2d0073b297041425c7c3df6eb4792d598a15323fe63346852b092eca02904c"
 dependencies = [
- "cpubits",
  "cpufeatures",
  "universal-hash",
 ]
@@ -1462,11 +1415,11 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 name = "ubiquisync-core"
 version = "0.0.4"
 dependencies = [
- "aes-gcm-siv",
  "async-recursion",
  "async-trait",
  "bitfield-struct",
  "chacha20",
+ "chacha20poly1305",
  "crypto-common",
  "divan",
  "ed25519-dalek",

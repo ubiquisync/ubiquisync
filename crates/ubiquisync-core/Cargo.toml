@@ -11,7 +11,6 @@ async-trait = { workspace = true }
 futures-channel = { workspace = true }
 futures-core = { workspace = true }
 thiserror = { workspace = true }
-aes-gcm-siv = { workspace = true }
 num_enum = { workspace = true }
 ed25519-dalek = { workspace = true }
 p256 = { workspace = true }
@@ -28,6 +27,7 @@ strum_macros = { workspace = true }
 async-recursion = { workspace = true }
 zstd = { workspace = true }
 chacha20 = { workspace = true }
+chacha20poly1305 = { workspace = true }
 crypto-common = { workspace = true }
 
 [target.'cfg(target_vendor = "apple")'.dependencies]

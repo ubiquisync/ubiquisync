@@ -1,11 +1,11 @@
 use std::borrow::Borrow;
 use std::ops::Range;
 
-use aes_gcm_siv::AeadInOut;
-use aes_gcm_siv::Aes256GcmSiv;
-use aes_gcm_siv::Nonce;
 use chacha20::ChaCha20;
 use chacha20::cipher::StreamCipher;
+use chacha20poly1305::AeadInOut;
+use chacha20poly1305::ChaCha20Poly1305;
+use chacha20poly1305::Nonce;
 use crypto_common::KeyInit;
 use crypto_common::KeyIvInit;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
@@ -52,7 +52,7 @@ pub enum EntryCipherSuite {
 #[derive(IntoPrimitive, TryFromPrimitive, Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub enum SegmentCipherSuite {
-    Aes256GcmSiv = 0,
+    ChaCha20Poly1305 = 0,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -226,7 +226,7 @@ impl SegmentCipher {
     pub fn new(suite: SegmentCipherSuite, key: Key256, log_id: &LogId) -> Self {
         assert_eq!(
             suite,
-            SegmentCipherSuite::Aes256GcmSiv,
+            SegmentCipherSuite::ChaCha20Poly1305,
             "if this gets triggered it means we need to support new cipher suites",
         );
 
@@ -265,7 +265,7 @@ impl SegmentCipher {
         &self,
         range: &Range<u64>,
         nonce: &[u8; 16],
-    ) -> (Vec<u8>, Aes256GcmSiv, Nonce) {
+    ) -> (Vec<u8>, ChaCha20Poly1305, Nonce) {
         let mut ad = Vec::new();
         ad.extend_from_slice(self.base.ad_prefix.as_slice());
         ad.extend_from_slice(&range.start.to_le_bytes());
@@ -274,7 +274,7 @@ impl SegmentCipher {
         let mut key_info = ad.clone();
         key_info.extend_from_slice(nonce);
         let key = derive_key(DeriveKeyDomain::SegmentCipher, &self.base.key, &key_info);
-        let cipher = Aes256GcmSiv::new(key.0.expose_secret().into());
+        let cipher = ChaCha20Poly1305::new(key.0.expose_secret().into());
         (ad, cipher, [0; 12].into()) // since we derive every key based on coordinates, we can use a zero nonce
     }
 
@@ -283,7 +283,7 @@ impl SegmentCipher {
     }
 
     pub fn cipher_suite(&self) -> SegmentCipherSuite {
-        SegmentCipherSuite::Aes256GcmSiv
+        SegmentCipherSuite::ChaCha20Poly1305
     }
 
     pub fn cipher_info(&self) -> CipherInfo {

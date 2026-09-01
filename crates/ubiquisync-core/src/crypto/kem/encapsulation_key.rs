@@ -1,6 +1,6 @@
 use hpke::{
     Deserializable, Serializable,
-    aead::AesGcm256,
+    aead::ChaCha20Poly1305,
     kdf::HkdfSha256,
     kem::{Kem, X25519HkdfSha256},
 };
@@ -27,8 +27,8 @@ pub struct KemError;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub enum KeyWrap {
-    X25519HkdfSha256AesGcm256 { enc: [u8; 32], ciphertext: [u8; 48] },
-    DhP256HkdfSha256AesGcm256 { enc: [u8; 33], ciphertext: [u8; 48] },
+    X25519HkdfSha256ChaCha20Poly1305 { enc: [u8; 32], ciphertext: [u8; 48] },
+    DhP256HkdfSha256ChaCha20Poly1305 { enc: [u8; 33], ciphertext: [u8; 48] },
 }
 
 pub const DOMAIN_KEY_WRAP: &[u8] = b"ubiquisync/v1/key-wrap";
@@ -40,7 +40,7 @@ impl EncapsulationKey {
                 let pubkey = <X25519HkdfSha256 as Kem>::PublicKey::from_bytes(pubkey)
                     .map_err(|_| KemError)?;
                 let (encapped_key, ciphertext) =
-                    hpke::single_shot_seal::<AesGcm256, HkdfSha256, X25519HkdfSha256>(
+                    hpke::single_shot_seal::<ChaCha20Poly1305, HkdfSha256, X25519HkdfSha256>(
                         &hpke::OpModeS::Base,
                         &pubkey,
                         DOMAIN_KEY_WRAP,
@@ -48,7 +48,7 @@ impl EncapsulationKey {
                         &[],
                     )
                     .map_err(|_| KemError)?;
-                Ok(KeyWrap::X25519HkdfSha256AesGcm256 {
+                Ok(KeyWrap::X25519HkdfSha256ChaCha20Poly1305 {
                     enc: encapped_key.to_bytes().into(),
                     ciphertext: ciphertext.try_into().map_err(|_| KemError)?,
                 })
