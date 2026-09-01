@@ -75,10 +75,11 @@ impl<'a> SegmentReader<'a> {
                 for e in decode_entries(buf) {
                     res.push(e?);
                 }
+                check_entry_count(res.iter(), self.header.count)?;
                 DecodedSegment::Opaque(res)
             }
-            SegmentEncoding::Plaintext(enc) => {
-                DecodedSegment::Plaintext(match enc.outer_encryption {
+            SegmentEncoding::Plaintext(enc) => DecodedSegment::Plaintext({
+                let entries = match enc.outer_encryption {
                     Some(c) => {
                         if let Some(cipher) = cipher
                             && c.cipher == cipher.cipher_info()
@@ -95,8 +96,10 @@ impl<'a> SegmentReader<'a> {
                         }
                     }
                     None => decompress_decode_entries(buf)?,
-                })
-            }
+                };
+                check_entry_count(entries.iter(), self.header.count)?;
+                entries
+            }),
         })
     }
 }
@@ -222,7 +225,6 @@ pub enum SegmentEncodeError {
     CipherError(#[from] CipherError),
     #[error("write error: {0}")]
     WriteError(#[from] WriteError),
-
     #[error("entry count mismatch, expected {expected:?}, got {actual:?}")]
     CountMismatch { actual: u64, expected: u64 },
     #[error("nonce generation error")]
@@ -249,8 +251,10 @@ pub enum SegmentDecodeError {
     UnknownEncryptionInfo(u8),
     #[error("missing segment cipher {0:?}")]
     MissingSegmentCipher(CipherInfo),
-    #[error("decompressed segment is too large, max 256mb")]
+    #[error("decompressed segment is too large, max 128mb")]
     CompressionOverflow,
+    #[error("entry count mismatch, expected {expected:?}, got {actual:?}")]
+    CountMismatch { actual: u64, expected: u64 },
 }
 
 fn encode_compress_encrypt_entries<'a>(
@@ -272,8 +276,8 @@ fn encode_compress_entries<'a>(
     Ok((zstd::encode_all(w.finalize().as_slice(), 0)?, count))
 }
 
-/// 256mb decode limit
-const ZSTD_DECODE_LIMIT: u64 = 1u64 << 28;
+/// 128mb decode limit
+const ZSTD_DECODE_LIMIT: u64 = 1u64 << 27;
 
 fn decompress_decode_entries(
     buf: &[u8],
@@ -417,6 +421,17 @@ pub fn count_entries<'a, B: std::fmt::Debug + 'a>(
         }
     }
     count
+}
+
+fn check_entry_count<'a, B: std::fmt::Debug + 'a>(
+    entries: impl Iterator<Item = &'a LogEntry<B>>,
+    expected: u64,
+) -> Result<(), SegmentDecodeError> {
+    let actual = count_entries(entries);
+    if actual != expected {
+        return Err(SegmentDecodeError::CountMismatch { actual, expected });
+    }
+    Ok(())
 }
 
 #[cfg(test)]
