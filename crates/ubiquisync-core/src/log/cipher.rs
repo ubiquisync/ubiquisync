@@ -31,7 +31,7 @@ pub enum SegmentCipherError {
 /// It is an error for the segment to change its cipher mid-stream. Cipher changes MUST result in separate
 /// segments with respect to encryption/decryption
 pub fn segment_to_opaque<'a: 'b, 'b>(
-    cipher: Option<&Cipher>,
+    cipher: &Option<Cipher>,
     entries: impl Iterator<Item = &'b PlaintextLogEntry<'a>>,
     chain_hash: &mut ChainHash,
 ) -> impl Iterator<Item = Result<OpaqueLogEntry<'a>, SegmentCipherError>> {
@@ -56,7 +56,7 @@ pub fn segment_to_opaque<'a: 'b, 'b>(
 /// while updating the chain hash along the way.
 /// This function has the same behavior as [segment_to_plaintext] with regards to ciphers.
 pub fn segment_to_plaintext<'a: 'b, 'b>(
-    cipher: Option<&Cipher>,
+    cipher: &Option<Cipher>,
     entries: impl Iterator<Item = &'b OpaqueLogEntry<'a>>,
     chain_hash: &mut ChainHash,
 ) -> impl Iterator<Item = Result<PlaintextLogEntry<'a>, SegmentCipherError>> {
@@ -85,7 +85,7 @@ struct OpBatchHashState {
 
 fn to_opaque<'a>(
     entry: &PlaintextLogEntry<'a>,
-    cipher: Option<&Cipher>,
+    cipher: &Option<Cipher>,
     chain_hash: &ChainHash,
 ) -> Result<(OpaqueLogEntry<'a>, Option<Hash256>), CipherError> {
     if let Some(cipher) = cipher {
@@ -127,7 +127,7 @@ fn to_opaque<'a>(
 
 fn to_plaintext<'a>(
     entry: &OpaqueLogEntry<'a>,
-    cipher: Option<&Cipher>,
+    cipher: &Option<Cipher>,
     chain_hash: &ChainHash,
 ) -> Result<(PlaintextLogEntry<'a>, Option<Hash256>), CipherError> {
     if let Some(cipher) = cipher {
@@ -168,7 +168,7 @@ fn to_plaintext<'a>(
 }
 
 fn check_use_key<E: std::fmt::Debug, H: std::fmt::Debug>(
-    cipher: Option<&Cipher>,
+    cipher: &Option<Cipher>,
     e: &LogEntry<E, H>,
 ) -> Result<(), SegmentCipherError> {
     let LogEntry::IndexedEntry {
@@ -207,50 +207,65 @@ mod tests {
     #[proptest]
     fn test_entry_cipher(
         entry: LogEntry<PlaintextBytes<'static>, PlaintextBytes<'static>>,
-        key: [u8; 32],
+        key: Option<[u8; 32]>,
         log_id: LogId,
     ) {
-        let key = Key256(SecretBox::new(Box::new(key)));
-        let cipher = Cipher::new(CipherSuite::Aes256GcmSiv, key, &log_id);
+        let cipher = if let Some(key) = key {
+            let key = Key256(SecretBox::new(Box::new(key)));
+            Some(Cipher::new(CipherSuite::Aes256GcmSiv, key, &log_id))
+        } else {
+            None
+        };
         let chain_hash = ChainHash::new_seed(&log_id);
-        let (opaque, hash1) = to_opaque(&entry, Some(&cipher), &chain_hash).unwrap();
-        let (plaintext, hash2) = to_plaintext(&opaque, Some(&cipher), &chain_hash).unwrap();
+        let (opaque, hash1) = to_opaque(&entry, &cipher, &chain_hash).unwrap();
+        let (plaintext, hash2) = to_plaintext(&opaque, &cipher, &chain_hash).unwrap();
         assert_eq!(entry, plaintext);
         assert_eq!(hash1, hash2);
         if let LogEntry::IndexedEntry {
             idx,
             entry: crate::log::EntryBody::OpBatch(batch),
         } = opaque
+            && cipher.is_some()
         {
             let hash = batch.hash(chain_hash.seed(), idx);
             assert_eq!(hash, hash1.unwrap());
         }
     }
 
-    #[proptest]
-    fn test_segment_cipher(entries: LogEntries, key: [u8; 32], log_id: LogId, prev_hash: Hash256) {
-        let key = Key256(SecretBox::new(Box::new(key)));
-        let cipher = Cipher::new(CipherSuite::Aes256GcmSiv, key, &log_id);
+    #[proptest(cases = 10)]
+    fn test_segment_cipher(
+        entries: LogEntries,
+        key: Option<[u8; 32]>,
+        log_id: LogId,
+        prev_hash: Hash256,
+    ) {
         let mut start_idx = entries.start_index;
         let mut entries = entries.entries;
-        if start_idx > 0 {
-            // if we're not at the very start, inject a UseKey entry at the beginning with our cipher to test this case
-            // random UseKey entries in other places are not valid
-            start_idx -= 1;
-            entries.insert(
-                0,
-                LogEntry::IndexedEntry {
-                    idx: start_idx,
-                    entry: crate::log::EntryBody::UseKey(cipher.cipher_info()),
-                },
-            )
-        }
+        let cipher = if let Some(key) = key {
+            let key = Key256(SecretBox::new(Box::new(key)));
+            let cipher = Cipher::new(CipherSuite::Aes256GcmSiv, key, &log_id);
+            if start_idx > 0 {
+                // if we're not at the very start, inject a UseKey entry at the beginning with our cipher to test this case
+                // random UseKey entries in other places are not valid
+                start_idx -= 1;
+                entries.insert(
+                    0,
+                    LogEntry::IndexedEntry {
+                        idx: start_idx,
+                        entry: crate::log::EntryBody::UseKey(cipher.cipher_info()),
+                    },
+                )
+            }
+            Some(cipher)
+        } else {
+            None
+        };
         let mut chain_hash = ChainHash::from_existing(&log_id, start_idx, prev_hash);
-        let opaque = segment_to_opaque(Some(&cipher), entries.iter(), &mut chain_hash)
+        let opaque = segment_to_opaque(&cipher, entries.iter(), &mut chain_hash)
             .map(|e| e.unwrap())
             .collect::<Vec<_>>();
         let mut chain_hash2 = ChainHash::from_existing(&log_id, start_idx, prev_hash);
-        let plaintext = segment_to_plaintext(Some(&cipher), opaque.iter(), &mut chain_hash2)
+        let plaintext = segment_to_plaintext(&cipher, opaque.iter(), &mut chain_hash2)
             .map(|e| e.unwrap())
             .collect::<Vec<_>>();
         assert_eq!(chain_hash, chain_hash2);

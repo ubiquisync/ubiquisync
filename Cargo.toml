@@ -66,6 +66,7 @@ proptest = "1.11.0"
 test-strategy = "0.4.5"
 test-case = "3.3.1"
 insta = "1.48.0"
+divan = "0.1.21"
 
 ## platform deps
 # Apple only
