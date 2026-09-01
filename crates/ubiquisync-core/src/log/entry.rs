@@ -11,15 +11,8 @@ use crate::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub enum LogEntry<B: std::fmt::Debug> {
-    /// Represents an indexed entry which contributes to the chain hash.
-    ///
-    /// Note that the `idx` parameter is computed and not decoded from the stream.
-    /// It is included in the type to ensure consumers are processing the correct index.
-    IndexedEntry { idx: u64, entry: EntryBody<B> },
-    /// A signature over the chain hash of indexed entries up to this point.
-    ///
-    /// The size parameter is not encoded on the wire, but rather inferred from prior entry indexes.
-    Signature { size: u64, signature: Signature },
+    IndexedEntry(EntryBody<B>),
+    Signature(Signature),
     // TODO we could consider adding some explicit forward-compatible support for unknown entries
     // where if an entry type byte has specific flags set we can hash and encrypt it and verify
     // signatures on top of it without actually being able to process it.
@@ -82,7 +75,7 @@ impl<B: alloc::fmt::Debug> LogEntry<B> {
         B: Borrow<[u8]>,
     {
         match self {
-            LogEntry::IndexedEntry { idx: _, entry } => match entry {
+            LogEntry::IndexedEntry(entry) => match entry {
                 EntryBody::OpBatch(op_batch) => {
                     writer.write_byte(ENTRY_TYPE_OP_BATCH);
                     op_batch.encode(writer)?;
@@ -96,7 +89,7 @@ impl<B: alloc::fmt::Debug> LogEntry<B> {
                     writer.write_array(hash);
                 }
             },
-            LogEntry::Signature { size: _, signature } => {
+            LogEntry::Signature(signature) => {
                 // NOTE: size is inferred by the last entry, it's the callers responsibility to verify before encoding
                 writer.write_byte(ENTRY_TYPE_SIGNATURE);
                 signature.encode(writer);
@@ -105,53 +98,27 @@ impl<B: alloc::fmt::Debug> LogEntry<B> {
         Ok(())
     }
 
-    pub fn decode<'a>(
-        reader: &mut Reader<'a>,
-        next_entry_index: u64,
-    ) -> Result<Self, LogDecodeError>
+    pub fn decode<'a>(reader: &mut Reader<'a>) -> Result<Self, LogDecodeError>
     where
         B: From<&'a [u8]>,
     {
         let entry_type = reader.read_byte()?;
         Ok(match entry_type {
-            ENTRY_TYPE_OP_BATCH => Self::IndexedEntry {
-                idx: next_entry_index,
+            ENTRY_TYPE_OP_BATCH => Self::IndexedEntry(
                 // TODO max op length
-                entry: EntryBody::OpBatch(OpBatch::decode(reader)?),
-            },
-            ENTRY_TYPE_SIGNATURE => Self::Signature {
-                size: next_entry_index,
-                signature: Signature::decode(reader)
-                    .map_err(LogDecodeError::from_sig_decode_err)?,
-            },
-            ENTRY_TYPE_USE_KEY => Self::IndexedEntry {
-                idx: next_entry_index,
-                entry: EntryBody::UseKey(CipherInfo::decode(reader)?),
-            },
-            ENTRY_TYPE_EXPUNGED => Self::IndexedEntry {
-                idx: next_entry_index,
-                entry: EntryBody::Expunged(reader.read_array()?),
-            },
+                EntryBody::OpBatch(OpBatch::decode(reader)?),
+            ),
+            ENTRY_TYPE_SIGNATURE => Self::Signature(
+                Signature::decode(reader).map_err(LogDecodeError::from_sig_decode_err)?,
+            ),
+            ENTRY_TYPE_USE_KEY => {
+                Self::IndexedEntry(EntryBody::UseKey(CipherInfo::decode(reader)?))
+            }
+            ENTRY_TYPE_EXPUNGED => Self::IndexedEntry(EntryBody::Expunged(reader.read_array()?)),
             unknown => {
                 return Err(LogDecodeError::UndecodableEntryType(unknown));
             }
         })
-    }
-
-    pub(crate) fn entry_index(&self) -> Option<u64> {
-        match self {
-            LogEntry::IndexedEntry { idx, .. } => Some(*idx),
-            _ => None,
-        }
-    }
-
-    #[cfg(test)]
-    /// Just used for testing to be able to roundtrip random data.
-    fn end_index(&self) -> Option<u64> {
-        match self {
-            LogEntry::IndexedEntry { idx, .. } => Some(*idx),
-            LogEntry::Signature { size, .. } => Some(*size),
-        }
     }
 }
 
@@ -178,9 +145,7 @@ mod tests {
         let res = w.finalize();
 
         let mut r = Reader::new(&res);
-        let idx = entry.end_index();
-        let decoded = LogEntry::decode(&mut r, idx.unwrap_or(1)).unwrap();
+        let decoded = LogEntry::decode(&mut r).unwrap();
         assert_eq!(entry, decoded);
-        assert_eq!(idx, decoded.end_index());
     }
 }

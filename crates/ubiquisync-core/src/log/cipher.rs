@@ -24,15 +24,15 @@ pub enum SegmentCipherError {
     ChainHashError(#[from] ChainHashError),
 }
 
-pub fn segment_to_opaque<'a: 'b, 'b>(
+pub fn entries_to_opaque<'a: 'b, 'b>(
     cipher: &Option<EntryCipher>,
-    entries: impl Iterator<Item = &'b PlaintextLogEntry<'a>>,
     seed: &ChainSeed,
     prev_chain: &ChainHash,
+    entries: impl Iterator<Item = &'b PlaintextLogEntry<'a>>,
 ) -> Result<(Vec<OpaqueLogEntry<'a>>, ChainHash), SegmentCipherError> {
     let mut res = vec![];
     let mut cur_chain = *prev_chain;
-    for e in segment_to_opaque_iter(cipher, entries, seed, prev_chain) {
+    for e in entries_to_opaque_iter(cipher, seed, prev_chain, entries) {
         let (e, chain) = e?;
         res.push(e);
         cur_chain = chain;
@@ -46,11 +46,11 @@ pub fn segment_to_opaque<'a: 'b, 'b>(
 /// The provided [Cipher] MUST match whatever cipher was declared by the latest `UseKey` entry in the log (if any).
 /// It is an error for the segment to change its cipher mid-stream. Cipher changes MUST result in separate
 /// segments with respect to encryption/decryption
-pub fn segment_to_opaque_iter<'a: 'b, 'b>(
+pub fn entries_to_opaque_iter<'a: 'b, 'b>(
     cipher: &Option<EntryCipher>,
-    entries: impl Iterator<Item = &'b PlaintextLogEntry<'a>>,
     seed: &ChainSeed,
     prev_chain: &ChainHash,
+    entries: impl Iterator<Item = &'b PlaintextLogEntry<'a>>,
 ) -> impl Iterator<Item = Result<(OpaqueLogEntry<'a>, ChainHash), SegmentCipherError>> {
     let mut cur_chain = *prev_chain;
     entries.scan(false, move |failed, e| {
@@ -70,15 +70,15 @@ pub fn segment_to_opaque_iter<'a: 'b, 'b>(
     })
 }
 
-pub fn segment_to_plaintext<'a: 'b, 'b>(
+pub fn entries_to_plaintext<'a: 'b, 'b>(
     cipher: &Option<EntryCipher>,
-    entries: impl Iterator<Item = &'b OpaqueLogEntry<'a>>,
     seed: &ChainSeed,
     prev_chain: &ChainHash,
+    entries: impl Iterator<Item = &'b OpaqueLogEntry<'a>>,
 ) -> Result<(Vec<PlaintextLogEntry<'a>>, ChainHash), SegmentCipherError> {
     let mut res = vec![];
     let mut cur_chain = *prev_chain;
-    for e in segment_to_plaintext_iter(cipher, entries, seed, prev_chain) {
+    for e in entries_to_plaintext_iter(cipher, seed, prev_chain, entries) {
         let (e, chain) = e?;
         res.push(e);
         cur_chain = chain;
@@ -89,11 +89,11 @@ pub fn segment_to_plaintext<'a: 'b, 'b>(
 /// Converts a segment of log entries from opaque (possibly encrypted) to plaintext (not encrypted)
 /// while updating the chain hash along the way.
 /// This function has the same behavior as [segment_to_plaintext] with regards to ciphers.
-pub fn segment_to_plaintext_iter<'a: 'b, 'b>(
+pub fn entries_to_plaintext_iter<'a: 'b, 'b>(
     cipher: &Option<EntryCipher>,
-    entries: impl Iterator<Item = &'b OpaqueLogEntry<'a>>,
     seed: &ChainSeed,
     prev_chain: &ChainHash,
+    entries: impl Iterator<Item = &'b OpaqueLogEntry<'a>>,
 ) -> impl Iterator<Item = Result<(PlaintextLogEntry<'a>, ChainHash), SegmentCipherError>> {
     let mut cur_chain = *prev_chain;
     entries.scan(false, move |failed, e| {
@@ -103,7 +103,7 @@ pub fn segment_to_plaintext_iter<'a: 'b, 'b>(
         let res = (|| {
             let (e2, maybe_hash) = to_plaintext(e, cipher, seed, &cur_chain)?;
             check_use_key(cipher, &e2)?;
-            cur_chain = cur_chain.next(&e, maybe_hash, seed)?;
+            cur_chain = cur_chain.next(e, maybe_hash, seed)?;
             Ok((e2, cur_chain))
         })();
         if res.is_err() {
@@ -125,8 +125,10 @@ fn to_opaque<'a>(
     seed: &ChainSeed,
     prev_chain: &ChainHash,
 ) -> Result<(OpaqueLogEntry<'a>, Option<Hash256>), CipherError> {
+    let entry_index = prev_chain.size;
     if let Some(cipher) = cipher {
         let (e2, maybe_hash_state) = entry.transform(
+            entry_index,
             |entry_idx, op_batch| {
                 Ok(OpBatchHashState {
                     last_hash: prev_chain.hash,
@@ -149,6 +151,7 @@ fn to_opaque<'a>(
         Ok((e2, maybe_hash_state.map(|st| st.hasher.finalize())))
     } else {
         let (e2, _) = entry.transform(
+            entry_index,
             |_, _| Ok(()),
             |s, _| Ok(OpaqueBytes(s.0.clone())),
             |_, _| Ok(()),
@@ -163,8 +166,10 @@ fn to_plaintext<'a>(
     seed: &ChainSeed,
     prev_chain: &ChainHash,
 ) -> Result<(PlaintextLogEntry<'a>, Option<Hash256>), CipherError> {
+    let entry_index = prev_chain.size;
     if let Some(cipher) = cipher {
         let (e2, maybe_hash_state) = entry.transform(
+            entry_index,
             |entry_idx, op_batch| {
                 Ok(OpBatchHashState {
                     last_hash: prev_chain.hash,
@@ -187,6 +192,7 @@ fn to_plaintext<'a>(
         Ok((e2, maybe_hash_state.map(|st| st.hasher.finalize())))
     } else {
         let (e2, _) = entry.transform(
+            entry_index,
             |_, _| Ok(()),
             |s, _| Ok(PlaintextBytes(s.0.clone())),
             |_, _| Ok(()),
@@ -200,11 +206,7 @@ fn check_use_key<E: BytesWrapper>(
     cipher: &Option<EntryCipher>,
     e: &LogEntry<E>,
 ) -> Result<(), SegmentCipherError> {
-    let LogEntry::IndexedEntry {
-        entry: EntryBody::UseKey(cipher_info),
-        ..
-    } = e
-    else {
+    let LogEntry::IndexedEntry(EntryBody::UseKey(cipher_info)) = e else {
         return Ok(());
     };
 
@@ -229,9 +231,10 @@ mod tests {
     #[cfg(test)]
     use crate::log::ChainSeed;
     use crate::log::cipher::{to_opaque, to_plaintext};
-    use crate::log::segment::tests::LogEntries;
-    use crate::log::{ChainHash, segment_to_opaque};
-    use crate::log::{LogEntry, segment_to_plaintext};
+    #[cfg(test)]
+    use crate::log::segment::tests::GeneratedEntries;
+    use crate::log::{ChainHash, entries_to_opaque};
+    use crate::log::{LogEntry, entries_to_plaintext};
 
     #[proptest]
     fn test_entry_cipher(
@@ -256,26 +259,24 @@ mod tests {
         let (plaintext, hash2) = to_plaintext(&opaque, &cipher, &seed, &chain_hash).unwrap();
         assert_eq!(entry, plaintext);
         assert_eq!(hash1, hash2);
-        if let LogEntry::IndexedEntry {
-            idx,
-            entry: crate::log::EntryBody::OpBatch(batch),
-        } = opaque
+        if let LogEntry::IndexedEntry(crate::log::EntryBody::OpBatch(batch)) = opaque
             && cipher.is_some()
         {
-            let hash = batch.hash(&seed, idx);
+            let hash = batch.hash(&seed, chain_hash.size);
             assert_eq!(hash, hash1.unwrap());
         }
     }
 
     #[proptest(cases = 10)]
     fn test_segment_cipher(
-        entries: LogEntries,
+        #[strategy(0u64..1<<24)] start_idx: u64,
+        entries: GeneratedEntries,
         key: Option<[u8; 32]>,
         log_id: LogId,
         prev_hash: Hash256,
     ) {
-        let mut start_idx = entries.start_index;
-        let mut entries = entries.entries;
+        let mut start_idx = start_idx;
+        let mut entries = entries.into_entries();
         let cipher = if let Some(key) = key {
             let key = RootKey256::new(SecretBox::new(Box::new(key)));
             let container_key = key.container_key(&log_id.container_id);
@@ -286,10 +287,7 @@ mod tests {
                 start_idx -= 1;
                 entries.insert(
                     0,
-                    LogEntry::IndexedEntry {
-                        idx: start_idx,
-                        entry: crate::log::EntryBody::UseKey(cipher.cipher_info()),
-                    },
+                    LogEntry::IndexedEntry(crate::log::EntryBody::UseKey(cipher.cipher_info())),
                 )
             }
             Some(cipher)
@@ -303,9 +301,9 @@ mod tests {
             hash: prev_hash,
         };
         let (opaque, end_chain) =
-            segment_to_opaque(&cipher, entries.iter(), &seed, &start_chain).unwrap();
+            entries_to_opaque(&cipher, &seed, &start_chain, entries.iter()).unwrap();
         let (plaintext, end_chain2) =
-            segment_to_plaintext(&cipher, opaque.iter(), &seed, &start_chain).unwrap();
+            entries_to_plaintext(&cipher, &seed, &start_chain, opaque.iter()).unwrap();
         assert_eq!(end_chain, end_chain2);
         assert_eq!(entries, plaintext);
     }

@@ -1,20 +1,18 @@
-use std::ops::Range;
-
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use thiserror::Error;
 
 use crate::{
     bytes::{BytesWrapper, PlaintextBytes, ToStatic},
     codec::{ReadError, Reader, WriteError, Writer},
-    crypto::{CipherError, CipherInfo, CryptoDecodeError, Hash256, SegmentCipher, Signature},
+    crypto::{CipherError, CipherInfo, CryptoDecodeError, SegmentCipher, Signature},
     log::{ChainHash, LogDecodeError, LogEncodeError, LogEntry, OpaqueLogEntry, PlaintextLogEntry},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SegmentHeader {
-    pub range: Range<u64>,
     pub signature: Signature,
-    pub prev_chain_hash: Hash256,
+    pub prev_chain: ChainHash,
+    pub count: u64,
     pub encoding: SegmentEncoding,
 }
 
@@ -68,12 +66,11 @@ impl<'a> SegmentReader<'a> {
         self,
         cipher: &Option<SegmentCipher>,
     ) -> Result<DecodedSegment<'a>, SegmentDecodeError> {
-        let start = self.header.range.start;
         let buf = self.reader.into_remaining();
         Ok(match self.header.encoding {
             SegmentEncoding::Opaque => {
                 let mut res = vec![];
-                for e in decode_entries(start, buf) {
+                for e in decode_entries(buf) {
                     res.push(e?);
                 }
                 DecodedSegment::Opaque(res)
@@ -86,7 +83,8 @@ impl<'a> SegmentReader<'a> {
                         {
                             decrypt_decompress_decode_entries(
                                 cipher,
-                                &self.header.range,
+                                &self.header.prev_chain,
+                                self.header.count,
                                 &c.nonce,
                                 buf,
                             )?
@@ -94,7 +92,7 @@ impl<'a> SegmentReader<'a> {
                             return Err(SegmentDecodeError::MissingSegmentCipher(c.cipher));
                         }
                     }
-                    None => decompress_decode_entries(start, buf)?,
+                    None => decompress_decode_entries(buf)?,
                 })
             }
         })
@@ -102,48 +100,36 @@ impl<'a> SegmentReader<'a> {
 }
 
 pub fn encode_segment_opaque<'a>(
-    range: &Range<u64>,
     signature: &Signature,
     prev_chain: &ChainHash,
+    count: u64,
     entries: impl Iterator<Item = &'a OpaqueLogEntry<'a>>,
 ) -> Result<Vec<u8>, SegmentEncodeError> {
-    if prev_chain.size != range.start {
-        return Err(SegmentEncodeError::RangeMismatch {
-            actual: range.clone(),
-            expected: prev_chain.size..range.end,
-        });
-    }
     let mut w = Writer::new();
     let header = SegmentHeader {
-        range: range.clone(),
+        prev_chain: *prev_chain,
         signature: *signature,
-        prev_chain_hash: prev_chain.hash,
+        count,
         encoding: SegmentEncoding::Opaque,
     };
     header.encode(&mut w)?;
-    let range2 = encode_entries(entries, &mut w)?;
-    if range != &range2 {
-        return Err(SegmentEncodeError::RangeMismatch {
-            actual: range2,
-            expected: range.clone(),
+    let count2 = encode_entries(entries, &mut w)?;
+    if count != count2 {
+        return Err(SegmentEncodeError::CountMismatch {
+            actual: count2,
+            expected: count,
         });
     }
     Ok(w.finalize())
 }
 
 pub fn encode_segment_plaintext<'a>(
-    range: &Range<u64>,
     signature: &Signature,
     prev_chain: &ChainHash,
+    count: u64,
     cipher: &Option<SegmentCipher>,
     entries: impl Iterator<Item = &'a PlaintextLogEntry<'a>>,
 ) -> Result<Vec<u8>, SegmentEncodeError> {
-    if prev_chain.size != range.start {
-        return Err(SegmentEncodeError::RangeMismatch {
-            actual: range.clone(),
-            expected: prev_chain.size..range.end,
-        });
-    }
     let mut w = Writer::new();
     let (outer_encryption, nonce) = if let Some(cipher) = cipher {
         let nonce_size = cipher.cipher_suite().nonce_size();
@@ -165,21 +151,21 @@ pub fn encode_segment_plaintext<'a>(
         inner_compression: Compression::Zstd,
     };
     let header = SegmentHeader {
-        range: range.clone(),
+        count,
         signature: *signature,
-        prev_chain_hash: prev_chain.hash,
+        prev_chain: *prev_chain,
         encoding: SegmentEncoding::Plaintext(encoding),
     };
     header.encode(&mut w)?;
-    let (buf, range2) = if let Some(cipher) = cipher {
-        encode_compress_encrypt_entries(cipher, &nonce.unwrap(), entries)
+    let (buf, count2) = if let Some(cipher) = cipher {
+        encode_compress_encrypt_entries(cipher, prev_chain, &nonce.unwrap(), entries)
     } else {
         encode_compress_entries(entries)
     }?;
-    if range != &range2 {
-        return Err(SegmentEncodeError::RangeMismatch {
-            actual: range2,
-            expected: range.clone(),
+    if count != count2 {
+        return Err(SegmentEncodeError::CountMismatch {
+            actual: count2,
+            expected: count,
         });
     }
     w.write_slice(buf.as_slice());
@@ -187,28 +173,20 @@ pub fn encode_segment_plaintext<'a>(
 }
 
 pub fn decode_entries<'a, E>(
-    start: u64,
     bytes: &'a [u8],
 ) -> impl Iterator<Item = Result<LogEntry<E>, LogDecodeError>>
 where
     E: From<&'a [u8]> + BytesWrapper,
 {
     let mut reader = Reader::new(bytes);
-    let mut next_entry_index = start;
+    let mut failed = false;
     std::iter::from_fn(move || {
-        if reader.is_empty() {
+        if failed || reader.is_empty() {
             None
         } else {
-            let e = LogEntry::decode(&mut reader, next_entry_index);
-            if let Ok(ref e) = e
-                && let Some(idx) = e.entry_index()
-            {
-                if let Some(next) = idx.checked_add(1) {
-                    // NOTE: indexes aren't wire controlled, this is purely defensive
-                    next_entry_index = next
-                } else {
-                    return Some(Err(LogDecodeError::U64AddOverflow(idx, 1)));
-                }
+            let e = LogEntry::decode(&mut reader);
+            if e.is_err() {
+                failed = true;
             }
             Some(e)
         }
@@ -218,24 +196,18 @@ where
 pub fn encode_entries<'a, E>(
     entries: impl Iterator<Item = &'a LogEntry<E>>,
     writer: &mut Writer,
-) -> Result<Range<u64>, LogEncodeError>
+) -> Result<u64, LogEncodeError>
 where
     E: BytesWrapper + 'a,
 {
-    let mut have_start = false;
-    let mut start = 0;
-    let mut end = 0;
+    let mut count = 0;
     for e in entries {
-        if let Some(idx) = e.entry_index() {
-            if !have_start {
-                start = idx;
-                have_start = true;
-            }
-            end = idx + 1;
+        if let LogEntry::IndexedEntry(_) = e {
+            count += 1;
         }
         e.encode(writer)?;
     }
-    Ok(start..end)
+    Ok(count)
 }
 
 #[derive(Error, Debug)]
@@ -249,11 +221,8 @@ pub enum SegmentEncodeError {
     #[error("write error: {0}")]
     WriteError(#[from] WriteError),
 
-    #[error("range mismatch, expected {expected:?}, got {actual:?}")]
-    RangeMismatch {
-        actual: Range<u64>,
-        expected: Range<u64>,
-    },
+    #[error("entry count mismatch, expected {expected:?}, got {actual:?}")]
+    CountMismatch { actual: u64, expected: u64 },
     #[error("nonce generation error")]
     NonceGenerationError,
 }
@@ -282,27 +251,27 @@ pub enum SegmentDecodeError {
 
 fn encode_compress_encrypt_entries<'a>(
     segment_cipher: &SegmentCipher,
+    prev_chain: &ChainHash,
     nonce: &[u8],
     entries: impl Iterator<Item = &'a PlaintextLogEntry<'a>>,
-) -> Result<(Vec<u8>, Range<u64>), SegmentEncodeError> {
-    let (mut inout, range) = encode_compress_entries(entries)?;
-    segment_cipher.encrypt_segment(&range, nonce, &mut inout)?;
-    Ok((inout, range))
+) -> Result<(Vec<u8>, u64), SegmentEncodeError> {
+    let (mut inout, count) = encode_compress_entries(entries)?;
+    segment_cipher.encrypt_segment(prev_chain, count, nonce, &mut inout)?;
+    Ok((inout, count))
 }
 
 fn encode_compress_entries<'a>(
     entries: impl Iterator<Item = &'a PlaintextLogEntry<'a>>,
-) -> Result<(Vec<u8>, Range<u64>), SegmentEncodeError> {
+) -> Result<(Vec<u8>, u64), SegmentEncodeError> {
     let mut w = Writer::new();
-    let r = encode_entries(entries, &mut w)?;
-    Ok((zstd::encode_all(w.finalize().as_slice(), 0)?, r))
+    let count = encode_entries(entries, &mut w)?;
+    Ok((zstd::encode_all(w.finalize().as_slice(), 0)?, count))
 }
 
 /// 256mb decode limit
 const ZSTD_DECODE_LIMIT: usize = 1usize << 28;
 
 fn decompress_decode_entries(
-    start: u64,
     buf: &[u8],
 ) -> Result<Vec<PlaintextLogEntry<'static>>, SegmentDecodeError> {
     // TODO: decode with limit
@@ -311,7 +280,7 @@ fn decompress_decode_entries(
     //     .take(ZSTD_DECODE_LIMIT)
     //     .read_to_end(&mut buf);
     let buf = zstd::decode_all(buf)?;
-    let it = decode_entries::<PlaintextBytes>(start, buf.as_slice());
+    let it = decode_entries::<PlaintextBytes>(buf.as_slice());
     let mut res = vec![];
     for e in it {
         res.push(e?.to_static());
@@ -321,34 +290,35 @@ fn decompress_decode_entries(
 
 fn decrypt_decompress_decode_entries(
     segment_cipher: &SegmentCipher,
-    range: &Range<u64>,
+    prev_chain: &ChainHash,
+    count: u64,
     nonce: &[u8],
     buf: &[u8], // TODO we could maybe use parent vec as inout buffer for less alloc in the future
 ) -> Result<Vec<PlaintextLogEntry<'static>>, SegmentDecodeError> {
     let mut buf = Vec::from(buf);
-    segment_cipher.decrypt_segment(range, nonce, &mut buf)?;
-    decompress_decode_entries(range.start, buf.as_slice())
+    segment_cipher.decrypt_segment(prev_chain, count, nonce, &mut buf)?;
+    decompress_decode_entries(buf.as_slice())
 }
 
 impl SegmentHeader {
     pub fn encode(&self, w: &mut Writer) -> Result<(), WriteError> {
-        w.write_range(&self.range)?;
+        self.prev_chain.encode(w);
+        w.write_var_u64(self.count);
         self.signature.encode(w);
-        w.write_array(&self.prev_chain_hash);
         self.encoding.encode(w);
         Ok(())
     }
 
     pub fn decode(r: &mut Reader) -> Result<Self, SegmentDecodeError> {
-        let range = r.read_range()?;
+        let prev_chain = ChainHash::decode(r)?;
+        let count = r.read_var_u64()?;
         let signature = Signature::decode(r).map_err(SegmentDecodeError::from_sig_decode_err)?;
-        let prev_chain_hash: Hash256 = r.read_array()?;
         let encoding = SegmentEncoding::decode(r)?;
         Ok(Self {
-            range,
             signature,
-            prev_chain_hash,
             encoding,
+            prev_chain,
+            count,
         })
     }
 }
@@ -432,28 +402,20 @@ const SEGMENT_ENCODING_OPAQUE: u8 = 0;
 const SEGMENT_ENCODING_PLAINTEXT: u8 = 1;
 
 /// Computes the index range of the segment. Returns 0..0 if the segment has no indexed entries.
-pub fn compute_segment_range<'a, B: std::fmt::Debug + 'a>(
+pub fn count_entries<'a, B: std::fmt::Debug + 'a>(
     entries: impl Iterator<Item = &'a LogEntry<B>>,
-) -> Range<u64> {
-    let mut have_start = false;
-    let mut start = 0;
-    let mut end = 0;
-    for entry in entries {
-        if let Some(idx) = entry.entry_index() {
-            if !have_start {
-                start = idx;
-                have_start = true;
-            }
-            end = idx + 1;
+) -> u64 {
+    let mut count = 0;
+    for e in entries {
+        if let LogEntry::IndexedEntry(_) = e {
+            count += 1;
         }
     }
-    start..end
+    count
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use proptest::strategy::{BoxedStrategy, Strategy};
-    #[cfg(test)]
     use secrecy::SecretBox;
     use test_strategy::{Arbitrary, proptest};
 
@@ -462,42 +424,18 @@ pub(crate) mod tests {
         crypto::{RootKey256, Signature},
         ids::LogId,
         log::{
-            ChainHash, EntryBody, LogEntry, OpBatch, PlaintextLogEntry,
-            segment::{
-                SegmentEncoding, compute_segment_range, encode_segment_opaque,
-                encode_segment_plaintext,
-            },
-            segment_to_opaque,
+            ChainHash, LogEntry, OpBatch, PlaintextLogEntry, entries_to_opaque,
+            segment::{SegmentEncoding, encode_segment_opaque, encode_segment_plaintext},
         },
     };
     #[cfg(test)]
     use crate::{
         crypto::{SegmentCipher, SegmentCipherSuite},
-        log::{ChainSeed, segment::SegmentReader},
+        log::{
+            ChainSeed,
+            segment::{SegmentReader, count_entries},
+        },
     };
-
-    #[derive(Debug)]
-    pub(crate) struct LogEntries {
-        pub start_index: u64,
-        pub entries: Vec<PlaintextLogEntry<'static>>,
-    }
-
-    impl proptest::arbitrary::Arbitrary for LogEntries {
-        type Parameters = ();
-        type Strategy = BoxedStrategy<Self>;
-
-        fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
-            (
-                (0u64..1 << 24),
-                proptest::collection::vec(proptest::arbitrary::any::<GeneratedEntry>(), 1..=256),
-            )
-                .prop_map(|(start_index, entries)| LogEntries {
-                    start_index,
-                    entries: GeneratedEntry::to_entries(entries, start_index).collect(),
-                })
-                .boxed()
-        }
-    }
 
     #[derive(Arbitrary, Debug)]
     pub(crate) enum GeneratedEntry {
@@ -505,35 +443,34 @@ pub(crate) mod tests {
         Signature(Signature),
     }
 
-    impl GeneratedEntry {
-        pub(crate) fn to_entries(
-            entries: Vec<Self>,
-            mut next_entry_index: u64,
-        ) -> impl Iterator<Item = PlaintextLogEntry<'static>> {
-            entries.into_iter().map(move |e| match e {
-                GeneratedEntry::Ops(ops) => {
-                    let e = LogEntry::IndexedEntry {
-                        idx: next_entry_index,
-                        entry: EntryBody::OpBatch(ops),
-                    };
-                    next_entry_index += 1;
-                    e
-                }
-                GeneratedEntry::Signature(signature) => LogEntry::Signature {
-                    size: next_entry_index,
-                    signature,
-                },
-            })
+    #[derive(Arbitrary, Debug)]
+    pub(crate) struct GeneratedEntries(Vec<GeneratedEntry>);
+
+    impl GeneratedEntries {
+        pub(crate) fn into_entries(self) -> Vec<PlaintextLogEntry<'static>> {
+            self.0
+                .into_iter()
+                .map(move |e| match e {
+                    GeneratedEntry::Ops(ops) => {
+                        LogEntry::IndexedEntry(crate::log::EntryBody::OpBatch(ops))
+                    }
+                    GeneratedEntry::Signature(signature) => LogEntry::Signature(signature),
+                })
+                .collect::<Vec<_>>()
         }
     }
 
     #[proptest(cases = 10)]
-    fn test_segments_no_cipher(entries: LogEntries, log_id: LogId) {
-        let range = compute_segment_range(entries.entries.iter());
-        assert_eq!(range.start, entries.start_index);
+    fn test_segments_no_cipher(
+        #[strategy(0u64..1<<24)] start_idx: u64,
+        entries: GeneratedEntries,
+        log_id: LogId,
+    ) {
+        let entries = entries.into_entries();
+        let count = count_entries(entries.iter());
         let seed = ChainSeed::new(&log_id);
         let start_chain = ChainHash {
-            size: range.start,
+            size: start_idx,
             hash: [3; 32],
         };
         let sig = Signature::Ed25519([2; 64]);
@@ -541,13 +478,13 @@ pub(crate) mod tests {
         // test opaque encoding
         {
             let (opaque, _) =
-                segment_to_opaque(&None, entries.entries.iter(), &seed, &start_chain).unwrap();
-            let segment = encode_segment_opaque(&range, &sig, &start_chain, opaque.iter()).unwrap();
+                entries_to_opaque(&None, &seed, &start_chain, entries.iter()).unwrap();
+            let segment = encode_segment_opaque(&sig, &start_chain, count, opaque.iter()).unwrap();
             let reader = SegmentReader::start(&segment).unwrap();
             let header = reader.header();
             assert_eq!(sig, header.signature);
-            assert_eq!(range, header.range);
-            assert_eq!(start_chain.hash, header.prev_chain_hash);
+            assert_eq!(count, header.count);
+            assert_eq!(start_chain, header.prev_chain);
             assert_eq!(header.encoding, SegmentEncoding::Opaque);
             let decoded = reader.read(&None).unwrap();
             match decoded {
@@ -561,17 +498,16 @@ pub(crate) mod tests {
         // test plaintext encoding (basically just compression)
         {
             let segment =
-                encode_segment_plaintext(&range, &sig, &start_chain, &None, entries.entries.iter())
-                    .unwrap();
+                encode_segment_plaintext(&sig, &start_chain, count, &None, entries.iter()).unwrap();
             let reader = SegmentReader::start(&segment).unwrap();
             let header = reader.header();
             assert_eq!(sig, header.signature);
-            assert_eq!(range, header.range);
-            assert_eq!(start_chain.hash, header.prev_chain_hash);
+            assert_eq!(count, header.count);
+            assert_eq!(start_chain, header.prev_chain);
             let decoded = reader.read(&None).unwrap();
             match decoded {
                 crate::log::segment::DecodedSegment::Plaintext(items) => {
-                    assert_eq!(entries.entries, items);
+                    assert_eq!(entries, items);
                 }
                 crate::log::segment::DecodedSegment::Opaque(_) => unreachable!(),
             }
@@ -579,33 +515,36 @@ pub(crate) mod tests {
     }
 
     #[proptest(cases = 10)]
-    fn test_segments_with_cipher(entries: LogEntries, log_id: LogId, key: [u8; 32]) {
+    fn test_segments_with_cipher(
+        #[strategy(0u64..1<<24)] start_idx: u64,
+        entries: Vec<PlaintextLogEntry<'static>>,
+        log_id: LogId,
+        key: [u8; 32],
+    ) {
         let key = RootKey256::new(SecretBox::new(Box::new(key)));
         let cipher = Some(SegmentCipher::new(
             SegmentCipherSuite::XChaCha20Poly1305,
             key.container_key(&log_id.container_id),
             &log_id,
         ));
-        let range = compute_segment_range(entries.entries.iter());
-        assert_eq!(range.start, entries.start_index);
+        let count = count_entries(entries.iter());
         let chain_start = ChainHash {
-            size: range.start,
+            size: start_idx,
             hash: [3; 32],
         };
         let sig = Signature::Ed25519([2; 64]);
 
         let segment =
-            encode_segment_plaintext(&range, &sig, &chain_start, &cipher, entries.entries.iter())
-                .unwrap();
+            encode_segment_plaintext(&sig, &chain_start, count, &cipher, entries.iter()).unwrap();
         let reader = SegmentReader::start(&segment).unwrap();
         let header = reader.header();
         assert_eq!(sig, header.signature);
-        assert_eq!(range, header.range);
-        assert_eq!(chain_start.hash, header.prev_chain_hash);
+        assert_eq!(count, header.count);
+        assert_eq!(chain_start, header.prev_chain);
         let decoded = reader.read(&cipher).unwrap();
         match decoded {
             crate::log::segment::DecodedSegment::Plaintext(items) => {
-                assert_eq!(entries.entries, items);
+                assert_eq!(entries, items);
             }
             crate::log::segment::DecodedSegment::Opaque(_) => unreachable!(),
         }

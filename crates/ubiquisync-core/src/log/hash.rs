@@ -4,6 +4,7 @@ use thiserror::Error;
 
 use crate::{
     bytes::OpaqueBytes,
+    codec::{ReadError, Reader, Writer},
     crypto::{CipherInfo, Hash256, Hasher, TaggedHashDomain, new_tagged_hasher},
     ids::LogId,
     log::{EntryBody, LogEntry, OpBatch, OpOrExpunge, OpaqueLogEntry},
@@ -16,10 +17,8 @@ pub struct ChainHash {
 }
 
 #[derive(Error, Debug)]
-pub enum ChainHashError {
-    #[error("expected entry {size}, got {idx}")]
-    OutOfOrderEntry { size: u64, idx: u64 },
-}
+#[error("chain hash error")]
+pub struct ChainHashError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChainSeed(Hash256);
@@ -49,15 +48,11 @@ impl ChainHash {
         seed: &ChainSeed,
     ) -> Result<ChainHash, ChainHashError> {
         match entry {
-            LogEntry::IndexedEntry { idx, entry } => {
-                let size = self.size;
-                if *idx != size {
-                    return Err(ChainHashError::OutOfOrderEntry { size, idx: *idx });
-                }
-                let entry_hash = precomputed_hash.unwrap_or_else(|| entry.hash(seed, *idx));
+            LogEntry::IndexedEntry(entry) => {
+                let entry_hash = precomputed_hash.unwrap_or_else(|| entry.hash(seed, self.size));
                 Ok(self.add_one(&entry_hash))
             }
-            LogEntry::Signature { .. } => Ok(*self),
+            LogEntry::Signature(_) => Ok(*self),
         }
     }
 
@@ -67,6 +62,17 @@ impl ChainHash {
         hasher.update(&self.size.to_le_bytes());
         hasher.update(&self.hash);
         hasher.finalize()
+    }
+
+    pub fn encode(&self, w: &mut Writer) {
+        w.write_var_u64(self.size);
+        w.write_array(&self.hash);
+    }
+
+    pub fn decode(r: &mut Reader) -> Result<Self, ReadError> {
+        let size = r.read_var_u64()?;
+        let hash = r.read_array()?;
+        Ok(Self { size, hash })
     }
 }
 
@@ -95,7 +101,7 @@ impl<'a> OpBatch<OpaqueBytes<'a>> {
     pub fn hash(&self, seed: &ChainSeed, entry_idx: u64) -> Hash256 {
         let mut hasher = OpBatchHasher::new(seed, entry_idx, self.ops.len());
         hasher.hash_slot(&self.timestamp);
-        if self.server_attested_user_id.0.len() > 0 {
+        if !self.server_attested_user_id.0.is_empty() {
             hasher.hash_slot(&self.server_attested_user_id);
         }
         for e in self.ops.iter() {

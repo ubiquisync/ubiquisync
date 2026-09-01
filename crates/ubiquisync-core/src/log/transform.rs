@@ -59,6 +59,7 @@ impl<X: BytesWrapper> LogEntry<X> {
     /// `on_expunge_op` is called when an op-level expunge is encountered with the op index, hash and mutable state.
     pub fn transform<X2: BytesWrapper, A, B, C, S, Err>(
         &self,
+        entry_index: u64,
         init_state: A,
         transform_slot: B,
         on_expunge_op: C,
@@ -69,40 +70,28 @@ impl<X: BytesWrapper> LogEntry<X> {
         C: Fn(&Hash256, &mut S) -> Result<(), Err>,
     {
         Ok(match self {
-            LogEntry::IndexedEntry { idx, entry } => match entry {
+            LogEntry::IndexedEntry(entry) => match entry {
                 EntryBody::OpBatch(op_batch) => {
-                    let (op_batch2, state) =
-                        op_batch.transform(*idx, init_state, transform_slot, on_expunge_op)?;
+                    let (op_batch2, state) = op_batch.transform(
+                        entry_index,
+                        init_state,
+                        transform_slot,
+                        on_expunge_op,
+                    )?;
                     (
-                        LogEntry::IndexedEntry {
-                            entry: EntryBody::OpBatch(op_batch2),
-                            idx: *idx,
-                        },
+                        LogEntry::IndexedEntry(EntryBody::OpBatch(op_batch2)),
                         Some(state),
                     )
                 }
                 EntryBody::UseKey(cipher_info) => (
-                    LogEntry::IndexedEntry {
-                        entry: EntryBody::UseKey(*cipher_info),
-                        idx: *idx,
-                    },
+                    LogEntry::IndexedEntry(EntryBody::UseKey(*cipher_info)),
                     None,
                 ),
-                EntryBody::Expunged(hash) => (
-                    LogEntry::IndexedEntry {
-                        entry: EntryBody::Expunged(*hash),
-                        idx: *idx,
-                    },
-                    None,
-                ),
+                EntryBody::Expunged(hash) => {
+                    (LogEntry::IndexedEntry(EntryBody::Expunged(*hash)), None)
+                }
             },
-            LogEntry::Signature { size, signature } => (
-                LogEntry::Signature {
-                    size: *size,
-                    signature: *signature,
-                },
-                None,
-            ),
+            LogEntry::Signature(signature) => (LogEntry::Signature(*signature), None),
         })
     }
 }
@@ -137,15 +126,12 @@ where
 
     fn to_static(self) -> Self::Static {
         match self {
-            LogEntry::IndexedEntry { idx, entry } => LogEntry::IndexedEntry {
-                idx,
-                entry: match entry {
-                    EntryBody::OpBatch(op_batch) => EntryBody::OpBatch(op_batch.to_static()),
-                    EntryBody::UseKey(cipher_info) => EntryBody::UseKey(cipher_info),
-                    EntryBody::Expunged(hash) => EntryBody::Expunged(hash),
-                },
-            },
-            LogEntry::Signature { size, signature } => LogEntry::Signature { size, signature },
+            LogEntry::IndexedEntry(entry) => LogEntry::IndexedEntry(match entry {
+                EntryBody::OpBatch(op_batch) => EntryBody::OpBatch(op_batch.to_static()),
+                EntryBody::UseKey(cipher_info) => EntryBody::UseKey(cipher_info),
+                EntryBody::Expunged(hash) => EntryBody::Expunged(hash),
+            }),
+            LogEntry::Signature(signature) => LogEntry::Signature(signature),
         }
     }
 }

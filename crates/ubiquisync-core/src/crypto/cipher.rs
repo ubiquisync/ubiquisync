@@ -1,5 +1,4 @@
 use std::borrow::Borrow;
-use std::ops::Range;
 
 use chacha20::ChaCha20;
 use chacha20::KeyIvInit;
@@ -27,6 +26,7 @@ use crate::codec::Writer;
 use crate::crypto::Hash256;
 use crate::ids::ContainerId;
 use crate::ids::LogId;
+use crate::log::ChainHash;
 
 /// The cipher suite for per-entry encryption used for canonical entry hashing
 /// for signatures. This mode is only used for transport and storage when the
@@ -278,11 +278,12 @@ impl SegmentCipher {
 
     pub fn decrypt_segment(
         &self,
-        range: &Range<u64>,
+        prev_chain: &ChainHash,
+        count: u64,
         nonce: &[u8],
         inout: &mut Vec<u8>,
     ) -> Result<(), CipherError> {
-        let (ad, nonce) = self.segment_ad_and_cipher(range, nonce)?;
+        let (ad, nonce) = self.segment_ad_and_cipher(prev_chain, count, nonce)?;
         self.cipher
             .decrypt_in_place(&nonce, &ad, inout)
             .map_err(|_| CipherError)?;
@@ -291,11 +292,12 @@ impl SegmentCipher {
 
     pub fn encrypt_segment(
         &self,
-        range: &Range<u64>,
+        prev_chain: &ChainHash,
+        count: u64,
         nonce: &[u8],
         inout: &mut Vec<u8>,
     ) -> Result<(), CipherError> {
-        let (ad, nonce) = self.segment_ad_and_cipher(range, nonce)?;
+        let (ad, nonce) = self.segment_ad_and_cipher(prev_chain, count, nonce)?;
         self.cipher
             .encrypt_in_place(&nonce, &ad, inout)
             .map_err(|_| CipherError)?;
@@ -304,13 +306,15 @@ impl SegmentCipher {
 
     fn segment_ad_and_cipher(
         &self,
-        range: &Range<u64>,
+        prev_chain: &ChainHash,
+        count: u64,
         nonce: &[u8],
     ) -> Result<(Vec<u8>, XNonce), CipherError> {
         let mut ad = Vec::new();
         ad.extend_from_slice(self.base.derive_prefix.as_slice());
-        ad.extend_from_slice(&range.start.to_le_bytes());
-        ad.extend_from_slice(&range.end.to_le_bytes());
+        ad.extend_from_slice(&prev_chain.hash);
+        ad.extend_from_slice(&prev_chain.size.to_le_bytes());
+        ad.extend_from_slice(&count.to_le_bytes());
         let xnonce = nonce.try_into().map_err(|_| CipherError)?;
         Ok((ad, xnonce))
     }
