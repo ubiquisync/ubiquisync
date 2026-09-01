@@ -64,7 +64,7 @@ pub struct OpBatch<B: alloc::fmt::Debug> {
 
 /// Represents an operation or that operation's hash in the case it has been expunged on a per-slot basis.
 /// Generally per-slot expunge shouldn't be used, there should only be one operation in a batch and if
-/// we want to expunge that entry, we can just use [LogEntry::Expunged].
+/// we want to expunge that entry, we can just use [crate::log::EntryBody::Expunged].
 /// A few scenarios where per-slot expungement _could_ be useful where conceived of when this
 /// structure was created, but not implemented. Now it mainly serves to separate op header and body
 /// for hashing and then encryption, but the possibility of multiple ops with per-slot expungement

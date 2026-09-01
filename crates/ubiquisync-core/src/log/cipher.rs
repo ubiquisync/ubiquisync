@@ -24,6 +24,12 @@ pub enum SegmentCipherError {
     ChainHashError(#[from] ChainHashError),
 }
 
+/// Converts a segment of log entries from plaintext (not encrypted) to opaque (possibly encrypted)
+/// and returns the resulting chain hash.
+/// Entries are encrypted depending on whether or not a cipher is passed in.
+/// The provided [EntryCipher] MUST match whatever cipher was declared by the latest `UseKey` entry in the log (if any).
+/// It is an error for the segment to change its cipher mid-stream. Cipher changes MUST result in separate
+/// segments with respect to encryption/decryption
 pub fn entries_to_opaque<'a: 'b, 'b>(
     cipher: &Option<EntryCipher>,
     seed: &ChainSeed,
@@ -40,12 +46,6 @@ pub fn entries_to_opaque<'a: 'b, 'b>(
     Ok((res, cur_chain))
 }
 
-/// Converts a segment of log entries from plaintext (not encrypted) to opaque (possibly encrypted)
-/// while updating the chain hash along the way.
-/// Entries are encrypted depending on whether or not a cipher is passed in.
-/// The provided [Cipher] MUST match whatever cipher was declared by the latest `UseKey` entry in the log (if any).
-/// It is an error for the segment to change its cipher mid-stream. Cipher changes MUST result in separate
-/// segments with respect to encryption/decryption
 pub fn entries_to_opaque_iter<'a: 'b, 'b>(
     cipher: &Option<EntryCipher>,
     seed: &ChainSeed,
@@ -70,6 +70,9 @@ pub fn entries_to_opaque_iter<'a: 'b, 'b>(
     })
 }
 
+/// Converts a segment of log entries from opaque (possibly encrypted) to plaintext (not encrypted)
+/// and returns the resulting chain hash.
+/// This function has the same behavior as [entries_to_opaque] with regards to ciphers.
 pub fn entries_to_plaintext<'a: 'b, 'b>(
     cipher: &Option<EntryCipher>,
     seed: &ChainSeed,
@@ -86,9 +89,6 @@ pub fn entries_to_plaintext<'a: 'b, 'b>(
     Ok((res, cur_chain))
 }
 
-/// Converts a segment of log entries from opaque (possibly encrypted) to plaintext (not encrypted)
-/// while updating the chain hash along the way.
-/// This function has the same behavior as [segment_to_plaintext] with regards to ciphers.
 pub fn entries_to_plaintext_iter<'a: 'b, 'b>(
     cipher: &Option<EntryCipher>,
     seed: &ChainSeed,
