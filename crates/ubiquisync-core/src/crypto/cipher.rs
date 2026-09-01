@@ -5,8 +5,8 @@ use chacha20::ChaCha20;
 use chacha20::KeyIvInit;
 use chacha20::cipher::StreamCipher;
 use chacha20poly1305::AeadInOut;
-use chacha20poly1305::ChaCha20Poly1305;
-use chacha20poly1305::Nonce;
+use chacha20poly1305::XChaCha20Poly1305;
+use chacha20poly1305::XNonce;
 use crypto_common::KeyInit;
 use hkdf::Hkdf;
 use hmac::Hmac;
@@ -52,7 +52,7 @@ pub enum EntryCipherSuite {
 #[derive(IntoPrimitive, TryFromPrimitive, Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub enum SegmentCipherSuite {
-    ChaCha20Poly1305 = 0,
+    XChaCha20Poly1305 = 0,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,6 +73,7 @@ pub struct EntryCipher {
 
 pub struct SegmentCipher {
     base: CipherBase,
+    cipher: XChaCha20Poly1305,
 }
 
 const DERIVE_PREFIX_LEN: usize = 1 + 32 + 32 + 16;
@@ -90,6 +91,14 @@ pub struct RootKey256Fingerprint(pub [u8; 32]);
 #[derive(Error, Debug)]
 #[error("cipher error")]
 pub struct CipherError;
+
+impl SegmentCipherSuite {
+    pub fn nonce_size(&self) -> usize {
+        match self {
+            SegmentCipherSuite::XChaCha20Poly1305 => 24,
+        }
+    }
+}
 
 impl CipherBase {
     fn new(suite: u8, key: ContainerKey256, log_id: &LogId) -> Self {
@@ -252,23 +261,26 @@ impl SegmentCipher {
     pub fn new(suite: SegmentCipherSuite, key: ContainerKey256, log_id: &LogId) -> Self {
         assert_eq!(
             suite,
-            SegmentCipherSuite::ChaCha20Poly1305,
+            SegmentCipherSuite::XChaCha20Poly1305,
             "if this gets triggered it means we need to support new cipher suites",
         );
 
         let base = CipherBase::new(suite.into(), key, log_id);
-
-        Self { base }
+        // TODO should we get this off the stack?
+        let mut key = [0; 32];
+        kdf(KDF_DOMAIN_LOG_SEGMENT, &base.key.key, &[], &mut key);
+        let cipher = XChaCha20Poly1305::new(&key.into());
+        Self { base, cipher }
     }
 
     pub fn decrypt_segment(
         &self,
         range: &Range<u64>,
-        nonce: &[u8; 16],
+        nonce: &[u8],
         inout: &mut Vec<u8>,
     ) -> Result<(), CipherError> {
-        let (ad, cipher, nonce) = self.segment_ad_and_cipher(range, nonce);
-        cipher
+        let (ad, nonce) = self.segment_ad_and_cipher(range, nonce)?;
+        self.cipher
             .decrypt_in_place(&nonce, &ad, inout)
             .map_err(|_| CipherError)?;
         Ok(())
@@ -277,11 +289,11 @@ impl SegmentCipher {
     pub fn encrypt_segment(
         &self,
         range: &Range<u64>,
-        nonce: &[u8; 16],
+        nonce: &[u8],
         inout: &mut Vec<u8>,
     ) -> Result<(), CipherError> {
-        let (ad, cipher, nonce) = self.segment_ad_and_cipher(range, nonce);
-        cipher
+        let (ad, nonce) = self.segment_ad_and_cipher(range, nonce)?;
+        self.cipher
             .encrypt_in_place(&nonce, &ad, inout)
             .map_err(|_| CipherError)?;
         Ok(())
@@ -290,24 +302,14 @@ impl SegmentCipher {
     fn segment_ad_and_cipher(
         &self,
         range: &Range<u64>,
-        nonce: &[u8; 16],
-    ) -> (Vec<u8>, ChaCha20Poly1305, Nonce) {
+        nonce: &[u8],
+    ) -> Result<(Vec<u8>, XNonce), CipherError> {
         let mut ad = Vec::new();
         ad.extend_from_slice(self.base.derive_prefix.as_slice());
         ad.extend_from_slice(&range.start.to_le_bytes());
         ad.extend_from_slice(&range.end.to_le_bytes());
-        // TODO do we need end in AD too?
-        let mut key_info = ad.clone();
-        key_info.extend_from_slice(nonce);
-        let mut key = [0; 32]; // TODO this probably shouldn't be on stack
-        kdf(
-            KDF_DOMAIN_LOG_SEGMENT,
-            &self.base.key.key,
-            &key_info,
-            &mut key,
-        );
-        let cipher = ChaCha20Poly1305::new(&key.into());
-        (ad, cipher, [0; 12].into()) // since we derive every key based on coordinates, we can use a zero nonce
+        let xnonce = nonce.try_into().map_err(|_| CipherError)?;
+        Ok((ad, xnonce))
     }
 
     pub fn key_fingerprint(&self) -> &RootKey256Fingerprint {
@@ -315,7 +317,7 @@ impl SegmentCipher {
     }
 
     pub fn cipher_suite(&self) -> SegmentCipherSuite {
-        SegmentCipherSuite::ChaCha20Poly1305
+        SegmentCipherSuite::XChaCha20Poly1305
     }
 
     pub fn cipher_info(&self) -> CipherInfo {
