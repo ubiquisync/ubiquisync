@@ -60,6 +60,7 @@ hkdf = "0.13.0"
 zeroize = {version = "1.9.0", features = ["zeroize_derive"]}
 secrecy = "0.10.3"
 crypto-common = "0.2.2"
+chacha20 = "0.10.2"
 
 # testing
 proptest = "1.11.0"

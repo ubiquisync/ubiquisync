@@ -3,8 +3,11 @@ use std::ops::Range;
 
 use aes_gcm_siv::AeadInOut;
 use aes_gcm_siv::Aes256GcmSiv;
-use aes_gcm_siv::KeyInit;
 use aes_gcm_siv::Nonce;
+use chacha20::ChaCha20;
+use chacha20::cipher::StreamCipher;
+use crypto_common::KeyInit;
+use crypto_common::KeyIvInit;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use secrecy::ExposeSecret;
 use secrecy::SecretBox;
@@ -24,10 +27,31 @@ use crate::crypto::derive_key;
 use crate::crypto::key_fingerprint;
 use crate::ids::LogId;
 
+/// The cipher suite for per-entry encryption used for canonical entry hashing
+/// for signatures. This mode is only used for transport and storage when the
+/// receiving party does not need to decrypt the data such as a blind relay.
+/// For this use case we use a non-AEAD cipher because:
+/// 1. All data is verified by signatures anyway so we don't care about authentication
+/// 2. We derive sub-keys for misuse resistance and the only edge case where an honest
+///    peer can realistically reuse a sub-key is in the first header of a fork.
+///    As long as the timestamp of the header is different from the timestamp at that
+///    entry before the fork, the sub-key used for the actual entry body will be distinct
+///    because it is derived from the encrypted hash of that header.
+///    Only an extremely rare clock issue could cause the header bytes to be identical
+///    or intentional misuse.
+/// 3. For blind relays which can't compress entries, tag overhead (32 bytes/entry)
+///    is relatively large compared to many realistic entry payloads (ex. keystroke edits).
 #[repr(u8)]
 #[derive(IntoPrimitive, TryFromPrimitive, Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]
-pub enum CipherSuite {
+pub enum EntryCipherSuite {
+    ChaCha20 = 0,
+}
+
+#[repr(u8)]
+#[derive(IntoPrimitive, TryFromPrimitive, Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(test, derive(test_strategy::Arbitrary))]
+pub enum SegmentCipherSuite {
     Aes256GcmSiv = 0,
 }
 
@@ -42,7 +66,15 @@ pub struct CipherInfo {
     pub fingerprint: Key256Fingerprint,
 }
 
-pub struct Cipher {
+pub struct EntryCipher {
+    base: CipherBase,
+}
+
+pub struct SegmentCipher {
+    base: CipherBase,
+}
+
+struct CipherBase {
     fingerprint: Key256Fingerprint,
     key: Key256,
     ad_prefix: Vec<u8>,
@@ -65,16 +97,10 @@ pub struct Key256Fingerprint(pub [u8; 32]);
 #[error("cipher error")]
 pub struct CipherError;
 
-impl Cipher {
-    pub fn new(suite: CipherSuite, key: Key256, log_id: &LogId) -> Self {
-        assert_eq!(
-            suite,
-            CipherSuite::Aes256GcmSiv,
-            "if this gets triggered it means we need to support new cipher suites",
-        );
-
+impl CipherBase {
+    fn new(suite: u8, key: Key256, log_id: &LogId) -> Self {
         let mut ad_prefix = vec![];
-        ad_prefix.push(suite.into());
+        ad_prefix.push(suite);
         let fingerprint = key.fingerprint();
         ad_prefix.extend_from_slice(&fingerprint.0[..]);
         ad_prefix.extend_from_slice(&log_id.peer_id.0[..]);
@@ -85,6 +111,20 @@ impl Cipher {
             fingerprint,
         }
     }
+}
+
+impl EntryCipher {
+    pub fn new(suite: EntryCipherSuite, key: Key256, log_id: &LogId) -> Self {
+        assert_eq!(
+            suite,
+            EntryCipherSuite::ChaCha20,
+            "if this gets triggered it means we need to support new cipher suites",
+        );
+
+        let base = CipherBase::new(suite.into(), key, log_id);
+
+        Self { base }
+    }
 
     pub fn encrypt_header(
         &self,
@@ -92,7 +132,9 @@ impl Cipher {
         prev_hash: &Hash256,
         header: &PlaintextBytes,
     ) -> Result<OpaqueBytes<'static>, CipherError> {
-        self.encrypt_slot(entry_idx, 0, prev_hash, header)
+        Ok(self
+            .cipher_slot(entry_idx, 0, prev_hash, header.borrow())
+            .into())
     }
 
     pub fn encrypt_op(
@@ -102,45 +144,25 @@ impl Cipher {
         prev_hash: &Hash256,
         op: &PlaintextBytes,
     ) -> Result<OpaqueBytes<'static>, CipherError> {
-        self.encrypt_slot(
-            entry_idx,
-            op_index.checked_add(1).expect("op index overflow"),
-            prev_hash,
-            op,
-        ) // convert to 1-based index, 0 for header
+        Ok(self
+            .cipher_slot(
+                entry_idx,
+                op_index.checked_add(1).expect("op index overflow"),
+                prev_hash,
+                op.borrow(),
+            )
+            .into()) // convert to 1-based index, 0 for header
     }
 
-    fn encrypt_slot(
-        &self,
-        entry_idx: u64,
-        slot_idx: u64,
-        prev_hash: &Hash256,
-        bytes: &PlaintextBytes,
-    ) -> Result<OpaqueBytes<'static>, CipherError> {
-        let (ad, cipher, nonce) = self.associated_data_and_key(entry_idx, slot_idx, prev_hash);
-        let bytes: &[u8] = bytes.borrow();
-        let mut res = Vec::from(bytes); // we copy the input data to the res vec to encrypt in place
-        cipher
-            .encrypt_in_place(&nonce, &ad, &mut res)
-            .map_err(|_| CipherError)?;
-        Ok(res.into())
-    }
-
-    fn associated_data_and_key(
-        &self,
-        entry_idx: u64,
-        slot_idx: u64,
-        prev_hash: &Hash256,
-    ) -> (Vec<u8>, Aes256GcmSiv, Nonce) {
-        let mut ad = Vec::new();
-        ad.extend_from_slice(self.ad_prefix.as_slice());
-        ad.extend_from_slice(&entry_idx.to_le_bytes());
-        ad.extend_from_slice(&slot_idx.to_le_bytes());
-        let mut key_info = ad.clone();
+    fn derive_key(&self, entry_idx: u64, slot_idx: u64, prev_hash: &Hash256) -> ChaCha20 {
+        let mut key_info = Vec::new();
+        key_info.extend_from_slice(self.base.ad_prefix.as_slice());
+        key_info.extend_from_slice(&entry_idx.to_le_bytes());
+        key_info.extend_from_slice(&slot_idx.to_le_bytes());
         key_info.extend_from_slice(&prev_hash[..]);
-        let key = derive_key(DeriveKeyDomain::EntryCipher, &self.key, &key_info);
-        let cipher = Aes256GcmSiv::new(key.0.expose_secret().into());
-        (ad, cipher, [0; 12].into()) // since we derive every key based on coordinates, we can use a zero nonce
+        let key = derive_key(DeriveKeyDomain::EntryCipher, &self.base.key, &key_info);
+        let nonce = [0; 12]; // since we derive the key we can use a zero nonce
+        ChaCha20::new(key.0.expose_secret().into(), &nonce.into())
     }
 
     pub fn decrypt_header(
@@ -149,7 +171,9 @@ impl Cipher {
         prev_hash: &Hash256,
         header: &OpaqueBytes,
     ) -> Result<PlaintextBytes<'static>, CipherError> {
-        self.decrypt_slot(entry_idx, 0, prev_hash, header)
+        Ok(self
+            .cipher_slot(entry_idx, 0, prev_hash, header.borrow())
+            .into())
     }
 
     pub fn decrypt_op(
@@ -159,28 +183,56 @@ impl Cipher {
         prev_hash: &Hash256,
         op: &OpaqueBytes,
     ) -> Result<PlaintextBytes<'static>, CipherError> {
-        self.decrypt_slot(
-            entry_idx,
-            op_index.checked_add(1).expect("op index overflow"),
-            prev_hash,
-            op,
-        ) // convert to 1-based index, 0 for header
+        Ok(self
+            .cipher_slot(
+                entry_idx,
+                op_index.checked_add(1).expect("op index overflow"),
+                prev_hash,
+                op.borrow(),
+            )
+            .into()) // convert to 1-based index, 0 for header
     }
 
-    fn decrypt_slot(
+    fn cipher_slot(
         &self,
         entry_idx: u64,
         slot_idx: u64,
         prev_hash: &Hash256,
-        bytes: &OpaqueBytes,
-    ) -> Result<PlaintextBytes<'static>, CipherError> {
-        let (ad, cipher, nonce) = self.associated_data_and_key(entry_idx, slot_idx, prev_hash);
-        let bytes: &[u8] = bytes.borrow();
+        bytes: &[u8],
+    ) -> Vec<u8> {
+        let mut cipher = self.derive_key(entry_idx, slot_idx, prev_hash);
         let mut res = Vec::from(bytes); // we copy the input data to the res vec to decrypt in place
-        cipher
-            .decrypt_in_place(&nonce, &ad, &mut res)
-            .map_err(|_| CipherError)?;
-        Ok(res.into())
+        cipher.apply_keystream(res.as_mut_slice());
+        res
+    }
+
+    pub fn key_fingerprint(&self) -> &Key256Fingerprint {
+        &self.base.fingerprint
+    }
+
+    pub fn cipher_suite(&self) -> EntryCipherSuite {
+        EntryCipherSuite::ChaCha20
+    }
+
+    pub fn cipher_info(&self) -> CipherInfo {
+        CipherInfo {
+            cipher_suite: self.cipher_suite().into(),
+            fingerprint: self.base.fingerprint,
+        }
+    }
+}
+
+impl SegmentCipher {
+    pub fn new(suite: SegmentCipherSuite, key: Key256, log_id: &LogId) -> Self {
+        assert_eq!(
+            suite,
+            SegmentCipherSuite::Aes256GcmSiv,
+            "if this gets triggered it means we need to support new cipher suites",
+        );
+
+        let base = CipherBase::new(suite.into(), key, log_id);
+
+        Self { base }
     }
 
     pub fn decrypt_segment(
@@ -215,29 +267,29 @@ impl Cipher {
         nonce: &[u8; 16],
     ) -> (Vec<u8>, Aes256GcmSiv, Nonce) {
         let mut ad = Vec::new();
-        ad.extend_from_slice(self.ad_prefix.as_slice());
+        ad.extend_from_slice(self.base.ad_prefix.as_slice());
         ad.extend_from_slice(&range.start.to_le_bytes());
         ad.extend_from_slice(&range.end.to_le_bytes());
         // TODO do we need end in AD too?
         let mut key_info = ad.clone();
         key_info.extend_from_slice(nonce);
-        let key = derive_key(DeriveKeyDomain::SegmentCipher, &self.key, &key_info);
+        let key = derive_key(DeriveKeyDomain::SegmentCipher, &self.base.key, &key_info);
         let cipher = Aes256GcmSiv::new(key.0.expose_secret().into());
         (ad, cipher, [0; 12].into()) // since we derive every key based on coordinates, we can use a zero nonce
     }
 
     pub fn key_fingerprint(&self) -> &Key256Fingerprint {
-        &self.fingerprint
+        &self.base.fingerprint
     }
 
-    pub fn cipher_suite(&self) -> CipherSuite {
-        CipherSuite::Aes256GcmSiv
+    pub fn cipher_suite(&self) -> SegmentCipherSuite {
+        SegmentCipherSuite::Aes256GcmSiv
     }
 
     pub fn cipher_info(&self) -> CipherInfo {
         CipherInfo {
             cipher_suite: self.cipher_suite().into(),
-            fingerprint: self.fingerprint,
+            fingerprint: self.base.fingerprint,
         }
     }
 }
@@ -266,7 +318,7 @@ mod tests {
     use crate::bytes::PlaintextBytes;
     use crate::ids::{ContainerId, LogId};
     use crate::{
-        crypto::{Cipher, CipherSuite, Key256},
+        crypto::{EntryCipher, EntryCipherSuite, Key256},
         ids::PeerId,
     };
 
@@ -285,7 +337,7 @@ mod tests {
             peer_id: PeerId(peer_id),
             container_id: ContainerId(container_id),
         };
-        let cipher = Cipher::new(CipherSuite::Aes256GcmSiv, key, &log_id);
+        let cipher = EntryCipher::new(EntryCipherSuite::ChaCha20, key, &log_id);
         let slot_bytes = PlaintextBytes(slot_bytes.into());
         if let Some(idx) = op_or_header {
             let encrypted = cipher

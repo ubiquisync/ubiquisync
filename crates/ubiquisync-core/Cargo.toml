@@ -27,6 +27,8 @@ strum = { workspace = true }
 strum_macros = { workspace = true }
 async-recursion = { workspace = true }
 zstd = { workspace = true }
+chacha20 = { workspace = true }
+crypto-common = { workspace = true }
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 security-framework =  { workspace = true }
@@ -38,7 +40,6 @@ futures-test = { workspace = true }
 proptest = { workspace = true }
 test-strategy = { workspace = true }
 test-case = { workspace = true }
-crypto-common = { workspace = true }
 insta = { workspace = true }
 divan = { workspace = true }
 

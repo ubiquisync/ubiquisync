@@ -2,7 +2,7 @@ use thiserror::Error;
 
 use crate::{
     bytes::{OpaqueBytes, PlaintextBytes},
-    crypto::{Cipher, CipherError, Hash256, Key256Fingerprint},
+    crypto::{CipherError, EntryCipher, Hash256, Key256Fingerprint},
     log::{
         ChainHash, ChainHashError, EntryBody, LogEntry, OpBatchHasher, OpaqueLogEntry,
         PlaintextLogEntry,
@@ -31,7 +31,7 @@ pub enum SegmentCipherError {
 /// It is an error for the segment to change its cipher mid-stream. Cipher changes MUST result in separate
 /// segments with respect to encryption/decryption
 pub fn segment_to_opaque<'a: 'b, 'b>(
-    cipher: &Option<Cipher>,
+    cipher: &Option<EntryCipher>,
     entries: impl Iterator<Item = &'b PlaintextLogEntry<'a>>,
     chain_hash: &mut ChainHash,
 ) -> impl Iterator<Item = Result<OpaqueLogEntry<'a>, SegmentCipherError>> {
@@ -56,7 +56,7 @@ pub fn segment_to_opaque<'a: 'b, 'b>(
 /// while updating the chain hash along the way.
 /// This function has the same behavior as [segment_to_plaintext] with regards to ciphers.
 pub fn segment_to_plaintext<'a: 'b, 'b>(
-    cipher: &Option<Cipher>,
+    cipher: &Option<EntryCipher>,
     entries: impl Iterator<Item = &'b OpaqueLogEntry<'a>>,
     chain_hash: &mut ChainHash,
 ) -> impl Iterator<Item = Result<PlaintextLogEntry<'a>, SegmentCipherError>> {
@@ -85,7 +85,7 @@ struct OpBatchHashState {
 
 fn to_opaque<'a>(
     entry: &PlaintextLogEntry<'a>,
-    cipher: &Option<Cipher>,
+    cipher: &Option<EntryCipher>,
     chain_hash: &ChainHash,
 ) -> Result<(OpaqueLogEntry<'a>, Option<Hash256>), CipherError> {
     if let Some(cipher) = cipher {
@@ -127,7 +127,7 @@ fn to_opaque<'a>(
 
 fn to_plaintext<'a>(
     entry: &OpaqueLogEntry<'a>,
-    cipher: &Option<Cipher>,
+    cipher: &Option<EntryCipher>,
     chain_hash: &ChainHash,
 ) -> Result<(PlaintextLogEntry<'a>, Option<Hash256>), CipherError> {
     if let Some(cipher) = cipher {
@@ -168,7 +168,7 @@ fn to_plaintext<'a>(
 }
 
 fn check_use_key<E: std::fmt::Debug, H: std::fmt::Debug>(
-    cipher: &Option<Cipher>,
+    cipher: &Option<EntryCipher>,
     e: &LogEntry<E, H>,
 ) -> Result<(), SegmentCipherError> {
     let LogEntry::IndexedEntry {
@@ -196,7 +196,7 @@ mod tests {
     use crate::bytes::PlaintextBytes;
     #[cfg(test)]
     use crate::crypto::Hash256;
-    use crate::crypto::{Cipher, CipherSuite, Key256};
+    use crate::crypto::{EntryCipher, EntryCipherSuite, Key256};
     use crate::ids::LogId;
     use crate::log::cipher::{to_opaque, to_plaintext};
     #[cfg(test)]
@@ -212,7 +212,7 @@ mod tests {
     ) {
         let cipher = if let Some(key) = key {
             let key = Key256(SecretBox::new(Box::new(key)));
-            Some(Cipher::new(CipherSuite::Aes256GcmSiv, key, &log_id))
+            Some(EntryCipher::new(EntryCipherSuite::ChaCha20, key, &log_id))
         } else {
             None
         };
@@ -243,7 +243,7 @@ mod tests {
         let mut entries = entries.entries;
         let cipher = if let Some(key) = key {
             let key = Key256(SecretBox::new(Box::new(key)));
-            let cipher = Cipher::new(CipherSuite::Aes256GcmSiv, key, &log_id);
+            let cipher = EntryCipher::new(EntryCipherSuite::ChaCha20, key, &log_id);
             if start_idx > 0 {
                 // if we're not at the very start, inject a UseKey entry at the beginning with our cipher to test this case
                 // random UseKey entries in other places are not valid

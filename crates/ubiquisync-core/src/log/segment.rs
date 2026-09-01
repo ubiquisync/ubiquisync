@@ -6,7 +6,7 @@ use thiserror::Error;
 use crate::{
     bytes::{PlaintextBytes, ToStatic},
     codec::{ReadError, Reader, WriteError, Writer},
-    crypto::{Cipher, CipherError, CipherInfo, CryptoDecodeError, Hash256, Signature},
+    crypto::{CipherError, CipherInfo, CryptoDecodeError, Hash256, SegmentCipher, Signature},
     log::{ChainHash, LogDecodeError, LogEncodeError, LogEntry, OpaqueLogEntry, PlaintextLogEntry},
 };
 
@@ -65,7 +65,10 @@ impl<'a> SegmentReader<'a> {
         &self.header
     }
 
-    pub fn read(self, cipher: Option<&Cipher>) -> Result<DecodedSegment<'a>, SegmentDecodeError> {
+    pub fn read(
+        self,
+        cipher: &Option<SegmentCipher>,
+    ) -> Result<DecodedSegment<'a>, SegmentDecodeError> {
         let start = self.header.range.start;
         let buf = self.reader.into_remaining();
         Ok(match self.header.encoding {
@@ -127,7 +130,7 @@ pub fn encode_segment_plaintext<'a>(
     range: &Range<u64>,
     signature: &Signature,
     prev_chain_hash: &Hash256,
-    cipher: Option<&Cipher>,
+    cipher: &Option<SegmentCipher>,
     entries: impl Iterator<Item = PlaintextLogEntry<'a>>,
 ) -> Result<Vec<u8>, SegmentEncodeError> {
     let mut w = Writer::new();
@@ -261,7 +264,7 @@ pub enum SegmentDecodeError {
 }
 
 fn encode_compress_encrypt_entries<'a>(
-    segment_cipher: &Cipher,
+    segment_cipher: &SegmentCipher,
     nonce: &[u8; 16],
     entries: impl Iterator<Item = PlaintextLogEntry<'a>>,
 ) -> Result<(Vec<u8>, Range<u64>), SegmentEncodeError> {
@@ -292,7 +295,7 @@ fn decompress_decode_entries(
 }
 
 fn decrypt_decompress_decode_entries(
-    segment_cipher: &Cipher,
+    segment_cipher: &SegmentCipher,
     range: &Range<u64>,
     nonce: &[u8; 16],
     buf: &[u8], // TODO we could maybe use parent vec as inout buffer for less alloc in the future
