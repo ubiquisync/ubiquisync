@@ -45,8 +45,7 @@ pub enum KeyScope {
 pub const DOMAIN_KEY_WRAP: &[u8] = b"ubiquisync/v1/key-wrap";
 
 impl EncapsulationKey {
-    // pub fn wrap_key(&self, key: &SecretBox<[u8; 32]>) -> Result<KeyWrap, KemError> {}
-
+    #[allow(dead_code)]
     fn do_wrap_key(&self, key: &SecretBox<[u8; 32]>) -> Result<KeyWrap, KemError> {
         match self {
             EncapsulationKey::X25519(pubkey) => {
