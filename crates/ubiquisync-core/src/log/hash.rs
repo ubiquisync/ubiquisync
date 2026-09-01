@@ -91,7 +91,7 @@ impl<'a> EntryBody<OpaqueBytes<'a>> {
         match self {
             EntryBody::OpBatch(op_batch) => op_batch.hash(seed, entry_index),
             // TODO should we add LogId coordinates to hash_use_key?
-            EntryBody::UseKey(cipher_info) => hash_use_key(entry_index, cipher_info),
+            EntryBody::UseKey(cipher_info) => hash_use_key(seed, entry_index, cipher_info),
             EntryBody::Expunged(hash) => *hash,
         }
     }
@@ -161,8 +161,9 @@ impl OpBatchHasher {
 }
 
 // TODO should we anchor this with seed too?
-fn hash_use_key(entry_index: u64, cipher_info: &CipherInfo) -> Hash256 {
+fn hash_use_key(seed: &ChainSeed, entry_index: u64, cipher_info: &CipherInfo) -> Hash256 {
     let mut hasher = new_tagged_hasher(TaggedHashDomain::LogEntryUseKey);
+    hasher.update(&seed.0);
     hasher.update(&entry_index.to_le_bytes());
     hasher.update(&[cipher_info.cipher_suite]);
     hasher.update(&cipher_info.fingerprint.0);

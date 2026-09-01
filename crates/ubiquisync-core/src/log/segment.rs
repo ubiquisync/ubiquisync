@@ -1,3 +1,5 @@
+use std::io::Read;
+
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use thiserror::Error;
 
@@ -247,6 +249,8 @@ pub enum SegmentDecodeError {
     UnknownEncryptionInfo(u8),
     #[error("missing segment cipher {0:?}")]
     MissingSegmentCipher(CipherInfo),
+    #[error("decompressed segment is too large, max 256mb")]
+    CompressionOverflow,
 }
 
 fn encode_compress_encrypt_entries<'a>(
@@ -269,18 +273,19 @@ fn encode_compress_entries<'a>(
 }
 
 /// 256mb decode limit
-const ZSTD_DECODE_LIMIT: usize = 1usize << 28;
+const ZSTD_DECODE_LIMIT: u64 = 1u64 << 28;
 
 fn decompress_decode_entries(
     buf: &[u8],
 ) -> Result<Vec<PlaintextLogEntry<'static>>, SegmentDecodeError> {
-    // TODO: decode with limit
-    // let mut buf = vec![];
-    // let buf = zstd::Decoder::new(buf)?
-    //     .take(ZSTD_DECODE_LIMIT)
-    //     .read_to_end(&mut buf);
-    let buf = zstd::decode_all(buf)?;
-    let it = decode_entries::<PlaintextBytes>(buf.as_slice());
+    let mut out = vec![];
+    zstd::Decoder::with_buffer(buf)?
+        .take(ZSTD_DECODE_LIMIT + 1)
+        .read_to_end(&mut out)?;
+    if out.len() as u64 > ZSTD_DECODE_LIMIT {
+        return Err(SegmentDecodeError::CompressionOverflow);
+    }
+    let it = decode_entries::<PlaintextBytes>(&out);
     let mut res = vec![];
     for e in it {
         res.push(e?.to_static());

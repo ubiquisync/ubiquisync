@@ -227,7 +227,7 @@ impl SlotCipher {
         self.slot_index += 1;
         kdf.update(&slot_index.to_le_bytes());
         kdf.update(prev_hash);
-        kdf.update(&[1u8]); // to make this consistent with HKDF
+        kdf.update(&[1u8]); // this results in essentially the same behavior as HKDF extract-only
         let okm: Zeroizing<[u8; 32]> = Zeroizing::new(kdf.finalize_fixed().into());
         let mut cipher = ChaCha20::new((&*okm).into(), &[0; 12].into());
         cipher.apply_keystream(buf);
