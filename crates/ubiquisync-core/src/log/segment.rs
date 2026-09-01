@@ -406,7 +406,7 @@ impl SegmentDecodeError {
 const SEGMENT_ENCODING_OPAQUE: u8 = 0;
 const SEGMENT_ENCODING_PLAINTEXT: u8 = 1;
 
-/// Computes the index range of the segment. Returns 0..0 if the segment has no indexed entries.
+/// Counts the number of _indexed entries_ in the segment.
 pub fn count_entries<'a, B: std::fmt::Debug + 'a>(
     entries: impl Iterator<Item = &'a LogEntry<B>>,
 ) -> u64 {
@@ -522,6 +522,7 @@ pub(crate) mod tests {
     #[proptest(cases = 10)]
     fn test_segments_with_cipher(
         #[strategy(0u64..1<<24)] start_idx: u64,
+        // safe to use random entries which include UseKey entries since we're not doing per-entry encryption
         entries: Vec<PlaintextLogEntry<'static>>,
         log_id: LogId,
         key: [u8; 32],

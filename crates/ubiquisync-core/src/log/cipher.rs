@@ -4,8 +4,7 @@ use crate::{
     bytes::{BytesWrapper, OpaqueBytes, PlaintextBytes},
     crypto::{CipherError, EntryCipher, Hash256, RootKey256Fingerprint, SlotCipher},
     log::{
-        ChainHash, ChainHashError, ChainSeed, EntryBody, LogEntry, OpBatchHasher, OpaqueLogEntry,
-        PlaintextLogEntry,
+        ChainHash, ChainSeed, EntryBody, LogEntry, OpBatchHasher, OpaqueLogEntry, PlaintextLogEntry,
     },
 };
 

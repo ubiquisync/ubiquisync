@@ -90,7 +90,6 @@ impl<B: alloc::fmt::Debug> LogEntry<B> {
                 }
             },
             LogEntry::Signature(signature) => {
-                // NOTE: size is inferred by the last entry, it's the callers responsibility to verify before encoding
                 writer.write_byte(ENTRY_TYPE_SIGNATURE);
                 signature.encode(writer);
             }

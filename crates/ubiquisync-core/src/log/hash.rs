@@ -18,7 +18,9 @@ pub struct ChainHash {
 
 #[derive(Error, Debug)]
 #[error("chain hash error")]
-pub struct ChainHashError;
+pub enum ChainHashError {
+    SizeOverflow,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChainSeed(Hash256);
@@ -31,13 +33,16 @@ impl ChainHash {
         }
     }
 
-    fn add_one(&self, entry_hash: &Hash256) -> Self {
+    fn add_one(&self, entry_hash: &Hash256) -> Result<Self, ChainHashError> {
         let mut hasher = new_tagged_hasher(TaggedHashDomain::ChainHash);
         hasher.update(&self.hash);
         hasher.update(entry_hash);
         let hash = hasher.finalize();
-        let size = self.size + 1;
-        Self { hash, size }
+        let size = self
+            .size
+            .checked_add(1)
+            .ok_or(ChainHashError::SizeOverflow)?;
+        Ok(Self { hash, size })
     }
 
     /// Updates the chain has with the next entry and a possibly already computed hash (from encryption/decryption processing).
@@ -46,11 +51,11 @@ impl ChainHash {
         entry: &OpaqueLogEntry,
         precomputed_hash: Option<Hash256>,
         seed: &ChainSeed,
-    ) -> Result<ChainHash, ChainHashError> {
+    ) -> Result<Self, ChainHashError> {
         match entry {
             LogEntry::IndexedEntry(entry) => {
                 let entry_hash = precomputed_hash.unwrap_or_else(|| entry.hash(seed, self.size));
-                Ok(self.add_one(&entry_hash))
+                Ok(self.add_one(&entry_hash)?)
             }
             LogEntry::Signature(_) => Ok(*self),
         }
@@ -90,7 +95,6 @@ impl<'a> EntryBody<OpaqueBytes<'a>> {
     pub fn hash(&self, seed: &ChainSeed, entry_index: u64) -> Hash256 {
         match self {
             EntryBody::OpBatch(op_batch) => op_batch.hash(seed, entry_index),
-            // TODO should we add LogId coordinates to hash_use_key?
             EntryBody::UseKey(cipher_info) => hash_use_key(seed, entry_index, cipher_info),
             EntryBody::Expunged(hash) => *hash,
         }
@@ -160,7 +164,6 @@ impl OpBatchHasher {
     }
 }
 
-// TODO should we anchor this with seed too?
 fn hash_use_key(seed: &ChainSeed, entry_index: u64, cipher_info: &CipherInfo) -> Hash256 {
     let mut hasher = new_tagged_hasher(TaggedHashDomain::LogEntryUseKey);
     hasher.update(&seed.0);
