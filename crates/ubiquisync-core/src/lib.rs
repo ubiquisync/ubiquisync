@@ -27,4 +27,5 @@ pub mod log;
 pub mod store;
 //pub mod sync;
 pub mod bytes;
+pub mod init;
 pub mod uuid;
