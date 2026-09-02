@@ -1,9 +1,12 @@
 use std::borrow::Borrow;
 
 use crate::{
+    bytes::PlaintextBytes,
     codec::{ReadError, Reader, Writer},
     crypto::Hash256,
+    hlc::Timestamp,
     log::LogEncodeError,
+    uuid::Uuid,
 };
 
 /// A batch of one or more operations in an op vocabulary.
@@ -74,6 +77,21 @@ pub struct OpBatch<B: alloc::fmt::Debug> {
 pub enum OpOrExpunge<Op> {
     Op(Op),
     Expunge(Hash256),
+}
+
+impl OpBatch<PlaintextBytes<'_>> {
+    pub fn new(
+        timestamp: Timestamp,
+        server_attested_user_id: Option<Uuid>,
+        op_bytes: Vec<u8>,
+    ) -> Self {
+        let timestamp = timestamp.raw().to_le_bytes()[..].into();
+        Self {
+            timestamp,
+            server_attested_user_id: todo!(),
+            ops: todo!(),
+        }
+    }
 }
 
 impl<B: alloc::fmt::Debug> OpBatch<B> {

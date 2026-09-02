@@ -3,6 +3,7 @@
 mod batch;
 mod error;
 mod schema;
+pub mod sea_query;
 mod value;
 
 pub use batch::{DbBatch, DbStatementResult, StmtId};

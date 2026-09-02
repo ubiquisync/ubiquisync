@@ -13,6 +13,18 @@ pub struct LogId {
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub struct PeerId(pub [u8; 32]);
 
+impl AsRef<[u8]> for PeerId {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub struct ContainerId(pub [u8; 16]);
+
+impl AsRef<[u8]> for ContainerId {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
