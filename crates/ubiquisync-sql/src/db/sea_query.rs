@@ -1,24 +1,86 @@
-use sea_query::{PostgresQueryBuilder, SelectStatement, SqliteQueryBuilder, Value};
-
-use crate::{
-    db::{Cols, Db, DbError, DbRow, DbValue, Rows},
-    dialect::SqlDialect,
+use sea_query::{
+    DeleteStatement, Expr, InsertStatement, PostgresQueryBuilder, SelectStatement,
+    SqliteQueryBuilder, UpdateStatement, Value, Values,
 };
 
-pub async fn select(db: &dyn Db, stmt: &SelectStatement) -> Result<Vec<DbRow>, DbError> {
-    let (sql, params) = build_select(stmt, db.dialect())?;
-    let res = db.query(&sql, &params).await?;
-    Ok(res)
-}
+use crate::{
+    db::{self, Cols, Db, DbBatch, DbError, DbRow, DbValue, Rows, col},
+    dialect::SqlDialect,
+};
 
 pub async fn select_cols<C: Cols>(
     db: &dyn Db,
     stmt: &mut SelectStatement,
 ) -> Result<Rows<C>, DbError> {
-    C::add_to_select(stmt);
+    stmt.columns(C::idens());
     let (sql, params) = build_select(&stmt, db.dialect())?;
     let res = db.query(&sql, &params).await?;
     Ok(res.into())
+}
+
+pub fn insert_cols_batch<C: Cols>(
+    batch: &mut dyn DbBatch,
+    params: C::Params,
+    stmt: &mut InsertStatement,
+) -> Result<(), DbError> {
+    stmt.columns(C::idens());
+    let db_vals = C::encode(params);
+    let mut vals = vec![];
+    for v in db_vals {
+        vals.push(Expr::Constant(db_to_value(v)))
+    }
+    stmt.values(vals).map_err(|e| match e {
+        sea_query::error::Error::ColValNumMismatch { col_len, val_len } => {
+            DbError::ColumnValueCountMismatch {
+                cols: col_len,
+                vals: val_len,
+            }
+        }
+    })?;
+    let (sql, values) = build_insert(stmt, batch.dialect())?;
+    batch.add_statement(&sql, &values);
+    Ok(())
+}
+
+pub fn update_cols_batch<C: Cols>(
+    batch: &mut dyn DbBatch,
+    params: C::Params,
+    stmt: &mut UpdateStatement,
+) -> Result<(), DbError> {
+    let db_vals = C::encode(params);
+    let idens = C::idens();
+    let mut iden_exprs = vec![];
+    let mut i = 0;
+    for v in db_vals {
+        iden_exprs.push((idens[i].clone(), Expr::Constant(db_to_value(v))));
+        i += 1;
+    }
+    stmt.values(iden_exprs);
+    let (sql, values) = build_update(stmt, batch.dialect())?;
+    batch.add_statement(&sql, &values);
+    Ok(())
+}
+
+pub fn build_insert(
+    stmt: &InsertStatement,
+    dialect: SqlDialect,
+) -> Result<(String, Vec<DbValue>), DbError> {
+    let (sql, values) = match dialect {
+        SqlDialect::Sqlite => stmt.build_any(&SqliteQueryBuilder),
+        SqlDialect::Postgres => stmt.build_any(&PostgresQueryBuilder),
+    };
+    Ok((sql, values_to_db(values)?))
+}
+
+pub fn build_update(
+    stmt: &UpdateStatement,
+    dialect: SqlDialect,
+) -> Result<(String, Vec<DbValue>), DbError> {
+    let (sql, values) = match dialect {
+        SqlDialect::Sqlite => stmt.build_any(&SqliteQueryBuilder),
+        SqlDialect::Postgres => stmt.build_any(&PostgresQueryBuilder),
+    };
+    Ok((sql, values_to_db(values)?))
 }
 
 pub fn build_select(
@@ -29,11 +91,25 @@ pub fn build_select(
         SqlDialect::Sqlite => stmt.build_any(&SqliteQueryBuilder),
         SqlDialect::Postgres => stmt.build_any(&PostgresQueryBuilder),
     };
-    let params = values
+    Ok((sql, values_to_db(values)?))
+}
+
+pub fn build_delete(
+    stmt: &DeleteStatement,
+    dialect: SqlDialect,
+) -> Result<(String, Vec<DbValue>), DbError> {
+    let (sql, values) = match dialect {
+        SqlDialect::Sqlite => stmt.build_any(&SqliteQueryBuilder),
+        SqlDialect::Postgres => stmt.build_any(&PostgresQueryBuilder),
+    };
+    Ok((sql, values_to_db(values)?))
+}
+
+fn values_to_db(values: Values) -> Result<Vec<DbValue>, DbError> {
+    values
         .into_iter()
         .map(value_to_db)
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok((sql, params))
+        .collect::<Result<Vec<_>, _>>()
 }
 
 fn value_to_db(value: Value) -> Result<DbValue, DbError> {
@@ -73,4 +149,14 @@ fn value_to_db(value: Value) -> Result<DbValue, DbError> {
         }
     };
     Ok(db)
+}
+
+fn db_to_value(value: DbValue) -> Value {
+    match value {
+        DbValue::Null => Value::Bytes(None),
+        DbValue::Integer(i) => Value::BigInt(Some(i)),
+        DbValue::Text(s) => Value::String(Some(s)),
+        DbValue::Blob(b) => Value::Bytes(Some(b)),
+        DbValue::Uuid(u) => Value::Bytes(Some(u.into())),
+    }
 }

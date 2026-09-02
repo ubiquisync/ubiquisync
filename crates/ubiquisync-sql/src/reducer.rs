@@ -66,7 +66,7 @@ pub trait Reducer: Send {
         &self,
         batch: &mut dyn DbBatch,
         timestamp: Timestamp,
-        op: &Self::Op,
+        op: Self::Op,
         read: Self::ReadState,
     ) -> Result<Self::ApplyState, Self::Error>;
 

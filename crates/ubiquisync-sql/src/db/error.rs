@@ -32,6 +32,9 @@ pub enum DbError {
     /// A column index past the end of the row was requested.
     #[error("column index {0} out of bounds")]
     ColumnOutOfBounds(usize),
+    /// A column index past the end of the row was requested.
+    #[error("column value count mismatch: cols={cols} vals={vals}")]
+    ColumnValueCountMismatch { cols: usize, vals: usize },
     /// A column was SQL NULL where the caller required a non-null value.
     #[error("unexpected null")]
     UnexpectedNull,

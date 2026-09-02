@@ -1,4 +1,4 @@
-use sea_query::{Iden, SelectStatement};
+use sea_query::{DynIden, Iden};
 use ubiquisync_core::uuid::Uuid;
 
 use crate::db::{CreateColDef, DbError, DbRow, DbType, DbValue};
@@ -14,12 +14,15 @@ pub trait ColType {
 
     fn create_col_def(name: &str) -> CreateColDef;
     fn from_db_val<'a>(value: &'a DbValue) -> Result<Self::BorrowedType<'a>, DbError>;
+    fn to_db_val(value: Self) -> DbValue;
 }
 
 pub trait Cols {
     type Row<'a>;
-    fn add_to_select(stmt: &mut SelectStatement);
+    type Params;
+    fn encode(row: Self::Params) -> Vec<DbValue>;
     fn decode<'a>(row: &'a DbRow) -> Result<Self::Row<'a>, DbError>;
+    fn idens() -> Vec<DynIden>;
 }
 
 impl ColType for u64 {
@@ -40,6 +43,10 @@ impl ColType for u64 {
             }),
         }
     }
+
+    fn to_db_val(value: u64) -> DbValue {
+        DbValue::Integer(value as i64)
+    }
 }
 
 impl ColType for i64 {
@@ -57,6 +64,10 @@ impl ColType for i64 {
                 actual: value.db_type(),
             }),
         }
+    }
+
+    fn to_db_val(value: i64) -> DbValue {
+        DbValue::Integer(value as i64)
     }
 }
 
@@ -76,6 +87,10 @@ impl ColType for String {
             }),
         }
     }
+
+    fn to_db_val(value: String) -> DbValue {
+        DbValue::Text(value)
+    }
 }
 
 impl ColType for Vec<u8> {
@@ -93,6 +108,10 @@ impl ColType for Vec<u8> {
                 actual: value.db_type(),
             }),
         }
+    }
+
+    fn to_db_val(value: Vec<u8>) -> DbValue {
+        DbValue::Blob(value.into())
     }
 }
 
@@ -116,6 +135,10 @@ impl ColType for Uuid {
             }),
         }
     }
+
+    fn to_db_val(value: Uuid) -> DbValue {
+        DbValue::Uuid(value)
+    }
 }
 
 impl<T: ColType> ColType for Option<T> {
@@ -131,6 +154,13 @@ impl<T: ColType> ColType for Option<T> {
             v => Ok(Some(<T as ColType>::from_db_val(v)?)),
         }
     }
+
+    fn to_db_val(value: Self) -> DbValue {
+        match value {
+            None => DbValue::Null,
+            Some(v) => T::to_db_val(v),
+        }
+    }
 }
 
 fn col(name: &str, db_type: DbType) -> CreateColDef {
@@ -143,19 +173,26 @@ fn col(name: &str, db_type: DbType) -> CreateColDef {
 }
 
 macro_rules! impl_col_tuples {
-    ($($param:ident $idx:literal),+) => {
+    ($($param:ident $idx:tt),+) => {
         impl <$($param: Col,)+> Cols for ($($param,)+) {
             type Row<'a> = ($(<$param::Type as ColType>::BorrowedType<'a>,)+);
+            type Params = ($($param::Type,)+);
 
-            fn add_to_select(stmt: &mut SelectStatement) {
-                $(stmt.column($param::default());)+
+            fn encode(row: Self::Params) -> Vec<DbValue> {
+                vec![$(<$param::Type as ColType>::to_db_val(row.$idx),)+]
             }
 
             fn decode<'a>(row: &'a DbRow) -> Result<Self::Row<'a>, DbError> {
                 Ok(($(row.get_at::<$param::Type>($idx)?,)+))
             }
+
+            fn idens() -> Vec<sea_query::types::DynIden> {
+                vec![$(<$param as sea_query::types::IntoIden>::into_iden($param::default()),)+]
+            }
         }
+
     }
+
 }
 
 impl_col_tuples!(A 0);

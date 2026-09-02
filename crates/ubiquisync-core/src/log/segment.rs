@@ -131,6 +131,21 @@ pub fn encode_segment_opaque<'a>(
 pub fn encode_segment_plaintext<'a>(
     signature: &Signature,
     prev_chain: &ChainHash,
+    cipher: &Option<SegmentCipher>,
+    entries: &[PlaintextLogEntry<'a>],
+) -> Result<Vec<u8>, SegmentEncodeError> {
+    encode_segment_plaintext_iter(
+        signature,
+        prev_chain,
+        entries.len() as u64,
+        cipher,
+        entries.iter(),
+    )
+}
+
+pub fn encode_segment_plaintext_iter<'a>(
+    signature: &Signature,
+    prev_chain: &ChainHash,
     count: u64,
     cipher: &Option<SegmentCipher>,
     entries: impl Iterator<Item = &'a PlaintextLogEntry<'a>>,
@@ -453,7 +468,7 @@ pub(crate) mod tests {
         crypto::{SegmentCipher, SegmentCipherSuite},
         log::{
             ChainSeed,
-            segment::{SegmentReader, count_entries},
+            segment::{SegmentReader, count_entries, encode_segment_plaintext_iter},
         },
     };
 
@@ -518,7 +533,8 @@ pub(crate) mod tests {
         // test plaintext encoding (basically just compression)
         {
             let segment =
-                encode_segment_plaintext(&sig, &start_chain, count, &None, entries.iter()).unwrap();
+                encode_segment_plaintext_iter(&sig, &start_chain, count, &None, entries.iter())
+                    .unwrap();
             let reader = SegmentReader::start(&segment).unwrap();
             let header = reader.header();
             assert_eq!(sig, header.signature);
@@ -556,7 +572,8 @@ pub(crate) mod tests {
         let sig = Signature::Ed25519([2; 64]);
 
         let segment =
-            encode_segment_plaintext(&sig, &chain_start, count, &cipher, entries.iter()).unwrap();
+            encode_segment_plaintext_iter(&sig, &chain_start, count, &cipher, entries.iter())
+                .unwrap();
         let reader = SegmentReader::start(&segment).unwrap();
         let header = reader.header();
         assert_eq!(sig, header.signature);

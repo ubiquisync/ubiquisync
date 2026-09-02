@@ -5,10 +5,15 @@ def_table_with_auto_id!(containers (id) => {container_id: Vec<u8>});
 def_table_with_auto_id!(streams (id) => {
    peer_id: i64,
    container_id: i64,
-   head_idx: u64,
+   head_size: u64,
    head_hash: Option<Vec<u8>>,
    head_cipher: Option<Vec<u8>>,
    head_status: Option<Vec<u8>>,
+});
+def_table!(segments (stream_id: i64, end_size: u64) => {
+    start_idx: u64,
+    body: Vec<u8>,
+    // TODO should this have rowid because of possibly large bodies? or we have a separate segment_body table
 });
 
 // use sea_query::Iden;
