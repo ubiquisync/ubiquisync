@@ -1,10 +1,9 @@
 use crate::{def_table, def_table_with_auto_id};
 
 def_table_with_auto_id!(peers (id) => {peer_id: Vec<u8>, commitment: Vec<u8>, signature: Vec<u8>});
-def_table_with_auto_id!(containers (id) => {container_id: Vec<u8>});
 def_table_with_auto_id!(streams (id) => {
    peer_id: i64,
-   container_id: i64,
+   container_id: [u8;16],
    head_size: u64,
    head_hash: Option<Vec<u8>>,
    head_cipher: Option<Vec<u8>>,

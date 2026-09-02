@@ -1,10 +1,10 @@
 use sea_query::{
-    DeleteStatement, Expr, InsertStatement, PostgresQueryBuilder, SelectStatement,
-    SqliteQueryBuilder, UpdateStatement, Value, Values,
+    ColumnName, ColumnRef, DeleteStatement, Expr, InsertStatement, PostgresQueryBuilder,
+    SelectStatement, SqliteQueryBuilder, UpdateStatement, Value, Values,
 };
 
 use crate::{
-    db::{self, Cols, Db, DbBatch, DbError, DbRow, DbValue, Rows, col},
+    db::{Cols, Db, DbBatch, DbError, DbValue, Rows},
     dialect::SqlDialect,
 };
 
@@ -18,13 +18,34 @@ pub async fn select_cols<C: Cols>(
     Ok(res.into())
 }
 
+pub async fn insert_cols<Inserting: Cols, Returning: Cols>(
+    db: &dyn Db,
+    params: Inserting::Params,
+    stmt: &mut InsertStatement,
+) -> Result<Rows<Returning>, DbError> {
+    let (sql, values) = prep_insert_cols::<Inserting, Returning>(params, stmt, db.dialect())?;
+    let res = db.query(&sql, &values).await?;
+    Ok(res.into())
+}
+
 pub fn insert_cols_batch<C: Cols>(
     batch: &mut dyn DbBatch,
     params: C::Params,
     stmt: &mut InsertStatement,
 ) -> Result<(), DbError> {
-    stmt.columns(C::idens());
-    let db_vals = C::encode(params);
+    let (sql, values) = prep_insert_cols::<C, ()>(params, stmt, batch.dialect())?;
+    batch.add_statement(&sql, &values);
+    Ok(())
+}
+
+pub fn prep_insert_cols<Inserting: Cols, Returning: Cols>(
+    params: Inserting::Params,
+    stmt: &mut InsertStatement,
+    dialect: SqlDialect,
+) -> Result<(String, Vec<DbValue>), DbError> {
+    // inserting
+    stmt.columns(Inserting::idens());
+    let db_vals = Inserting::encode(params);
     let mut vals = vec![];
     for v in db_vals {
         vals.push(Expr::Constant(db_to_value(v)))
@@ -37,9 +58,18 @@ pub fn insert_cols_batch<C: Cols>(
             }
         }
     })?;
-    let (sql, values) = build_insert(stmt, batch.dialect())?;
-    batch.add_statement(&sql, &values);
-    Ok(())
+
+    // returning
+    let returning_idens = Returning::idens();
+    if !returning_idens.is_empty() {
+        let mut col_refs = vec![];
+        for i in returning_idens {
+            col_refs.push(ColumnRef::Column(ColumnName(None, i)))
+        }
+        stmt.returning(sea_query::ReturningClause::Columns(col_refs));
+    }
+
+    build_insert(stmt, dialect)
 }
 
 pub fn update_cols_batch<C: Cols>(

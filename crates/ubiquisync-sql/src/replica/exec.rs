@@ -2,10 +2,9 @@ use sea_query::{Expr, ExprTrait, Query};
 use thiserror::Error;
 use ubiquisync_core::{
     crypto::SigningError,
-    hlc::Timestamp,
     ids::LogId,
     log::{
-        ChainHash, ChainSeed, EntryBody, LogEntry, OpBatch, PlaintextLogEntry, SegmentCipherError,
+        ChainHash, ChainSeed, EntryBody, OpBatch, PlaintextLogEntry, SegmentCipherError,
         segment::{SegmentEncodeError, encode_segment_plaintext},
     },
     uuid::Uuid,
@@ -14,13 +13,13 @@ use ubiquisync_core::{
 use crate::{
     db::{
         DbError,
-        sea_query::{insert_cols_batch, select_cols, update_cols_batch},
+        sea_query::{insert_cols, insert_cols_batch, select_cols, update_cols_batch},
     },
     op::Op,
     reducer::Reducer,
     replica::{
         replica::Replica,
-        schema::{containers, peers, segments, streams},
+        schema::{segments, streams},
     },
 };
 
@@ -29,7 +28,7 @@ where
     R::Op: Op,
 {
     /// Apply a local write, minting a fresh log entry for it.
-    async fn exec(
+    pub async fn exec(
         // TODO do we want mut here or user interior mutability?
         // either way this makes exec single-threaded which we want for now (for safety of ordering)
         &mut self,
@@ -54,52 +53,47 @@ where
             streams::HeadSize,
             streams::HeadHash,
             streams::HeadCipher,
+            streams::HeadStatus,
         )>(
             self.db.as_ref(),
             Query::select()
                 .from(streams::Table)
-                .and_where(
-                    Expr::column(streams::PeerId).eq(Expr::col("id").in_subquery(
-                        Query::select()
-                            .from(peers::Table)
-                            .column(peers::Id)
-                            .and_where(Expr::column(peers::PeerId).eq(self.self_id.as_ref()))
-                            .take(),
-                    )),
-                )
-                .and_where(
-                    Expr::column(streams::ContainerId).eq(Expr::col("id").in_subquery(
-                        Query::select()
-                            .from(containers::Table)
-                            .column(containers::Id)
-                            .and_where(
-                                Expr::column(containers::ContainerId).eq(container_id.as_ref()),
-                            )
-                            .take(),
-                    )),
-                )
-                .and_where(Expr::column(streams::HeadStatus).is_null()),
+                .and_where(Expr::column(streams::PeerId).eq(self.self_db_id))
+                .and_where(Expr::column(streams::ContainerId).eq(container_id.as_ref())),
         )
         .await
         .map_err(ExecError::Db)?;
 
-        if stream_rows.is_empty() {
-            todo!("create stream")
+        let log_id = LogId {
+            peer_id: self.self_id,
+            container_id,
+        };
+        let seed = ChainSeed::new(&log_id);
+
+        let (stream_id, chain_head) = if stream_rows.is_empty() {
+            let res = insert_cols::<(streams::PeerId, streams::ContainerId), (streams::Id,)>(
+                self.db.as_ref(),
+                (self.self_db_id, container_id.0),
+                Query::insert().into_table(streams::Table),
+            )
+            .await
+            .map_err(ExecError::Db)?;
+            let (stream_id,) = res.exactly_one().map_err(ExecError::Db)?;
+            (stream_id, ChainHash::empty(&seed))
         } else if stream_rows.len() > 1 {
-            todo!("fork")
+            todo!("found multiple rows, this means we have a fork and need to know what to do")
         } else {
-            let (stream_id, head_size, head_hash, head_cipher) =
+            let (stream_id, head_size, head_hash, head_cipher, head_status) =
                 stream_rows.exactly_one().map_err(ExecError::Db)?;
-            if head_cipher.is_some() {
-                todo!("cipher not supported");
+
+            if head_status.is_some() {
+                todo!("handle some unexpected status")
             }
 
-            let log_id = LogId {
-                peer_id: self.self_id,
-                container_id,
-            };
+            if head_cipher.is_some() {
+                todo!("cipher not supported yet");
+            }
 
-            let seed = ChainSeed::new(&log_id);
             let chain_head = if let Some(hash) = head_hash {
                 ChainHash {
                     hash: hash.try_into().map_err(|_| {
@@ -116,58 +110,60 @@ where
                 ChainHash::empty(&seed)
             };
 
-            let mut batch = self.db.new_batch();
-            let timestamp = self.hlc.now(batch.as_mut()).map_err(ExecError::Db)?;
+            (stream_id, chain_head)
+        };
 
-            let entry = PlaintextLogEntry::IndexedEntry(EntryBody::OpBatch(OpBatch::new(
-                timestamp,
-                server_user_id,
-                wire_bytes,
-            )));
-            let entries = vec![entry];
+        let mut batch = self.db.new_batch();
+        let timestamp = self.hlc.now(batch.as_mut()).map_err(ExecError::Db)?;
 
-            let next_chain_head = chain_head
-                .compute_next_plaintext(&seed, &None, entries.iter())
-                .map_err(ExecError::SegmentCipher)?;
+        let entry = PlaintextLogEntry::IndexedEntry(EntryBody::OpBatch(OpBatch::new(
+            timestamp,
+            server_user_id,
+            wire_bytes,
+        )));
+        let entries = vec![entry];
 
-            let sign_bytes = next_chain_head.sign_bytes(&seed);
+        let next_chain_head = chain_head
+            .compute_next_plaintext(&seed, &None, entries.iter())
+            .map_err(ExecError::SegmentCipher)?;
 
-            let signature = self
-                .credentials
-                .signing_key()
-                .sign(&sign_bytes)
-                .map_err(ExecError::SigningError)?;
+        let sign_bytes = next_chain_head.sign_bytes(&seed);
 
-            let segment = encode_segment_plaintext(&signature, &chain_head, &None, &entries)
-                .map_err(ExecError::SegmentEncode)?;
+        let signature = self
+            .credentials
+            .signing_key()
+            .sign(&sign_bytes)
+            .map_err(ExecError::SigningError)?;
 
-            insert_cols_batch::<(
-                segments::StreamId,
-                segments::StartIdx,
-                segments::EndSize,
-                segments::Body,
-            )>(
-                batch.as_mut(),
-                (stream_id, chain_head.size, next_chain_head.size, segment),
-                Query::insert().into_table(segments::Table),
-            )
-            .map_err(ExecError::Db)?;
+        let segment = encode_segment_plaintext(&signature, &chain_head, &None, &entries)
+            .map_err(ExecError::SegmentEncode)?;
 
-            update_cols_batch::<(streams::HeadSize, streams::HeadHash)>(
-                batch.as_mut(),
-                (next_chain_head.size, Some(next_chain_head.hash.to_vec())),
-                Query::update()
-                    .table(streams::Table)
-                    .and_where(Expr::column(streams::Id).eq(stream_id)),
-            )
-            .map_err(ExecError::Db)?;
+        insert_cols_batch::<(
+            segments::StreamId,
+            segments::StartIdx,
+            segments::EndSize,
+            segments::Body,
+        )>(
+            batch.as_mut(),
+            (stream_id, chain_head.size, next_chain_head.size, segment),
+            Query::insert().into_table(segments::Table),
+        )
+        .map_err(ExecError::Db)?;
 
-            self.reducer
-                .apply(batch.as_mut(), timestamp, op, read_state)
-                .map_err(ExecError::Reducer)?;
+        update_cols_batch::<(streams::HeadSize, streams::HeadHash)>(
+            batch.as_mut(),
+            (next_chain_head.size, Some(next_chain_head.hash.to_vec())),
+            Query::update()
+                .table(streams::Table)
+                .and_where(Expr::column(streams::Id).eq(stream_id)),
+        )
+        .map_err(ExecError::Db)?;
 
-            Ok(())
-        }
+        self.reducer
+            .apply(batch.as_mut(), timestamp, op, read_state)
+            .map_err(ExecError::Reducer)?;
+
+        Ok(())
     }
 }
 

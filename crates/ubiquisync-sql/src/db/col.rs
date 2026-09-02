@@ -203,3 +203,20 @@ impl_col_tuples!(A 0, B 1, C 2, D 3, E 4);
 impl_col_tuples!(A 0, B 1, C 2, D 3, E 4, F 5);
 impl_col_tuples!(A 0, B 1, C 2, D 3, E 4, F 5, G 6);
 impl_col_tuples!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7);
+
+impl Cols for () {
+    type Row<'a> = ();
+    type Params = ();
+
+    fn encode(_: Self::Params) -> Vec<DbValue> {
+        vec![]
+    }
+
+    fn decode<'a>(_: &'a DbRow) -> Result<Self::Row<'a>, DbError> {
+        Ok(())
+    }
+
+    fn idens() -> Vec<DynIden> {
+        vec![]
+    }
+}
