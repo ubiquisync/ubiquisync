@@ -4,14 +4,16 @@ mod batch;
 mod col;
 mod error;
 mod macros;
+mod row;
 mod schema;
 pub mod sea_query;
 mod value;
 
 pub use batch::{DbBatch, DbStatementResult, StmtId};
 pub use col::*;
-pub use error::DbError;
+pub use error::*;
 pub use macros::*;
+pub use row::*;
 pub use schema::*;
 pub use value::{DbRow, DbValue, ValueBinder};
 

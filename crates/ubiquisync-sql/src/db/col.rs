@@ -1,9 +1,9 @@
-use sea_query::Iden;
+use sea_query::{Iden, SelectStatement};
 use ubiquisync_core::uuid::Uuid;
 
-use crate::db::{CreateColDef, DbError, DbType, DbValue};
+use crate::db::{CreateColDef, DbError, DbRow, DbType, DbValue};
 
-pub trait Col: Iden + Copy {
+pub trait Col: Iden + Copy + Default {
     type Type: ColType;
 
     fn create_col_def() -> CreateColDef;
@@ -14,6 +14,12 @@ pub trait ColType {
 
     fn create_col_def(name: &str) -> CreateColDef;
     fn from_db_val<'a>(value: &'a DbValue) -> Result<Self::BorrowedType<'a>, DbError>;
+}
+
+pub trait Cols {
+    type Row<'a>;
+    fn add_to_select(stmt: &mut SelectStatement);
+    fn decode<'a>(row: &'a DbRow) -> Result<Self::Row<'a>, DbError>;
 }
 
 impl ColType for u64 {
@@ -135,3 +141,28 @@ fn col(name: &str, db_type: DbType) -> CreateColDef {
         default_zero: false,
     }
 }
+
+macro_rules! impl_col_tuples {
+    ($($param:ident $idx:literal),+) => {
+        impl <$($param: Col,)+> Cols for ($($param,)+) {
+            type Row<'a> = ($(<$param::Type as ColType>::BorrowedType<'a>,)+);
+
+            fn add_to_select(stmt: &mut SelectStatement) {
+                $(stmt.column($param::default());)+
+            }
+
+            fn decode<'a>(row: &'a DbRow) -> Result<Self::Row<'a>, DbError> {
+                Ok(($(row.get_at::<$param::Type>($idx)?,)+))
+            }
+        }
+    }
+}
+
+impl_col_tuples!(A 0);
+impl_col_tuples!(A 0, B 1);
+impl_col_tuples!(A 0, B 1, C 2);
+impl_col_tuples!(A 0, B 1, C 2, D 3);
+impl_col_tuples!(A 0, B 1, C 2, D 3, E 4);
+impl_col_tuples!(A 0, B 1, C 2, D 3, E 4, F 5);
+impl_col_tuples!(A 0, B 1, C 2, D 3, E 4, F 5, G 6);
+impl_col_tuples!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7);

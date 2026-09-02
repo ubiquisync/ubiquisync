@@ -1,7 +1,7 @@
 use sea_query::{PostgresQueryBuilder, SelectStatement, SqliteQueryBuilder, Value};
 
 use crate::{
-    db::{Db, DbError, DbRow, DbValue},
+    db::{Cols, Db, DbError, DbRow, DbValue, Rows},
     dialect::SqlDialect,
 };
 
@@ -9,6 +9,16 @@ pub async fn select(db: &dyn Db, stmt: &SelectStatement) -> Result<Vec<DbRow>, D
     let (sql, params) = build_select(stmt, db.dialect())?;
     let res = db.query(&sql, &params).await?;
     Ok(res)
+}
+
+pub async fn select_cols<C: Cols>(
+    db: &dyn Db,
+    mut stmt: SelectStatement,
+) -> Result<Rows<C>, DbError> {
+    C::add_to_select(&mut stmt);
+    let (sql, params) = build_select(&stmt, db.dialect())?;
+    let res = db.query(&sql, &params).await?;
+    Ok(res.into())
 }
 
 pub fn build_select(

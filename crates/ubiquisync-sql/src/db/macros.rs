@@ -47,15 +47,15 @@ macro_rules! def_table_with_auto_id {
 
 #[macro_export]
 macro_rules! def_col {
-    ($name:ident $typ:ty $(: $modifier:tt )? ) => {
+    ($name:ident $typ:ty $(: $modifier:ident $args:tt )? ) => {
         pastey::paste! {
             // TODO we could re-export sea_query::Iden
-            #[derive(sea_query::Iden, Clone, Copy)]
+            #[derive(sea_query::Iden, Clone, Copy, Default)]
             pub struct [< $name:camel >];
             impl $crate::db::Col for [< $name:camel >] {
                 type Type = $typ;
                 fn create_col_def() -> $crate::db::CreateColDef {
-                    <$typ as $crate::db::ColType>::create_col_def(stringify!($name)) $(.$modifier)?
+                    <$typ as $crate::db::ColType>::create_col_def(stringify!($name)) $(.$modifier $args)?
                 }
             }
         }
