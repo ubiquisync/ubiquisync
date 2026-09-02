@@ -1,13 +1,17 @@
 //! The SQL backend abstraction: values, rows, batches, and the [`Db`] trait.
 
 mod batch;
+mod col;
 mod error;
+mod macros;
 mod schema;
 pub mod sea_query;
 mod value;
 
 pub use batch::{DbBatch, DbStatementResult, StmtId};
+pub use col::*;
 pub use error::DbError;
+pub use macros::*;
 pub use schema::*;
 pub use value::{DbRow, DbValue, ValueBinder};
 

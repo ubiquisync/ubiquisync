@@ -3,7 +3,10 @@ use thiserror::Error;
 use ubiquisync_core::uuid::Uuid;
 
 use crate::{
-    db::{DbError, DbRow, sea_query::select}, op::Op, reducer::Reducer, replica::{replica::Replica, schema::Streams}
+    db::{DbError, DbRow, sea_query::select},
+    op::Op,
+    reducer::Reducer,
+    replica::{replica::Replica, schema::Streams},
 };
 
 impl<R: Reducer> Replica<R>
@@ -26,14 +29,21 @@ where
 
         let (container, wire_bytes) = op.encode();
 
-        let stream_rows = select(self.db.as_ref(), Query::select()
-            .column(Streams::HeadIdx)
-            .column(Streams::HeadHash)
-            .column(Streams::HeadCipher)
-            .from(Streams::Table)
-            .and_where(Expr::column(Streams::PeerId).eq(self.self_id.as_ref()))
-            .and_where(Expr::column(Streams::ContainerId).eq(container.as_ref()))
-        ).await?;
+        let stream_rows = select(
+            self.db.as_ref(),
+            Query::select()
+                .from(Streams::Table)
+                .columns([
+                    Streams::Id,
+                    Streams::HeadIdx,
+                    Streams::HeadHash,
+                    Streams::HeadCipher,
+                ])
+                .and_where(Expr::column(Streams::PeerId).eq(self.self_id.as_ref()))
+                .and_where(Expr::column(Streams::ContainerId).eq(container.as_ref()))
+                .and_where(Expr::column(Streams::HeadStatus).is_null()),
+        )
+        .await?;
 
         if stream_rows.is_empty() {
             todo!("create stream")
@@ -41,9 +51,10 @@ where
             todo!("fork")
         } else {
             let stream_row = &stream_rows[0];
-            let head_idx = stream_row.get_u64(0)?;
-            let head_hash = stream_row.get_blob(1)?;
-            let head_cipher = stream_row.get_optional_blob(2)?;
+            let stream_id = stream_row.get_i64(0)?;
+            let head_idx = stream_row.get_u64(1)?;
+            let head_hash = stream_row.get_blob(2)?;
+            let head_cipher = stream_row.get_optional_blob(3)?;
             if head_cipher.is_some() {
                 todo!("cipher not supported");
             }
@@ -55,12 +66,6 @@ where
         // log from another peer
 
         todo!()
-    }
-
-    fn select(&mut self, select: SelectStatement) -> Result<Vec<DbRow>, DbError> {
-
-        self.db
-            .query(&, params)
     }
 }
 

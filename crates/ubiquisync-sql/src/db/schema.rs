@@ -1,5 +1,3 @@
-use sea_query::Iden;
-
 use crate::{dialect::SqlDialect, util::quote_ident};
 
 /// An existing table's shape as reported by backend introspection
@@ -204,7 +202,7 @@ impl CreateColDef {
     }
 }
 
-pub fn table(name: &dyn Iden, pk: &[CreateColDef], cols: &[CreateColDef]) -> CreateTableDef {
+pub fn table(name: &str, pk: &[CreateColDef], cols: &[CreateColDef]) -> CreateTableDef {
     CreateTableDef {
         name: name.to_string(),
         pk: CreatePrimaryKeyDef::Columns(pk.into()),
@@ -213,7 +211,7 @@ pub fn table(name: &dyn Iden, pk: &[CreateColDef], cols: &[CreateColDef]) -> Cre
     }
 }
 
-pub fn table_with_auto_id(name: &dyn Iden, id: &dyn Iden, cols: &[CreateColDef]) -> CreateTableDef {
+pub fn table_with_auto_id(name: &str, id: &str, cols: &[CreateColDef]) -> CreateTableDef {
     CreateTableDef {
         name: name.to_string(),
         pk: CreatePrimaryKeyDef::AutoId(id.to_string()),
@@ -222,18 +220,11 @@ pub fn table_with_auto_id(name: &dyn Iden, id: &dyn Iden, cols: &[CreateColDef])
     }
 }
 
-pub fn col(name: &dyn Iden, db_type: DbType) -> CreateColDef {
-    CreateColDef {
-        name: name.to_string(),
-        db_type,
-        nullable: false,
-        default_zero: false,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use insta::assert_snapshot;
+
+    use crate::{def_table, def_table_with_auto_id};
 
     use super::*;
 
@@ -257,30 +248,34 @@ mod tests {
 
     #[test]
     fn test_create_table() {
-        let user = table(&"user", &[col(&"id", DbType::Uuid)], &[]);
-        let user_device = table(
-            &"user",
-            &[col(&"user", DbType::Uuid), col(&"device", DbType::Uuid)],
-            &[],
-        );
-        let entry = table_with_auto_id(
-            &"entry",
-            &"id",
-            &[col(&"bytes", DbType::Blob), col(&"ts", DbType::Integer)],
-        );
+        def_table!(user (id [u8; 16]) => {});
+        def_table!(user_device (user [u8; 16], device [u8; 16]) => {});
+        def_table_with_auto_id!(entry (id) => {bytes Vec<u8>, ts i64});
 
-        assert_snapshot!("user.sqlite", user.create_table_sql(SqlDialect::Sqlite));
+        assert_snapshot!(
+            "user.sqlite",
+            user::create_table_def().create_table_sql(SqlDialect::Sqlite)
+        );
         assert_snapshot!(
             "user_device.sqlite",
-            user_device.create_table_sql(SqlDialect::Sqlite)
+            user_device::create_table_def().create_table_sql(SqlDialect::Sqlite)
         );
-        assert_snapshot!("entry.sqlite", entry.create_table_sql(SqlDialect::Sqlite));
+        assert_snapshot!(
+            "entry.sqlite",
+            entry::create_table_def().create_table_sql(SqlDialect::Sqlite)
+        );
 
-        assert_snapshot!("user.pg", user.create_table_sql(SqlDialect::Postgres));
+        assert_snapshot!(
+            "user.pg",
+            user::create_table_def().create_table_sql(SqlDialect::Postgres)
+        );
         assert_snapshot!(
             "user_device.pg",
-            user_device.create_table_sql(SqlDialect::Postgres)
+            user_device::create_table_def().create_table_sql(SqlDialect::Postgres)
         );
-        assert_snapshot!("entry.pg", entry.create_table_sql(SqlDialect::Postgres));
+        assert_snapshot!(
+            "entry.pg",
+            entry::create_table_def().create_table_sql(SqlDialect::Postgres)
+        );
     }
 }

@@ -1,4 +1,9 @@
-use crate::dialect::{PlaceholderGen, SqlDialect};
+use ubiquisync_core::uuid::Uuid;
+
+use crate::{
+    db::{ColType, DbType},
+    dialect::{PlaceholderGen, SqlDialect},
+};
 
 use super::DbError;
 
@@ -31,6 +36,17 @@ impl DbValue {
             .map(DbValue::Integer)
             .map_err(|_| DbError::IntegerOutOfRange(value as i128))
     }
+
+    /// Returns the [DbType] of the value or `None`.
+    pub fn db_type(&self) -> Option<DbType> {
+        match self {
+            DbValue::Null => None,
+            DbValue::Integer(_) => Some(DbType::Integer),
+            DbValue::Text(_) => Some(DbType::Text),
+            DbValue::Blob(_) => Some(DbType::Blob),
+            DbValue::Uuid(_) => Some(DbType::Uuid),
+        }
+    }
 }
 
 /// One result row: a positional list of column values.
@@ -41,46 +57,30 @@ pub struct DbRow {
 }
 
 impl DbRow {
+    fn get_at<'a, T: ColType>(&'a self, idx: usize) -> Result<T::BorrowedType<'a>, DbError> {
+        let v = self
+            .values
+            .get(idx)
+            .ok_or(DbError::ColumnOutOfBounds(idx))?;
+        T::from_db_val(v)
+    }
+
     /// Read column `idx` as an `i64`. Errors if it is NULL, not an integer, or
     /// out of bounds.
     pub fn get_i64(&self, idx: usize) -> Result<i64, DbError> {
-        match self.values.get(idx) {
-            Some(DbValue::Integer(v)) => Ok(*v),
-            Some(DbValue::Null) => Err(DbError::UnexpectedNull(idx)),
-            Some(_) => Err(DbError::TypeMismatch {
-                col: idx,
-                expected: "integer",
-            }),
-            None => Err(DbError::ColumnOutOfBounds(idx)),
-        }
+        self.get_at::<i64>(idx)
     }
 
     /// Read column `idx` as text. Errors if it is NULL, not text, or out of
     /// bounds.
     pub fn get_text(&self, idx: usize) -> Result<&str, DbError> {
-        match self.values.get(idx) {
-            Some(DbValue::Text(v)) => Ok(v),
-            Some(DbValue::Null) => Err(DbError::UnexpectedNull(idx)),
-            Some(_) => Err(DbError::TypeMismatch {
-                col: idx,
-                expected: "text",
-            }),
-            None => Err(DbError::ColumnOutOfBounds(idx)),
-        }
+        self.get_at::<String>(idx)
     }
 
     /// Read column `idx` as a byte blob. Errors if it is NULL, not a blob, or
     /// out of bounds.
     pub fn get_blob(&self, idx: usize) -> Result<&[u8], DbError> {
-        match self.values.get(idx) {
-            Some(DbValue::Blob(v)) => Ok(v),
-            Some(DbValue::Null) => Err(DbError::UnexpectedNull(idx)),
-            Some(_) => Err(DbError::TypeMismatch {
-                col: idx,
-                expected: "blob",
-            }),
-            None => Err(DbError::ColumnOutOfBounds(idx)),
-        }
+        self.get_at::<Vec<u8>>(idx)
     }
 
     /// Read a column written via [`DbValue::from_u64`]: a stored integer that
@@ -89,8 +89,7 @@ impl DbRow {
     /// value (corruption or a hand-edit) is rejected rather than wrapped to a
     /// huge `u64` that would jump the clock to the end of time.
     pub fn get_u64(&self, idx: usize) -> Result<u64, DbError> {
-        let v = self.get_i64(idx)?;
-        u64::try_from(v).map_err(|_| DbError::IntegerOutOfRange(v as i128))
+        self.get_at::<u64>(idx)
     }
 
     /// Read an optional column written via [`DbValue::from_u64`]: a stored integer that
@@ -99,110 +98,39 @@ impl DbRow {
     /// value (corruption or a hand-edit) is rejected rather than wrapped to a
     /// huge `u64` that would jump the clock to the end of time.
     pub fn get_optional_u64(&self, idx: usize) -> Result<Option<u64>, DbError> {
-        if let Some(v) = self.get_optional_i64(idx)? {
-            Ok(Some(
-                u64::try_from(v).map_err(|_| DbError::IntegerOutOfRange(v as i128))?,
-            ))
-        } else {
-            Ok(None)
-        }
-    }
-
-    /// Read column `idx` as a bool — a stored integer, `true` iff nonzero.
-    /// Errors if it is NULL, not an integer, or out of bounds.
-    pub fn get_bool(&self, idx: usize) -> Result<bool, DbError> {
-        match self.values.get(idx) {
-            Some(DbValue::Integer(v)) => Ok(*v != 0),
-            Some(DbValue::Null) => Err(DbError::UnexpectedNull(idx)),
-            Some(_) => Err(DbError::TypeMismatch {
-                col: idx,
-                expected: "bool/integer",
-            }),
-            None => Err(DbError::ColumnOutOfBounds(idx)),
-        }
+        self.get_at::<Option<u64>>(idx)
     }
 
     /// Read column `idx` as an optional `i64`: `None` when NULL. Errors if it
     /// is not an integer or out of bounds.
     pub fn get_optional_i64(&self, idx: usize) -> Result<Option<i64>, DbError> {
-        match self.values.get(idx) {
-            Some(DbValue::Integer(v)) => Ok(Some(*v)),
-            Some(DbValue::Null) => Ok(None),
-            Some(_) => Err(DbError::TypeMismatch {
-                col: idx,
-                expected: "integer",
-            }),
-            None => Err(DbError::ColumnOutOfBounds(idx)),
-        }
+        self.get_at::<Option<i64>>(idx)
     }
 
     /// Read column `idx` as optional text: `None` when NULL. Errors if it is
     /// not text or out of bounds.
     pub fn get_optional_text(&self, idx: usize) -> Result<Option<&str>, DbError> {
-        match self.values.get(idx) {
-            Some(DbValue::Text(v)) => Ok(Some(v)),
-            Some(DbValue::Null) => Ok(None),
-            Some(_) => Err(DbError::TypeMismatch {
-                col: idx,
-                expected: "text",
-            }),
-            None => Err(DbError::ColumnOutOfBounds(idx)),
-        }
+        self.get_at::<Option<String>>(idx)
+    }
+
+    /// Read column `idx` as an optional byte blob: `None` when NULL. Errors if
+    /// it is not a blob or out of bounds.
+    pub fn get_optional_blob(&self, idx: usize) -> Result<Option<&[u8]>, DbError> {
+        self.get_at::<Option<Vec<u8>>>(idx)
     }
 
     /// Read column `idx` as a 16-byte UUID, accepting either a native UUID
     /// value or a 16-byte blob. Errors if it is NULL, a wrong-length blob,
     /// another type, or out of bounds.
     pub fn get_uuid(&self, idx: usize) -> Result<[u8; 16], DbError> {
-        match self.values.get(idx) {
-            Some(DbValue::Blob(v)) => v.as_slice().try_into().map_err(|_| DbError::TypeMismatch {
-                col: idx,
-                expected: "16-byte UUID blob",
-            }),
-            Some(DbValue::Uuid(v)) => Ok(*v),
-            Some(DbValue::Null) => Err(DbError::UnexpectedNull(idx)),
-            Some(_) => Err(DbError::TypeMismatch {
-                col: idx,
-                expected: "uuid or 16-byte blob",
-            }),
-            None => Err(DbError::ColumnOutOfBounds(idx)),
-        }
+        self.get_at::<Uuid>(idx)
     }
 
     /// Read column `idx` as an optional 16-byte UUID (native UUID or 16-byte
     /// blob): `None` when NULL. Errors on a wrong-length blob, another type, or
     /// out of bounds.
     pub fn get_optional_uuid(&self, idx: usize) -> Result<Option<[u8; 16]>, DbError> {
-        match self.values.get(idx) {
-            Some(DbValue::Blob(v)) => {
-                let arr = v.as_slice().try_into().map_err(|_| DbError::TypeMismatch {
-                    col: idx,
-                    expected: "16-byte UUID blob",
-                })?;
-                Ok(Some(arr))
-            }
-            Some(DbValue::Uuid(v)) => Ok(Some(*v)),
-            Some(DbValue::Null) => Ok(None),
-            Some(_) => Err(DbError::TypeMismatch {
-                col: idx,
-                expected: "uuid or 16-byte blob",
-            }),
-            None => Err(DbError::ColumnOutOfBounds(idx)),
-        }
-    }
-
-    /// Read column `idx` as an optional byte blob: `None` when NULL. Errors if
-    /// it is not a blob or out of bounds.
-    pub fn get_optional_blob(&self, idx: usize) -> Result<Option<&[u8]>, DbError> {
-        match self.values.get(idx) {
-            Some(DbValue::Blob(v)) => Ok(Some(v)),
-            Some(DbValue::Null) => Ok(None),
-            Some(_) => Err(DbError::TypeMismatch {
-                col: idx,
-                expected: "blob",
-            }),
-            None => Err(DbError::ColumnOutOfBounds(idx)),
-        }
+        self.get_at::<Option<Uuid>>(idx)
     }
 }
 

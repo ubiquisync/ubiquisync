@@ -1,5 +1,5 @@
 ---
 source: crates/ubiquisync-sql/src/db/schema.rs
-expression: "user_device.create_table_sql(SqlDialect::Postgres)"
+expression: "user_device::create_table_def().create_table_sql(SqlDialect::Postgres)"
 ---
-CREATE TABLE "user" ("user" UUID NOT NULL, "device" UUID NOT NULL, PRIMARY KEY("user", "device"));
+CREATE TABLE "user_device" ("user" UUID NOT NULL, "device" UUID NOT NULL, PRIMARY KEY("user", "device"));

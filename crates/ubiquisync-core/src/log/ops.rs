@@ -85,12 +85,13 @@ impl OpBatch<PlaintextBytes<'_>> {
         server_attested_user_id: Option<Uuid>,
         op_bytes: Vec<u8>,
     ) -> Self {
-        let timestamp = timestamp.raw().to_le_bytes()[..].into();
-        Self {
-            timestamp,
-            server_attested_user_id: todo!(),
-            ops: todo!(),
-        }
+        // let timestamp = timestamp.raw().to_le_bytes()[..].into();
+        // Self {
+        //     timestamp,
+        //     server_attested_user_id: todo!(),
+        //     ops: todo!(),
+        // }
+        todo!()
     }
 }
 
