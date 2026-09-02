@@ -5,7 +5,7 @@ use crate::{
     codec::{ReadError, Reader, Writer},
     crypto::Hash256,
     hlc::Timestamp,
-    log::LogEncodeError,
+    log::{LogDecodeError, LogEncodeError, LogValidationError},
     uuid::Uuid,
 };
 
@@ -85,13 +85,30 @@ impl OpBatch<PlaintextBytes<'_>> {
         server_attested_user_id: Option<Uuid>,
         op_bytes: Vec<u8>,
     ) -> Self {
-        // let timestamp = timestamp.raw().to_le_bytes()[..].into();
-        // Self {
-        //     timestamp,
-        //     server_attested_user_id: todo!(),
-        //     ops: todo!(),
-        // }
-        todo!()
+        let server_attested_user_id = if let Some(id) = server_attested_user_id {
+            PlaintextBytes::from(Vec::from(id))
+        } else {
+            PlaintextBytes::default()
+        };
+        Self {
+            timestamp: Vec::from(timestamp.raw().to_le_bytes()).into(),
+            server_attested_user_id,
+            ops: vec![OpOrExpunge::Op(op_bytes.into())],
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), LogValidationError> {
+        if self.timestamp.0.len() != 8 {
+            return Err(LogValidationError::InvalidTimestamp);
+        }
+        let n = self.server_attested_user_id.0.len();
+        if !(n == 0 || n == 16) {
+            return Err(LogValidationError::InvalidServerAttestedUserId);
+        }
+        if self.ops.is_empty() {
+            return Err(LogValidationError::EmptyOps);
+        }
+        Ok(())
     }
 }
 
@@ -100,6 +117,9 @@ impl<B: alloc::fmt::Debug> OpBatch<B> {
     where
         B: Borrow<[u8]>,
     {
+        if self.ops.is_empty() {
+            return Err(LogEncodeError::EmptyOps);
+        }
         writer.write_len_prefixed(self.timestamp.borrow());
         writer.write_len_prefixed(self.server_attested_user_id.borrow());
         writer.write_var_usize(self.ops.len());
@@ -109,7 +129,7 @@ impl<B: alloc::fmt::Debug> OpBatch<B> {
         Ok(())
     }
 
-    pub fn decode<'a>(reader: &mut Reader<'a>) -> Result<Self, ReadError>
+    pub fn decode<'a>(reader: &mut Reader<'a>) -> Result<Self, LogDecodeError>
     where
         B: From<&'a [u8]>,
     {
@@ -121,6 +141,9 @@ impl<B: alloc::fmt::Debug> OpBatch<B> {
         for _ in 0..n {
             let op = OpOrExpunge::decode(reader)?;
             ops.push(op);
+        }
+        if ops.is_empty() {
+            return Err(LogDecodeError::EmptyOps);
         }
         Ok(Self {
             timestamp,
@@ -139,7 +162,7 @@ impl<B> OpOrExpunge<B> {
             OpOrExpunge::Op(op) => {
                 let bz = op.borrow();
                 if bz.is_empty() {
-                    return Err(LogEncodeError::EmptyOp);
+                    return Err(LogEncodeError::EmptyOps);
                 }
                 writer.write_len_prefixed(bz);
             }
@@ -198,6 +221,6 @@ mod tests {
         let op = OpOrExpunge::Op(PlaintextBytes(Cow::Owned(vec![])));
         let mut w = Writer::new();
         let res = op.encode(&mut w);
-        assert_matches!(res, Err(LogEncodeError::EmptyOp))
+        assert_matches!(res, Err(LogEncodeError::EmptyOps))
     }
 }

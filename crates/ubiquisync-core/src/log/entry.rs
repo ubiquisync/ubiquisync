@@ -4,7 +4,7 @@ use crate::{
     bytes::{OpaqueBytes, PlaintextBytes},
     codec::{Reader, Writer},
     crypto::{CipherInfo, Hash256, Signature},
-    log::{LogDecodeError, LogEncodeError, OpBatch},
+    log::{LogDecodeError, LogEncodeError, LogValidationError, OpBatch},
 };
 
 /// Represents a single entry in a stream of logs.
@@ -118,6 +118,15 @@ impl<B: alloc::fmt::Debug> LogEntry<B> {
                 return Err(LogDecodeError::UndecodableEntryType(unknown));
             }
         })
+    }
+}
+
+impl<'a> PlaintextLogEntry<'a> {
+    pub fn validate(&self) -> Result<(), LogValidationError> {
+        match self {
+            LogEntry::IndexedEntry(EntryBody::OpBatch(ops)) => ops.validate(),
+            _ => Ok(()),
+        }
     }
 }
 

@@ -4,8 +4,8 @@ use crate::{
     bytes::{BytesWrapper, OpaqueBytes, PlaintextBytes},
     crypto::{CipherError, EntryCipher, Hash256, RootKey256Fingerprint, SlotCipher},
     log::{
-        ChainHash, ChainHashError, ChainSeed, EntryBody, LogEntry, OpBatchHasher, OpaqueLogEntry,
-        PlaintextLogEntry,
+        ChainHash, ChainHashError, ChainSeed, EntryBody, LogEntry, LogValidationError,
+        OpBatchHasher, OpaqueLogEntry, PlaintextLogEntry,
     },
 };
 
@@ -22,6 +22,9 @@ pub enum SegmentCipherError {
 
     #[error("chain update error: {0}")]
     ChainHashError(#[from] ChainHashError),
+
+    #[error("log validation error: {0}")]
+    LogValidation(#[from] LogValidationError),
 }
 
 /// Converts a segment of log entries from plaintext (not encrypted) to opaque (possibly encrypted)
@@ -165,38 +168,44 @@ fn to_plaintext<'a>(
     cipher: &Option<EntryCipher>,
     seed: &ChainSeed,
     prev_chain: &ChainHash,
-) -> Result<(PlaintextLogEntry<'a>, Option<Hash256>), CipherError> {
+) -> Result<(PlaintextLogEntry<'a>, Option<Hash256>), SegmentCipherError> {
     let entry_index = prev_chain.size;
     if let Some(cipher) = cipher {
-        let (e2, maybe_hash_state) = entry.transform(
-            entry_index,
-            |entry_idx, op_batch| {
-                Ok(OpBatchHashState {
-                    last_hash: prev_chain.hash,
-                    hasher: OpBatchHasher::new(seed, entry_idx, op_batch.ops.len()),
-                    slot_cipher: cipher.slot_cipher(entry_idx),
-                })
-            },
-            |slot_cipher, st| {
-                let op = st.slot_cipher.decrypt_slot(&st.last_hash, slot_cipher)?;
-                st.last_hash = st.hasher.hash_slot(slot_cipher);
-                Ok(op)
-            },
-            |expunge_hash, st| {
-                st.last_hash = *expunge_hash;
-                st.hasher.hash_expunge(expunge_hash);
-                st.slot_cipher.skip_slot();
-                Ok(())
-            },
-        )?;
+        let (e2, maybe_hash_state) = entry
+            .transform(
+                entry_index,
+                |entry_idx, op_batch| {
+                    Ok(OpBatchHashState {
+                        last_hash: prev_chain.hash,
+                        hasher: OpBatchHasher::new(seed, entry_idx, op_batch.ops.len()),
+                        slot_cipher: cipher.slot_cipher(entry_idx),
+                    })
+                },
+                |slot_cipher, st| {
+                    let op = st.slot_cipher.decrypt_slot(&st.last_hash, slot_cipher)?;
+                    st.last_hash = st.hasher.hash_slot(slot_cipher);
+                    Ok(op)
+                },
+                |expunge_hash, st| {
+                    st.last_hash = *expunge_hash;
+                    st.hasher.hash_expunge(expunge_hash);
+                    st.slot_cipher.skip_slot();
+                    Ok(())
+                },
+            )
+            .map_err(SegmentCipherError::CipherError)?;
+        e2.validate()?;
         Ok((e2, maybe_hash_state.map(|st| st.hasher.finalize())))
     } else {
-        let (e2, _) = entry.transform(
-            entry_index,
-            |_, _| Ok(()),
-            |s, _| Ok(PlaintextBytes(s.0.clone())),
-            |_, _| Ok(()),
-        )?;
+        let (e2, _) = entry
+            .transform(
+                entry_index,
+                |_, _| Ok(()),
+                |s, _| Ok(PlaintextBytes(s.0.clone())),
+                |_, _| Ok(()),
+            )
+            .map_err(SegmentCipherError::CipherError)?;
+        e2.validate()?;
         Ok((e2, None))
     }
 }
