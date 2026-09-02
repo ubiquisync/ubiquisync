@@ -3,10 +3,13 @@ use thiserror::Error;
 use ubiquisync_core::uuid::Uuid;
 
 use crate::{
-    db::{DbError, DbRow, sea_query::select},
+    db::{
+        DbError,
+        sea_query::{select, select_cols},
+    },
     op::Op,
     reducer::Reducer,
-    replica::{replica::Replica, schema::Streams},
+    replica::{replica::Replica, schema::streams},
 };
 
 impl<R: Reducer> Replica<R>
@@ -29,19 +32,18 @@ where
 
         let (container, wire_bytes) = op.encode();
 
-        let stream_rows = select(
+        let stream_rows = select_cols::<(
+            streams::Id,
+            streams::HeadIdx,
+            streams::HeadHash,
+            streams::HeadCipher,
+        )>(
             self.db.as_ref(),
             Query::select()
-                .from(Streams::Table)
-                .columns([
-                    Streams::Id,
-                    Streams::HeadIdx,
-                    Streams::HeadHash,
-                    Streams::HeadCipher,
-                ])
-                .and_where(Expr::column(Streams::PeerId).eq(self.self_id.as_ref()))
-                .and_where(Expr::column(Streams::ContainerId).eq(container.as_ref()))
-                .and_where(Expr::column(Streams::HeadStatus).is_null()),
+                .from(streams::Table)
+                .and_where(Expr::column(streams::PeerId).eq(self.self_id.as_ref()))
+                .and_where(Expr::column(streams::ContainerId).eq(container.as_ref()))
+                .and_where(Expr::column(streams::HeadStatus).is_null()),
         )
         .await?;
 
@@ -50,11 +52,7 @@ where
         } else if stream_rows.len() > 1 {
             todo!("fork")
         } else {
-            let stream_row = &stream_rows[0];
-            let stream_id = stream_row.get_i64(0)?;
-            let head_idx = stream_row.get_u64(1)?;
-            let head_hash = stream_row.get_blob(2)?;
-            let head_cipher = stream_row.get_optional_blob(3)?;
+            let (stream_id, head_idx, head_hash, head_cipher) = stream_rows.exactly_one()?;
             if head_cipher.is_some() {
                 todo!("cipher not supported");
             }

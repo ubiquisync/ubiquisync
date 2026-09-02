@@ -13,9 +13,9 @@ pub async fn select(db: &dyn Db, stmt: &SelectStatement) -> Result<Vec<DbRow>, D
 
 pub async fn select_cols<C: Cols>(
     db: &dyn Db,
-    mut stmt: SelectStatement,
+    stmt: &mut SelectStatement,
 ) -> Result<Rows<C>, DbError> {
-    C::add_to_select(&mut stmt);
+    C::add_to_select(stmt);
     let (sql, params) = build_select(&stmt, db.dialect())?;
     let res = db.query(&sql, &params).await?;
     Ok(res.into())

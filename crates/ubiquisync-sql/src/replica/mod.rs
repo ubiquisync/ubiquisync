@@ -1,4 +1,4 @@
-// mod exec;
+mod exec;
 mod replica;
-// mod schema;
+mod schema;
 // mod segments;

@@ -35,4 +35,6 @@ pub enum DbError {
     /// A column was SQL NULL where the caller required a non-null value.
     #[error("unexpected null")]
     UnexpectedNull,
+    #[error("unexpected row count: {got}")]
+    UnexpectedRowCount { got: usize },
 }

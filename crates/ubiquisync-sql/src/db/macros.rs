@@ -1,10 +1,10 @@
 #[macro_export]
 macro_rules! def_table {
-    ($name:ident ( $($pk_name:ident $pk_typ:ty),+ ) => { $($col_name:ident $col_typ:ty),* }) => {
+    ($name:ident ( $($pk_name:ident: $pk_typ:ty),+ $(,)?) => { $($col_name:ident: $col_typ:ty),* $(,)?}) => {
         pastey::paste! {
             pub mod $name {
                 #[derive(sea_query::Iden, Clone, Copy)]
-                pub struct TableName;
+                pub struct Table;
 
                 pub fn create_table_def() -> $crate::db::CreateTableDef {
                     $crate::db::table(
@@ -14,8 +14,8 @@ macro_rules! def_table {
                     )
                 }
 
-                $( $crate::def_col!($pk_name $pk_typ); )+
-                $( $crate::def_col!($col_name $col_typ); )*
+                $( $crate::def_col!($pk_name: $pk_typ); )+
+                $( $crate::def_col!($col_name: $col_typ); )*
 
             }
         }
@@ -24,11 +24,11 @@ macro_rules! def_table {
 
 #[macro_export]
 macro_rules! def_table_with_auto_id {
-    ($name:ident ($id_col:ident) => { $($col_name:ident $col_typ:ty),* }) => {
+    ($name:ident ($id_col:ident) => { $($col_name:ident: $col_typ:ty),* $(,)?}) => {
         pastey::paste! {
             pub mod $name {
                 #[derive(sea_query::Iden, Clone, Copy)]
-                pub struct TableName;
+                pub struct Table;
 
                 pub fn create_table_def() -> $crate::db::CreateTableDef {
                     $crate::db::table_with_auto_id(
@@ -38,8 +38,8 @@ macro_rules! def_table_with_auto_id {
                     )
                 }
 
-                $crate::def_col!($id_col i64);
-                $( $crate::def_col!($col_name $col_typ); )*
+                $crate::def_col!($id_col: i64);
+                $( $crate::def_col!($col_name: $col_typ); )*
             }
         }
     };
@@ -47,7 +47,7 @@ macro_rules! def_table_with_auto_id {
 
 #[macro_export]
 macro_rules! def_col {
-    ($name:ident $typ:ty $(: $modifier:ident $args:tt )? ) => {
+    ($name:ident : $typ:ty $(: $modifier:ident $args:tt )? ) => {
         pastey::paste! {
             // TODO we could re-export sea_query::Iden
             #[derive(sea_query::Iden, Clone, Copy, Default)]

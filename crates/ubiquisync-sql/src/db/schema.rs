@@ -248,9 +248,9 @@ mod tests {
 
     #[test]
     fn test_create_table() {
-        def_table!(user (id [u8; 16]) => {});
-        def_table!(user_device (user [u8; 16], device [u8; 16]) => {});
-        def_table_with_auto_id!(entry (id) => {bytes Vec<u8>, ts i64});
+        def_table!(user (id: [u8; 16]) => {});
+        def_table!(user_device (user: [u8; 16], device: [u8; 16]) => {});
+        def_table_with_auto_id!(entry (id) => {bytes: Vec<u8>, ts: i64});
 
         assert_snapshot!(
             "user.sqlite",

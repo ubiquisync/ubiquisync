@@ -101,6 +101,36 @@ impl<C: Cols> Rows<C> {
     pub fn iter<'a>(&'a self) -> impl Iterator<Item = Result<C::Row<'a>, DbError>> {
         self.rows.iter().map(C::decode)
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    pub fn first<'a>(&'a self) -> Result<Option<C::Row<'a>>, DbError> {
+        match self.iter().next() {
+            Some(Ok(r)) => Ok(Some(r)),
+            Some(Err(e)) => Err(e),
+            None => Ok(None),
+        }
+    }
+
+    pub fn one<'a>(&'a self) -> Result<Option<C::Row<'a>>, DbError> {
+        if self.len() > 1 {
+            return Err(DbError::UnexpectedRowCount { got: self.len() });
+        }
+        self.first()
+    }
+
+    pub fn exactly_one<'a>(&'a self) -> Result<C::Row<'a>, DbError> {
+        if self.len() != 1 {
+            return Err(DbError::UnexpectedRowCount { got: self.len() });
+        }
+        C::decode(&self.rows[0])
+    }
 }
 
 impl<C: Cols> From<Vec<DbRow>> for Rows<C> {
