@@ -33,6 +33,8 @@ impl<R: Reducer> Replica<R> {
 
         let hlc = HlcService::open(SqlHlcStorage::open(db.as_ref(), "").await?)?;
 
+        // TODO: initialize replica schema
+
         let self_id = if let Some((self_id, commitment_bytes, sig)) =
             select_cols::<(peers::PeerId, peers::Commitment, peers::Signature)>(
                 db.as_ref(),
@@ -55,7 +57,7 @@ impl<R: Reducer> Replica<R> {
             };
             init_entry.verify(&app_magic)?;
             let commit_data = init_entry.commitment_data()?;
-            if commit_data.sig_verify_key != credentials.signing_key().get_verifying_key() {
+            if commit_data.sig_verify_key != credentials.signing_key().verifying_key() {
                 todo!()
             }
             if commit_data.encrypt_wrap_key != credentials.decapsulation_key().encapsulation_key() {
@@ -67,7 +69,7 @@ impl<R: Reducer> Replica<R> {
             let commitment = InitCommitment {
                 version: Version::default(),
                 hash_suite: ubiquisync_core::crypto::Hash256Suite::Sha256,
-                sig_verify_key: credentials.signing_key().get_verifying_key(),
+                sig_verify_key: credentials.signing_key().verifying_key(),
                 encrypt_wrap_key: credentials.decapsulation_key().encapsulation_key(),
                 // TODO: support servers
                 server: false,

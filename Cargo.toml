@@ -52,18 +52,18 @@ strum = "0.28.0"
 strum_macros = "0.28.0"
 
 # cryptography
+sha2 = {version="0.11.0", features=["zeroize"]}
 ed25519-dalek = "3.0.0"
+x25519-dalek = {version="3.0.0", features=["zeroize"]} # TODO maybe enable precomputed-tables for performance
 p256 = "0.14.0"
 hpke = {version="0.14.0", default-features=false, features=["alloc", "nistp", "getrandom", "x25519", "chacha"]}
-x25519-dalek = {version="3.0.0", features=["zeroize"]} # TODO maybe enable precomputed-tables for performance
-sha2 = {version="0.11.0", features=["zeroize"]}
+chacha20 = "0.10.2"
+chacha20poly1305 = "0.11.0"
 hmac = {version="0.13.0", features=["zeroize"]}
 hkdf = "0.13.0"
 zeroize = {version = "1.9.0", features = ["zeroize_derive"]}
 secrecy = "0.10.3"
 crypto-common = "0.2.2"
-chacha20 = "0.10.2"
-chacha20poly1305 = "0.11.0"
 
 # testing
 proptest = "1.11.0"

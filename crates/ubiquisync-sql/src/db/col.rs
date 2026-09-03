@@ -67,7 +67,7 @@ impl ColType for i64 {
     }
 
     fn to_db_val(value: i64) -> DbValue {
-        DbValue::Integer(value as i64)
+        DbValue::Integer(value)
     }
 }
 
@@ -111,7 +111,7 @@ impl ColType for Vec<u8> {
     }
 
     fn to_db_val(value: Vec<u8>) -> DbValue {
-        DbValue::Blob(value.into())
+        DbValue::Blob(value)
     }
 }
 

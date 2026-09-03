@@ -460,7 +460,7 @@ pub(crate) mod tests {
         ids::LogId,
         log::{
             ChainHash, LogEntry, OpBatch, PlaintextLogEntry, entries_to_opaque,
-            segment::{SegmentEncoding, encode_segment_opaque, encode_segment_plaintext},
+            segment::{SegmentEncoding, encode_segment_opaque},
         },
     };
     #[cfg(test)]

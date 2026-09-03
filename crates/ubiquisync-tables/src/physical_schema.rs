@@ -259,6 +259,7 @@ impl PhysicalTableSchema {
         let without_rowid = db.dialect().without_rowid();
         db.exec(
             &format!(
+                // TODO in weird edge cases DDL could race so we could add IF NOT EXISTS or reload schema if there's an error
                 "CREATE TABLE {} ({}, PRIMARY KEY ({})){without_rowid};",
                 self.quoted_name,
                 col_defs.join(", "),
@@ -283,6 +284,7 @@ impl PhysicalTableSchema {
         let mut batch = db.new_batch();
         // Add column
         // TODO do we need to quote the names now that they're all surrogates
+        // TODO in weird edge cases DDL could race so we could add IF NOT EXISTS on postgres or reload schema if there's an error
         batch.add_statement(
             &format!(
                 // TODO ensure that we don't need to specify NULL

@@ -4,9 +4,8 @@ use thiserror::Error;
 use crate::{
     codec::{ReadError, Reader, Writer},
     crypto::{
-        CryptoDecodeError, Hash256, Hash256Suite, Signature, SignatureVerificationError,
-        SigningError, SigningKey, TaggedHashDomain, VerifyingKey, kem::EncapsulationKey,
-        new_tagged_hasher,
+        CryptoDecodeError, Hash256Suite, Signature, SignatureVerificationError, SigningError,
+        SigningKey, TaggedHashDomain, VerifyingKey, kem::EncapsulationKey, new_tagged_hasher,
     },
     ids::{AppId, PeerId},
 };

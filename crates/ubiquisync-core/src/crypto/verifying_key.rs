@@ -85,17 +85,20 @@ impl VerifyingKey {
 
 #[cfg(test)]
 mod tests {
+    use secrecy::SecretBox;
     use test_strategy::proptest;
 
     use crate::crypto::SigningKey;
+    #[cfg(test)]
+    use crate::crypto::ed25519::Ed25519SigningKey;
 
     #[proptest(cases = 5)] // we don't need that many cases here
     fn test_ed25519_verify_signature(
         secret_key: [u8; ed25519_dalek::SECRET_KEY_LENGTH],
         msg: Vec<u8>,
     ) {
-        let signing_key = ed25519_dalek::SigningKey::from_bytes(&secret_key);
-        let verifying_key = signing_key.get_verifying_key();
+        let signing_key = Ed25519SigningKey::new(SecretBox::new(Box::new(secret_key)));
+        let verifying_key = signing_key.verifying_key();
         let sig = signing_key.sign(&msg).unwrap();
         verifying_key.verify_signature(&msg, &sig).unwrap();
     }
@@ -105,7 +108,7 @@ mod tests {
         use crypto_common::Generate;
 
         let signing_key = p256::ecdsa::SigningKey::generate();
-        let verifying_key = signing_key.get_verifying_key();
+        let verifying_key = SigningKey::verifying_key(&signing_key);
         let sig = signing_key.sign(&msg).unwrap();
         verifying_key.verify_signature(&msg, &sig).unwrap();
     }

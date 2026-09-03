@@ -13,7 +13,7 @@ pub async fn select_cols<C: Cols>(
     stmt: &mut SelectStatement,
 ) -> Result<Rows<C>, DbError> {
     stmt.columns(C::idens());
-    let (sql, params) = build_select(&stmt, db.dialect())?;
+    let (sql, params) = build_select(stmt, db.dialect())?;
     let res = db.query(&sql, &params).await?;
     Ok(res.into())
 }
@@ -80,10 +80,8 @@ pub fn update_cols_batch<C: Cols>(
     let db_vals = C::encode(params);
     let idens = C::idens();
     let mut iden_exprs = vec![];
-    let mut i = 0;
-    for v in db_vals {
+    for (i, v) in db_vals.into_iter().enumerate() {
         iden_exprs.push((idens[i].clone(), Expr::Constant(db_to_value(v))));
-        i += 1;
     }
     stmt.values(iden_exprs);
     let (sql, values) = build_update(stmt, batch.dialect())?;
