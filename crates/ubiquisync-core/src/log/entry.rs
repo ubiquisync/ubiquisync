@@ -2,7 +2,7 @@ use alloc::borrow::Borrow;
 
 use crate::{
     bytes::{BytesWrapper, OpaqueBytes, PlaintextBytes},
-    codec::{Readable, Reader, Writable, Writer},
+    codec::{Reader, Writer},
     crypto::{CipherInfo, Hash256, Signature},
     log::{LogDecodeError, LogEncodeError, LogValidationError, OpBatch},
 };

@@ -35,8 +35,8 @@ impl<R: Reducer> Replica<R> {
 
         // TODO: initialize replica schema
 
-        let self_id = if let Some((self_id, commitment_bytes, sig)) =
-            select_cols::<(peers::PeerId, peers::Commitment, peers::Signature)>(
+        let self_id = if let Some((self_id, commitment_bytes, signature)) =
+            select_cols::<(peers::PeerId, peers::CommitmentBytes, peers::Signature)>(
                 db.as_ref(),
                 Query::select()
                     .from(peers::Table)
@@ -48,7 +48,6 @@ impl<R: Reducer> Replica<R> {
             let self_id: PeerId = PeerId(self_id.try_into().map_err(|_| {
                 InitError::Internal(format!("invalid peer id length: {0}", self_id.len()))
             })?);
-            let signature = Signature::decode(&mut Reader::new(sig))?;
             let init_entry = InitEntry {
                 commitment_bytes: commitment_bytes.into(),
                 peer_id: self_id,
@@ -79,21 +78,20 @@ impl<R: Reducer> Replica<R> {
             };
             let init_entry = InitEntry::create(commitment, &app_magic, credentials.signing_key())?;
 
-            let mut sig_writer = Writer::new();
-            init_entry.signature.encode(&mut sig_writer);
-            let sig_bytes = sig_writer.finalize();
-            let (self_db_id,) =
-                insert_cols::<(peers::PeerId, peers::Commitment, peers::Signature), (peers::Id,)>(
-                    db.as_ref(),
-                    (
-                        init_entry.peer_id.as_ref().into(),
-                        init_entry.commitment_bytes,
-                        sig_bytes,
-                    ),
-                    Query::insert().into_table(peers::Table),
-                )
-                .await?
-                .exactly_one()?;
+            let (self_db_id,) = insert_cols::<
+                (peers::PeerId, peers::CommitmentBytes, peers::Signature),
+                (peers::Id,),
+            >(
+                db.as_ref(),
+                (
+                    init_entry.peer_id.0,
+                    init_entry.commitment_bytes,
+                    init_entry.signature,
+                ),
+                Query::insert().into_table(peers::Table),
+            )
+            .await?
+            .exactly_one()?;
 
             if self_db_id != SELF_DB_ID {
                 return Err(InitError::Internal(format!(

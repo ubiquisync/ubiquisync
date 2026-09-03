@@ -5,7 +5,7 @@ use thiserror::Error;
 
 use crate::{
     bytes::{BytesWrapper, PlaintextBytes, ToStatic},
-    codec::{ReadError, Readable, Reader, Writable, WriteError, Writer},
+    codec::{ReadError, Reader, WriteError, Writer},
     crypto::{CipherError, CipherInfo, CryptoDecodeError, SegmentCipher, Signature},
     log::{ChainHash, LogDecodeError, LogEncodeError, LogEntry, OpaqueLogEntry, PlaintextLogEntry},
 };

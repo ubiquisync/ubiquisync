@@ -171,14 +171,14 @@ macro_rules! codeable_col_repr {
             type Repr = Vec<u8>;
             fn to_repr(self) -> Self::Repr {
                 let mut w = ubiquisync_core::codec::Writer::new();
-                <Self as ubiquisync_core::codec::Writable>::encode(&self, &mut w);
+                self.encode(&mut w);
                 w.finalize()
             }
             fn from_repr<'a>(
                 value: <Self::Repr as $crate::db::ColType>::BorrowedType<'a>,
             ) -> Result<Self, $crate::db::DbError> {
                 let mut r = ubiquisync_core::codec::Reader::new(value);
-                if let Ok(res) = <Self as ubiquisync_core::codec::Readable>::decode(&mut r) {
+                if let Ok(res) = Self::decode(&mut r) {
                     if r.is_empty() {
                         return Ok(res);
                     }

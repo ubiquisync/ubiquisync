@@ -21,9 +21,7 @@ use zeroize::Zeroizing;
 use crate::bytes::OpaqueBytes;
 use crate::bytes::PlaintextBytes;
 use crate::codec::ReadError;
-use crate::codec::Readable;
 use crate::codec::Reader;
-use crate::codec::Writable;
 use crate::codec::Writer;
 use crate::crypto::Hash256;
 use crate::ids::ContainerId;
@@ -339,16 +337,13 @@ impl SegmentCipher {
     }
 }
 
-impl Writable for CipherInfo {
-    fn encode(&self, writer: &mut Writer) {
+impl CipherInfo {
+    pub fn encode(&self, writer: &mut Writer) {
         writer.write_byte(self.cipher_suite);
         writer.write_array(&self.fingerprint.0);
     }
-}
 
-impl Readable for CipherInfo {
-    type Error = ReadError;
-    fn decode<'a>(reader: &mut Reader<'a>) -> Result<Self, ReadError> {
+    pub fn decode<'a>(reader: &mut Reader<'a>) -> Result<Self, ReadError> {
         let cipher_suite = reader.read_byte()?;
         Ok(CipherInfo {
             cipher_suite,

@@ -95,7 +95,7 @@ where
         };
         let seed = ChainSeed::new(&log_id);
 
-        let (stream_id, chain_head, segment_seq) = if stream_rows.is_empty() {
+        let (stream_id, chain_head) = if stream_rows.is_empty() {
             // TODO handle current inserts of root branch to stream!
             let res = insert_cols::<(streams::PeerId, streams::ContainerId), (streams::Id,)>(
                 self.db.as_ref(),
@@ -105,11 +105,11 @@ where
             .await
             .map_err(ExecError::Db)?;
             let (stream_id,) = res.exactly_one().map_err(ExecError::Db)?;
-            (stream_id, ChainHash::empty(&seed), 0)
+            (stream_id, ChainHash::empty(&seed))
         } else if stream_rows.len() > 1 {
             todo!("found multiple rows, this means we have a fork and need to know what to do")
         } else {
-            let (stream_id, head_size, head_hash, head_cipher, head_status, segment_seq) =
+            let (stream_id, head_size, head_hash, head_cipher, head_status) =
                 stream_rows.exactly_one().map_err(ExecError::Db)?;
 
             if head_status.is_some() {
@@ -120,23 +120,12 @@ where
                 todo!("cipher not supported yet");
             }
 
-            let chain_head = if let Some(hash) = head_hash {
-                ChainHash {
-                    hash: hash.try_into().map_err(|_| {
-                        ExecError::Internal(format!("unexpected hash size {0}", hash.len()))
-                    })?,
-                    size: head_size,
-                }
-            } else {
-                if head_size != 0 {
-                    return Err(ExecError::Internal(format!(
-                        "stream {stream_id} has empty head hash but head size {head_size}"
-                    )));
-                }
-                ChainHash::empty(&seed)
+            let chain_head = ChainHash {
+                hash: head_hash,
+                size: head_size,
             };
 
-            (stream_id, chain_head, segment_seq)
+            (stream_id, chain_head)
         };
 
         let mut batch = self.db.new_batch();
@@ -166,19 +155,12 @@ where
 
         insert_cols_batch::<(
             segments::StreamId,
-            segments::SegmentSeq,
             segments::StartIdx,
             segments::EndSize,
-            segments::Body,
+            segments::BodyId,
         )>(
             batch.as_mut(),
-            (
-                stream_id,
-                segment_seq,
-                chain_head.size,
-                next_chain_head.size,
-                segment,
-            ),
+            (stream_id, chain_head.size, next_chain_head.size, todo!()),
             Query::insert().into_table(segments::Table),
         )
         .map_err(ExecError::Db)?;
