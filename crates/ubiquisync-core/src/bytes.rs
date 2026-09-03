@@ -10,7 +10,9 @@ pub trait ToStatic {
     fn to_static(self) -> Self::Static;
 }
 
-pub trait BytesWrapper: Borrow<[u8]> + std::fmt::Debug + From<Vec<u8>> + Default {
+pub trait BytesWrapper:
+    ToStatic + Borrow<[u8]> + std::fmt::Debug + From<Vec<u8>> + Default
+{
     fn is_empty(&self) -> bool;
 }
 

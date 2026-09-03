@@ -1,7 +1,7 @@
 use std::borrow::Borrow;
 
 use crate::{
-    bytes::PlaintextBytes,
+    bytes::{BytesWrapper, PlaintextBytes},
     codec::{ReadError, Reader, Writer},
     crypto::Hash256,
     hlc::Timestamp,
@@ -43,8 +43,7 @@ use crate::{
 /// extend to the server attested user id or first divergent op slot, and then its hash
 /// would be input to key derivation for future entrying keeping their contents protected.)
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(test, derive(test_strategy::Arbitrary))]
-pub struct OpBatch<B: alloc::fmt::Debug> {
+pub struct OpBatch<B: BytesWrapper> {
     /// HLC timestamp — monotonically non-decreasing within a peer's stream.
     /// Entries written in one atomic transaction share a tick, so they are
     /// treated as one logical write by LWW comparisons.
@@ -74,7 +73,7 @@ pub struct OpBatch<B: alloc::fmt::Debug> {
 /// was retained because it is otherwise cheap and would be expensive to add back later.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]
-pub enum OpOrExpunge<Op> {
+pub enum OpOrExpunge<Op: BytesWrapper> {
     Op(Op),
     Expunge(Hash256),
 }
@@ -112,7 +111,7 @@ impl OpBatch<PlaintextBytes<'_>> {
     }
 }
 
-impl<B: alloc::fmt::Debug> OpBatch<B> {
+impl<B: BytesWrapper> OpBatch<B> {
     pub fn encode(&self, writer: &mut Writer) -> Result<(), LogEncodeError>
     where
         B: Borrow<[u8]>,
@@ -153,7 +152,7 @@ impl<B: alloc::fmt::Debug> OpBatch<B> {
     }
 }
 
-impl<B> OpOrExpunge<B> {
+impl<B: BytesWrapper> OpOrExpunge<B> {
     pub fn encode(&self, writer: &mut Writer) -> Result<(), LogEncodeError>
     where
         B: Borrow<[u8]>,
@@ -194,15 +193,34 @@ mod tests {
     use std::assert_matches;
     use std::borrow::Cow;
 
+    use proptest::prelude::*;
     use test_strategy::proptest;
 
-    #[cfg(test)]
     use crate::bytes::OpaqueBytes;
     use crate::{
-        bytes::PlaintextBytes,
+        bytes::{BytesWrapper, PlaintextBytes},
         codec::{Reader, Writer},
         log::{LogEncodeError, OpBatch, OpOrExpunge},
     };
+
+    impl<B: BytesWrapper + Arbitrary + 'static> Arbitrary for OpBatch<B> {
+        type Parameters = ();
+        type Strategy = BoxedStrategy<Self>;
+
+        fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
+            (
+                any::<[u8; 8]>(),
+                prop_oneof![Just(vec![]), any::<[u8; 16]>().prop_map(|uid| uid.to_vec())],
+                proptest::collection::vec(any::<OpOrExpunge<B>>(), 1..16),
+            )
+                .prop_map(|(ts, uid, ops)| OpBatch {
+                    timestamp: ts.to_vec().into(),
+                    server_attested_user_id: uid.into(),
+                    ops,
+                })
+                .boxed()
+        }
+    }
 
     #[proptest]
     fn test_roundtrip(op_batch: OpBatch<OpaqueBytes<'static>>) {

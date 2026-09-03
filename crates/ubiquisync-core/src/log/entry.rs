@@ -1,7 +1,7 @@
 use alloc::borrow::Borrow;
 
 use crate::{
-    bytes::{OpaqueBytes, PlaintextBytes},
+    bytes::{BytesWrapper, OpaqueBytes, PlaintextBytes},
     codec::{Reader, Writer},
     crypto::{CipherInfo, Hash256, Signature},
     log::{LogDecodeError, LogEncodeError, LogValidationError, OpBatch},
@@ -10,7 +10,7 @@ use crate::{
 /// Represents a single entry in a stream of logs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]
-pub enum LogEntry<B: std::fmt::Debug> {
+pub enum LogEntry<B: BytesWrapper> {
     IndexedEntry(EntryBody<B>),
     Signature(Signature),
     // TODO we could consider adding some explicit forward-compatible support for unknown entries
@@ -27,7 +27,7 @@ pub type PlaintextLogEntry<'a> = LogEntry<PlaintextBytes<'a>>;
 /// The content of signed and indexed log entries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]
-pub enum EntryBody<B: std::fmt::Debug> {
+pub enum EntryBody<B: BytesWrapper> {
     /// An operation batch in the app's op vocabulary.
     OpBatch(OpBatch<B>),
     /// Declares the fingerprint for the encryption key being used from
@@ -69,7 +69,7 @@ pub enum EntryBody<B: std::fmt::Debug> {
     Expunged(Hash256),
 }
 
-impl<B: alloc::fmt::Debug> LogEntry<B> {
+impl<B: BytesWrapper> LogEntry<B> {
     pub fn encode(&self, writer: &mut Writer) -> Result<(), LogEncodeError>
     where
         B: Borrow<[u8]>,

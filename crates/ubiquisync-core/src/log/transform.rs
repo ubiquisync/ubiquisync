@@ -96,9 +96,9 @@ impl<X: BytesWrapper> LogEntry<X> {
     }
 }
 
-impl<B: ToStatic + std::fmt::Debug> ToStatic for OpBatch<B>
+impl<B: BytesWrapper> ToStatic for OpBatch<B>
 where
-    B::Static: std::fmt::Debug,
+    B::Static: BytesWrapper,
 {
     type Static = OpBatch<B::Static>;
 
@@ -118,9 +118,9 @@ where
     }
 }
 
-impl<B: ToStatic + std::fmt::Debug> ToStatic for LogEntry<B>
+impl<B: BytesWrapper> ToStatic for LogEntry<B>
 where
-    B::Static: std::fmt::Debug,
+    B::Static: BytesWrapper,
 {
     type Static = LogEntry<B::Static>;
 

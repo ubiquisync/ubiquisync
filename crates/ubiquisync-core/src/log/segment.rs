@@ -426,7 +426,7 @@ const SEGMENT_ENCODING_OPAQUE: u8 = 0;
 const SEGMENT_ENCODING_PLAINTEXT: u8 = 1;
 
 /// Counts the number of _indexed entries_ in the segment.
-pub fn count_entries<'a, B: std::fmt::Debug + 'a>(
+pub fn count_entries<'a, B: BytesWrapper + 'a>(
     entries: impl Iterator<Item = &'a LogEntry<B>>,
 ) -> u64 {
     let mut count = 0;
@@ -438,7 +438,7 @@ pub fn count_entries<'a, B: std::fmt::Debug + 'a>(
     count
 }
 
-fn check_entry_count<'a, B: std::fmt::Debug + 'a>(
+fn check_entry_count<'a, B: BytesWrapper + 'a>(
     entries: impl Iterator<Item = &'a LogEntry<B>>,
     expected: u64,
 ) -> Result<(), SegmentDecodeError> {
