@@ -31,7 +31,7 @@ where
     pub async fn exec(
         // TODO do we want mut here or user interior mutability?
         // either way this makes exec single-threaded which we want for now (for safety of ordering)
-        &mut self,
+        &self,
         server_user_id: Option<Uuid>,
         op: R::Op,
     ) -> Result<(), ExecError<R::Error>> {
@@ -54,6 +54,7 @@ where
             streams::HeadHash,
             streams::HeadCipher,
             streams::HeadStatus,
+            streams::NextSegmentSeq,
         )>(
             self.db.as_ref(),
             Query::select()
@@ -70,7 +71,7 @@ where
         };
         let seed = ChainSeed::new(&log_id);
 
-        let (stream_id, chain_head) = if stream_rows.is_empty() {
+        let (stream_id, chain_head, segment_seq) = if stream_rows.is_empty() {
             let res = insert_cols::<(streams::PeerId, streams::ContainerId), (streams::Id,)>(
                 self.db.as_ref(),
                 (self.self_db_id, container_id.0),
@@ -79,11 +80,11 @@ where
             .await
             .map_err(ExecError::Db)?;
             let (stream_id,) = res.exactly_one().map_err(ExecError::Db)?;
-            (stream_id, ChainHash::empty(&seed))
+            (stream_id, ChainHash::empty(&seed), 0)
         } else if stream_rows.len() > 1 {
             todo!("found multiple rows, this means we have a fork and need to know what to do")
         } else {
-            let (stream_id, head_size, head_hash, head_cipher, head_status) =
+            let (stream_id, head_size, head_hash, head_cipher, head_status, segment_seq) =
                 stream_rows.exactly_one().map_err(ExecError::Db)?;
 
             if head_status.is_some() {
@@ -110,7 +111,7 @@ where
                 ChainHash::empty(&seed)
             };
 
-            (stream_id, chain_head)
+            (stream_id, chain_head, segment_seq)
         };
 
         let mut batch = self.db.new_batch();
@@ -140,19 +141,34 @@ where
 
         insert_cols_batch::<(
             segments::StreamId,
+            segments::SegmentSeq,
             segments::StartIdx,
             segments::EndSize,
             segments::Body,
         )>(
             batch.as_mut(),
-            (stream_id, chain_head.size, next_chain_head.size, segment),
+            (
+                stream_id,
+                segment_seq,
+                chain_head.size,
+                next_chain_head.size,
+                segment,
+            ),
             Query::insert().into_table(segments::Table),
         )
         .map_err(ExecError::Db)?;
 
-        update_cols_batch::<(streams::HeadSize, streams::HeadHash)>(
+        update_cols_batch::<(
+            streams::HeadSize,
+            streams::HeadHash,
+            streams::NextSegmentSeq,
+        )>(
             batch.as_mut(),
-            (next_chain_head.size, Some(next_chain_head.hash.to_vec())),
+            (
+                next_chain_head.size,
+                Some(next_chain_head.hash.to_vec()),
+                segment_seq + 1,
+            ),
             Query::update()
                 .table(streams::Table)
                 .and_where(Expr::column(streams::Id).eq(stream_id)),
@@ -162,6 +178,13 @@ where
         self.reducer
             .apply(batch.as_mut(), timestamp, op, read_state)
             .map_err(ExecError::Reducer)?;
+
+        match batch.commit().await {
+            Err(DbError::UniqueViolation) => {
+                todo!("we could try rerunning exec (with retry backoff) if this fails because of a unique violation")
+            },
+            r => r
+        }.map_err(ExecError::Db)?;
 
         Ok(())
     }

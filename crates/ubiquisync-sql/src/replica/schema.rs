@@ -1,15 +1,28 @@
 use crate::{def_table, def_table_with_auto_id};
 
-def_table_with_auto_id!(peers (id) => {peer_id: Vec<u8>, commitment: Vec<u8>, signature: Vec<u8>});
+def_table_with_auto_id!(peers (id) => {
+    peer_id: Vec<u8>, // TODO UNIQUE
+    commitment: Vec<u8>,
+    signature: Vec<u8>
+});
 def_table_with_auto_id!(streams (id) => {
    peer_id: i64,
    container_id: [u8;16],
-   head_size: u64,
+   head_size: u64, // TODO default 0
    head_hash: Option<Vec<u8>>,
    head_cipher: Option<Vec<u8>>,
    head_status: Option<Vec<u8>>,
+   // Ensures that there is a unique constraint on the segments table that will
+   // cause an insert failure which fails a whole batch if segment is inserted
+   // concurrently for a stream.
+   next_segment_seq: u64 // TODO default 0
 });
-def_table!(segments (stream_id: i64, end_size: u64) => {
+
+// segment_seq simply forces a unique constraint to ensure that
+// concurrent insertions to the segments table for the same stream
+// will not race.
+def_table!(segments (stream_id: i64, segment_seq: u64) => {
+    end_size: u64,
     start_idx: u64,
     body: Vec<u8>,
     // TODO should this have rowid because of possibly large bodies? or we have a separate segment_body table

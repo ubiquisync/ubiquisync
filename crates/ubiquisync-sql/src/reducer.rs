@@ -36,10 +36,6 @@ use crate::db::{Db, DbBatch, DbStatementResult};
 pub trait Reducer: Send {
     /// The op vocabulary this reducer materializes (e.g. the table op enum).
     type Op: Send + Sync;
-    /// Data read in [`prepare`](Reducer::prepare) and consumed by
-    /// [`apply`](Reducer::apply): e.g. a card's prior FSRS state, or its full
-    /// review history when an out-of-order op forces a recompute. `()` when
-    /// `apply` needs nothing read.
     type ReadState;
     /// Carried from [`apply`](Reducer::apply) to
     /// [`post_apply`](Reducer::post_apply): the `StmtId`s of the emitted
@@ -55,8 +51,7 @@ pub trait Reducer: Send {
     /// [`ReadState`](Reducer::ReadState). Runs outside the batch — DDL is
     /// additive and safe to commit on its own, and hoisting reads here is what
     /// keeps `apply` pure.
-    async fn prepare(&mut self, db: &dyn Db, op: &Self::Op)
-    -> Result<Self::ReadState, Self::Error>;
+    async fn prepare(&self, db: &dyn Db, op: &Self::Op) -> Result<Self::ReadState, Self::Error>;
 
     /// Emit the statements that materialize `op` at `timestamp` into `batch`,
     /// using only `op`, the cached schema, and `read`. Read-free, so it stays

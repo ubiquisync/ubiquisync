@@ -4,8 +4,10 @@ macro_rules! def_table {
         pastey::paste! {
             pub mod $name {
                 #[derive(sea_query::Iden, Clone, Copy)]
+                #[allow(dead_code)]
                 pub struct Table;
 
+                #[allow(dead_code)]
                 pub fn create_table_def() -> $crate::db::CreateTableDef {
                     $crate::db::table(
                         stringify!($name),
@@ -28,8 +30,10 @@ macro_rules! def_table_with_auto_id {
         pastey::paste! {
             pub mod $name {
                 #[derive(sea_query::Iden, Clone, Copy)]
+                #[allow(dead_code)]
                 pub struct Table;
 
+                #[allow(dead_code)]
                 pub fn create_table_def() -> $crate::db::CreateTableDef {
                     $crate::db::table_with_auto_id(
                         stringify!($name),
@@ -51,6 +55,7 @@ macro_rules! def_col {
         pastey::paste! {
             // TODO we could re-export sea_query::Iden
             #[derive(sea_query::Iden, Clone, Copy, Default)]
+            #[allow(dead_code)]
             pub struct [< $name:camel >];
             impl $crate::db::Col for [< $name:camel >] {
                 type Type = $typ;
