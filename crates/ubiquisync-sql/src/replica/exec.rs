@@ -79,7 +79,6 @@ where
             streams::HeadHash,
             streams::HeadCipher,
             streams::HeadStatus,
-            streams::NextSegmentSeq,
         )>(
             self.db.as_ref(),
             Query::select()

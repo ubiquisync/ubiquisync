@@ -2,7 +2,7 @@ use alloc::borrow::Borrow;
 
 use crate::{
     bytes::{BytesWrapper, OpaqueBytes, PlaintextBytes},
-    codec::{Reader, Writer},
+    codec::{Readable, Reader, Writable, Writer},
     crypto::{CipherInfo, Hash256, Signature},
     log::{LogDecodeError, LogEncodeError, LogValidationError, OpBatch},
 };
@@ -139,15 +139,11 @@ const ENTRY_TYPE_EXPUNGED: u8 = 0x03;
 mod tests {
     use test_strategy::proptest;
 
-    use crate::log::LogEntry;
-    #[cfg(test)]
-    use crate::{
-        bytes::OpaqueBytes,
-        codec::{Reader, Writer},
-    };
+    use crate::codec::{Reader, Writer};
+    use crate::{bytes::PlaintextBytes, log::LogEntry};
 
     #[proptest]
-    fn test_round_trip(entry: LogEntry<OpaqueBytes<'static>>) {
+    fn test_round_trip(entry: LogEntry<PlaintextBytes<'static>>) {
         let mut w = Writer::new();
         entry.encode(&mut w).unwrap();
         let res = w.finalize();

@@ -112,7 +112,9 @@ impl CreateTableDef {
         let col_sql = col_defs.join(", ");
         let pk_clause = self.pk.pk_clause();
         let rowid_clause = self.pk.rowid_clause(dialect);
-        format!("CREATE TABLE {quoted_table_name} ({col_sql}{pk_clause}){rowid_clause};")
+        format!(
+            "CREATE TABLE IF NOT EXISTS {quoted_table_name} ({col_sql}{pk_clause}){rowid_clause};"
+        )
     }
 
     pub fn with_unique(mut self, cols: &[&str]) -> Self {

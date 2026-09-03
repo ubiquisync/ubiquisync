@@ -5,7 +5,7 @@ use thiserror::Error;
 
 use crate::{
     bytes::{BytesWrapper, PlaintextBytes, ToStatic},
-    codec::{ReadError, Reader, WriteError, Writer},
+    codec::{ReadError, Readable, Reader, Writable, WriteError, Writer},
     crypto::{CipherError, CipherInfo, CryptoDecodeError, SegmentCipher, Signature},
     log::{ChainHash, LogDecodeError, LogEncodeError, LogEntry, OpaqueLogEntry, PlaintextLogEntry},
 };
@@ -329,7 +329,7 @@ impl SegmentHeader {
         self.prev_chain.encode(w);
         w.write_var_u64(self.count);
         self.signature.encode(w);
-        self.encoding.encode(w);
+        self.encoding.encode(w)?;
         Ok(())
     }
 
@@ -348,7 +348,7 @@ impl SegmentHeader {
 }
 
 impl SegmentEncoding {
-    pub fn encode(&self, w: &mut Writer) {
+    pub fn encode(&self, w: &mut Writer) -> Result<(), WriteError> {
         match self {
             SegmentEncoding::Opaque => {
                 w.write_byte(SEGMENT_ENCODING_OPAQUE);
@@ -358,6 +358,7 @@ impl SegmentEncoding {
                 enc.encode(w);
             }
         }
+        Ok(())
     }
 
     pub fn decode(r: &mut Reader) -> Result<Self, SegmentDecodeError> {

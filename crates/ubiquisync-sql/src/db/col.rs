@@ -141,6 +141,155 @@ impl ColType for Uuid {
     }
 }
 
+pub trait ColRepr: Sized {
+    type Repr: ColType;
+    fn to_repr(self) -> Self::Repr;
+    fn from_repr<'a>(value: <Self::Repr as ColType>::BorrowedType<'a>) -> Result<Self, DbError>;
+}
+
+impl<T: ColRepr> ColType for T {
+    type BorrowedType<'a> = T;
+
+    fn create_col_def(name: &str) -> CreateColDef {
+        T::Repr::create_col_def(name)
+    }
+
+    fn from_db_val<'a>(value: &'a DbValue) -> Result<Self::BorrowedType<'a>, DbError> {
+        let x = T::Repr::from_db_val(value)?;
+        Self::from_repr(x)
+    }
+
+    fn to_db_val(value: Self) -> DbValue {
+        T::Repr::to_db_val(value.to_repr())
+    }
+}
+
+#[macro_export]
+macro_rules! codeable_col_repr {
+    ($typ:ty) => {
+        impl ColRepr for $typ {
+            type Repr = Vec<u8>;
+            fn to_repr(self) -> Self::Repr {
+                let mut w = ubiquisync_core::codec::Writer::new();
+                <Self as ubiquisync_core::codec::Writable>::encode(&self, &mut w);
+                w.finalize()
+            }
+            fn from_repr<'a>(
+                value: <Self::Repr as $crate::db::ColType>::BorrowedType<'a>,
+            ) -> Result<Self, $crate::db::DbError> {
+                let mut r = ubiquisync_core::codec::Reader::new(value);
+                if let Ok(res) = <Self as ubiquisync_core::codec::Readable>::decode(&mut r) {
+                    if r.is_empty() {
+                        return Ok(res);
+                    }
+                }
+                Err($crate::db::DbError::TypeMismatch {
+                    expected: std::any::type_name::<Self>(),
+                    actual: Some($crate::db::DbType::Blob),
+                })
+            }
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! enum_col_repr {
+    ($typ:ty) => {
+        try_from_into_col_repr!($typ, i64);
+    };
+}
+
+#[macro_export]
+macro_rules! try_from_into_col_repr {
+    ($typ:ty, $repr:ty) => {
+        impl ColRepr for $typ {
+            type Repr = $repr;
+            fn to_repr(self) -> Self::Repr {
+                self.into()
+            }
+            fn from_repr<'a>(
+                value: <Self::Repr as $crate::db::ColType>::BorrowedType<'a>,
+            ) -> Result<Self, $crate::db::DbError> {
+                Self::try_from(value).map_err(|_| $crate::db::DbError::TypeMismatch {
+                    expected: std::any::type_name::<Self>(),
+                    actual: Some($crate::db::DbType::Integer),
+                })
+            }
+        }
+    };
+}
+
+// impl<T: ColEnum> ColType for T {
+//     type BorrowedType<'a> = T;
+
+//     fn create_col_def(name: &str) -> CreateColDef {
+//         col(name, DbType::Integer)
+//     }
+
+//     fn from_db_val<'a>(value: &'a DbValue) -> Result<Self::BorrowedType<'a>, DbError> {
+//         let x = i64::from_db_val(value)?;
+//         let e = Self::try_from(x).map_err(|_| DbError::TypeMismatch {
+//             expected: type_name::<T>(),
+//             actual: value.db_type(),
+//         })?;
+//         Ok(e)
+//     }
+
+//     fn to_db_val(value: Self) -> DbValue {
+//         DbValue::Integer(value.into())
+//     }
+// }
+
+// impl ColType for [u8; 32] {
+//     type BorrowedType<'a> = [u8; 32];
+
+//     fn create_col_def(name: &str) -> CreateColDef {
+//         col(name, DbType::Blob)
+//     }
+
+//     fn from_db_val<'a>(value: &'a DbValue) -> Result<Self::BorrowedType<'a>, DbError> {
+//         Ok(
+//             Self::try_from(<Vec<u8>>::from_db_val(value)?).map_err(|_| DbError::TypeMismatch {
+//                 expected: "[u8; 32]",
+//                 actual: value.db_type(),
+//             })?,
+//         )
+//     }
+
+//     fn to_db_val(value: Self) -> DbValue {
+//         DbValue::Blob(value.to_vec())
+//     }
+// }
+
+// impl<T: HasCodec> ColType for T {
+//     type BorrowedType<'a> = T;
+
+//     fn create_col_def(name: &str) -> CreateColDef {
+//         col(name, DbType::Blob)
+//     }
+
+//     fn from_db_val<'a>(value: &'a DbValue) -> Result<Self::BorrowedType<'a>, DbError> {
+//         let buf = <Vec<u8>>::from_db_val(value)?;
+//         let mut r = Reader::new(buf);
+//         let res = T::read(&mut r);
+//         if let Ok(res) = res {
+//             if r.is_empty() {
+//                 return Ok(res);
+//             }
+//         }
+//         Err(DbError::TypeMismatch {
+//             expected: type_name::<T>(),
+//             actual: value.db_type(),
+//         })
+//     }
+
+//     fn to_db_val(value: Self) -> DbValue {
+//         let mut w = Writer::new();
+//         value.write(&mut w);
+//         DbValue::Blob(w.finalize())
+//     }
+// }
+
 impl<T: ColType> ColType for Option<T> {
     type BorrowedType<'a> = Option<T::BorrowedType<'a>>;
 

@@ -1,4 +1,10 @@
-use crate::{def_table, def_table_with_auto_id};
+use num_enum::{IntoPrimitive, TryFromPrimitive};
+use ubiquisync_core::crypto::CipherInfo;
+
+use crate::{
+    codeable_col_repr, db::ColRepr, def_table, def_table_with_auto_id, enum_col_repr,
+    try_from_into_col_repr,
+};
 
 def_table_with_auto_id!(peers (id) => {
     peer_id: Vec<u8>, // TODO UNIQUE
@@ -9,129 +15,43 @@ def_table_with_auto_id!(streams (id) => {
    peer_id: i64, // TODO ref peers
    container_id: [u8;16],
    head_size: u64, // TODO default 0
-   head_hash: Option<Vec<u8>>,
-   head_cipher: Option<Vec<u8>>,
+   head_hash: [u8; 32], // TODO could be non-null and default to seed
+   head_cipher: Option<super::CipherInfo>,
    head_status: Option<Vec<u8>>,
-   // Ensures that there is a unique constraint on the segments table that will
-   // cause an insert failure which fails a whole batch if segment is inserted
-   // concurrently for a stream.
-   next_segment_seq: u64, // TODO default 0
+   commit_size: u64, // TODO default 0
+   commit_cipher: Option<super::CipherInfo>,
+   commit_status: super::CommitStatus, // TODO default 0
+   commit_status_data: Option<Vec<u8>>,
    parent_id: Option<i64>, // TODO ref streams
    fork_idx: Option<u64>,
    fork_hash: Option<Vec<u8>>,
+   // TODO CHECK(commit_size <= head_size)
 });
+
+#[derive(IntoPrimitive, TryFromPrimitive, Clone, Copy)]
+#[repr(i64)]
+pub enum CommitStatus {
+    Ok = 0,
+    NeedKey = 1,
+    HLCForwardSkew = 2,
+    NeedPeerCommit = 3,
+    NeedSoftwareUpgrade = 4,
+    CantDecodeOp = 5,
+    Frozen = 6,
+}
+
+enum_col_repr!(CommitStatus);
+try_from_into_col_repr!([u8; 32], Vec<u8>);
+codeable_col_repr!(CipherInfo);
 
 // TODO: CREATE UNIQUE INDEX streams_root ON streams(peer_id, container_id) WHERE parent_id IS NULL;
 // TODO: we might also want a unique on (parent_id, fork_idx, fork_hash) to avoid races
 
-// segment_seq simply forces a unique constraint to ensure that
-// concurrent insertions to the segments table for the same stream
-// will not race.
-def_table!(segments (stream_id: i64, segment_seq: u64) => { // TODO ref streams
-    end_size: u64,
+def_table!(segments (stream_id: i64, end_size: u64) => { // TODO ref streams
     start_idx: u64,
-    body: Vec<u8>,
-    // TODO should this have rowid because of possibly large bodies? or we have a separate segment_body table
+    body_id: u64, // TODO ref segment_body
 });
 
-// use sea_query::Iden;
-// fn table_schemas() -> Vec<CreateTableDef> {
-//     vec![
-//         table_with_auto_id(
-//             &Peers::Table,
-//             &Peers::Id,
-//             &[
-//                 col(&Peers::PeerId, Blob),
-//                 col(&Peers::Commitment, Blob),
-//                 col(&Peers::Signature, Blob),
-//             ],
-//         )
-//         .with_unique(&["peer_id"]),
-//         table_with_auto_id(
-//             &Containers::Table,
-//             &Containers::Id,
-//             &[col(&Containers::ContainerId, Uuid)],
-//         )
-//         .with_unique(&["container_id"]),
-//         table_with_auto_id(
-//             &Streams::Table,
-//             &Streams::Id,
-//             &[
-//                 col(&Streams::PeerId, Integer),
-//                 col(&Streams::ContainerId, Integer),
-//                 col(&Streams::HeadIdx, Integer).default_zero(),
-//                 col(&Streams::HeadHash, Blob).default_zero(),
-//                 col(&Streams::HeadCipher, Blob).nullable(),
-//                 col(&Streams::HeadStatus, Blob).nullable(),
-//                 col(&Streams::ReadyIdx, Integer).default_zero(),
-//                 col(&Streams::ReadyStatus, Integer).default_zero(),
-//                 col(&Streams::ReadyStatusData, Blob).default_zero(),
-//                 col(&Streams::CommitIdx, Integer).default_zero(),
-//                 col(&Streams::CommitStatus, Integer).default_zero(),
-//                 col(&Streams::CommitStatusData, Blob).default_zero(),
-//                 col(&Streams::ParentId, Integer).nullable(),
-//                 col(&Streams::ForkIdx, Integer).nullable(),
-//                 col(&Streams::ForkHash, Blob).nullable(),
-//             ],
-//         ),
-//         table(
-//             &Segments::Table,
-//             &[
-//                 col(&Segments::LogId, Integer),
-//                 col(&Segments::EndIdx, Integer),
-//             ],
-//             &[
-//                 col(&Segments::StartIdx, Integer),
-//                 col(&Segments::EndHash, Blob),
-//                 col(&Segments::Body, Blob),
-//             ],
-//         ),
-//     ]
-// }
-
-// #[derive(Iden)]
-// pub enum Peers {
-//     Table,
-//     Id,
-//     PeerId,
-//     Commitment,
-//     Signature,
-// }
-
-// #[derive(Iden)]
-// pub enum Containers {
-//     Table,
-//     Id,
-//     ContainerId,
-// }
-
-// #[derive(Iden)]
-// pub enum Streams {
-//     Table,
-//     Id,
-//     PeerId,
-//     ContainerId,
-//     HeadIdx,
-//     HeadHash,
-//     HeadCipher,
-//     HeadStatus,
-//     ReadyIdx,
-//     ReadyStatus,
-//     ReadyStatusData,
-//     CommitIdx,
-//     CommitStatus,
-//     CommitStatusData,
-//     ParentId,
-//     ForkIdx,
-//     ForkHash, // is this even needed if we know the parent id definitively?
-// }
-
-// #[derive(Iden)]
-// pub enum Segments {
-//     Table,
-//     LogId,
-//     StartIdx,
-//     EndIdx,
-//     EndHash,
-//     Body,
-// }
+def_table_with_auto_id!(segment_body (id) => {
+    body: Vec<u8>,
+});

@@ -1615,6 +1615,7 @@ dependencies = [
  "backon",
  "futures",
  "insta",
+ "num_enum",
  "pastey",
  "sea-query",
  "thiserror",

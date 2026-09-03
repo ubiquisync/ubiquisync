@@ -21,6 +21,7 @@ sea-query = { workspace = true }
 pastey = { workspace = true }
 backon = { workspace = true }
 tracing = { workspace = true }
+num_enum = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }
