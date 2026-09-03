@@ -44,7 +44,7 @@ pub trait Reducer: Send {
     /// The change event produced for an applied op, for downstream observers.
     type Event: Send + Clone;
     /// Error surfaced from any phase.
-    type Error;
+    type Error: core::error::Error;
 
     /// Reconcile the schema needed by `op` (create/alter tables, refresh any
     /// cache) and read whatever `apply` will need, returning it as a
@@ -61,7 +61,7 @@ pub trait Reducer: Send {
         &self,
         batch: &mut dyn DbBatch,
         timestamp: Timestamp,
-        op: Self::Op,
+        op: &Self::Op,
         read: Self::ReadState,
     ) -> Result<Self::ApplyState, Self::Error>;
 

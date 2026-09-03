@@ -19,6 +19,8 @@ futures = { workspace = true }
 thiserror = { workspace = true }
 sea-query = { workspace = true }
 pastey = { workspace = true }
+backon = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }

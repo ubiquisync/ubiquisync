@@ -1,8 +1,11 @@
+use std::time::Duration;
+
+use backon::{ConstantBuilder, Retryable};
 use sea_query::{Expr, ExprTrait, Query};
 use thiserror::Error;
 use ubiquisync_core::{
     crypto::SigningError,
-    ids::LogId,
+    ids::{ContainerId, LogId},
     log::{
         ChainHash, ChainSeed, EntryBody, OpBatch, PlaintextLogEntry, SegmentCipherError,
         segment::{SegmentEncodeError, encode_segment_plaintext},
@@ -28,12 +31,35 @@ where
     R::Op: Op,
 {
     /// Apply a local write, minting a fresh log entry for it.
+    #[tracing::instrument(skip_all)]
     pub async fn exec(
-        // TODO do we want mut here or user interior mutability?
-        // either way this makes exec single-threaded which we want for now (for safety of ordering)
         &self,
         server_user_id: Option<Uuid>,
         op: R::Op,
+    ) -> Result<(), ExecError<R::Error>> {
+        let (container_id, wire_bytes) = op.encode();
+        (|| self.do_exec(server_user_id, &op, container_id, &wire_bytes))
+            .retry(
+                ConstantBuilder::new()
+                    .with_delay(Duration::from_millis(10))
+                    .with_jitter()
+                    .with_max_times(5),
+            )
+            .when(|e| match e {
+                // TODO check other errors, maybe extract into a helper if used elsewhere
+                ExecError::Db(DbError::UniqueViolation) => true,
+                _ => false,
+            })
+            .notify(|err, _| tracing::debug!(%err, "retrying"))
+            .await
+    }
+
+    async fn do_exec(
+        &self,
+        server_user_id: Option<Uuid>,
+        op: &R::Op,
+        container_id: ContainerId,
+        wire_bytes: &[u8],
     ) -> Result<(), ExecError<R::Error>> {
         // TODO does prepare indicate stall conditions?
         // somewhere in here maybe prepare, for ctl ops
@@ -42,12 +68,11 @@ where
         // log from another peer
         let read_state = self
             .reducer
-            .prepare(self.db.as_ref(), &op)
+            .prepare(self.db.as_ref(), op)
             .await
             .map_err(ExecError::Reducer)?;
 
-        let (container_id, wire_bytes) = op.encode();
-
+        // TODO we want a per stream mutex to avoid race conditions
         let stream_rows = select_cols::<(
             streams::Id,
             streams::HeadSize,
@@ -72,6 +97,7 @@ where
         let seed = ChainSeed::new(&log_id);
 
         let (stream_id, chain_head, segment_seq) = if stream_rows.is_empty() {
+            // TODO handle current inserts of root branch to stream!
             let res = insert_cols::<(streams::PeerId, streams::ContainerId), (streams::Id,)>(
                 self.db.as_ref(),
                 (self.self_db_id, container_id.0),
@@ -120,7 +146,7 @@ where
         let entry = PlaintextLogEntry::IndexedEntry(EntryBody::OpBatch(OpBatch::new(
             timestamp,
             server_user_id,
-            wire_bytes,
+            wire_bytes.to_vec(),
         )));
         let entries = vec![entry];
 
@@ -179,12 +205,7 @@ where
             .apply(batch.as_mut(), timestamp, op, read_state)
             .map_err(ExecError::Reducer)?;
 
-        match batch.commit().await {
-            Err(DbError::UniqueViolation) => {
-                todo!("we could try rerunning exec (with retry backoff) if this fails because of a unique violation")
-            },
-            r => r
-        }.map_err(ExecError::Db)?;
+        batch.commit().await.map_err(ExecError::Db)?;
 
         Ok(())
     }

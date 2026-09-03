@@ -6,7 +6,7 @@ def_table_with_auto_id!(peers (id) => {
     signature: Vec<u8>
 });
 def_table_with_auto_id!(streams (id) => {
-   peer_id: i64,
+   peer_id: i64, // TODO ref peers
    container_id: [u8;16],
    head_size: u64, // TODO default 0
    head_hash: Option<Vec<u8>>,
@@ -15,13 +15,19 @@ def_table_with_auto_id!(streams (id) => {
    // Ensures that there is a unique constraint on the segments table that will
    // cause an insert failure which fails a whole batch if segment is inserted
    // concurrently for a stream.
-   next_segment_seq: u64 // TODO default 0
+   next_segment_seq: u64, // TODO default 0
+   parent_id: Option<i64>, // TODO ref streams
+   fork_idx: Option<u64>,
+   fork_hash: Option<Vec<u8>>,
 });
+
+// TODO: CREATE UNIQUE INDEX streams_root ON streams(peer_id, container_id) WHERE parent_id IS NULL;
+// TODO: we might also want a unique on (parent_id, fork_idx, fork_hash) to avoid races
 
 // segment_seq simply forces a unique constraint to ensure that
 // concurrent insertions to the segments table for the same stream
 // will not race.
-def_table!(segments (stream_id: i64, segment_seq: u64) => {
+def_table!(segments (stream_id: i64, segment_seq: u64) => { // TODO ref streams
     end_size: u64,
     start_idx: u64,
     body: Vec<u8>,
