@@ -202,7 +202,7 @@ macro_rules! enum_col_repr {
 #[macro_export]
 macro_rules! try_from_into_col_repr {
     ($typ:ty, $repr:ty) => {
-        impl ColRepr for $typ {
+        impl $crate::db::ColRepr for $typ {
             type Repr = $repr;
             fn to_repr(self) -> Self::Repr {
                 self.into()
@@ -218,6 +218,8 @@ macro_rules! try_from_into_col_repr {
         }
     };
 }
+
+try_from_into_col_repr!(bool, i64);
 
 // impl<T: ColEnum> ColType for T {
 //     type BorrowedType<'a> = T;

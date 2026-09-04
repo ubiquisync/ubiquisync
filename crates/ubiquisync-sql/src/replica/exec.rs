@@ -61,6 +61,12 @@ where
         container_id: ContainerId,
         wire_bytes: &[u8],
     ) -> Result<(), ExecError<R::Error>> {
+        let log_id = LogId {
+            peer_id: self.self_id,
+            container_id,
+        };
+        let _guard = self.stream_locks.lock(&log_id).await;
+
         // TODO does prepare indicate stall conditions?
         // somewhere in here maybe prepare, for ctl ops
         // we need to enrich them with observe & key wrap ops when needed
@@ -89,10 +95,6 @@ where
         .await
         .map_err(ExecError::Db)?;
 
-        let log_id = LogId {
-            peer_id: self.self_id,
-            container_id,
-        };
         let seed = ChainSeed::new(&log_id);
 
         let (stream_id, chain_head) = if stream_rows.is_empty() {
@@ -157,25 +159,17 @@ where
             segments::StreamId,
             segments::StartIdx,
             segments::EndSize,
-            segments::BodyId,
+            segments::Body,
         )>(
             batch.as_mut(),
-            (stream_id, chain_head.size, next_chain_head.size, todo!()),
+            (stream_id, chain_head.size, next_chain_head.size, segment),
             Query::insert().into_table(segments::Table),
         )
         .map_err(ExecError::Db)?;
 
-        update_cols_batch::<(
-            streams::HeadSize,
-            streams::HeadHash,
-            streams::NextSegmentSeq,
-        )>(
+        update_cols_batch::<(streams::HeadSize, streams::HeadHash)>(
             batch.as_mut(),
-            (
-                next_chain_head.size,
-                Some(next_chain_head.hash.to_vec()),
-                segment_seq + 1,
-            ),
+            (next_chain_head.size, next_chain_head.hash),
             Query::update()
                 .table(streams::Table)
                 .and_where(Expr::column(streams::Id).eq(stream_id)),

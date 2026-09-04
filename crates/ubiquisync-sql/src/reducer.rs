@@ -41,8 +41,6 @@ pub trait Reducer: Send {
     /// [`post_apply`](Reducer::post_apply): the `StmtId`s of the emitted
     /// statements plus any op-derived data needed to build the event.
     type ApplyState: Send;
-    /// The change event produced for an applied op, for downstream observers.
-    type Event: Send + Clone;
     /// Error surfaced from any phase.
     type Error: core::error::Error;
 
@@ -75,5 +73,5 @@ pub trait Reducer: Send {
         &self,
         apply_state: Self::ApplyState,
         batch_result: &[DbStatementResult],
-    ) -> Result<Vec<Self::Event>, Self::Error>;
+    ) -> Result<(), Self::Error>;
 }

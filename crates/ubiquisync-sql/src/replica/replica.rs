@@ -1,6 +1,15 @@
-use ubiquisync_core::{crypto::credentials::Credentials, hlc::HlcService, ids::PeerId};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Weak},
+};
 
-use crate::{db::Db, hlc_storage::SqlHlcStorage};
+use ubiquisync_core::{
+    crypto::credentials::Credentials,
+    hlc::HlcService,
+    ids::{LogId, PeerId},
+};
+
+use crate::{db::Db, hlc_storage::SqlHlcStorage, replica::stream_lock::KeyedLock};
 
 pub struct Replica<R> {
     pub(crate) self_id: PeerId,
@@ -9,4 +18,5 @@ pub struct Replica<R> {
     pub(crate) db: Box<dyn Db>,
     pub(crate) reducer: R,
     pub(crate) hlc: HlcService<SqlHlcStorage>,
+    pub(crate) stream_locks: KeyedLock<LogId>,
 }
