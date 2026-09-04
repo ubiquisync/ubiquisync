@@ -1,5 +1,5 @@
 ---
 source: crates/ubiquisync-sql/src/db/schema.rs
-expression: "entry.create_table_sql(SqlDialect::Sqlite)"
+expression: "entry::create_table_def().create_table_sql(SqlDialect::Sqlite)"
 ---
-CREATE TABLE "entry" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "bytes" BLOB NOT NULL, "ts" INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS "entry" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "bytes" BLOB NOT NULL, "ts" INTEGER NOT NULL);
