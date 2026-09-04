@@ -66,6 +66,10 @@ impl<'a> Reader<'a> {
         Ok(u64::from_le_bytes(self.read_array()?))
     }
 
+    pub fn read_le_u16(&mut self) -> Result<u16, ReadError> {
+        Ok(u16::from_le_bytes(self.read_array()?))
+    }
+
     pub fn read_zigzag_i64(&mut self) -> Result<i64, ReadError> {
         let (x, rest) = decode_zigzag_i64(self.buf)?;
         self.buf = rest;

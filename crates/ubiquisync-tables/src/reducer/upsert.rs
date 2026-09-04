@@ -12,11 +12,12 @@ use ubiquisync_sql::util::quote_ident;
 
 impl Reducer {
     pub(crate) async fn sync_upsert_schema(
-        &mut self,
+        &self,
         db: &dyn Db,
         upsert: &Upsert,
     ) -> Result<(), TablesError> {
-        let table = self.ensure_table(db, upsert.table_id).await?;
+        let guard = self.ddl_lock.lock().await;
+        let mut table = self.ensure_table(&guard, db, upsert.table_id).await?;
         for col_update in upsert.sets.iter() {
             table.ensure_column(db, col_update.column_id).await?;
         }
@@ -24,6 +25,7 @@ impl Reducer {
         for null_col_id in upsert.nulls.iter() {
             table.ensure_column(db, *null_col_id).await?;
         }
+        self.set_table(upsert.table_id, table);
         Ok(())
     }
 
@@ -37,7 +39,7 @@ impl Reducer {
 
         let table_id = upsert.table_id;
         let table = self.require_table(table_id)?;
-        let named_table = self.named_tables.get(&table_id);
+        let named_table = self.logical_tables.get(&table_id);
         let quoted_table_name = table.get_quoted_name();
 
         let mut insert_into_cols = vec![]; // INSERT INTO (...)
@@ -190,7 +192,7 @@ impl Reducer {
             // Filter out the column which "won" based on a newer lww timestamp
             let mut winning_columns = Vec::with_capacity(changed_columns.len());
             for (idx, column) in changed_columns.into_iter().enumerate() {
-                if row.get_bool(idx)? {
+                if row.get_i64(idx)? != 0 {
                     winning_columns.push(column);
                 }
             }

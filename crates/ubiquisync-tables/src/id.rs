@@ -58,6 +58,7 @@ use bitfield_struct::bitfield;
 /// a manual pack/unpack rather than a fixed bitfield — see the module docs
 /// for the per-count layouts.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub struct TableId(u16);
 
 impl TableId {

@@ -16,13 +16,10 @@
 // //! [`ubiquisync-core`](ubiquisync_core); SQL backends live in companion crates
 // //! such as `ubiquisync-sqlite`.
 
-// pub mod codec;
-// /// Column types and their mapping to SQL storage classes.
+pub mod codec;
 pub mod col_type;
-// pub mod error;
+pub mod error;
 pub mod id;
-// /// Splits ops into indexable `(tag, key, value)` parts for the SQL op-log.
-// pub mod index_codec;
 // /// Declarative macros for building [`schema`] values from a compact table DSL.
 // pub mod macros;
 mod naming;
@@ -34,20 +31,20 @@ mod naming;
 // /// each table's `Col`/`Table` line up — a separately-versioned `sea-query`
 // /// dependency would not.
 // pub use sea_query;
-// pub mod op;
+pub mod op;
 // // Physical storage layer (surrogate tables, schema reconciliation). Wired into
 // // the shipping build by the table reducer; `allow(dead_code)` until then. The
 // // `test_support` suite exercises it in the meantime.
-// #[allow(dead_code)]
-// mod physical_schema;
+#[allow(dead_code)]
+mod physical_schema;
 // /// User-declared table schemas ([`TableSchema`](schema::TableSchema)): the
 // /// user-facing name and columns exposed as a SQL VIEW over surrogate storage.
-// pub mod schema;
+pub mod schema;
 
-// pub mod reducer;
+pub mod reducer;
 // /// Backend-agnostic physical-schema suite the driver crates run against their
 // /// real `Db`. Compiled for this crate's own tests and for any crate that enables
 // /// the `test-support` feature (a SQL driver, in its dev-dependencies).
 // #[cfg(any(test, feature = "test-support"))]
 // pub mod test_support;
-// pub mod watch;
+pub mod watch;

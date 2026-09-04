@@ -9,11 +9,12 @@ use ubiquisync_sql::db::{Db, DbBatch, DbStatementResult, DbValue, StmtId, ValueB
 
 impl Reducer {
     pub(crate) async fn sync_delete_schema(
-        &mut self,
+        &self,
         db: &dyn Db,
         delete: &Delete,
     ) -> Result<(), TablesError> {
-        self.ensure_table(db, delete.table_id).await?;
+        let guard = self.ddl_lock.lock().await;
+        self.ensure_table(&guard, db, delete.table_id).await?;
         Ok(())
     }
 
@@ -76,7 +77,7 @@ impl Reducer {
         );
 
         let stmt_id = batch.add_statement(&sql, &value_binder.values());
-        let staged_event = self.named_tables.get(&table_id).map(|named_table| {
+        let staged_event = self.logical_tables.get(&table_id).map(|named_table| {
             ChangeEvent::Delete(DeleteEvent {
                 table_id,
                 primary_key: delete.primary_key.clone(),

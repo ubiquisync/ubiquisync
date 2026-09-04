@@ -11,14 +11,22 @@ mod schema;
 mod upsert;
 mod validate;
 
-use crate::error::TablesError;
 use crate::id::TableId;
 use crate::op::Op;
 use crate::physical_schema::PhysicalTableSchema;
 use crate::schema::TableSchema;
 use crate::watch::ChangeEvent;
-use std::collections::{HashMap, HashSet};
-use ubiquisync_sql::db::{Db, DbBatch, DbStatementResult, StmtId};
+use crate::{codec::Codec, error::TablesError};
+use futures::lock::Mutex as AsyncMutex;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::RwLock,
+};
+use ubiquisync_core::ids::ContainerId;
+use ubiquisync_sql::{
+    db::{Db, DbBatch, DbStatementResult, StmtId},
+    op::OpCodec,
+};
 
 /// Applies table ops to a SQL backend, merging every column last-writer-wins.
 ///
@@ -31,9 +39,11 @@ use ubiquisync_sql::db::{Db, DbBatch, DbStatementResult, StmtId};
 /// (e.g. one a newer peer defined that this build doesn't model) is still
 /// materialized and merged, but has no view and emits no events.
 pub struct Reducer {
+    codec: Codec,
     prefix: String,
-    all_tables: HashMap<TableId, PhysicalTableSchema>,
-    named_tables: HashMap<TableId, TableSchema>,
+    ddl_lock: AsyncMutex<()>,
+    physical_tables: RwLock<HashMap<TableId, PhysicalTableSchema>>,
+    logical_tables: HashMap<TableId, TableSchema>,
 }
 
 impl Reducer {
@@ -47,6 +57,7 @@ impl Reducer {
     /// `id` or a view `name`; the check runs before any table or view is
     /// created, so a rejected call has no side effects.
     pub async fn new(
+        container_id: ContainerId,
         prefix: &str,
         tables: &[TableSchema],
         db: &dyn Db,
@@ -77,9 +88,11 @@ impl Reducer {
             table.create_view(prefix, db).await?;
         }
         Ok(Self {
+            codec: Codec::new(container_id),
             prefix: prefix.into(),
-            all_tables,
-            named_tables,
+            physical_tables: RwLock::new(all_tables),
+            logical_tables: named_tables,
+            ddl_lock: Default::default(),
         })
     }
 }
@@ -90,9 +103,12 @@ impl ubiquisync_sql::reducer::Reducer for Reducer {
     type Error = TablesError;
     type ReadState = ();
     type ApplyState = ApplyState;
-    type Event = ChangeEvent;
 
-    async fn prepare(&mut self, db: &dyn Db, op: &Op) -> Result<(), Self::Error> {
+    fn codec(&self) -> &dyn OpCodec<Op> {
+        &self.codec
+    }
+
+    async fn prepare(&self, db: &dyn Db, op: &Op) -> Result<(), Self::Error> {
         // Reject malformed ops before touching the schema or building any SQL.
         match op {
             Op::Upsert(upsert) => {
@@ -124,7 +140,7 @@ impl ubiquisync_sql::reducer::Reducer for Reducer {
         &self,
         apply_state: Self::ApplyState,
         batch_result: &[DbStatementResult],
-    ) -> Result<Vec<ChangeEvent>, Self::Error> {
+    ) -> Result<(), Self::Error> {
         // A single table op maps to at most one change event; `post_upsert`/
         // `post_delete` return `None` when the write lost LWW or hit an unnamed
         // table. Collect that 0-or-1 into the reducer's 0-or-many contract.
@@ -137,7 +153,9 @@ impl ubiquisync_sql::reducer::Reducer for Reducer {
             }
             None => None,
         };
-        Ok(event.into_iter().collect())
+        // TODO manage event dispatch ourselves
+        // let _events = event.into_iter().collect();
+        Ok(())
     }
 }
 

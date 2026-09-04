@@ -1,8 +1,3 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc, Weak},
-};
-
 use ubiquisync_core::{
     crypto::credentials::Credentials,
     hlc::HlcService,
@@ -11,6 +6,7 @@ use ubiquisync_core::{
 
 use crate::{db::Db, hlc_storage::SqlHlcStorage, replica::stream_lock::KeyedLock};
 
+#[allow(dead_code)]
 pub struct Replica<R> {
     pub(crate) self_id: PeerId,
     pub(crate) self_db_id: i64,

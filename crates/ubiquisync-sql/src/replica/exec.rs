@@ -18,7 +18,7 @@ use crate::{
         DbError,
         sea_query::{insert_cols, insert_cols_batch, select_cols, update_cols_batch},
     },
-    op::Op,
+    op::OpEncodeError,
     reducer::Reducer,
     replica::{
         replica::Replica,
@@ -26,19 +26,16 @@ use crate::{
     },
 };
 
-impl<R: Reducer> Replica<R>
-where
-    R::Op: Op,
-{
+impl<R: Reducer> Replica<R> {
     /// Apply a local write, minting a fresh log entry for it.
     #[tracing::instrument(skip_all)]
+    #[allow(dead_code)]
     pub async fn exec(
         &self,
         server_user_id: Option<Uuid>,
         op: R::Op,
     ) -> Result<(), ExecError<R::Error>> {
-        let (container_id, wire_bytes) = op.encode();
-        (|| self.do_exec(server_user_id, &op, container_id, &wire_bytes))
+        (|| self.do_exec(server_user_id, &op))
             .retry(
                 ConstantBuilder::new()
                     .with_delay(Duration::from_millis(10))
@@ -58,9 +55,12 @@ where
         &self,
         server_user_id: Option<Uuid>,
         op: &R::Op,
-        container_id: ContainerId,
-        wire_bytes: &[u8],
     ) -> Result<(), ExecError<R::Error>> {
+        let (container_id, op_bytes) = self
+            .reducer
+            .codec()
+            .encode(op)
+            .map_err(ExecError::OpEncode)?;
         let log_id = LogId {
             peer_id: self.self_id,
             container_id,
@@ -136,7 +136,7 @@ where
         let entry = PlaintextLogEntry::IndexedEntry(EntryBody::OpBatch(OpBatch::new(
             timestamp,
             server_user_id,
-            wire_bytes.to_vec(),
+            op_bytes,
         )));
         let entries = vec![entry];
 
@@ -200,4 +200,6 @@ pub enum ExecError<E> {
     SigningError(SigningError),
     #[error("segment encode error: {0}")]
     SegmentEncode(SegmentEncodeError),
+    #[error("op encode error: {0}")]
+    OpEncode(OpEncodeError),
 }

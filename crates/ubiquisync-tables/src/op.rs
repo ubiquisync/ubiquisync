@@ -106,3 +106,6 @@ pub struct ColumnSet {
     /// The value to write — its variant must match `column_id`'s declared type.
     pub value: Value,
 }
+
+#[cfg(test)]
+mod test {}

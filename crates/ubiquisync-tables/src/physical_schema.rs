@@ -185,10 +185,7 @@ impl PhysicalTableSchema {
                         );
                     }
                     if !col.nullable {
-                        return schema_mismatch(
-                            id,
-                            format!("column {} is not nullable", col.name),
-                        );
+                        return schema_mismatch(id, format!("column {} is not nullable", col.name));
                     }
 
                     if lww_col.db_type != DbType::Integer {
@@ -254,7 +251,10 @@ impl PhysicalTableSchema {
                 col.col_name(),
                 col.col_type().db_type().sql_type(dialect),
             ));
-            col_defs.push(format!("{} {int_type} NOT NULL DEFAULT 0", col.lww_col_name()));
+            col_defs.push(format!(
+                "{} {int_type} NOT NULL DEFAULT 0",
+                col.lww_col_name()
+            ));
         }
         let without_rowid = db.dialect().without_rowid();
         db.exec(

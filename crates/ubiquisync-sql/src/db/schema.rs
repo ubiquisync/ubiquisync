@@ -7,7 +7,7 @@ use crate::{dialect::SqlDialect, util::quote_ident};
 pub struct DbTableDescriptor {
     /// The table's name.
     pub name: String,
-    pub pk: Vec<DbColumnDescription>,
+    pub pk_cols: Vec<DbColumnDescription>,
     /// The remaining (non-primary-key) columns.
     pub cols: Vec<DbColumnDescription>,
 }

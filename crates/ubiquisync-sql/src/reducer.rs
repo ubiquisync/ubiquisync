@@ -7,7 +7,10 @@
 
 use ubiquisync_core::hlc::Timestamp;
 
-use crate::db::{Db, DbBatch, DbStatementResult};
+use crate::{
+    db::{Db, DbBatch, DbStatementResult},
+    op::OpCodec,
+};
 
 /// Translates a single op into the SQL writes that materialize it, in three
 /// phases so the work maps onto every backend — including ones with no
@@ -43,6 +46,8 @@ pub trait Reducer: Send {
     type ApplyState: Send;
     /// Error surfaced from any phase.
     type Error: core::error::Error;
+
+    fn codec(&self) -> &dyn OpCodec<Self::Op>;
 
     /// Reconcile the schema needed by `op` (create/alter tables, refresh any
     /// cache) and read whatever `apply` will need, returning it as a

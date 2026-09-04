@@ -78,11 +78,11 @@ pub enum OpOrExpunge<Op: BytesWrapper> {
     Expunge(Hash256),
 }
 
-impl OpBatch<PlaintextBytes<'_>> {
+impl<'a> OpBatch<PlaintextBytes<'a>> {
     pub fn new(
         timestamp: Timestamp,
         server_attested_user_id: Option<Uuid>,
-        op_bytes: Vec<u8>,
+        op_bytes: Vec<PlaintextBytes<'a>>,
     ) -> Self {
         let server_attested_user_id = if let Some(id) = server_attested_user_id {
             PlaintextBytes::from(Vec::from(id))
@@ -92,7 +92,10 @@ impl OpBatch<PlaintextBytes<'_>> {
         Self {
             timestamp: Vec::from(timestamp.raw().to_le_bytes()).into(),
             server_attested_user_id,
-            ops: vec![OpOrExpunge::Op(op_bytes.into())],
+            ops: op_bytes
+                .into_iter()
+                .map(OpOrExpunge::Op)
+                .collect::<Vec<_>>(),
         }
     }
 
