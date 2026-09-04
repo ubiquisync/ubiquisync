@@ -1624,6 +1624,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "ubiquisync-tables"
+version = "0.0.4"
+dependencies = [
+ "async-trait",
+ "bitfield-struct",
+ "futures",
+ "pastey",
+ "sea-query",
+ "thiserror",
+ "ubiquisync-core",
+ "ubiquisync-sql",
+ "uuid",
+]
+
+[[package]]
 name = "unarray"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

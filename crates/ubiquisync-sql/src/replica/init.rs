@@ -16,7 +16,7 @@ use crate::{
     },
     hlc_storage::SqlHlcStorage,
     reducer::Reducer,
-    replica::{replica::Replica, schema::peers},
+    replica::{replica::Replica, schema::peers, stream_lock::KeyedLock},
 };
 
 impl<R: Reducer> Replica<R> {
@@ -109,6 +109,7 @@ impl<R: Reducer> Replica<R> {
             db,
             reducer,
             hlc,
+            stream_locks: KeyedLock::new(),
         })
     }
 }

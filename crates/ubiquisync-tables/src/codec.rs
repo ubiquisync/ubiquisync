@@ -12,12 +12,15 @@
 //! [`ColumnId`] carries its column type — so the decoder knows how to read
 //! each value without a schema lookup.
 
+use std::collections::HashMap;
 use std::io::BufRead;
+
+use ubiquisync_core::codec::Writer;
+use ubiquisync_core::uuid::Uuid;
 
 use crate::col_type::ColType;
 use crate::id::{ColumnId, TableId};
 use crate::op::{ColumnSet, Delete, Op, Upsert, Value};
-use ubiquisync_core::codec::{CodecError, EntryBufferReader, EntryBufferWriter};
 
 // ── Op tags ──────────────────────────────────────────────────────────────────
 // Tag 0xFF is reserved by the core codec for expunged entries; op tags must
@@ -28,16 +31,16 @@ pub const TAG_UPSERT: u8 = 0;
 /// Soft-delete a table row.
 pub const TAG_DELETE: u8 = 1;
 
-// Fully-qualified: the core trait and this crate's enum are both named `Op`.
-impl ubiquisync_core::codec::Op for Op {
-    fn decode<R: BufRead>(tag: u8, r: &mut EntryBufferReader<R>) -> Result<Self, CodecError> {
-        decode_one_op(tag, r)
-    }
+// // Fully-qualified: the core trait and this crate's enum are both named `Op`.
+// impl ubiquisync_core::codec::Op for Op {
+//     fn decode<R: BufRead>(tag: u8, r: &mut EntryBufferReader<R>) -> Result<Self, CodecError> {
+//         decode_one_op(tag, r)
+//     }
 
-    fn encode(&self, w: &mut EntryBufferWriter) -> Result<(), CodecError> {
-        encode_one_op(w, self)
-    }
-}
+//     fn encode(&self, w: &mut EntryBufferWriter) -> Result<(), CodecError> {
+//         encode_one_op(w, self)
+//     }
+// }
 
 // ── Text validation ──────────────────────────────────────────────────────────
 
@@ -54,53 +57,58 @@ fn check_text(s: &str) -> Result<(), CodecError> {
     Ok(())
 }
 
-// ── Encode ─────────────────────────────────────────────────────────────────
+type UuidMap = HashMap<u64, Uuid>;
 
-fn encode_one_op(w: &mut EntryBufferWriter, op: &Op) -> Result<(), CodecError> {
-    match op {
-        Op::Upsert(e) => {
-            w.write_byte(TAG_UPSERT);
-            encode_one_key(w, e.table_id, &e.primary_key)?;
-            encode_one_value(w, e)
-        }
-        Op::Delete(e) => {
-            w.write_byte(TAG_DELETE);
-            encode_one_key(w, e.table_id, &e.primary_key)
-        }
-    }
-}
+// fn encode_one_op(w: &mut Writer, op: &Op) -> Result<(), WriteError> {
+//     match op {
+//         Op::Upsert(e) => {
+//             w.write_byte(TAG_UPSERT);
+//             encode_one_key(w, e.table_id, &e.primary_key)?;
+//             encode_one_value(w, e)
+//         }
+//         Op::Delete(e) => {
+//             w.write_byte(TAG_DELETE);
+//             encode_one_key(w, e.table_id, &e.primary_key)
+//         }
+//     }
+// }
 
-pub(crate) fn encode_one_key(
-    w: &mut EntryBufferWriter,
-    table_id: TableId,
-    pkey: &[Value],
-) -> Result<(), CodecError> {
-    w.write_u16_le(table_id.into());
-    write_pk(w, table_id, pkey)
-}
+// pub(crate) fn encode_one_key(
+//     w: &mut Writer,
+//     table_id: TableId,
+//     pkey: &[Value],
+// ) -> Result<(), WriteError> {
+//     w.write_u16_le(table_id.into());
+//     write_pk(w, table_id, pkey)
+// }
 
-pub(crate) fn encode_one_value(w: &mut EntryBufferWriter, e: &Upsert) -> Result<(), CodecError> {
-    w.write_varint(e.sets.len() as u64);
-    for set in &e.sets {
-        w.write_byte(set.column_id.into());
-        write_col_value(w, set.column_id, &set.value)?;
-    }
-    w.write_varint(e.nulls.len() as u64);
-    for col_id in &e.nulls {
-        w.write_byte((*col_id).into());
-    }
-    Ok(())
+// pub(crate) fn encode_one_value(w: &mut EntryBufferWriter, e: &Upsert) -> Result<(), CodecError> {
+//     w.write_varint(e.sets.len() as u64);
+//     for set in &e.sets {
+//         w.write_byte(set.column_id.into());
+//         write_col_value(w, set.column_id, &set.value)?;
+//     }
+//     w.write_varint(e.nulls.len() as u64);
+//     for col_id in &e.nulls {
+//         w.write_byte((*col_id).into());
+//     }
+//     Ok(())
+// }
+
+pub enum EncodeOpError {
+    PkCountMismatch { expected: usize, got: usize },
+    PkValueMismatch,
 }
 
 pub(crate) fn write_pk(
-    w: &mut EntryBufferWriter,
+    w: &mut Writer,
     table_id: TableId,
     pk: &[Value],
-) -> Result<(), CodecError> {
+) -> Result<(), EncodeOpError> {
     let pk_count = table_id.pk_count();
     // A wrong number of PK values is a caller error.
     if pk.len() != pk_count {
-        return Err(CodecError::PkCountMismatch {
+        return Err(EncodeOpError::PkCountMismatch {
             expected: pk_count,
             got: pk.len(),
         });
@@ -119,147 +127,147 @@ pub(crate) fn write_pk(
                 w.write_blob(s.as_bytes());
             }
             (ColType::I64, Value::I64(n)) => w.write_zigzag(*n),
-            _ => return Err(CodecError::PkValueMismatch),
+            _ => return Err(EncodeOpError::PkValueMismatch),
         }
     }
     Ok(())
 }
 
-pub(crate) fn write_col_value(
-    w: &mut EntryBufferWriter,
-    col_id: ColumnId,
-    value: &Value,
-) -> Result<(), CodecError> {
-    // The value variant must match the column ID's declared type; a mismatch
-    // is a caller error.
-    match col_id.col_type() {
-        ColType::Bytes => match value {
-            Value::Bytes(b) => w.write_blob(b),
-            _ => return Err(CodecError::ColumnValueMismatch),
-        },
-        ColType::Text => match value {
-            Value::Text(s) => {
-                check_text(s)?;
-                w.write_blob(s.as_bytes());
-            }
-            _ => return Err(CodecError::ColumnValueMismatch),
-        },
-        ColType::I64 => match value {
-            Value::I64(n) => w.write_zigzag(*n),
-            _ => return Err(CodecError::ColumnValueMismatch),
-        },
-        ColType::Uuid => match value {
-            Value::Uuid(u) => w.write_uuid(u),
-            _ => return Err(CodecError::ColumnValueMismatch),
-        },
-    }
-    Ok(())
-}
+// pub(crate) fn write_col_value(
+//     w: &mut EntryBufferWriter,
+//     col_id: ColumnId,
+//     value: &Value,
+// ) -> Result<(), CodecError> {
+//     // The value variant must match the column ID's declared type; a mismatch
+//     // is a caller error.
+//     match col_id.col_type() {
+//         ColType::Bytes => match value {
+//             Value::Bytes(b) => w.write_blob(b),
+//             _ => return Err(CodecError::ColumnValueMismatch),
+//         },
+//         ColType::Text => match value {
+//             Value::Text(s) => {
+//                 check_text(s)?;
+//                 w.write_blob(s.as_bytes());
+//             }
+//             _ => return Err(CodecError::ColumnValueMismatch),
+//         },
+//         ColType::I64 => match value {
+//             Value::I64(n) => w.write_zigzag(*n),
+//             _ => return Err(CodecError::ColumnValueMismatch),
+//         },
+//         ColType::Uuid => match value {
+//             Value::Uuid(u) => w.write_uuid(u),
+//             _ => return Err(CodecError::ColumnValueMismatch),
+//         },
+//     }
+//     Ok(())
+// }
 
-// ── Decode ─────────────────────────────────────────────────────────────────
+// // ── Decode ─────────────────────────────────────────────────────────────────
 
-fn decode_one_op<R: BufRead>(tag: u8, r: &mut EntryBufferReader<R>) -> Result<Op, CodecError> {
-    match tag {
-        TAG_UPSERT => {
-            let (table_id, primary_key) = decode_one_key(r)?;
-            let (sets, nulls) = decode_one_value(r)?;
-            Ok(Op::Upsert(Upsert {
-                table_id,
-                primary_key,
-                sets,
-                nulls,
-            }))
-        }
-        TAG_DELETE => {
-            let (table_id, primary_key) = decode_one_key(r)?;
-            Ok(Op::Delete(Delete {
-                table_id,
-                primary_key,
-            }))
-        }
-        other => Err(CodecError::UnknownTag(other)),
-    }
-}
+// fn decode_one_op<R: BufRead>(tag: u8, r: &mut EntryBufferReader<R>) -> Result<Op, CodecError> {
+//     match tag {
+//         TAG_UPSERT => {
+//             let (table_id, primary_key) = decode_one_key(r)?;
+//             let (sets, nulls) = decode_one_value(r)?;
+//             Ok(Op::Upsert(Upsert {
+//                 table_id,
+//                 primary_key,
+//                 sets,
+//                 nulls,
+//             }))
+//         }
+//         TAG_DELETE => {
+//             let (table_id, primary_key) = decode_one_key(r)?;
+//             Ok(Op::Delete(Delete {
+//                 table_id,
+//                 primary_key,
+//             }))
+//         }
+//         other => Err(CodecError::UnknownTag(other)),
+//     }
+// }
 
-pub(crate) fn decode_one_key<'a, R: BufRead>(
-    r: &mut EntryBufferReader<'a, R>,
-) -> Result<(TableId, Vec<Value>), CodecError> {
-    let table_id = TableId::from(r.read_u16_le()?);
-    let primary_key = read_pk(r, table_id)?;
-    Ok((table_id, primary_key))
-}
+// pub(crate) fn decode_one_key<'a, R: BufRead>(
+//     r: &mut EntryBufferReader<'a, R>,
+// ) -> Result<(TableId, Vec<Value>), CodecError> {
+//     let table_id = TableId::from(r.read_u16_le()?);
+//     let primary_key = read_pk(r, table_id)?;
+//     Ok((table_id, primary_key))
+// }
 
-pub(crate) fn decode_one_value<'a, R: BufRead>(
-    r: &mut EntryBufferReader<'a, R>,
-) -> Result<(Vec<ColumnSet>, Vec<ColumnId>), CodecError> {
-    // Counts come from untrusted bytes. Convert with try_into (not `as`,
-    // which truncates on 32-bit targets and would mis-decode), and don't
-    // pre-allocate to them — the Vec grows as entries are actually
-    // decoded, so a too-large count just fails fast on the first absent
-    // column rather than OOM-ing up front.
-    let set_raw = r.read_varint()?;
-    let set_count: usize = set_raw
-        .try_into()
-        .map_err(|_| CodecError::LengthTooLarge(set_raw))?;
-    let mut sets = Vec::new();
-    for _ in 0..set_count {
-        let column_id = read_column_id(r)?;
-        let value = read_col_value(r, column_id)?;
-        sets.push(ColumnSet { column_id, value });
-    }
-    let null_raw = r.read_varint()?;
-    let null_count: usize = null_raw
-        .try_into()
-        .map_err(|_| CodecError::LengthTooLarge(null_raw))?;
-    let mut nulls = Vec::new();
-    for _ in 0..null_count {
-        nulls.push(read_column_id(r)?);
-    }
-    Ok((sets, nulls))
-}
+// pub(crate) fn decode_one_value<'a, R: BufRead>(
+//     r: &mut EntryBufferReader<'a, R>,
+// ) -> Result<(Vec<ColumnSet>, Vec<ColumnId>), CodecError> {
+//     // Counts come from untrusted bytes. Convert with try_into (not `as`,
+//     // which truncates on 32-bit targets and would mis-decode), and don't
+//     // pre-allocate to them — the Vec grows as entries are actually
+//     // decoded, so a too-large count just fails fast on the first absent
+//     // column rather than OOM-ing up front.
+//     let set_raw = r.read_varint()?;
+//     let set_count: usize = set_raw
+//         .try_into()
+//         .map_err(|_| CodecError::LengthTooLarge(set_raw))?;
+//     let mut sets = Vec::new();
+//     for _ in 0..set_count {
+//         let column_id = read_column_id(r)?;
+//         let value = read_col_value(r, column_id)?;
+//         sets.push(ColumnSet { column_id, value });
+//     }
+//     let null_raw = r.read_varint()?;
+//     let null_count: usize = null_raw
+//         .try_into()
+//         .map_err(|_| CodecError::LengthTooLarge(null_raw))?;
+//     let mut nulls = Vec::new();
+//     for _ in 0..null_count {
+//         nulls.push(read_column_id(r)?);
+//     }
+//     Ok((sets, nulls))
+// }
 
-fn read_pk<R: BufRead>(
-    r: &mut EntryBufferReader<R>,
-    table_id: TableId,
-) -> Result<Vec<Value>, CodecError> {
-    let pk_count = table_id.pk_count();
-    let mut pk = Vec::with_capacity(pk_count);
-    for i in 0..pk_count {
-        pk.push(match table_id.pk_col_type(i) {
-            ColType::Bytes => Value::Bytes(r.read_blob()?),
-            ColType::Uuid => Value::Uuid(r.read_uuid()?),
-            ColType::Text => {
-                let s = String::from_utf8(r.read_blob()?)?;
-                check_text(&s)?;
-                Value::Text(s)
-            }
-            ColType::I64 => Value::I64(r.read_zigzag()?),
-        });
-    }
-    Ok(pk)
-}
+// fn read_pk<R: BufRead>(
+//     r: &mut EntryBufferReader<R>,
+//     table_id: TableId,
+// ) -> Result<Vec<Value>, CodecError> {
+//     let pk_count = table_id.pk_count();
+//     let mut pk = Vec::with_capacity(pk_count);
+//     for i in 0..pk_count {
+//         pk.push(match table_id.pk_col_type(i) {
+//             ColType::Bytes => Value::Bytes(r.read_blob()?),
+//             ColType::Uuid => Value::Uuid(r.read_uuid()?),
+//             ColType::Text => {
+//                 let s = String::from_utf8(r.read_blob()?)?;
+//                 check_text(&s)?;
+//                 Value::Text(s)
+//             }
+//             ColType::I64 => Value::I64(r.read_zigzag()?),
+//         });
+//     }
+//     Ok(pk)
+// }
 
-fn read_col_value<R: BufRead>(
-    r: &mut EntryBufferReader<R>,
-    col_id: ColumnId,
-) -> Result<Value, CodecError> {
-    match col_id.col_type() {
-        ColType::Text => {
-            let s = String::from_utf8(r.read_blob()?)?;
-            check_text(&s)?;
-            Ok(Value::Text(s))
-        }
-        ColType::Bytes => Ok(Value::Bytes(r.read_blob()?)),
-        ColType::Uuid => Ok(Value::Uuid(r.read_uuid()?)),
-        ColType::I64 => Ok(Value::I64(r.read_zigzag()?)),
-    }
-}
+// fn read_col_value<R: BufRead>(
+//     r: &mut EntryBufferReader<R>,
+//     col_id: ColumnId,
+// ) -> Result<Value, CodecError> {
+//     match col_id.col_type() {
+//         ColType::Text => {
+//             let s = String::from_utf8(r.read_blob()?)?;
+//             check_text(&s)?;
+//             Ok(Value::Text(s))
+//         }
+//         ColType::Bytes => Ok(Value::Bytes(r.read_blob()?)),
+//         ColType::Uuid => Ok(Value::Uuid(r.read_uuid()?)),
+//         ColType::I64 => Ok(Value::I64(r.read_zigzag()?)),
+//     }
+// }
 
-fn read_column_id<R: BufRead>(r: &mut EntryBufferReader<R>) -> Result<ColumnId, CodecError> {
-    // Every byte is a valid column ID: the 2-bit type field admits all four
-    // `ColType` values, so this only fails if the byte itself can't be read.
-    Ok(ColumnId::from(r.read_byte()?))
-}
+// fn read_column_id<R: BufRead>(r: &mut EntryBufferReader<R>) -> Result<ColumnId, CodecError> {
+//     // Every byte is a valid column ID: the 2-bit type field admits all four
+//     // `ColType` values, so this only fails if the byte itself can't be read.
+//     Ok(ColumnId::from(r.read_byte()?))
+// }
 
 #[cfg(test)]
 mod tests {
@@ -381,7 +389,10 @@ mod tests {
         for (i, (got, want)) in decoded.iter().zip(expected).enumerate() {
             match got {
                 DecodedEntry::LogEntry(got) => {
-                    assert_eq!(got.server_user_id, want.server_user_id, "entry {i}: server_user_id");
+                    assert_eq!(
+                        got.server_user_id, want.server_user_id,
+                        "entry {i}: server_user_id"
+                    );
                     assert_eq!(got.timestamp, want.timestamp, "entry {i}: timestamp");
                     assert_eq!(
                         format!("{:?}", got.op),
