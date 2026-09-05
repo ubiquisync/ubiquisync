@@ -21,6 +21,7 @@ futures = { workspace = true }
 pastey = { workspace = true }
 sea-query = { workspace = true }
 uuid = { workspace = true }
+tokio = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

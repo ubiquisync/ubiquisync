@@ -271,6 +271,10 @@ impl PhysicalTableSchema {
         Ok(())
     }
 
+    pub(crate) fn has_column(&self, col_id: ColumnId) -> bool {
+        self.cols.contains(&col_id)
+    }
+
     pub(crate) async fn ensure_column(
         &mut self,
         db: &dyn Db,

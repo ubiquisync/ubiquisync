@@ -1635,6 +1635,7 @@ dependencies = [
  "sea-query",
  "test-strategy",
  "thiserror",
+ "tokio",
  "ubiquisync-core",
  "ubiquisync-sql",
  "uuid",

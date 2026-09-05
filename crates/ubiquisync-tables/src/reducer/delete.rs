@@ -1,9 +1,10 @@
 use crate::error::TablesError;
 use crate::op::Delete;
-use crate::physical_schema::DELETED_TS_COL;
+use crate::physical_schema::{DELETED_TS_COL, PhysicalTableSchema};
 use crate::reducer::upsert::{bind_pkey, lww_winner_sql, set_lww_sql};
 use crate::reducer::{ApplyState, Reducer};
 use crate::watch::{ChangeEvent, DeleteEvent};
+use tokio::sync::OwnedRwLockReadGuard;
 use ubiquisync_core::hlc::Timestamp;
 use ubiquisync_sql::db::{Db, DbBatch, DbStatementResult, DbValue, StmtId, ValueBinder};
 
@@ -12,10 +13,9 @@ impl Reducer {
         &self,
         db: &dyn Db,
         delete: &Delete,
-    ) -> Result<(), TablesError> {
-        let guard = self.ddl_lock.lock().await;
-        self.ensure_table(&guard, db, delete.table_id).await?;
-        Ok(())
+    ) -> Result<OwnedRwLockReadGuard<PhysicalTableSchema>, TablesError> {
+        let table = self.ensure_table(db, delete.table_id).await?;
+        Ok(table.read_owned().await)
     }
 
     pub(crate) fn apply_delete(
@@ -23,10 +23,10 @@ impl Reducer {
         batch: &mut dyn DbBatch,
         timestamp: Timestamp,
         delete: &Delete,
+        table: OwnedRwLockReadGuard<PhysicalTableSchema>,
     ) -> Result<ApplyState, TablesError> {
         let dialect = batch.dialect();
         let table_id = delete.table_id;
-        let table = self.require_table(table_id)?;
         let quoted_table_name = table.get_quoted_name();
 
         // Because deletes are soft deletes, counter-intuitively we're actually building a INSERT ON CONFLICT SET statement
@@ -87,6 +87,7 @@ impl Reducer {
         Ok(ApplyState {
             stmt_id,
             staged_event,
+            table_rguard: table,
         })
     }
 
