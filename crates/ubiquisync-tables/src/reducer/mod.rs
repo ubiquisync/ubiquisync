@@ -145,6 +145,20 @@ impl ubiquisync_sql::reducer::Reducer for Reducer {
         apply_state: Self::ApplyState,
         batch_result: &[DbStatementResult],
     ) -> Result<(), Self::Error> {
+        if let Some(event) = self.do_post_apply(apply_state, batch_result)? {
+            self.event_handler.publish(event);
+        }
+        Ok(())
+    }
+}
+
+impl Reducer {
+    // This is separated out from post_apply for testing purposes
+    pub(crate) fn do_post_apply(
+        &self,
+        apply_state: ApplyState,
+        batch_result: &[DbStatementResult],
+    ) -> Result<Option<ChangeEvent>, TablesError> {
         // A single table op maps to at most one change event; `post_upsert`/
         // `post_delete` return `None` when the write lost LWW or hit an unnamed
         // table. Collect that 0-or-1 into the reducer's 0-or-many contract.
@@ -154,7 +168,7 @@ impl ubiquisync_sql::reducer::Reducer for Reducer {
             ..
         } = apply_state;
         drop(table_rguard); // release the table schema read lock
-        if let Some(event) = match staged_event {
+        Ok(match staged_event {
             Some(ChangeEvent::Upsert(event)) => {
                 self.post_upsert(apply_state.stmt_id, event, batch_result)?
             }
@@ -162,10 +176,7 @@ impl ubiquisync_sql::reducer::Reducer for Reducer {
                 self.post_delete(apply_state.stmt_id, event, batch_result)?
             }
             None => None,
-        } {
-            self.event_handler.publish(event);
-        }
-        Ok(())
+        })
     }
 }
 

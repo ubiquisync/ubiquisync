@@ -13,6 +13,7 @@ use futures::{FutureExt, StreamExt};
 use ubiquisync_core::crypto::credentials::software::SoftwareCredentials;
 use ubiquisync_core::event::EventBus;
 use ubiquisync_core::ids::{AppId, ContainerId};
+use ubiquisync_sql::Exec;
 use ubiquisync_sql::db::Db;
 
 use crate::op::Op;
@@ -33,7 +34,7 @@ const NODE: [u8; 16] = [1u8; 16];
 
 /// Run every macro-surface scenario against `db`. Call with a freshly opened,
 /// empty database.
-pub async fn run_macros_suite<D: Db>(db: D) {
+pub async fn run_macros_suite<D: Db + 'static>(db: D) {
     let store = open(db).await;
     let s = &store;
 
@@ -53,17 +54,17 @@ pub async fn run_macros_suite<D: Db>(db: D) {
 }
 
 /// Open the store under test: the table reducer over `db`, behind `SqlStore`.
-async fn open<D: Db>(db: D) -> StoreImpl {
+async fn open<D: Db + 'static>(db: D) -> StoreImpl {
     StoreImpl::new(
         AppId([1; 16]),
         ContainerId([2; 16]),
-        SoftwareCredentials::generate(),
+        Box::new(SoftwareCredentials::generate()),
         "",
         &tables().expect("schemas build"),
         Box::new(db),
     )
     .await
-    .expect("no error");
+    .expect("no error")
 }
 
 // ── Writes + point reads ─────────────────────────────────────────────────────

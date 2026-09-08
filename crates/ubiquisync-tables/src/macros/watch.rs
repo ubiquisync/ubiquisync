@@ -103,7 +103,7 @@ macro_rules! __define_table_watch {
             $($pk_name: $crate::__q_pk_arg!($pk_type),)+
         ) -> impl $crate::macros::support::Stream<Item = Event>
         {
-            $crate::macros::support::project_events::<Event>(store.watch(
+            $crate::macros::support::project_events::<Event>(store.subscribe(
                 $crate::watch::WatchTarget::TableRow(
                     TABLE_ID,
                     ::std::vec![ $( $crate::__w_pk_val!($pk_name, $pk_type) ),+ ],
