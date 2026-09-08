@@ -11,7 +11,7 @@ use ubiquisync_sql::db::{Db, DbBatch, DbStatementResult, DbValue, StmtId, ValueB
 use ubiquisync_sql::dialect::SqlDialect;
 use ubiquisync_sql::util::quote_ident;
 
-impl Reducer {
+impl<EH> Reducer<EH> {
     pub(crate) async fn sync_upsert_schema(
         &self,
         db: &dyn Db,

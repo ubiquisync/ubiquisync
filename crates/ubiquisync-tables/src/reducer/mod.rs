@@ -20,6 +20,7 @@ use crate::{codec::Codec, error::TablesError};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{OwnedRwLockReadGuard, RwLock};
+use ubiquisync_core::event::Publisher;
 use ubiquisync_core::ids::ContainerId;
 use ubiquisync_sql::{
     db::{Db, DbBatch, DbStatementResult, StmtId},
@@ -36,14 +37,15 @@ use ubiquisync_sql::{
 /// [`ChangeEvent`]s carrying those names. A table seen only by surrogate ID
 /// (e.g. one a newer peer defined that this build doesn't model) is still
 /// materialized and merged, but has no view and emits no events.
-pub struct Reducer {
+pub struct Reducer<EH> {
     codec: Codec,
     prefix: String,
     physical_tables: RwLock<HashMap<TableId, Arc<RwLock<PhysicalTableSchema>>>>,
     logical_tables: HashMap<TableId, TableSchema>,
+    event_handler: EH,
 }
 
-impl Reducer {
+impl<EH> Reducer<EH> {
     /// Open a reducer with `prefix` for surrogate table names, declaring each of
     /// `tables` as a named, user-facing table: its physical storage is
     /// created/reconciled in `db` up front, a SQL VIEW exposing it under the
@@ -58,6 +60,7 @@ impl Reducer {
         prefix: &str,
         tables: &[TableSchema],
         db: &dyn Db,
+        event_handler: EH,
     ) -> Result<Self, TablesError> {
         let mut seen_ids = HashSet::new();
         let mut seen_names = HashSet::new();
@@ -89,12 +92,13 @@ impl Reducer {
             prefix: prefix.into(),
             physical_tables: RwLock::new(all_tables),
             logical_tables: named_tables,
+            event_handler,
         })
     }
 }
 
 #[async_trait::async_trait]
-impl ubiquisync_sql::reducer::Reducer for Reducer {
+impl<EH: Publisher<ChangeEvent> + Sync + Send> ubiquisync_sql::reducer::Reducer for Reducer<EH> {
     type Op = Op;
     type Error = TablesError;
     type ReadState = ReadState;
@@ -144,7 +148,13 @@ impl ubiquisync_sql::reducer::Reducer for Reducer {
         // A single table op maps to at most one change event; `post_upsert`/
         // `post_delete` return `None` when the write lost LWW or hit an unnamed
         // table. Collect that 0-or-1 into the reducer's 0-or-many contract.
-        let event = match apply_state.staged_event {
+        let ApplyState {
+            staged_event,
+            table_rguard,
+            ..
+        } = apply_state;
+        drop(table_rguard); // release the table schema read lock
+        if let Some(event) = match staged_event {
             Some(ChangeEvent::Upsert(event)) => {
                 self.post_upsert(apply_state.stmt_id, event, batch_result)?
             }
@@ -152,9 +162,9 @@ impl ubiquisync_sql::reducer::Reducer for Reducer {
                 self.post_delete(apply_state.stmt_id, event, batch_result)?
             }
             None => None,
-        };
-        // TODO manage event dispatch ourselves
-        // let _events = event.into_iter().collect();
+        } {
+            self.event_handler.publish(event);
+        }
         Ok(())
     }
 }

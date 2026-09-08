@@ -8,7 +8,7 @@ use tokio::sync::OwnedRwLockReadGuard;
 use ubiquisync_core::hlc::Timestamp;
 use ubiquisync_sql::db::{Db, DbBatch, DbStatementResult, DbValue, StmtId, ValueBinder};
 
-impl Reducer {
+impl<EH> Reducer<EH> {
     pub(crate) async fn sync_delete_schema(
         &self,
         db: &dyn Db,

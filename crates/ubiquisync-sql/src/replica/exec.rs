@@ -5,7 +5,7 @@ use sea_query::{Expr, ExprTrait, Query};
 use thiserror::Error;
 use ubiquisync_core::{
     crypto::SigningError,
-    ids::{ContainerId, LogId},
+    ids::LogId,
     log::{
         ChainHash, ChainSeed, EntryBody, OpBatch, PlaintextLogEntry, SegmentCipherError,
         segment::{SegmentEncodeError, encode_segment_plaintext},

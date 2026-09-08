@@ -38,7 +38,7 @@ impl<K: std::hash::Hash + Eq + Clone> KeyedLock<K> {
         }
     }
 
-    fn lock_map(&self) -> MutexGuard<HashMap<K, Weak<futures::lock::Mutex<()>>>> {
+    fn lock_map(&self) -> MutexGuard<'_, HashMap<K, Weak<futures::lock::Mutex<()>>>> {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
@@ -48,10 +48,10 @@ impl<K: std::hash::Hash + Eq + Clone> Drop for KeyedLockGuard<K> {
         // release the lock first decrementing the strong count
         self.guard.take();
         let mut map = self.locks.lock_map();
-        if let Some(weak) = map.get(&self.key) {
-            if weak.strong_count() == 0 {
-                map.remove(&self.key);
-            }
+        if let Some(weak) = map.get(&self.key)
+            && weak.strong_count() == 0
+        {
+            map.remove(&self.key);
         }
     }
 }
