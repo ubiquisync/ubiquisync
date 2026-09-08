@@ -78,8 +78,8 @@ macro_rules! __define_table_query {
 
         /// Fetch the row with this primary key, or `None` if it doesn't exist.
         #[allow(dead_code)]
-        pub async fn get<O, E, S>(
-            store: &dyn $crat::macros::support::SqlQueryStore,
+        pub async fn get(
+            store: &dyn $crate::macros::support::SqlQueryStore,
             $($pk_name: $crate::__q_pk_arg!($pk_type),)+
         ) -> ::core::result::Result<
             ::core::option::Option<Row>,
@@ -108,8 +108,8 @@ macro_rules! __define_table_query {
         /// Fetch every live (non-tombstoned) row of the table. The VIEW already
         /// hides tombstones, so no delete filter is needed here.
         #[allow(dead_code)]
-        pub async fn get_all<O, E, S>(
-            store: &dyn $crat::macros::support::SqlQueryStore,
+        pub async fn get_all(
+            store: &dyn $crate::macros::support::SqlQueryStore,
         ) -> ::core::result::Result<::std::vec::Vec<Row>, $crate::macros::support::DbError>
         {
             let mut stmt = $crate::macros::support::sea_query::Query::select();
@@ -135,8 +135,8 @@ macro_rules! __define_table_query {
         /// }).await?;
         /// ```
         #[allow(dead_code)]
-        pub async fn query<O, E, S, F>(
-            store: &dyn $crat::macros::support::SqlQueryStore,
+        pub async fn query<F>(
+            store: &dyn $crate::macros::support::SqlQueryStore,
             compose: F,
         ) -> ::core::result::Result<::std::vec::Vec<Row>, $crate::macros::support::DbError>
         where

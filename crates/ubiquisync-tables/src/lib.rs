@@ -30,7 +30,7 @@ mod naming;
 // /// re-export (e.g. `ubiquisync_tables::sea_query::Expr`) so the `Iden` impls on
 // /// each table's `Col`/`Table` line up — a separately-versioned `sea-query`
 // /// dependency would not.
-// pub use sea_query;
+pub use sea_query;
 pub mod op;
 // // Physical storage layer (surrogate tables, schema reconciliation). Wired into
 // // the shipping build by the table reducer; `allow(dead_code)` until then. The
@@ -45,7 +45,7 @@ pub mod reducer;
 // /// Backend-agnostic physical-schema suite the driver crates run against their
 // /// real `Db`. Compiled for this crate's own tests and for any crate that enables
 // /// the `test-support` feature (a SQL driver, in its dev-dependencies).
-// #[cfg(any(test, feature = "test-support"))]
-// pub mod test_support;
 pub mod store;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 pub mod watch;

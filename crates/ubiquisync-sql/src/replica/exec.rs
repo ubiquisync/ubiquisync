@@ -20,7 +20,7 @@ use crate::{
     reducer::Reducer,
     replica::{
         Replica,
-        schema::{segments, streams},
+        schema::{CommitStatus, segments, streams},
     },
 };
 
@@ -53,26 +53,17 @@ impl<R: Reducer> Replica<R> {
             peer_id: self.self_id,
             container_id,
         };
+        // per-stream mutex guard to prevent ensures only one thread touches a single stream
         let _guard = self.stream_locks.lock(&log_id).await;
 
-        // TODO does prepare indicate stall conditions?
-        // somewhere in here maybe prepare, for ctl ops
-        // we need to enrich them with observe & key wrap ops when needed
-        // and also return a stall condition if waiting on another ctl
-        // log from another peer
-        let read_state = self
-            .reducer
-            .prepare(self.db.as_ref(), op)
-            .await
-            .map_err(|e| ExecError::Reducer(Box::new(e)))?;
-
-        // TODO we want a per stream mutex to avoid race conditions
         let stream_rows = select_cols::<(
             streams::Id,
             streams::HeadSize,
             streams::HeadHash,
             streams::HeadCipher,
             streams::HeadStatus,
+            streams::CommitSize,
+            streams::CommitStatus,
         )>(
             self.db.as_ref(),
             Query::select()
@@ -85,28 +76,44 @@ impl<R: Reducer> Replica<R> {
 
         let seed = ChainSeed::new(&log_id);
 
-        let (stream_id, chain_head) = if stream_rows.is_empty() {
+        let (stream_id, chain_head, commit_status) = if stream_rows.is_empty() {
             let res = insert_cols::<
                 (
                     streams::PeerId,
                     streams::ContainerId,
                     streams::HeadSize,
                     streams::HeadHash,
+                    streams::CommitSize,
+                    streams::CommitStatus,
                 ),
                 (streams::Id,),
             >(
                 self.db.as_ref(),
-                (self.self_db_id, container_id.0, 0, *seed.hash()),
+                (
+                    self.self_db_id,
+                    container_id.0,
+                    0,
+                    *seed.hash(),
+                    0,
+                    CommitStatus::Ok,
+                ),
                 Query::insert().into_table(streams::Table),
             )
             .await?;
             let (stream_id,) = res.exactly_one()?;
-            (stream_id, ChainHash::empty(&seed))
+            (stream_id, ChainHash::empty(&seed), CommitStatus::Ok)
         } else if stream_rows.len() > 1 {
             todo!("found multiple rows, this means we have a fork and need to know what to do")
         } else {
-            let (stream_id, head_size, head_hash, head_cipher, head_status) =
-                stream_rows.exactly_one()?;
+            let (
+                stream_id,
+                head_size,
+                head_hash,
+                head_cipher,
+                head_status,
+                commit_size,
+                commit_status,
+            ) = stream_rows.exactly_one()?;
 
             if head_status.is_some() {
                 todo!("handle some unexpected status")
@@ -116,12 +123,18 @@ impl<R: Reducer> Replica<R> {
                 todo!("cipher not supported yet");
             }
 
+            if commit_status == CommitStatus::Ok && commit_size != head_size {
+                return Err(ExecError::Internal(format!(
+                    "commit status is okay but head {head_size} and commit {commit_size} sizes do not match"
+                )));
+            }
+
             let chain_head = ChainHash {
                 hash: head_hash,
                 size: head_size,
             };
 
-            (stream_id, chain_head)
+            (stream_id, chain_head, commit_status)
         };
 
         let mut batch = self.db.new_batch();
@@ -153,24 +166,54 @@ impl<R: Reducer> Replica<R> {
             Query::insert().into_table(segments::Table),
         )?;
 
-        update_cols_batch::<(streams::HeadSize, streams::HeadHash)>(
-            batch.as_mut(),
-            (next_chain_head.size, next_chain_head.hash),
-            Query::update()
-                .table(streams::Table)
-                .and_where(Expr::column(streams::Id).eq(stream_id)),
-        )?;
+        if commit_status == CommitStatus::Ok {
+            // TODO does prepare indicate stall conditions?
+            // somewhere in here maybe prepare, for ctl ops
+            // we need to enrich them with observe & key wrap ops when needed
+            // and also return a stall condition if waiting on another ctl
+            // log from another peer
+            let read_state = self
+                .reducer
+                .prepare(self.db.as_ref(), op)
+                .await
+                .map_err(|e| ExecError::Reducer(Box::new(e)))?;
 
-        let apply_state = self
-            .reducer
-            .apply(batch.as_mut(), timestamp, op, read_state)
-            .map_err(|e| ExecError::Reducer(Box::new(e)))?;
+            update_cols_batch::<(streams::HeadSize, streams::HeadHash, streams::CommitSize)>(
+                batch.as_mut(),
+                (
+                    next_chain_head.size,
+                    next_chain_head.hash,
+                    next_chain_head.size,
+                ), // head and commit sizes match
+                Query::update()
+                    .table(streams::Table)
+                    .and_where(Expr::column(streams::Id).eq(stream_id)),
+            )?;
 
-        let batch_result = batch.commit().await?;
+            let apply_state = self
+                .reducer
+                .apply(batch.as_mut(), timestamp, op, read_state)
+                .map_err(|e| ExecError::Reducer(Box::new(e)))?;
 
-        self.reducer
-            .post_apply(apply_state, &batch_result)
-            .map_err(|e| ExecError::Reducer(Box::new(e)))?;
+            let batch_result = batch.commit().await?;
+
+            self.reducer
+                .post_apply(apply_state, &batch_result)
+                .map_err(|e| ExecError::Reducer(Box::new(e)))?;
+        } else {
+            // we cannot commit because our commit status is non-Ok, so we just update the head size and hash
+            update_cols_batch::<(streams::HeadSize, streams::HeadHash)>(
+                batch.as_mut(),
+                (next_chain_head.size, next_chain_head.hash),
+                Query::update()
+                    .table(streams::Table)
+                    .and_where(Expr::column(streams::Id).eq(stream_id)),
+            )?;
+
+            batch.commit().await?;
+
+            // TODO should we return any kind of pending status to the caller? maybe not and this would be more of an alerting watch channel that could propogate to UI sync status or something
+        }
 
         Ok(())
     }

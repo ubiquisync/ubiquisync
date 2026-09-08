@@ -1,3 +1,5 @@
+use secrecy::SecretBox;
+
 use crate::crypto::{
     credentials::Credentials, ed25519::Ed25519SigningKey, kem::X25519DecapsulationKey,
 };

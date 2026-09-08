@@ -58,7 +58,7 @@ def_table_with_auto_id!(streams (id) => {
    // TODO CHECK(commit_size <= head_size)
 });
 
-#[derive(IntoPrimitive, TryFromPrimitive, Clone, Copy)]
+#[derive(IntoPrimitive, TryFromPrimitive, Clone, Copy, PartialEq, Eq)]
 #[repr(i64)]
 pub enum CommitStatus {
     Ok = 0,
@@ -100,13 +100,13 @@ pub enum CommitStatusData {
         container_id: Option<ContainerId>,
         head: ChainHash,
     },
-    IncompatibleSoftware(SoftwareIncompatibilityInfo),
+    IncompatibleSoftware(UnknownSoftwareVersion),
 }
 
-pub enum SoftwareIncompatibilityInfo {
-    UnknownEntryType(u8),
-    UnknownOpType(u8),
-    UnknownCipherSuite(u8),
+pub enum UnknownSoftwareVersion {
+    EntryType(u8),
+    OpType(u8),
+    CipherSuite(u8),
 }
 
 impl HeadStatus {
@@ -129,7 +129,7 @@ impl CommitStatusData {
     }
 }
 
-impl SoftwareIncompatibilityInfo {
+impl UnknownSoftwareVersion {
     pub fn encode(&self, writer: &mut Writer) {
         todo!()
     }

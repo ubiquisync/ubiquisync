@@ -87,7 +87,7 @@ macro_rules! __define_table_watch {
         /// Watch every change to this table as a stream of typed [`Event`]s.
         /// Dropping the stream unsubscribes.
         #[allow(dead_code)]
-        pub fn watch<O, S>(
+        pub fn watch(
             store: &dyn $crate::macros::support::Subscribe<$crate::watch::ChangeEvent>
         ) -> impl $crate::macros::support::Stream<Item = Event>
         {
@@ -98,8 +98,8 @@ macro_rules! __define_table_watch {
 
         /// Watch changes to the single row with this primary key.
         #[allow(dead_code)]
-        pub fn watch_row<O, S>(
-            store: &dyn $crate::macros::support::Subscribe<$crate::watch::ChangeEvent>
+        pub fn watch_row(
+            store: &dyn $crate::macros::support::Subscribe<$crate::watch::ChangeEvent>,
             $($pk_name: $crate::__q_pk_arg!($pk_type),)+
         ) -> impl $crate::macros::support::Stream<Item = Event>
         {
