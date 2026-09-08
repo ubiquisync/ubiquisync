@@ -1,6 +1,7 @@
 mod exec;
 mod fs_sync_schema;
 mod init;
+mod query;
 mod replica;
 mod schema;
 mod stream_lock;

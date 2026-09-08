@@ -176,11 +176,16 @@ impl<R: Reducer> Replica<R> {
         )
         .map_err(ExecError::Db)?;
 
-        self.reducer
+        let apply_state = self
+            .reducer
             .apply(batch.as_mut(), timestamp, op, read_state)
             .map_err(ExecError::Reducer)?;
 
-        batch.commit().await.map_err(ExecError::Db)?;
+        let batch_result = batch.commit().await.map_err(ExecError::Db)?;
+
+        self.reducer
+            .post_apply(apply_state, &batch_result)
+            .map_err(ExecError::Reducer)?;
 
         Ok(())
     }

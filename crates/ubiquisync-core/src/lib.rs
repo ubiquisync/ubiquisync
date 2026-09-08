@@ -24,7 +24,6 @@ pub mod event;
 pub mod hlc;
 pub mod ids;
 pub mod log;
-pub mod store;
 //pub mod sync;
 pub mod bytes;
 pub mod init;
