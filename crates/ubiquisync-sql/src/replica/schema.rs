@@ -15,16 +15,19 @@ use crate::{
 };
 
 pub(crate) async fn create_tables(db: &dyn Db) -> Result<(), DbError> {
-    db.exec(&create_table_sql(db.dialect()), &[]).await?;
+    let mut batch = db.new_batch();
+    for st in create_table_sql(db.dialect()) {
+        batch.add_statement(&st, &[]);
+    }
+    batch.commit().await?;
     Ok(())
 }
 
-fn create_table_sql(dialect: SqlDialect) -> String {
+fn create_table_sql(dialect: SqlDialect) -> Vec<String> {
     table_defs()
         .iter()
         .map(|d| d.create_table_sql(dialect))
         .collect::<Vec<_>>()
-        .join(";\n")
 }
 
 fn table_defs() -> Vec<CreateTableDef> {
@@ -149,7 +152,7 @@ mod tests {
     fn schema_snapshot() {
         assert_snapshot!(
             "sqlite",
-            create_table_sql(crate::dialect::SqlDialect::Sqlite)
+            create_table_sql(crate::dialect::SqlDialect::Sqlite).join(";\n")
         );
     }
 }

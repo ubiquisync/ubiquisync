@@ -30,8 +30,6 @@ crate::define_tables! {
     3 counters (id I64)          => {},
 }
 
-const NODE: [u8; 16] = [1u8; 16];
-
 /// Run every macro-surface scenario against `db`. Call with a freshly opened,
 /// empty database.
 pub async fn run_macros_suite<D: Db + 'static>(db: D) {

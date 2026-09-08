@@ -32,7 +32,7 @@ impl<R: Reducer> Replica<R> {
     ) -> Result<Self, InitError> {
         // TODO support prefixes
 
-        const SELF_DB_ID: i64 = 0;
+        const SELF_DB_ID: i64 = 1;
 
         let hlc = HlcService::open(SqlHlcStorage::open(db.as_ref(), "").await?)?;
 
@@ -49,9 +49,7 @@ impl<R: Reducer> Replica<R> {
             .await?
             .one()?
         {
-            let self_id: PeerId = PeerId(self_id.try_into().map_err(|_| {
-                InitError::Internal(format!("invalid peer id length: {0}", self_id.len()))
-            })?);
+            let self_id = PeerId(self_id);
             let init_entry = InitEntry {
                 commitment_bytes: commitment_bytes.into(),
                 peer_id: self_id,
