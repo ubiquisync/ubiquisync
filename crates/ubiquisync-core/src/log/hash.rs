@@ -114,6 +114,10 @@ impl ChainSeed {
         let seed = hasher.finalize();
         Self(seed)
     }
+
+    pub fn hash(&self) -> &Hash256 {
+        &self.0
+    }
 }
 
 impl<'a> EntryBody<OpaqueBytes<'a>> {

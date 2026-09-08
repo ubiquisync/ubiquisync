@@ -21,7 +21,7 @@ pub mod col_type;
 pub mod error;
 pub mod id;
 // /// Declarative macros for building [`schema`] values from a compact table DSL.
-// pub mod macros;
+pub mod macros;
 mod naming;
 
 // /// The `sea-query` version this crate builds its typed table columns against.
@@ -47,4 +47,5 @@ pub mod reducer;
 // /// the `test-support` feature (a SQL driver, in its dev-dependencies).
 // #[cfg(any(test, feature = "test-support"))]
 // pub mod test_support;
+pub mod store;
 pub mod watch;

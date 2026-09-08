@@ -11,17 +11,18 @@
 #![allow(missing_docs)]
 
 pub use sea_query;
+use ubiquisync_sql::db::sea_query::value_to_db;
 pub use uuid;
 
 pub use futures::Stream;
 pub use pastey;
-pub use ubiquisync_core::event::RoutableEvent;
+pub use ubiquisync_core::event::{RoutableEvent, Subscribe};
 pub use ubiquisync_core::uuid::Uuid as CoreUuid;
+pub use ubiquisync_sql::SqlQueryStore;
 pub use ubiquisync_sql::db::{DbError, DbRow, DbValue};
-pub use ubiquisync_sql::store::SqlStore;
 
 use futures::{StreamExt, future::ready};
-use sea_query::{PostgresQueryBuilder, SelectStatement, SqliteQueryBuilder, Value};
+use sea_query::{PostgresQueryBuilder, SelectStatement, SqliteQueryBuilder};
 use ubiquisync_core::event::Subscription;
 use ubiquisync_sql::dialect::SqlDialect;
 
@@ -44,52 +45,6 @@ pub fn push_col(
         Some(value) => sets.push(ColumnSet { column_id, value }),
         None => nulls.push(column_id),
     }
-}
-
-/// Map a sea-query bind [`Value`] to our [`DbValue`]. The `get`/`get_all` readers
-/// only feed macro-controlled binds, but `query` hands callers the full
-/// [`Expr`](sea_query::Expr) surface, so any scalar can arrive here. Booleans,
-/// every signed/unsigned integer width (`LIMIT`/`OFFSET` bind unsigned), chars,
-/// strings, bytes, and UUIDs map cleanly; a float or any exotic type has no
-/// `DbValue` (our columns are only `Bytes`/`Uuid`/`Text`/`I64`), so it's a caller
-/// type error reported as [`DbError`] — never a panic.
-pub fn value_to_db(value: Value) -> Result<DbValue, DbError> {
-    let db = match value {
-        Value::Bool(Some(b)) => DbValue::Integer(b as i64),
-        Value::TinyInt(Some(i)) => DbValue::Integer(i as i64),
-        Value::SmallInt(Some(i)) => DbValue::Integer(i as i64),
-        Value::Int(Some(i)) => DbValue::Integer(i as i64),
-        Value::BigInt(Some(i)) => DbValue::Integer(i),
-        Value::TinyUnsigned(Some(u)) => DbValue::Integer(u as i64),
-        Value::SmallUnsigned(Some(u)) => DbValue::Integer(u as i64),
-        Value::Unsigned(Some(u)) => DbValue::Integer(u as i64),
-        Value::BigUnsigned(Some(u)) => {
-            DbValue::Integer(i64::try_from(u).map_err(|_| DbError::IntegerOutOfRange(u as i128))?)
-        }
-        Value::Char(Some(c)) => DbValue::Text(c.to_string()),
-        Value::String(Some(s)) => DbValue::Text(s),
-        Value::Bytes(Some(b)) => DbValue::Blob(b),
-        Value::Uuid(Some(u)) => DbValue::Uuid(u.into_bytes()),
-        Value::Bool(None)
-        | Value::TinyInt(None)
-        | Value::SmallInt(None)
-        | Value::Int(None)
-        | Value::BigInt(None)
-        | Value::TinyUnsigned(None)
-        | Value::SmallUnsigned(None)
-        | Value::Unsigned(None)
-        | Value::BigUnsigned(None)
-        | Value::Char(None)
-        | Value::String(None)
-        | Value::Bytes(None)
-        | Value::Uuid(None) => DbValue::Null,
-        other => {
-            return Err(DbError::Sql(format!(
-                "unsupported value bound into query: {other:?}"
-            )));
-        }
-    };
-    Ok(db)
 }
 
 /// Project a raw [`ChangeEvent`] subscription into a stream of a table's typed

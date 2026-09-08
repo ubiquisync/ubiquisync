@@ -7,7 +7,7 @@ use crate::reducer::Reducer;
 use tokio::sync::RwLock;
 use ubiquisync_sql::db::Db;
 
-impl<EH> Reducer<EH> {
+impl Reducer {
     /// We must pass in a mutex guard to ensure DDL operations don't happen concurrently.
     pub(crate) async fn ensure_table(
         &self,

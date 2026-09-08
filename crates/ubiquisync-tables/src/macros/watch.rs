@@ -87,23 +87,21 @@ macro_rules! __define_table_watch {
         /// Watch every change to this table as a stream of typed [`Event`]s.
         /// Dropping the stream unsubscribes.
         #[allow(dead_code)]
-        pub fn watch<O, S>(store: &S) -> impl $crate::macros::support::Stream<Item = Event>
-        where
-            S: $crate::macros::support::SqlStore<O, $crate::watch::ChangeEvent> + ?Sized,
+        pub fn watch<O, S>(
+            store: &dyn $crate::macros::support::Subscribe<$crate::watch::ChangeEvent>
+        ) -> impl $crate::macros::support::Stream<Item = Event>
         {
             $crate::macros::support::project_events::<Event>(
-                store.watch($crate::watch::WatchTarget::Table(TABLE_ID)),
+                store.subscribe($crate::watch::WatchTarget::Table(TABLE_ID)),
             )
         }
 
         /// Watch changes to the single row with this primary key.
         #[allow(dead_code)]
         pub fn watch_row<O, S>(
-            store: &S,
+            store: &dyn $crate::macros::support::Subscribe<$crate::watch::ChangeEvent>
             $($pk_name: $crate::__q_pk_arg!($pk_type),)+
         ) -> impl $crate::macros::support::Stream<Item = Event>
-        where
-            S: $crate::macros::support::SqlStore<O, $crate::watch::ChangeEvent> + ?Sized,
         {
             $crate::macros::support::project_events::<Event>(store.watch(
                 $crate::watch::WatchTarget::TableRow(
@@ -132,16 +130,28 @@ macro_rules! __ev_col_ty {
 #[macro_export]
 macro_rules! __ev_pk_val {
     ($v:expr, Uuid) => {
-        match $v { ::core::option::Option::Some($crate::op::Value::Uuid(u)) => u, _ => ::core::unreachable!() }
+        match $v {
+            ::core::option::Option::Some($crate::op::Value::Uuid(u)) => u,
+            _ => ::core::unreachable!(),
+        }
     };
     ($v:expr, Text) => {
-        match $v { ::core::option::Option::Some($crate::op::Value::Text(s)) => s, _ => ::core::unreachable!() }
+        match $v {
+            ::core::option::Option::Some($crate::op::Value::Text(s)) => s,
+            _ => ::core::unreachable!(),
+        }
     };
     ($v:expr, I64) => {
-        match $v { ::core::option::Option::Some($crate::op::Value::I64(i)) => i, _ => ::core::unreachable!() }
+        match $v {
+            ::core::option::Option::Some($crate::op::Value::I64(i)) => i,
+            _ => ::core::unreachable!(),
+        }
     };
     ($v:expr, Bytes) => {
-        match $v { ::core::option::Option::Some($crate::op::Value::Bytes(b)) => b, _ => ::core::unreachable!() }
+        match $v {
+            ::core::option::Option::Some($crate::op::Value::Bytes(b)) => b,
+            _ => ::core::unreachable!(),
+        }
     };
 }
 
@@ -153,28 +163,36 @@ macro_rules! __ev_pk_val {
 macro_rules! __ev_col_val {
     ($v:expr, Text) => {
         match $v {
-            ::core::option::Option::Some($crate::op::Value::Text(s)) => $crate::watch::ColumnChange::Set(s),
+            ::core::option::Option::Some($crate::op::Value::Text(s)) => {
+                $crate::watch::ColumnChange::Set(s)
+            }
             ::core::option::Option::None => $crate::watch::ColumnChange::SetNull,
             _ => ::core::unreachable!(),
         }
     };
     ($v:expr, I64) => {
         match $v {
-            ::core::option::Option::Some($crate::op::Value::I64(i)) => $crate::watch::ColumnChange::Set(i),
+            ::core::option::Option::Some($crate::op::Value::I64(i)) => {
+                $crate::watch::ColumnChange::Set(i)
+            }
             ::core::option::Option::None => $crate::watch::ColumnChange::SetNull,
             _ => ::core::unreachable!(),
         }
     };
     ($v:expr, Uuid) => {
         match $v {
-            ::core::option::Option::Some($crate::op::Value::Uuid(u)) => $crate::watch::ColumnChange::Set(u),
+            ::core::option::Option::Some($crate::op::Value::Uuid(u)) => {
+                $crate::watch::ColumnChange::Set(u)
+            }
             ::core::option::Option::None => $crate::watch::ColumnChange::SetNull,
             _ => ::core::unreachable!(),
         }
     };
     ($v:expr, Bytes) => {
         match $v {
-            ::core::option::Option::Some($crate::op::Value::Bytes(b)) => $crate::watch::ColumnChange::Set(b),
+            ::core::option::Option::Some($crate::op::Value::Bytes(b)) => {
+                $crate::watch::ColumnChange::Set(b)
+            }
             ::core::option::Option::None => $crate::watch::ColumnChange::SetNull,
             _ => ::core::unreachable!(),
         }

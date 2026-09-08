@@ -2,39 +2,33 @@ use std::time::Duration;
 
 use backon::{ConstantBuilder, Retryable};
 use sea_query::{Expr, ExprTrait, Query};
-use thiserror::Error;
 use ubiquisync_core::{
-    crypto::SigningError,
     ids::LogId,
     log::{
-        ChainHash, ChainSeed, EntryBody, OpBatch, PlaintextLogEntry, SegmentCipherError,
-        segment::{SegmentEncodeError, encode_segment_plaintext},
+        ChainHash, ChainSeed, EntryBody, OpBatch, PlaintextLogEntry,
+        segment::encode_segment_plaintext,
     },
     uuid::Uuid,
 };
 
 use crate::{
+    Exec, ExecError,
     db::{
         DbError,
         sea_query::{insert_cols, insert_cols_batch, select_cols, update_cols_batch},
     },
-    op::OpEncodeError,
     reducer::Reducer,
     replica::{
-        replica::Replica,
+        Replica,
         schema::{segments, streams},
     },
 };
 
-impl<R: Reducer> Replica<R> {
+#[async_trait::async_trait]
+impl<R: Reducer> Exec<R::Op> for Replica<R> {
     /// Apply a local write, minting a fresh log entry for it.
     #[tracing::instrument(skip_all)]
-    #[allow(dead_code)]
-    pub async fn exec(
-        &self,
-        server_user_id: Option<Uuid>,
-        op: R::Op,
-    ) -> Result<(), ExecError<R::Error>> {
+    async fn exec(&self, server_user_id: Option<Uuid>, op: R::Op) -> Result<(), ExecError> {
         (|| self.do_exec(server_user_id, &op))
             .retry(
                 ConstantBuilder::new()
@@ -50,17 +44,11 @@ impl<R: Reducer> Replica<R> {
             .notify(|err, _| tracing::debug!(%err, "retrying"))
             .await
     }
+}
 
-    async fn do_exec(
-        &self,
-        server_user_id: Option<Uuid>,
-        op: &R::Op,
-    ) -> Result<(), ExecError<R::Error>> {
-        let (container_id, op_bytes) = self
-            .reducer
-            .codec()
-            .encode(op)
-            .map_err(ExecError::OpEncode)?;
+impl<R: Reducer> Replica<R> {
+    async fn do_exec(&self, server_user_id: Option<Uuid>, op: &R::Op) -> Result<(), ExecError> {
+        let (container_id, op_bytes) = self.reducer.codec().encode(op)?;
         let log_id = LogId {
             peer_id: self.self_id,
             container_id,
@@ -76,7 +64,7 @@ impl<R: Reducer> Replica<R> {
             .reducer
             .prepare(self.db.as_ref(), op)
             .await
-            .map_err(ExecError::Reducer)?;
+            .map_err(|e| ExecError::Reducer(Box::new(e)))?;
 
         // TODO we want a per stream mutex to avoid race conditions
         let stream_rows = select_cols::<(
@@ -98,21 +86,27 @@ impl<R: Reducer> Replica<R> {
         let seed = ChainSeed::new(&log_id);
 
         let (stream_id, chain_head) = if stream_rows.is_empty() {
-            // TODO handle current inserts of root branch to stream!
-            let res = insert_cols::<(streams::PeerId, streams::ContainerId), (streams::Id,)>(
+            let res = insert_cols::<
+                (
+                    streams::PeerId,
+                    streams::ContainerId,
+                    streams::HeadSize,
+                    streams::HeadHash,
+                ),
+                (streams::Id,),
+            >(
                 self.db.as_ref(),
-                (self.self_db_id, container_id.0),
+                (self.self_db_id, container_id.0, 0, *seed.hash()),
                 Query::insert().into_table(streams::Table),
             )
-            .await
-            .map_err(ExecError::Db)?;
-            let (stream_id,) = res.exactly_one().map_err(ExecError::Db)?;
+            .await?;
+            let (stream_id,) = res.exactly_one()?;
             (stream_id, ChainHash::empty(&seed))
         } else if stream_rows.len() > 1 {
             todo!("found multiple rows, this means we have a fork and need to know what to do")
         } else {
             let (stream_id, head_size, head_hash, head_cipher, head_status) =
-                stream_rows.exactly_one().map_err(ExecError::Db)?;
+                stream_rows.exactly_one()?;
 
             if head_status.is_some() {
                 todo!("handle some unexpected status")
@@ -131,7 +125,7 @@ impl<R: Reducer> Replica<R> {
         };
 
         let mut batch = self.db.new_batch();
-        let timestamp = self.hlc.now(batch.as_mut()).map_err(ExecError::Db)?;
+        let timestamp = self.hlc.now(batch.as_mut())?;
 
         let entry = PlaintextLogEntry::IndexedEntry(EntryBody::OpBatch(OpBatch::new(
             timestamp,
@@ -140,20 +134,13 @@ impl<R: Reducer> Replica<R> {
         )));
         let entries = vec![entry];
 
-        let next_chain_head = chain_head
-            .compute_next_plaintext(&seed, &None, entries.iter())
-            .map_err(ExecError::SegmentCipher)?;
+        let next_chain_head = chain_head.compute_next_plaintext(&seed, &None, entries.iter())?;
 
         let sign_bytes = next_chain_head.sign_bytes(&seed);
 
-        let signature = self
-            .credentials
-            .signing_key()
-            .sign(&sign_bytes)
-            .map_err(ExecError::SigningError)?;
+        let signature = self.credentials.signing_key().sign(&sign_bytes)?;
 
-        let segment = encode_segment_plaintext(&signature, &chain_head, &None, &entries)
-            .map_err(ExecError::SegmentEncode)?;
+        let segment = encode_segment_plaintext(&signature, &chain_head, &None, &entries)?;
 
         insert_cols_batch::<(
             segments::StreamId,
@@ -164,8 +151,7 @@ impl<R: Reducer> Replica<R> {
             batch.as_mut(),
             (stream_id, chain_head.size, next_chain_head.size, segment),
             Query::insert().into_table(segments::Table),
-        )
-        .map_err(ExecError::Db)?;
+        )?;
 
         update_cols_batch::<(streams::HeadSize, streams::HeadHash)>(
             batch.as_mut(),
@@ -173,38 +159,19 @@ impl<R: Reducer> Replica<R> {
             Query::update()
                 .table(streams::Table)
                 .and_where(Expr::column(streams::Id).eq(stream_id)),
-        )
-        .map_err(ExecError::Db)?;
+        )?;
 
         let apply_state = self
             .reducer
             .apply(batch.as_mut(), timestamp, op, read_state)
-            .map_err(ExecError::Reducer)?;
+            .map_err(|e| ExecError::Reducer(Box::new(e)))?;
 
-        let batch_result = batch.commit().await.map_err(ExecError::Db)?;
+        let batch_result = batch.commit().await?;
 
         self.reducer
             .post_apply(apply_state, &batch_result)
-            .map_err(ExecError::Reducer)?;
+            .map_err(|e| ExecError::Reducer(Box::new(e)))?;
 
         Ok(())
     }
-}
-
-#[derive(Error, Debug)]
-pub enum ExecError<E> {
-    #[error("reducer error: {0}")]
-    Reducer(E),
-    #[error("unexpected error: {0}")]
-    Internal(String),
-    #[error("db error: {0}")]
-    Db(DbError),
-    #[error("segment cipher error: {0}")]
-    SegmentCipher(SegmentCipherError),
-    #[error("signing error: {0}")]
-    SigningError(SigningError),
-    #[error("segment encode error: {0}")]
-    SegmentEncode(SegmentEncodeError),
-    #[error("op encode error: {0}")]
-    OpEncode(OpEncodeError),
 }

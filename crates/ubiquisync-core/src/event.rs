@@ -36,6 +36,10 @@ pub trait Publisher<E> {
     fn publish(&self, event: E);
 }
 
+pub trait Subscribe<E: RoutableEvent> {
+    fn subscribe(&self, target: E::Target) -> Subscription<E>;
+}
+
 /// A [`Publisher`] that discards every event — for producers with nothing
 /// listening (a headless replica) or that opt out of change events.
 pub struct NoopPublisher;
@@ -135,9 +139,9 @@ impl<T: RoutableEvent> Publisher<T> for EventBusPublisher<T> {
     }
 }
 
-impl<T: RoutableEvent> EventBus<T> {
+impl<T: RoutableEvent> Subscribe<T> for EventBus<T> {
     /// Subscribe to every event routed to `target`.
-    pub fn subscribe(&self, target: T::Target) -> Subscription<T> {
+    fn subscribe(&self, target: T::Target) -> Subscription<T> {
         let (tx, rx) = mpsc::channel(SUBSCRIBER_BUFFER);
         let mut inner = lock(&self.inner);
         let id = inner.next_id;

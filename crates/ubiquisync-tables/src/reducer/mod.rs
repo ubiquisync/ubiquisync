@@ -15,12 +15,12 @@ use crate::id::TableId;
 use crate::op::Op;
 use crate::physical_schema::PhysicalTableSchema;
 use crate::schema::TableSchema;
-use crate::watch::ChangeEvent;
+use crate::watch::{ChangeEvent, WatchTarget};
 use crate::{codec::Codec, error::TablesError};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{OwnedRwLockReadGuard, RwLock};
-use ubiquisync_core::event::Publisher;
+use ubiquisync_core::event::{EventBusPublisher, Publisher};
 use ubiquisync_core::ids::ContainerId;
 use ubiquisync_sql::{
     db::{Db, DbBatch, DbStatementResult, StmtId},
@@ -37,15 +37,15 @@ use ubiquisync_sql::{
 /// [`ChangeEvent`]s carrying those names. A table seen only by surrogate ID
 /// (e.g. one a newer peer defined that this build doesn't model) is still
 /// materialized and merged, but has no view and emits no events.
-pub struct Reducer<EH> {
+pub struct Reducer {
     codec: Codec,
     prefix: String,
     physical_tables: RwLock<HashMap<TableId, Arc<RwLock<PhysicalTableSchema>>>>,
     logical_tables: HashMap<TableId, TableSchema>,
-    event_handler: EH,
+    event_handler: EventBusPublisher<ChangeEvent>,
 }
 
-impl<EH> Reducer<EH> {
+impl Reducer {
     /// Open a reducer with `prefix` for surrogate table names, declaring each of
     /// `tables` as a named, user-facing table: its physical storage is
     /// created/reconciled in `db` up front, a SQL VIEW exposing it under the
@@ -60,7 +60,7 @@ impl<EH> Reducer<EH> {
         prefix: &str,
         tables: &[TableSchema],
         db: &dyn Db,
-        event_handler: EH,
+        event_handler: EventBusPublisher<ChangeEvent>,
     ) -> Result<Self, TablesError> {
         let mut seen_ids = HashSet::new();
         let mut seen_names = HashSet::new();
@@ -98,7 +98,7 @@ impl<EH> Reducer<EH> {
 }
 
 #[async_trait::async_trait]
-impl<EH: Publisher<ChangeEvent> + Sync + Send> ubiquisync_sql::reducer::Reducer for Reducer<EH> {
+impl ubiquisync_sql::reducer::Reducer for Reducer {
     type Op = Op;
     type Error = TablesError;
     type ReadState = ReadState;

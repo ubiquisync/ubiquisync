@@ -140,7 +140,7 @@ fn values_to_db(values: Values) -> Result<Vec<DbValue>, DbError> {
         .collect::<Result<Vec<_>, _>>()
 }
 
-fn value_to_db(value: Value) -> Result<DbValue, DbError> {
+pub fn value_to_db(value: Value) -> Result<DbValue, DbError> {
     let db = match value {
         Value::Bool(Some(b)) => DbValue::Integer(b as i64),
         Value::TinyInt(Some(i)) => DbValue::Integer(i as i64),

@@ -1,10 +1,11 @@
 //! Error type for the tables crate.
 
-use ubiquisync_sql::db::DbError;
+use ubiquisync_sql::{db::DbError, replica::InitError};
 
 /// An error from the tables layer: either a backend failure or a schema that
 /// doesn't match what the table/column IDs require.
 #[derive(Debug, thiserror::Error)]
+// TODO: maybe we want a separate error type for different phases (such as init, exec)
 pub enum TablesError {
     /// A SQL backend error propagated from the [`Db`](ubiquisync_sql::db::Db).
     #[error("db error: {0}")]
@@ -23,4 +24,6 @@ pub enum TablesError {
     /// share a name.
     #[error("invalid schema: {0}")]
     InvalidSchema(String),
+    #[error("init error: {0}")]
+    Init(#[from] InitError),
 }

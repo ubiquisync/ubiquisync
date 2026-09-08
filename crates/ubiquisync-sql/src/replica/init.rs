@@ -16,7 +16,11 @@ use crate::{
     },
     hlc_storage::SqlHlcStorage,
     reducer::Reducer,
-    replica::{replica::Replica, schema::peers, stream_lock::KeyedLock},
+    replica::{
+        Replica,
+        schema::{create_tables, peers},
+        stream_lock::KeyedLock,
+    },
 };
 
 impl<R: Reducer> Replica<R> {
@@ -32,7 +36,8 @@ impl<R: Reducer> Replica<R> {
 
         let hlc = HlcService::open(SqlHlcStorage::open(db.as_ref(), "").await?)?;
 
-        // TODO: initialize replica schema
+        // initialize schema, in the future we need some more proper migrations
+        create_tables(db.as_ref()).await?;
 
         let self_id = if let Some((self_id, commitment_bytes, signature)) =
             select_cols::<(peers::PeerId, peers::CommitmentBytes, peers::Signature)>(

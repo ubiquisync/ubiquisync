@@ -36,16 +36,16 @@ use crate::{
 /// it must be. See the tracker's
 /// [duplicate-rejection contract](crate::tracker::LogTracker#duplicate-rejection).
 #[async_trait::async_trait]
-pub trait Reducer: Send {
+pub trait Reducer: Send + Sync {
     /// The op vocabulary this reducer materializes (e.g. the table op enum).
     type Op: Send + Sync;
-    type ReadState;
+    type ReadState: Send + Sync;
     /// Carried from [`apply`](Reducer::apply) to
     /// [`post_apply`](Reducer::post_apply): the `StmtId`s of the emitted
     /// statements plus any op-derived data needed to build the event.
-    type ApplyState: Send;
+    type ApplyState: Send + Sync;
     /// Error surfaced from any phase.
-    type Error: core::error::Error;
+    type Error: core::error::Error + Send + Sync + 'static;
 
     fn codec(&self) -> &dyn OpCodec<Self::Op>;
 
