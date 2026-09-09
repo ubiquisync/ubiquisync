@@ -1,4 +1,4 @@
-use crate::db::DbType;
+use crate::{BoxError, db::DbType};
 
 /// An error from a SQL backend operation.
 #[derive(Debug, thiserror::Error)]
@@ -21,6 +21,8 @@ pub enum DbError {
         expected: &'static str,
         actual: Option<DbType>,
     },
+    #[error("decode error: {0}")]
+    DecodeError(BoxError),
     /// A `u64` (e.g. a packed HLC timestamp) didn't fit the signed 64-bit
     /// integer a SQL backend stores. On a write the value exceeded `i64::MAX`;
     /// on a read the stored value was negative. Either way it can't round-trip

@@ -19,6 +19,8 @@ pub enum ReadError {
     USizeOverflow(u64),
     #[error("invalid range with start {start} and span {span}")]
     InvalidRange { start: u64, span: u64 },
+    #[error("trailing bytes")]
+    TrailingBytes,
 }
 
 impl<'a> Reader<'a> {
@@ -98,5 +100,12 @@ impl<'a> Reader<'a> {
 
     pub fn into_remaining(self) -> &'a [u8] {
         self.buf
+    }
+
+    pub fn require_empty(&self) -> Result<(), ReadError> {
+        if !self.is_empty() {
+            return Err(ReadError::TrailingBytes);
+        }
+        Ok(())
     }
 }

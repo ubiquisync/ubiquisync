@@ -182,15 +182,11 @@ macro_rules! codeable_col_repr {
                 value: <Self::Repr as $crate::db::ColType>::BorrowedType<'a>,
             ) -> Result<Self, $crate::db::DbError> {
                 let mut r = ubiquisync_core::codec::Reader::new(value);
-                if let Ok(res) = Self::decode(&mut r) {
-                    if r.is_empty() {
-                        return Ok(res);
-                    }
-                }
-                Err($crate::db::DbError::TypeMismatch {
-                    expected: std::any::type_name::<Self>(),
-                    actual: Some($crate::db::DbType::Blob),
-                })
+                let x = Self::decode(&mut r)
+                    .map_err(|e| $crate::db::DbError::DecodeError(Box::new(e)))?;
+                r.require_empty()
+                    .map_err(|e| $crate::db::DbError::DecodeError(Box::new(e)))?;
+                Ok(x)
             }
         }
     };

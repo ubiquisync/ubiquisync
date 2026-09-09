@@ -82,7 +82,7 @@ pub enum HeadErr {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-// #[cfg_attr(test, derive(test_strategy::Arbitrary))]
+#[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub enum CommitErr {
     NeedKey(RootKey256Fingerprint),
     HLCForwardSkew,
@@ -166,6 +166,7 @@ impl CommitErr {
                     head,
                 }
             }
+            4 => Self::IncompatibleSoftware(UnknownSoftwareVersion::decode(reader)?),
             b => return Err(StatusDecodeError::UnknownTag(b)),
         })
     }
@@ -197,8 +198,12 @@ impl UnknownSoftwareVersion {
 #[cfg(test)]
 mod tests {
     use insta::assert_snapshot;
+    use test_strategy::proptest;
 
-    use crate::replica::schema::create_table_sql;
+    use crate::{
+        db::ColRepr,
+        replica::schema::{CommitErr, create_table_sql},
+    };
 
     #[test]
     fn schema_snapshot() {
@@ -206,5 +211,11 @@ mod tests {
             "sqlite",
             create_table_sql(crate::dialect::SqlDialect::Sqlite).join(";\n")
         );
+    }
+
+    #[proptest]
+    fn roundtrip_commit_err(e: CommitErr) {
+        let e2 = CommitErr::from_repr(&e.to_repr()).unwrap();
+        assert_eq!(e, e2);
     }
 }
