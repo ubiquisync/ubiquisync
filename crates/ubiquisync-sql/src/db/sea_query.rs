@@ -24,7 +24,7 @@ pub async fn insert_cols<Inserting: Cols, Returning: Cols>(
     stmt: &mut InsertStatement,
 ) -> Result<Rows<Returning>, DbError> {
     let (sql, values) = prep_insert_cols::<Inserting, Returning>(params, stmt, db.dialect())?;
-    let res = db.query(&sql, &values).await?;
+    let res = db.exec_returning(&sql, &values).await?;
     Ok(res.into())
 }
 
@@ -45,7 +45,7 @@ pub fn prep_insert_cols<Inserting: Cols, Returning: Cols>(
 ) -> Result<(String, Vec<DbValue>), DbError> {
     // inserting
     stmt.columns(Inserting::idens());
-    let db_vals = Inserting::encode(params);
+    let db_vals = Inserting::encode(params)?;
     let mut vals = vec![];
     for v in db_vals {
         vals.push(Expr::Constant(db_to_value(v)))
@@ -77,7 +77,7 @@ pub fn update_cols_batch<C: Cols>(
     params: C::Params,
     stmt: &mut UpdateStatement,
 ) -> Result<(), DbError> {
-    let db_vals = C::encode(params);
+    let db_vals = C::encode(params)?;
     let idens = C::idens();
     let mut iden_exprs = vec![];
     for (i, v) in db_vals.into_iter().enumerate() {

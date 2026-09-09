@@ -136,6 +136,12 @@ impl Db for SqliteDb {
         Ok(result.rows_affected)
     }
 
+    async fn exec_returning(&self, sql: &str, params: &[DbValue]) -> Result<Vec<DbRow>, DbError> {
+        let conn = self.lock();
+        let result = run_statement(&conn, sql, params, false)?;
+        Ok(result.rows)
+    }
+
     async fn query(&self, sql: &str, params: &[DbValue]) -> Result<Vec<DbRow>, DbError> {
         let conn = self.lock();
         let result = run_statement(&conn, sql, params, true)?;

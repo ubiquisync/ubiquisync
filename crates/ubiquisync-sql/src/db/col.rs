@@ -14,13 +14,13 @@ pub trait ColType {
 
     fn create_col_def(name: &str) -> CreateColDef;
     fn from_db_val<'a>(value: &'a DbValue) -> Result<Self::BorrowedType<'a>, DbError>;
-    fn to_db_val(value: Self) -> DbValue;
+    fn to_db_val(value: Self) -> Result<DbValue, DbError>;
 }
 
 pub trait Cols {
     type Row<'a>;
     type Params;
-    fn encode(row: Self::Params) -> Vec<DbValue>;
+    fn encode(row: Self::Params) -> Result<Vec<DbValue>, DbError>;
     fn decode<'a>(row: &'a DbRow) -> Result<Self::Row<'a>, DbError>;
     fn idens() -> Vec<DynIden>;
 }
@@ -44,9 +44,12 @@ impl ColType for u64 {
         }
     }
 
-    fn to_db_val(value: u64) -> DbValue {
-        debug_assert!(value <= i64::MAX as u64);
-        DbValue::Integer(value as i64)
+    fn to_db_val(value: Self) -> Result<DbValue, DbError> {
+        Ok(DbValue::Integer(
+            value
+                .try_into()
+                .map_err(|_| DbError::IntegerOutOfRange(value as i128))?,
+        ))
     }
 }
 
@@ -67,8 +70,8 @@ impl ColType for i64 {
         }
     }
 
-    fn to_db_val(value: i64) -> DbValue {
-        DbValue::Integer(value)
+    fn to_db_val(value: Self) -> Result<DbValue, DbError> {
+        Ok(DbValue::Integer(value))
     }
 }
 
@@ -89,8 +92,8 @@ impl ColType for String {
         }
     }
 
-    fn to_db_val(value: String) -> DbValue {
-        DbValue::Text(value)
+    fn to_db_val(value: Self) -> Result<DbValue, DbError> {
+        Ok(DbValue::Text(value))
     }
 }
 
@@ -111,8 +114,8 @@ impl ColType for Vec<u8> {
         }
     }
 
-    fn to_db_val(value: Vec<u8>) -> DbValue {
-        DbValue::Blob(value)
+    fn to_db_val(value: Self) -> Result<DbValue, DbError> {
+        Ok(DbValue::Blob(value))
     }
 }
 
@@ -137,8 +140,8 @@ impl ColType for Uuid {
         }
     }
 
-    fn to_db_val(value: Uuid) -> DbValue {
-        DbValue::Uuid(value)
+    fn to_db_val(value: Self) -> Result<DbValue, DbError> {
+        Ok(DbValue::Uuid(value))
     }
 }
 
@@ -160,7 +163,7 @@ impl<T: ColRepr> ColType for T {
         Self::from_repr(x)
     }
 
-    fn to_db_val(value: Self) -> DbValue {
+    fn to_db_val(value: Self) -> Result<DbValue, DbError> {
         T::Repr::to_db_val(value.to_repr())
     }
 }
@@ -222,77 +225,6 @@ macro_rules! try_from_into_col_repr {
 
 try_from_into_col_repr!(bool, i64);
 
-// impl<T: ColEnum> ColType for T {
-//     type BorrowedType<'a> = T;
-
-//     fn create_col_def(name: &str) -> CreateColDef {
-//         col(name, DbType::Integer)
-//     }
-
-//     fn from_db_val<'a>(value: &'a DbValue) -> Result<Self::BorrowedType<'a>, DbError> {
-//         let x = i64::from_db_val(value)?;
-//         let e = Self::try_from(x).map_err(|_| DbError::TypeMismatch {
-//             expected: type_name::<T>(),
-//             actual: value.db_type(),
-//         })?;
-//         Ok(e)
-//     }
-
-//     fn to_db_val(value: Self) -> DbValue {
-//         DbValue::Integer(value.into())
-//     }
-// }
-
-// impl ColType for [u8; 32] {
-//     type BorrowedType<'a> = [u8; 32];
-
-//     fn create_col_def(name: &str) -> CreateColDef {
-//         col(name, DbType::Blob)
-//     }
-
-//     fn from_db_val<'a>(value: &'a DbValue) -> Result<Self::BorrowedType<'a>, DbError> {
-//         Ok(
-//             Self::try_from(<Vec<u8>>::from_db_val(value)?).map_err(|_| DbError::TypeMismatch {
-//                 expected: "[u8; 32]",
-//                 actual: value.db_type(),
-//             })?,
-//         )
-//     }
-
-//     fn to_db_val(value: Self) -> DbValue {
-//         DbValue::Blob(value.to_vec())
-//     }
-// }
-
-// impl<T: HasCodec> ColType for T {
-//     type BorrowedType<'a> = T;
-
-//     fn create_col_def(name: &str) -> CreateColDef {
-//         col(name, DbType::Blob)
-//     }
-
-//     fn from_db_val<'a>(value: &'a DbValue) -> Result<Self::BorrowedType<'a>, DbError> {
-//         let buf = <Vec<u8>>::from_db_val(value)?;
-//         let mut r = Reader::new(buf);
-//         let res = T::read(&mut r);
-//         if let Ok(res) = res {
-//             if r.is_empty() {
-//                 return Ok(res);
-//             }
-//         }
-//         Err(DbError::TypeMismatch {
-//             expected: type_name::<T>(),
-//             actual: value.db_type(),
-//         })
-//     }
-
-//     fn to_db_val(value: Self) -> DbValue {
-//         let mut w = Writer::new();
-//         value.write(&mut w);
-//         DbValue::Blob(w.finalize())
-//     }
-// }
-
 impl<T: ColType> ColType for Option<T> {
     type BorrowedType<'a> = Option<T::BorrowedType<'a>>;
 
@@ -307,9 +239,9 @@ impl<T: ColType> ColType for Option<T> {
         }
     }
 
-    fn to_db_val(value: Self) -> DbValue {
+    fn to_db_val(value: Self) -> Result<DbValue, DbError> {
         match value {
-            None => DbValue::Null,
+            None => Ok(DbValue::Null),
             Some(v) => T::to_db_val(v),
         }
     }
@@ -330,8 +262,8 @@ macro_rules! impl_col_tuples {
             type Row<'a> = ($(<$param::Type as ColType>::BorrowedType<'a>,)+);
             type Params = ($($param::Type,)+);
 
-            fn encode(row: Self::Params) -> Vec<DbValue> {
-                vec![$(<$param::Type as ColType>::to_db_val(row.$idx),)+]
+            fn encode(row: Self::Params) -> Result<Vec<DbValue>, DbError> {
+                Ok(vec![$(<$param::Type as ColType>::to_db_val(row.$idx)?,)+])
             }
 
             fn decode<'a>(row: &'a DbRow) -> Result<Self::Row<'a>, DbError> {
@@ -360,8 +292,8 @@ impl Cols for () {
     type Row<'a> = ();
     type Params = ();
 
-    fn encode(_: Self::Params) -> Vec<DbValue> {
-        vec![]
+    fn encode(_: Self::Params) -> Result<Vec<DbValue>, DbError> {
+        Ok(vec![])
     }
 
     fn decode<'a>(_: &'a DbRow) -> Result<Self::Row<'a>, DbError> {

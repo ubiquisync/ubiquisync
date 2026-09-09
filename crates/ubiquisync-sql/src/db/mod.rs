@@ -43,6 +43,10 @@ pub trait Db: Send + Sync {
     /// Returns the number of rows affected.
     async fn exec(&self, sql: &str, params: &[DbValue]) -> Result<usize, DbError>;
 
+    /// Execute a single statement outside any batch (autocommit) that returns
+    /// some data as rows (such as an INSERT with a RETURNING clause).
+    async fn exec_returning(&self, sql: &str, params: &[DbValue]) -> Result<Vec<DbRow>, DbError>;
+
     /// Run a read query and return every row. Materializes the full result
     /// set; not for unbounded scans.
     async fn query(&self, sql: &str, params: &[DbValue]) -> Result<Vec<DbRow>, DbError>;
