@@ -14,7 +14,7 @@ use crate::{
     reducer::Reducer,
     replica::{
         Replica,
-        schema::{CommitStatus, segments, streams},
+        schema::{segments, streams},
     },
 };
 
@@ -36,9 +36,9 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
             streams::HeadSize,
             streams::HeadHash,
             streams::HeadCipher,
-            streams::HeadStatus,
+            streams::HeadErr,
             streams::CommitSize,
-            streams::CommitStatus,
+            streams::CommitErr,
         )>(
             self.db.as_ref(),
             Query::select()
@@ -51,7 +51,7 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
 
         let seed = ChainSeed::new(&log_id);
 
-        let (stream_id, chain_head, commit_status) = if stream_rows.is_empty() {
+        let (stream_id, chain_head, commit_err) = if stream_rows.is_empty() {
             let res = insert_cols::<
                 (
                     streams::PeerId,
@@ -59,38 +59,23 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
                     streams::HeadSize,
                     streams::HeadHash,
                     streams::CommitSize,
-                    streams::CommitStatus,
                 ),
                 (streams::Id,),
             >(
                 self.db.as_ref(),
-                (
-                    self.self_db_id,
-                    container_id.0,
-                    0,
-                    *seed.hash(),
-                    0,
-                    CommitStatus::Ok,
-                ),
+                (self.self_db_id, container_id.0, 0, *seed.hash(), 0),
                 Query::insert().into_table(streams::Table),
             )
             .await?;
             let (stream_id,) = res.exactly_one()?;
-            (stream_id, ChainHash::empty(&seed), CommitStatus::Ok)
+            (stream_id, ChainHash::empty(&seed), None)
         } else if stream_rows.len() > 1 {
             todo!("found multiple rows, this means we have a fork and need to know what to do")
         } else {
-            let (
-                stream_id,
-                head_size,
-                head_hash,
-                head_cipher,
-                head_status,
-                commit_size,
-                commit_status,
-            ) = stream_rows.exactly_one()?;
+            let (stream_id, head_size, head_hash, head_cipher, head_err, commit_size, commit_err) =
+                stream_rows.exactly_one()?;
 
-            if head_status.is_some() {
+            if head_err.is_some() {
                 todo!("handle some unexpected status")
             }
 
@@ -98,7 +83,7 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
                 todo!("cipher not supported yet");
             }
 
-            if commit_status == CommitStatus::Ok && commit_size != head_size {
+            if commit_err.is_some() && commit_size != head_size {
                 return Err(ExecError::Internal(format!(
                     "commit status is okay but head {head_size} and commit {commit_size} sizes do not match"
                 )));
@@ -109,7 +94,7 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
                 size: head_size,
             };
 
-            (stream_id, chain_head, commit_status)
+            (stream_id, chain_head, commit_err)
         };
 
         let mut batch = self.db.new_batch();
@@ -141,7 +126,7 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
             Query::insert().into_table(segments::Table),
         )?;
 
-        if commit_status == CommitStatus::Ok {
+        if commit_err.is_none() {
             // TODO does prepare indicate stall conditions?
             // somewhere in here maybe prepare, for ctl ops
             // we need to enrich them with observe & key wrap ops when needed

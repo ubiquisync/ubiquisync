@@ -112,6 +112,7 @@ impl CreateTableDef {
         let col_sql = col_defs.join(", ");
         let pk_clause = self.pk.pk_clause();
         let rowid_clause = self.pk.rowid_clause(dialect);
+        // TODO render unique constraints
         format!(
             "CREATE TABLE IF NOT EXISTS {quoted_table_name} ({col_sql}{pk_clause}){rowid_clause};"
         )
