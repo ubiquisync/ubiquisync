@@ -199,7 +199,7 @@ impl CreateColDef {
 
     pub fn default_zero(mut self) -> Self {
         debug_assert_eq!(self.db_type, DbType::Integer);
-        self.nullable = true;
+        self.default_zero = true;
         self
     }
 }
