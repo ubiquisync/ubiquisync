@@ -44,7 +44,7 @@ def_table_with_auto_id!(peers as __replica_peers (id) => {
     signature: super::Signature
 });
 
-def_table_with_auto_id!(streams __replica_streams (id) => {
+def_table_with_auto_id!(streams as __replica_streams (id) => {
    peer_id: i64, // TODO ref peers
    container_id: [u8;16],
    head_size: u64, // TODO default 0

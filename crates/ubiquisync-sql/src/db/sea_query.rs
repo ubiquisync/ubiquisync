@@ -1,6 +1,6 @@
 use sea_query::{
     ColumnName, ColumnRef, DeleteStatement, Expr, InsertStatement, PostgresQueryBuilder,
-    SelectStatement, SqliteQueryBuilder, UpdateStatement, Value, Values,
+    QueryStatementBuilder, SelectStatement, SqliteQueryBuilder, UpdateStatement, Value, Values,
 };
 
 use crate::{
@@ -13,7 +13,7 @@ pub async fn select_cols<C: Cols>(
     stmt: &mut SelectStatement,
 ) -> Result<Rows<C>, DbError> {
     stmt.columns(C::idens());
-    let (sql, params) = build_select(stmt, db.dialect())?;
+    let (sql, params) = build_sql(stmt, db.dialect())?;
     let res = db.query(&sql, &params).await?;
     Ok(res.into())
 }
@@ -69,7 +69,7 @@ pub fn prep_insert_cols<Inserting: Cols, Returning: Cols>(
         stmt.returning(sea_query::ReturningClause::Columns(col_refs));
     }
 
-    build_insert(stmt, dialect)
+    build_sql(stmt, dialect)
 }
 
 pub fn update_cols_batch<C: Cols>(
@@ -84,46 +84,13 @@ pub fn update_cols_batch<C: Cols>(
         iden_exprs.push((idens[i].clone(), Expr::Constant(db_to_value(v))));
     }
     stmt.values(iden_exprs);
-    let (sql, values) = build_update(stmt, batch.dialect())?;
+    let (sql, values) = build_sql(stmt, batch.dialect())?;
     batch.add_statement(&sql, &values);
     Ok(())
 }
 
-pub fn build_insert(
-    stmt: &InsertStatement,
-    dialect: SqlDialect,
-) -> Result<(String, Vec<DbValue>), DbError> {
-    let (sql, values) = match dialect {
-        SqlDialect::Sqlite => stmt.build_any(&SqliteQueryBuilder),
-        SqlDialect::Postgres => stmt.build_any(&PostgresQueryBuilder),
-    };
-    Ok((sql, values_to_db(values)?))
-}
-
-pub fn build_update(
-    stmt: &UpdateStatement,
-    dialect: SqlDialect,
-) -> Result<(String, Vec<DbValue>), DbError> {
-    let (sql, values) = match dialect {
-        SqlDialect::Sqlite => stmt.build_any(&SqliteQueryBuilder),
-        SqlDialect::Postgres => stmt.build_any(&PostgresQueryBuilder),
-    };
-    Ok((sql, values_to_db(values)?))
-}
-
-pub fn build_select(
-    stmt: &SelectStatement,
-    dialect: SqlDialect,
-) -> Result<(String, Vec<DbValue>), DbError> {
-    let (sql, values) = match dialect {
-        SqlDialect::Sqlite => stmt.build_any(&SqliteQueryBuilder),
-        SqlDialect::Postgres => stmt.build_any(&PostgresQueryBuilder),
-    };
-    Ok((sql, values_to_db(values)?))
-}
-
-pub fn build_delete(
-    stmt: &DeleteStatement,
+pub fn build_sql<S: QueryStatementBuilder>(
+    stmt: &S,
     dialect: SqlDialect,
 ) -> Result<(String, Vec<DbValue>), DbError> {
     let (sql, values) = match dialect {
@@ -185,6 +152,6 @@ fn db_to_value(value: DbValue) -> Value {
         DbValue::Integer(i) => Value::BigInt(Some(i)),
         DbValue::Text(s) => Value::String(Some(s)),
         DbValue::Blob(b) => Value::Bytes(Some(b)),
-        DbValue::Uuid(u) => Value::Bytes(Some(u.into())),
+        DbValue::Uuid(u) => Value::Uuid(Some(sea_query::prelude::Uuid::from_bytes(u))),
     }
 }
