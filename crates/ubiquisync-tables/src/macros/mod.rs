@@ -1,14 +1,14 @@
 //! Declarative macros for building table [`schema`](crate::schema)s.
 //!
-//! [`define_tables!`] expands a compact table DSL into a `tables()` function
+//! [`define_tables!`](crate::define_tables) expands a compact table DSL into a `tables()` function
 //! that returns the [`TableSchema`](crate::schema::TableSchema) values a caller
 //! hands to [`Reducer::new`](crate::reducer::Reducer::new). Because the schema's
 //! PK names and its table ID both come from the single `pk: (...)` list, the
 //! count can never disagree — the one `TableSchema::new` error the macro cannot
 //! hit by construction.
 //!
-//! Alongside the schema, [`define_table!`] emits per table:
-//! - a typed **query** surface (a [`sea_query`](crate::macros::support::sea_query)
+//! Alongside the schema, [`define_table!`](crate::define_table) emits per table:
+//! - a typed **query** surface (a [`sea_query`]
 //!   `Table`/`Col` iden pair, a `Row`, and `get`/`get_all`/`query` readers) — see
 //!   the sibling `query` helper-macro module;
 //! - a typed **write** surface (`upsert` builder + `delete`, producing
@@ -16,9 +16,6 @@
 //! - a typed **watch** surface (an `Event` projected from
 //!   [`ChangeEvent`](crate::watch::ChangeEvent) plus `watch`/`watch_row` streams)
 //!   — see the sibling `watch` module.
-//!
-//! End-to-end coverage of all of the above lives in `ubiquisync-sqlite`'s
-//! integration tests, which drive a real processor over real SQLite.
 
 // Sibling helper-macro modules expanded by `define_table!`. `#[macro_export]`
 // hoists their macros to the crate root, so these just need to be compiled.

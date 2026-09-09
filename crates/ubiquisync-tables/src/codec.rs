@@ -1,12 +1,5 @@
 //! Wire codec for the table op vocabulary.
 //!
-//! This is the op-specific half of the segment codec: it implements the core
-//! [`Op`](ubiquisync_core::codec::Op) trait for this crate's
-//! [`Op`] enum, encoding and decoding op bodies dispatched by
-//! tag. The generic envelope framing (segment header, timestamp deltas, UUID
-//! dictionary compression, blake3 trailer, expungement) lives in
-//! [`ubiquisync_core::codec`] and drives this code through the trait.
-//!
 //! Wire shapes are derived from the [type-encoded IDs](crate::id): a
 //! [`TableId`] carries its PK column count and per-column types, and a
 //! [`ColumnId`] carries its column type — so the decoder knows how to read
@@ -83,8 +76,6 @@ impl Codec {
 }
 
 // ── Op tags ──────────────────────────────────────────────────────────────────
-// Tag 0xFF is reserved by the core codec for expunged entries; op tags must
-// avoid it. See `ubiquisync_core::codec::TAG_EXPUNGED`.
 
 /// Insert-or-merge a table row.
 const TAG_UPSERT: u8 = 0;

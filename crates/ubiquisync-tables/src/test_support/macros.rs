@@ -1,5 +1,4 @@
-//! Backend-agnostic suite for the `define_tables!` macro surface, driven through
-//! a real [`Processor`] over the caller's [`Db`]. Exercises every generated
+//! Backend-agnostic suite for the `define_tables!` macro surface. Exercises every generated
 //! helper — the `upsert`/`delete` op builders and the `get`/`get_all`/`query`/
 //! `watch` readers — so the whole path (op → reducer → physical table → VIEW →
 //! typed row/event) is asserted against a real backend.
@@ -48,7 +47,6 @@ pub async fn run_macros_suite<D: Db + 'static>(db: D) {
     watch_delivers_delete_event(s).await;
 }
 
-/// Open the store under test: the table reducer over `db`, behind `SqlStore`.
 async fn open<D: Db + 'static>(db: D) -> StoreImpl {
     StoreImpl::new(
         AppId([1; 16]),

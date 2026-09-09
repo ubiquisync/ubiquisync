@@ -32,9 +32,6 @@ mod naming;
 // /// dependency would not.
 pub use sea_query;
 pub mod op;
-// // Physical storage layer (surrogate tables, schema reconciliation). Wired into
-// // the shipping build by the table reducer; `allow(dead_code)` until then. The
-// // `test_support` suite exercises it in the meantime.
 #[allow(dead_code)]
 mod physical_schema;
 // /// User-declared table schemas ([`TableSchema`](schema::TableSchema)): the

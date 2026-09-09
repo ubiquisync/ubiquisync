@@ -28,15 +28,6 @@ use ubiquisync_sql::{
 };
 
 /// Applies table ops to a SQL backend, merging every column last-writer-wins.
-///
-/// `all_tables` holds the physical (surrogate-named) schema for every table the
-/// reducer has touched — the storage all ops are written to. `named_tables`
-/// holds the subset the caller declared with user-facing names: these are the
-/// application's own tables, exposed for querying as a SQL VIEW over the physical
-/// storage using the declared table/column names, and their changes surface as
-/// [`ChangeEvent`]s carrying those names. A table seen only by surrogate ID
-/// (e.g. one a newer peer defined that this build doesn't model) is still
-/// materialized and merged, but has no view and emits no events.
 pub struct Reducer {
     codec: Codec,
     prefix: String,
@@ -159,9 +150,6 @@ impl Reducer {
         apply_state: ApplyState,
         batch_result: &[DbStatementResult],
     ) -> Result<Option<ChangeEvent>, TablesError> {
-        // A single table op maps to at most one change event; `post_upsert`/
-        // `post_delete` return `None` when the write lost LWW or hit an unnamed
-        // table. Collect that 0-or-1 into the reducer's 0-or-many contract.
         let ApplyState {
             staged_event,
             table_rguard,

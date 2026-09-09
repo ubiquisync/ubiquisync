@@ -2,9 +2,7 @@
 //!
 //! Re-exports the third-party and sibling-crate paths generated code needs (so a
 //! downstream crate calling [`define_tables!`](crate::define_tables) needn't
-//! depend on `sea-query`/`uuid`/`ubiquisync-sql` directly), plus the small
-//! runtime that turns a sea-query statement into the `(sql, params)` pair the
-//! [`SqlStore`](ubiquisync_sql::store::SqlStore) read path wants.
+//! depend on `sea-query`/`uuid`/`ubiquisync-sql` directly).
 //!
 //! Not part of the public API — everything here is an implementation detail of
 //! the macros and may change without notice.

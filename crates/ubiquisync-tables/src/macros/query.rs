@@ -6,10 +6,7 @@
 //! sea-query is a pure SQL *builder* — it turns typed columns into
 //! dialect-correct `(sql, params)`, but does not map result rows back. So the
 //! macro emits both halves: the `Table`/`Col` idens (what sea-query needs) and
-//! the `Row`/`from_row` extraction (what it doesn't). Reads run through any
-//! [`SqlStore`](crate::macros::support::SqlStore) — the readers are generic over
-//! its `Op`/`Event`, so they work equally against this crate's own vocabulary or
-//! an app that has bundled it into a wider one; only `query`/`dialect` are used.
+//! the `Row`/`from_row` extraction (what it doesn't).
 //!
 //! Invoked by [`define_table!`](crate::define_table); not called directly.
 

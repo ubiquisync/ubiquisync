@@ -3,9 +3,7 @@
 //! the physical table back to assert LWW convergence and checks the emitted
 //! [`ChangeEvent`].
 //!
-//! The reducer is driven directly (not via the crate-private `Processor`), so
-//! these tests exercise exactly the SQL it builds without pulling in the HLC or
-//! tracker. Every scenario uses a distinct table index, so they all share one
+//! Every scenario uses a distinct table index, so they all share one
 //! database without colliding.
 
 use crate::col_type::ColType;
@@ -765,9 +763,6 @@ async fn apply(reducer: &mut Reducer, db: &dyn Db, raw_ts: u64, op: &Op) -> Opti
         .apply(batch.as_mut(), ts, op, read_state)
         .expect("apply");
     let result = batch.commit().await.expect("commit");
-    // A table op emits at most one event; collapse the reducer's 0-or-many `Vec`
-    // back to the `Option` these tests assert on, failing loudly if that
-    // invariant ever breaks (a duplicate or multi-event regression)
     reducer.do_post_apply(state, &result).expect("post_apply")
 }
 

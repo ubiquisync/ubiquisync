@@ -1,7 +1,7 @@
 //! Table operations — the core mutation types applied by the reducer.
 //!
 //! An [`Op`] is a single atomic state change. It is the payload inside a
-//! [`LogEntry`](ubiquisync_core::log_entry::LogEntry) in the table log: the
+//! [`LogEntry`](ubiquisync_core::log::LogEntry) in the table log: the
 //! application layer constructs `Op` values, the log layer wraps them with
 //! timestamp and attribution metadata, and the merge reducer applies them to
 //! local storage.
@@ -28,7 +28,7 @@ pub enum Op {
 
 /// Inserts or merges a row in a table. Every column merges last-writer-wins,
 /// keyed by the timestamp from the enclosing
-/// [`LogEntry`](ubiquisync_core::log_entry::LogEntry).
+/// [`LogEntry`](ubiquisync_core::log::LogEntry).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Upsert {
     /// The table this row belongs to.
@@ -90,7 +90,7 @@ impl Value {
 /// Soft-deletes a table row by advancing `__deleted_ts`. LWW — a later
 /// timestamp always wins; an earlier timestamp is silently ignored.
 /// Timestamp comes from the enclosing
-/// [`LogEntry`](ubiquisync_core::log_entry::LogEntry).
+/// [`LogEntry`](ubiquisync_core::log::LogEntry).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Delete {
     /// The table the row belongs to.

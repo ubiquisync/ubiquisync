@@ -7,11 +7,8 @@ pub enum DbError {
     /// own message.
     #[error("sql error: {0}")]
     Sql(String),
-    /// A UNIQUE / PRIMARY KEY conflict. A tracker that keys the op-log on
-    /// `(peer_id, entry_idx)` surfaces a re-ingested entry as this — failing the
-    /// batch so the whole apply rolls back rather than double-applying, not a
-    /// silent skip. Each backend must map its native constraint error to this
-    /// variant.
+    /// A UNIQUE / PRIMARY KEY conflict. Each backend must map its native
+    /// constraint error to this variant.
     #[error("unique constraint violation")]
     UniqueViolation,
     /// A column held a value of a different type than the caller requested.
