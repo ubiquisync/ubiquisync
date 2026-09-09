@@ -7,7 +7,10 @@ use crate::{
     bytes::{BytesWrapper, PlaintextBytes, ToStatic},
     codec::{ReadError, Reader, WriteError, Writer},
     crypto::{CipherError, CipherInfo, CryptoDecodeError, SegmentCipher, Signature},
-    log::{ChainHash, LogDecodeError, LogEncodeError, LogEntry, OpaqueLogEntry, PlaintextLogEntry},
+    log::{
+        ChainHash, LogDecodeError, LogEncodeError, LogEntry, LogValidationError, OpaqueLogEntry,
+        PlaintextLogEntry,
+    },
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -235,6 +238,8 @@ pub enum SegmentDecodeError {
     MissingSegmentCipher(CipherInfo),
     #[error("decompressed segment is too large, max 128mb")]
     CompressionOverflow,
+    #[error("entry validation error: {0}")]
+    Validation(#[from] LogValidationError),
 }
 
 fn encode_compress_encrypt_entries<'a>(
@@ -272,7 +277,9 @@ fn decompress_decode_entries(
     let it = decode_entries::<PlaintextBytes>(&out);
     let mut res = vec![];
     for e in it {
-        res.push(e?.to_static());
+        let e = e?;
+        e.validate()?;
+        res.push(e.to_static());
     }
     Ok(res)
 }
