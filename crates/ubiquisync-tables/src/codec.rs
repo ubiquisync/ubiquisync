@@ -75,6 +75,9 @@ impl Codec {
         }
         let mut r = Reader::new(ops[0].borrow());
         let op = decode_one_op(&mut r)?;
+        if !r.is_empty() {
+            return Err(DecodeOpError::TrailingBytes);
+        }
         Ok(op)
     }
 }
@@ -236,6 +239,8 @@ pub(crate) enum DecodeOpError {
     },
     #[error("invalid op count {0} expected 1")]
     InvalidOpCount(usize),
+    #[error("trailing bytes")]
+    TrailingBytes,
 }
 
 fn decode_one_op(r: &mut Reader) -> Result<Op, DecodeOpError> {
