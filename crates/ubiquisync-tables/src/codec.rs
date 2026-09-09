@@ -347,7 +347,7 @@ mod tests {
     use super::*;
 
     #[proptest]
-    fn op_roundtrips(op: Op) {
+    fn roundtrip_op(op: Op) {
         let mut w = Writer::new();
         encode_one_op(&mut w, &op).unwrap();
         let buf = w.finalize();

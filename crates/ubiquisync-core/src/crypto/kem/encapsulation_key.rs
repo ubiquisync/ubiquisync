@@ -14,7 +14,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(test, derive(test_strategy::Arbitrary))]
+#[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
 pub enum EncapsulationKey {
     X25519([u8; 32]),
     P256([u8; 33]),
@@ -26,7 +26,7 @@ pub struct KemError;
 
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[cfg_attr(test, derive(test_strategy::Arbitrary))]
+#[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
 pub enum KeyWrap {
     X25519HkdfSha256ChaCha20Poly1305 { enc: [u8; 32], ciphertext: [u8; 48] },
     DhP256HkdfSha256ChaCha20Poly1305 { enc: [u8; 33], ciphertext: [u8; 48] },

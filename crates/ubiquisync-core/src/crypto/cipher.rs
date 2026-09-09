@@ -46,20 +46,20 @@ use crate::log::ChainHash;
 /// See [crate::log::OpBatch] for additional details on how this works.
 #[repr(u8)]
 #[derive(IntoPrimitive, TryFromPrimitive, Clone, Copy, PartialEq, Eq, Debug)]
-#[cfg_attr(test, derive(test_strategy::Arbitrary))]
+#[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
 pub enum EntryCipherSuite {
     ChaCha20 = 0,
 }
 
 #[repr(u8)]
 #[derive(IntoPrimitive, TryFromPrimitive, Clone, Copy, PartialEq, Eq, Debug)]
-#[cfg_attr(test, derive(test_strategy::Arbitrary))]
+#[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
 pub enum SegmentCipherSuite {
     XChaCha20Poly1305 = 0,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(test, derive(test_strategy::Arbitrary))]
+#[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
 pub struct CipherInfo {
     /// The raw decoded cipher suite. We retain unknown cipher suites to indicate
     /// that the ciphertext may be from a newer client using a cipher suite we
@@ -87,7 +87,7 @@ struct CipherBase {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(test, derive(test_strategy::Arbitrary))]
+#[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
 pub struct RootKey256Fingerprint(pub [u8; 32]);
 
 #[derive(Error, Debug)]

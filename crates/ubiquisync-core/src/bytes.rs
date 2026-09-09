@@ -55,7 +55,7 @@ impl<'a> BytesWrapper for OpaqueBytes<'a> {
     }
 }
 
-#[cfg(test)]
+#[cfg(feature = "proptest")]
 impl proptest::arbitrary::Arbitrary for OpaqueBytes<'static> {
     type Parameters = ();
     type Strategy = proptest::strategy::BoxedStrategy<Self>;
@@ -111,7 +111,7 @@ impl<'a> BytesWrapper for PlaintextBytes<'a> {
     }
 }
 
-#[cfg(test)]
+#[cfg(feature = "proptest")]
 impl proptest::arbitrary::Arbitrary for PlaintextBytes<'static> {
     type Parameters = ();
     type Strategy = proptest::strategy::BoxedStrategy<Self>;

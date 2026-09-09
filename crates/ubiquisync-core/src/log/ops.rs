@@ -72,7 +72,7 @@ pub struct OpBatch<B: BytesWrapper> {
 /// for hashing and then encryption, but the possibility of multiple ops with per-slot expungement
 /// was retained because it is otherwise cheap and would be expensive to add back later.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(test, derive(test_strategy::Arbitrary))]
+#[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
 pub enum OpOrExpunge<Op: BytesWrapper> {
     Op(Op),
     Expunge(Hash256),

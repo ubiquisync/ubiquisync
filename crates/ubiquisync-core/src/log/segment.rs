@@ -40,7 +40,7 @@ pub struct EncryptionInfo {
 
 #[repr(u8)]
 #[derive(IntoPrimitive, TryFromPrimitive, Clone, Copy, PartialEq, Eq, Debug)]
-#[cfg_attr(test, derive(test_strategy::Arbitrary))]
+#[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
 pub enum Compression {
     Zstd = 0,
 }

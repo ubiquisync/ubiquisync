@@ -1681,6 +1681,7 @@ dependencies = [
  "test-case",
  "test-strategy",
  "thiserror",
+ "ubiquisync-core",
  "x25519-dalek",
  "zeroize",
  "zstd",

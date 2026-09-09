@@ -9,7 +9,7 @@ use crate::{
 
 /// Represents a single entry in a stream of logs.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(test, derive(test_strategy::Arbitrary))]
+#[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
 pub enum LogEntry<B: BytesWrapper> {
     IndexedEntry(EntryBody<B>),
     Signature(Signature),
@@ -26,7 +26,7 @@ pub type PlaintextLogEntry<'a> = LogEntry<PlaintextBytes<'a>>;
 
 /// The content of signed and indexed log entries.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(test, derive(test_strategy::Arbitrary))]
+#[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
 pub enum EntryBody<B: BytesWrapper> {
     /// An operation batch in the app's op vocabulary.
     OpBatch(OpBatch<B>),
