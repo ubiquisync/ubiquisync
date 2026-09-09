@@ -59,10 +59,14 @@ impl<R: Reducer> Replica<R> {
             init_entry.verify(&app_magic)?;
             let commit_data = init_entry.commitment_data()?;
             if commit_data.sig_verify_key != credentials.signing_key().verifying_key() {
-                todo!()
+                return Err(InitError::Internal(
+                    "signing key mismatch, invalid state".to_owned(),
+                ));
             }
             if commit_data.encrypt_wrap_key != credentials.decapsulation_key().encapsulation_key() {
-                todo!()
+                return Err(InitError::Internal(
+                    "encryption key mismatch, invalid state".to_owned(),
+                ));
             }
 
             self_id
