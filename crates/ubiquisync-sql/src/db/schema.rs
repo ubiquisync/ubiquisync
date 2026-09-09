@@ -112,9 +112,14 @@ impl CreateTableDef {
         let col_sql = col_defs.join(", ");
         let pk_clause = self.pk.pk_clause();
         let rowid_clause = self.pk.rowid_clause(dialect);
-        // TODO render unique constraints
+        let unique_clause = self
+            .unique
+            .iter()
+            .map(|uq| format!(", UNIQUE({0})", uq.join(", ")))
+            .collect::<Vec<_>>()
+            .join("");
         format!(
-            "CREATE TABLE IF NOT EXISTS {quoted_table_name} ({col_sql}{pk_clause}){rowid_clause};"
+            "CREATE TABLE IF NOT EXISTS {quoted_table_name} ({col_sql}{pk_clause}{unique_clause}){rowid_clause};"
         )
     }
 
@@ -254,31 +259,25 @@ mod tests {
         def_table!(user as user (id: [u8; 16]) => {});
         def_table!(user_device as user_device (user: [u8; 16], device: [u8; 16]) => {});
         def_table_with_auto_id!(entry as entry (id) => {bytes: Vec<u8>, ts: i64});
+        def_table_with_auto_id!(peers as peers (id) => {peer_id: Vec<u8>});
 
-        assert_snapshot!(
-            "user.sqlite",
-            user::create_table_def().create_table_sql(SqlDialect::Sqlite)
-        );
-        assert_snapshot!(
-            "user_device.sqlite",
-            user_device::create_table_def().create_table_sql(SqlDialect::Sqlite)
-        );
-        assert_snapshot!(
-            "entry.sqlite",
-            entry::create_table_def().create_table_sql(SqlDialect::Sqlite)
-        );
+        let tables = [
+            user::create_table_def(),
+            user_device::create_table_def(),
+            entry::create_table_def(),
+            peers::create_table_def().with_unique(&["peer_id"]),
+        ];
 
-        assert_snapshot!(
-            "user.pg",
-            user::create_table_def().create_table_sql(SqlDialect::Postgres)
-        );
-        assert_snapshot!(
-            "user_device.pg",
-            user_device::create_table_def().create_table_sql(SqlDialect::Postgres)
-        );
-        assert_snapshot!(
-            "entry.pg",
-            entry::create_table_def().create_table_sql(SqlDialect::Postgres)
-        );
+        let mk_sql = |dialect| {
+            tables
+                .iter()
+                .map(move |t| t.create_table_sql(dialect))
+                .collect::<Vec<_>>()
+                .join(";\n")
+        };
+        let sqlite = mk_sql(SqlDialect::Sqlite);
+        let pg = mk_sql(SqlDialect::Postgres);
+        assert_snapshot!("sqlite", sqlite);
+        assert_snapshot!("pg", pg);
     }
 }

@@ -1,0 +1,8 @@
+---
+source: crates/ubiquisync-sql/src/db/schema.rs
+expression: sqlite
+---
+CREATE TABLE IF NOT EXISTS "user" ("id" BLOB NOT NULL, PRIMARY KEY("id")) WITHOUT ROWID;;
+CREATE TABLE IF NOT EXISTS "user_device" ("user" BLOB NOT NULL, "device" BLOB NOT NULL, PRIMARY KEY("user", "device")) WITHOUT ROWID;;
+CREATE TABLE IF NOT EXISTS "entry" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "bytes" BLOB NOT NULL, "ts" INTEGER NOT NULL);;
+CREATE TABLE IF NOT EXISTS "peers" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "peer_id" BLOB NOT NULL, UNIQUE(peer_id));
