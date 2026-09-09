@@ -1733,6 +1733,7 @@ dependencies = [
  "pastey",
  "proptest",
  "sea-query",
+ "test-case",
  "test-strategy",
  "thiserror",
  "tokio",

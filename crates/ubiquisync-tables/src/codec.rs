@@ -340,6 +340,25 @@ fn read_column_id(r: &mut Reader) -> Result<ColumnId, DecodeOpError> {
     Ok(ColumnId::from(r.read_byte()?))
 }
 
+#[cfg(test)]
+mod tests {
+    use test_strategy::proptest;
+
+    use super::*;
+
+    #[proptest]
+    fn op_roundtrips(op: Op) {
+        let mut w = Writer::new();
+        encode_one_op(&mut w, &op).unwrap();
+        let buf = w.finalize();
+
+        let mut r = Reader::new(&buf);
+        let decoded = decode_one_op(&mut r).unwrap();
+        assert_eq!(op, decoded);
+        assert!(r.is_empty())
+    }
+}
+
 // #[cfg(test)]
 // mod tests {
 //     use super::*;

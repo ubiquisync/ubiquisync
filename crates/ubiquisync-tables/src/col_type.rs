@@ -7,6 +7,7 @@ use ubiquisync_sql::db::DbType;
 /// are valid, so a column or PK type can never fail to parse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
+#[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub enum ColType {
     /// `BLOB`. Length-prefixed on wire. LWW merge.
     Bytes = 0,
