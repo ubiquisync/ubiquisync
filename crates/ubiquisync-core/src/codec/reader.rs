@@ -19,6 +19,8 @@ pub enum ReadError {
     USizeOverflow(u64),
     #[error("invalid range with start {start} and span {span}")]
     InvalidRange { start: u64, span: u64 },
+    #[error("trailing bytes")]
+    TrailingBytes,
 }
 
 impl<'a> Reader<'a> {
@@ -66,6 +68,10 @@ impl<'a> Reader<'a> {
         Ok(u64::from_le_bytes(self.read_array()?))
     }
 
+    pub fn read_le_u16(&mut self) -> Result<u16, ReadError> {
+        Ok(u16::from_le_bytes(self.read_array()?))
+    }
+
     pub fn read_zigzag_i64(&mut self) -> Result<i64, ReadError> {
         let (x, rest) = decode_zigzag_i64(self.buf)?;
         self.buf = rest;
@@ -94,5 +100,12 @@ impl<'a> Reader<'a> {
 
     pub fn into_remaining(self) -> &'a [u8] {
         self.buf
+    }
+
+    pub fn require_empty(&self) -> Result<(), ReadError> {
+        if !self.is_empty() {
+            return Err(ReadError::TrailingBytes);
+        }
+        Ok(())
     }
 }

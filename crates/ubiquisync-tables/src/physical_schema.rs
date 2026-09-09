@@ -185,10 +185,7 @@ impl PhysicalTableSchema {
                         );
                     }
                     if !col.nullable {
-                        return schema_mismatch(
-                            id,
-                            format!("column {} is not nullable", col.name),
-                        );
+                        return schema_mismatch(id, format!("column {} is not nullable", col.name));
                     }
 
                     if lww_col.db_type != DbType::Integer {
@@ -254,11 +251,15 @@ impl PhysicalTableSchema {
                 col.col_name(),
                 col.col_type().db_type().sql_type(dialect),
             ));
-            col_defs.push(format!("{} {int_type} NOT NULL DEFAULT 0", col.lww_col_name()));
+            col_defs.push(format!(
+                "{} {int_type} NOT NULL DEFAULT 0",
+                col.lww_col_name()
+            ));
         }
         let without_rowid = db.dialect().without_rowid();
         db.exec(
             &format!(
+                // TODO in weird edge cases DDL could race so we could add IF NOT EXISTS or reload schema if there's an error
                 "CREATE TABLE {} ({}, PRIMARY KEY ({})){without_rowid};",
                 self.quoted_name,
                 col_defs.join(", "),
@@ -268,6 +269,10 @@ impl PhysicalTableSchema {
         )
         .await?;
         Ok(())
+    }
+
+    pub(crate) fn has_column(&self, col_id: ColumnId) -> bool {
+        self.cols.contains(&col_id)
     }
 
     pub(crate) async fn ensure_column(
@@ -283,6 +288,7 @@ impl PhysicalTableSchema {
         let mut batch = db.new_batch();
         // Add column
         // TODO do we need to quote the names now that they're all surrogates
+        // TODO in weird edge cases DDL could race so we could add IF NOT EXISTS on postgres or reload schema if there's an error
         batch.add_statement(
             &format!(
                 // TODO ensure that we don't need to specify NULL

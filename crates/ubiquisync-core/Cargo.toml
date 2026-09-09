@@ -6,6 +6,9 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+proptest = ["dep:proptest", "dep:test-strategy"]
+
 [dependencies]
 async-trait = { workspace = true }
 futures-channel = { workspace = true }
@@ -30,16 +33,17 @@ zstd = { workspace = true }
 chacha20 = { workspace = true }
 chacha20poly1305 = { workspace = true }
 crypto-common = { workspace = true }
+proptest = { workspace = true, optional = true }
+test-strategy = { workspace = true, optional = true }
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 security-framework =  { workspace = true }
 security-framework-sys =  { workspace = true }
 
 [dev-dependencies]
+ubiquisync-core = { path = ".", features = ["proptest"] }
 futures = { workspace = true }
 futures-test = { workspace = true }
-proptest = { workspace = true }
-test-strategy = { workspace = true }
 test-case = { workspace = true }
 insta = { workspace = true }
 divan = { workspace = true }

@@ -5,12 +5,16 @@ use thiserror::Error;
 use crate::{
     bytes::OpaqueBytes,
     codec::{ReadError, Reader, Writer},
-    crypto::{CipherInfo, Hash256, Hasher, TaggedHashDomain, new_tagged_hasher},
+    crypto::{CipherInfo, EntryCipher, Hash256, Hasher, TaggedHashDomain, new_tagged_hasher},
     ids::LogId,
-    log::{EntryBody, LogEntry, OpBatch, OpOrExpunge, OpaqueLogEntry},
+    log::{
+        EntryBody, LogEntry, OpBatch, OpOrExpunge, OpaqueLogEntry, PlaintextLogEntry,
+        SegmentCipherError, entries_to_opaque,
+    },
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
 pub struct ChainHash {
     pub hash: Hash256,
     pub size: u64,
@@ -61,6 +65,28 @@ impl ChainHash {
         }
     }
 
+    pub fn compute_next_plaintext<'a: 'b, 'b>(
+        &self,
+        seed: &ChainSeed,
+        cipher: &Option<EntryCipher>,
+        entries: impl Iterator<Item = &'b PlaintextLogEntry<'a>>,
+    ) -> Result<Self, SegmentCipherError> {
+        let (_, h) = entries_to_opaque(cipher, seed, self, entries)?;
+        Ok(h)
+    }
+
+    pub fn compute_next_opaque<'a: 'b, 'b>(
+        &self,
+        seed: &ChainSeed,
+        entries: impl Iterator<Item = &'a OpaqueLogEntry<'a>>,
+    ) -> Result<Self, ChainHashError> {
+        let mut h: ChainHash = *self;
+        for e in entries {
+            h = h.next(e, None, seed)?;
+        }
+        Ok(h)
+    }
+
     pub fn sign_bytes(&self, seed: &ChainSeed) -> Hash256 {
         let mut hasher = new_tagged_hasher(TaggedHashDomain::LogSignBytes);
         hasher.update(&seed.0);
@@ -88,6 +114,10 @@ impl ChainSeed {
         hasher.update(&log_id.container_id.0);
         let seed = hasher.finalize();
         Self(seed)
+    }
+
+    pub fn hash(&self) -> &Hash256 {
+        &self.0
     }
 }
 

@@ -1,0 +1,8 @@
+---
+source: crates/ubiquisync-sql/src/db/schema.rs
+expression: pg
+---
+CREATE TABLE IF NOT EXISTS "user" ("id" UUID NOT NULL, PRIMARY KEY("id"));;
+CREATE TABLE IF NOT EXISTS "user_device" ("user" UUID NOT NULL, "device" UUID NOT NULL, PRIMARY KEY("user", "device"));;
+CREATE TABLE IF NOT EXISTS "entry" ("id" BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, "bytes" BYTEA NOT NULL, "ts" BIGINT NOT NULL);;
+CREATE TABLE IF NOT EXISTS "peers" ("id" BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, "peer_id" BYTEA NOT NULL, UNIQUE("peer_id"));

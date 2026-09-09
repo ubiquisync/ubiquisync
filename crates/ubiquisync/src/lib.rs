@@ -13,8 +13,6 @@
 //! storage backends behind feature flags (`sqlite`, enabled by default).
 
 pub use ubiquisync_core::*;
-// `ubiquisync_tables::codec` isn't re-exported: its `Op` impl plugs into core's
-// codec automatically, so the bundle only needs the table data-domain types.
 // `schema` (+ the `define_tables!`/`define_table!` macros) lets callers declare
 // their tables; `define_table!` is pulled in because `define_tables!` expands to
 // it. The macros resolve their own `$crate` paths, so re-exporting the names is

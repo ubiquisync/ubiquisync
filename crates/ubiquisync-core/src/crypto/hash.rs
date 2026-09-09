@@ -12,7 +12,7 @@ pub type Hash256 = [u8; 32];
 // TODO maybe switch to sha256 everywhere
 #[repr(u8)]
 #[derive(IntoPrimitive, TryFromPrimitive, Clone, Copy, PartialEq, Eq, Debug)]
-#[cfg_attr(test, derive(test_strategy::Arbitrary))]
+#[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
 pub enum Hash256Suite {
     Sha256 = 0,
 }

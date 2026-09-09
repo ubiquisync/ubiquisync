@@ -2,9 +2,10 @@ use crate::col_type::ColType;
 use crate::error::TablesError;
 use crate::id::{ColumnId, TableId};
 use crate::op::{Upsert, Value};
-use crate::physical_schema::{DELETED_TS_COL, UPSERT_TS_COL};
+use crate::physical_schema::{DELETED_TS_COL, PhysicalTableSchema, UPSERT_TS_COL};
 use crate::reducer::{ApplyState, Reducer};
 use crate::watch::{ChangeEvent, ColumnValue, UpsertEvent};
+use tokio::sync::OwnedRwLockReadGuard;
 use ubiquisync_core::hlc::Timestamp;
 use ubiquisync_sql::db::{Db, DbBatch, DbStatementResult, DbValue, StmtId, ValueBinder};
 use ubiquisync_sql::dialect::SqlDialect;
@@ -12,19 +13,40 @@ use ubiquisync_sql::util::quote_ident;
 
 impl Reducer {
     pub(crate) async fn sync_upsert_schema(
-        &mut self,
+        &self,
         db: &dyn Db,
         upsert: &Upsert,
-    ) -> Result<(), TablesError> {
+    ) -> Result<OwnedRwLockReadGuard<PhysicalTableSchema>, TablesError> {
         let table = self.ensure_table(db, upsert.table_id).await?;
-        for col_update in upsert.sets.iter() {
-            table.ensure_column(db, col_update.column_id).await?;
+        // collect columns to add (if any) with a single read lock
+        let mut to_add = vec![];
+        {
+            let rtable = table.clone().read_owned().await;
+            for col_update in upsert.sets.iter() {
+                let col_id = col_update.column_id;
+                if !rtable.has_column(col_id) {
+                    to_add.push(col_id);
+                }
+            }
+
+            for col_id in upsert.nulls.iter() {
+                if !rtable.has_column(*col_id) {
+                    to_add.push(*col_id);
+                }
+            }
+
+            if to_add.is_empty() {
+                return Ok(rtable);
+            }
         }
 
-        for null_col_id in upsert.nulls.iter() {
-            table.ensure_column(db, *null_col_id).await?;
+        // acquire write lock, perform ddl (if still needed), then convert to read lock
+        let mut wtable = table.write_owned().await;
+        for id in to_add {
+            wtable.ensure_column(db, id).await?;
         }
-        Ok(())
+
+        Ok(wtable.downgrade())
     }
 
     pub(crate) fn apply_upsert(
@@ -32,12 +54,12 @@ impl Reducer {
         batch: &mut dyn DbBatch,
         timestamp: Timestamp,
         upsert: &Upsert,
+        table: OwnedRwLockReadGuard<PhysicalTableSchema>,
     ) -> Result<ApplyState, TablesError> {
         let dialect = batch.dialect();
 
         let table_id = upsert.table_id;
-        let table = self.require_table(table_id)?;
-        let named_table = self.named_tables.get(&table_id);
+        let named_table = self.logical_tables.get(&table_id);
         let quoted_table_name = table.get_quoted_name();
 
         let mut insert_into_cols = vec![]; // INSERT INTO (...)
@@ -170,6 +192,7 @@ impl Reducer {
         Ok(ApplyState {
             stmt_id,
             staged_event,
+            table_rguard: table,
         })
     }
 
@@ -190,7 +213,7 @@ impl Reducer {
             // Filter out the column which "won" based on a newer lww timestamp
             let mut winning_columns = Vec::with_capacity(changed_columns.len());
             for (idx, column) in changed_columns.into_iter().enumerate() {
-                if row.get_bool(idx)? {
+                if row.get_i64(idx)? != 0 {
                     winning_columns.push(column);
                 }
             }

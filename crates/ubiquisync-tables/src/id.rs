@@ -58,6 +58,7 @@ use bitfield_struct::bitfield;
 /// a manual pack/unpack rather than a fixed bitfield — see the module docs
 /// for the per-count layouts.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub struct TableId(u16);
 
 impl TableId {
@@ -163,6 +164,7 @@ impl core::fmt::Debug for TableId {
 /// the table. All non-PK columns are implicitly nullable.
 #[bitfield(u8, new = false)]
 #[derive(PartialEq, Eq, Hash, Ord, PartialOrd)]
+#[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub struct ColumnId {
     // -- Column index (low 6 bits) --
     /// Arbitrary column index within the table.

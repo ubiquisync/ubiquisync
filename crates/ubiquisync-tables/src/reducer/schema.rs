@@ -1,36 +1,32 @@
+use std::sync::Arc;
+
 use crate::error::TablesError;
 use crate::id::TableId;
 use crate::physical_schema::PhysicalTableSchema;
 use crate::reducer::Reducer;
-use std::collections::hash_map::Entry;
+use tokio::sync::RwLock;
 use ubiquisync_sql::db::Db;
 
 impl Reducer {
+    /// We must pass in a mutex guard to ensure DDL operations don't happen concurrently.
     pub(crate) async fn ensure_table(
-        &mut self,
+        &self,
         db: &dyn Db,
         table_id: TableId,
-    ) -> Result<&mut PhysicalTableSchema, TablesError> {
-        match self.all_tables.entry(table_id) {
-            Entry::Occupied(e) => Ok(e.into_mut()),
-            Entry::Vacant(e) => {
-                // init_surrogate borrows `self.prefix`, a field disjoint from
-                // `self.table_schemas`, so the borrow checker allows it here.
-                let table = PhysicalTableSchema::new_surrogate(&self.prefix, table_id, db).await?;
-                Ok(e.insert(table))
+    ) -> Result<Arc<RwLock<PhysicalTableSchema>>, TablesError> {
+        {
+            let physical_tables = self.physical_tables.read().await;
+            if let Some(t) = physical_tables.get(&table_id) {
+                return Ok(t.clone());
             }
         }
-    }
-
-    pub(crate) fn require_table(
-        &self,
-        table_id: TableId,
-    ) -> Result<&PhysicalTableSchema, TablesError> {
-        self.all_tables
-            .get(&table_id)
-            .ok_or(TablesError::SchemaError(format!(
-                "table not found: {:?}",
-                table_id,
-            )))
+        let mut physical_tables = self.physical_tables.write().await;
+        match physical_tables.entry(table_id) {
+            std::collections::hash_map::Entry::Occupied(e) => Ok(e.get().clone()),
+            std::collections::hash_map::Entry::Vacant(e) => {
+                let table = PhysicalTableSchema::new_surrogate(&self.prefix, table_id, db).await?;
+                Ok(e.insert(Arc::new(RwLock::new(table))).clone())
+            }
+        }
     }
 }

@@ -6,10 +6,7 @@
 //! sea-query is a pure SQL *builder* — it turns typed columns into
 //! dialect-correct `(sql, params)`, but does not map result rows back. So the
 //! macro emits both halves: the `Table`/`Col` idens (what sea-query needs) and
-//! the `Row`/`from_row` extraction (what it doesn't). Reads run through any
-//! [`SqlStore`](crate::macros::support::SqlStore) — the readers are generic over
-//! its `Op`/`Event`, so they work equally against this crate's own vocabulary or
-//! an app that has bundled it into a wider one; only `query`/`dialect` are used.
+//! the `Row`/`from_row` extraction (what it doesn't).
 //!
 //! Invoked by [`define_table!`](crate::define_table); not called directly.
 
@@ -78,16 +75,13 @@ macro_rules! __define_table_query {
 
         /// Fetch the row with this primary key, or `None` if it doesn't exist.
         #[allow(dead_code)]
-        pub async fn get<O, E, S>(
-            store: &S,
+        pub async fn get(
+            store: &dyn $crate::macros::support::SqlQueryStore,
             $($pk_name: $crate::__q_pk_arg!($pk_type),)+
         ) -> ::core::result::Result<
             ::core::option::Option<Row>,
             $crate::macros::support::DbError,
         >
-        where
-            S: $crate::macros::support::SqlStore<O, E> + ?Sized,
-            E: $crate::macros::support::RoutableEvent,
         {
             // Brings the SQL `.eq` (and friends) into scope; without it method
             // resolution finds `PartialEq::eq` and yields a `bool`.
@@ -98,7 +92,7 @@ macro_rules! __define_table_query {
                 $crate::macros::support::sea_query::Expr::col(Col::$pk_name)
                     .eq($crate::__q_pk_bind!($pk_name, $pk_type)),
             );)+
-            let (sql, params) = $crate::macros::support::build_select(&stmt, store.dialect())?;
+            let (sql, params) = $crate::macros::support::build_sql(&stmt, store.dialect())?;
             let rows = store.query(&sql, &params).await?;
             match rows.first() {
                 ::core::option::Option::Some(row) =>
@@ -111,16 +105,13 @@ macro_rules! __define_table_query {
         /// Fetch every live (non-tombstoned) row of the table. The VIEW already
         /// hides tombstones, so no delete filter is needed here.
         #[allow(dead_code)]
-        pub async fn get_all<O, E, S>(
-            store: &S,
+        pub async fn get_all(
+            store: &dyn $crate::macros::support::SqlQueryStore,
         ) -> ::core::result::Result<::std::vec::Vec<Row>, $crate::macros::support::DbError>
-        where
-            S: $crate::macros::support::SqlStore<O, E> + ?Sized,
-            E: $crate::macros::support::RoutableEvent,
         {
             let mut stmt = $crate::macros::support::sea_query::Query::select();
             stmt.columns([$(Col::$pk_name,)+ $(Col::$col_name,)*]).from(Table);
-            let (sql, params) = $crate::macros::support::build_select(&stmt, store.dialect())?;
+            let (sql, params) = $crate::macros::support::build_sql(&stmt, store.dialect())?;
             let rows = store.query(&sql, &params).await?;
             rows.iter().map(Row::from_row).collect()
         }
@@ -141,19 +132,17 @@ macro_rules! __define_table_query {
         /// }).await?;
         /// ```
         #[allow(dead_code)]
-        pub async fn query<O, E, S, F>(
-            store: &S,
+        pub async fn query<F>(
+            store: &dyn $crate::macros::support::SqlQueryStore,
             compose: F,
         ) -> ::core::result::Result<::std::vec::Vec<Row>, $crate::macros::support::DbError>
         where
-            S: $crate::macros::support::SqlStore<O, E> + ?Sized,
-            E: $crate::macros::support::RoutableEvent,
             F: ::core::ops::FnOnce(&mut $crate::macros::support::sea_query::SelectStatement),
         {
             let mut stmt = $crate::macros::support::sea_query::Query::select();
             stmt.from(Table).columns([$(Col::$pk_name,)+ $(Col::$col_name,)*]);
             compose(&mut stmt);
-            let (sql, params) = $crate::macros::support::build_select(&stmt, store.dialect())?;
+            let (sql, params) = $crate::macros::support::build_sql(&stmt, store.dialect())?;
             let rows = store.query(&sql, &params).await?;
             rows.iter().map(Row::from_row).collect()
         }
@@ -184,30 +173,54 @@ macro_rules! __q_col_ty {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __q_pk_get {
-    ($row:expr, $idx:expr, Uuid) => { $row.get_uuid($idx)? };
-    ($row:expr, $idx:expr, Text) => { $row.get_text($idx)?.to_string() };
-    ($row:expr, $idx:expr, I64) => { $row.get_i64($idx)? };
-    ($row:expr, $idx:expr, Bytes) => { $row.get_blob($idx)?.to_vec() };
+    ($row:expr, $idx:expr, Uuid) => {
+        $row.get_uuid($idx)?
+    };
+    ($row:expr, $idx:expr, Text) => {
+        $row.get_text($idx)?.to_string()
+    };
+    ($row:expr, $idx:expr, I64) => {
+        $row.get_i64($idx)?
+    };
+    ($row:expr, $idx:expr, Bytes) => {
+        $row.get_blob($idx)?.to_vec()
+    };
 }
 
 /// Extract a nullable value column from a `DbRow` at `idx`.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __q_col_get {
-    ($row:expr, $idx:expr, Uuid) => { $row.get_optional_uuid($idx)? };
-    ($row:expr, $idx:expr, Text) => { $row.get_optional_text($idx)?.map(|s| s.to_string()) };
-    ($row:expr, $idx:expr, I64) => { $row.get_optional_i64($idx)? };
-    ($row:expr, $idx:expr, Bytes) => { $row.get_optional_blob($idx)?.map(|b| b.to_vec()) };
+    ($row:expr, $idx:expr, Uuid) => {
+        $row.get_optional_uuid($idx)?
+    };
+    ($row:expr, $idx:expr, Text) => {
+        $row.get_optional_text($idx)?.map(|s| s.to_string())
+    };
+    ($row:expr, $idx:expr, I64) => {
+        $row.get_optional_i64($idx)?
+    };
+    ($row:expr, $idx:expr, Bytes) => {
+        $row.get_optional_blob($idx)?.map(|b| b.to_vec())
+    };
 }
 
 /// Rust argument type accepting a PK value in a reader.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __q_pk_arg {
-    (Uuid) => { &$crate::macros::support::CoreUuid };
-    (Text) => { &str };
-    (I64) => { i64 };
-    (Bytes) => { &[u8] };
+    (Uuid) => {
+        &$crate::macros::support::CoreUuid
+    };
+    (Text) => {
+        &str
+    };
+    (I64) => {
+        i64
+    };
+    (Bytes) => {
+        &[u8]
+    };
 }
 
 /// Convert a PK argument into the sea-query [`Value`] bound into the WHERE
@@ -224,7 +237,9 @@ macro_rules! __q_pk_bind {
         ))
     };
     ($v:expr, Text) => {
-        $crate::macros::support::sea_query::Value::String(::core::option::Option::Some($v.to_owned()))
+        $crate::macros::support::sea_query::Value::String(::core::option::Option::Some(
+            $v.to_owned(),
+        ))
     };
     ($v:expr, I64) => {
         $crate::macros::support::sea_query::Value::BigInt(::core::option::Option::Some($v))

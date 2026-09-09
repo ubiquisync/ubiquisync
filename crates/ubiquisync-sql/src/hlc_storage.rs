@@ -31,7 +31,7 @@ impl SqlHlcStorage {
     /// read, done once at startup. `prefix` namespaces the table so multiple
     /// stores can share a database.
     pub async fn open(db: &dyn Db, prefix: &str) -> Result<Self, DbError> {
-        let table = quote_ident(&format!("{prefix}__hlc"));
+        let table = quote_ident(&format!("{prefix}__replica_hlc"));
         db.exec(&create_sql(&table, db.dialect()), &[]).await?;
         let seed = match db.query(&load_sql(&table), &[]).await?.first() {
             Some(row) => Some(row.get_u64(0)?),

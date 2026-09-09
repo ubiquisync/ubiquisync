@@ -50,6 +50,10 @@ impl Writer {
         self.write_var_u64(x as u64)
     }
 
+    pub fn write_le_u16(&mut self, x: u16) {
+        self.write_slice(&x.to_le_bytes()[..])
+    }
+
     pub fn write_le_u64(&mut self, x: u64) {
         self.write_slice(&x.to_le_bytes()[..])
     }

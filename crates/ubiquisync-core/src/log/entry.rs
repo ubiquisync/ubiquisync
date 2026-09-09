@@ -1,16 +1,16 @@
 use alloc::borrow::Borrow;
 
 use crate::{
-    bytes::{OpaqueBytes, PlaintextBytes},
+    bytes::{BytesWrapper, OpaqueBytes, PlaintextBytes},
     codec::{Reader, Writer},
     crypto::{CipherInfo, Hash256, Signature},
-    log::{LogDecodeError, LogEncodeError, OpBatch},
+    log::{LogDecodeError, LogEncodeError, LogValidationError, OpBatch},
 };
 
 /// Represents a single entry in a stream of logs.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(test, derive(test_strategy::Arbitrary))]
-pub enum LogEntry<B: std::fmt::Debug> {
+#[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
+pub enum LogEntry<B: BytesWrapper> {
     IndexedEntry(EntryBody<B>),
     Signature(Signature),
     // TODO we could consider adding some explicit forward-compatible support for unknown entries
@@ -26,8 +26,8 @@ pub type PlaintextLogEntry<'a> = LogEntry<PlaintextBytes<'a>>;
 
 /// The content of signed and indexed log entries.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(test, derive(test_strategy::Arbitrary))]
-pub enum EntryBody<B: std::fmt::Debug> {
+#[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
+pub enum EntryBody<B: BytesWrapper> {
     /// An operation batch in the app's op vocabulary.
     OpBatch(OpBatch<B>),
     /// Declares the fingerprint for the encryption key being used from
@@ -69,7 +69,7 @@ pub enum EntryBody<B: std::fmt::Debug> {
     Expunged(Hash256),
 }
 
-impl<B: alloc::fmt::Debug> LogEntry<B> {
+impl<B: BytesWrapper> LogEntry<B> {
     pub fn encode(&self, writer: &mut Writer) -> Result<(), LogEncodeError>
     where
         B: Borrow<[u8]>,
@@ -121,6 +121,15 @@ impl<B: alloc::fmt::Debug> LogEntry<B> {
     }
 }
 
+impl<'a> PlaintextLogEntry<'a> {
+    pub fn validate(&self) -> Result<(), LogValidationError> {
+        match self {
+            LogEntry::IndexedEntry(EntryBody::OpBatch(ops)) => ops.validate(),
+            _ => Ok(()),
+        }
+    }
+}
+
 const ENTRY_TYPE_OP_BATCH: u8 = 0x00;
 const ENTRY_TYPE_USE_KEY: u8 = 0x01;
 const ENTRY_TYPE_SIGNATURE: u8 = 0x02;
@@ -130,15 +139,11 @@ const ENTRY_TYPE_EXPUNGED: u8 = 0x03;
 mod tests {
     use test_strategy::proptest;
 
-    use crate::log::LogEntry;
-    #[cfg(test)]
-    use crate::{
-        bytes::OpaqueBytes,
-        codec::{Reader, Writer},
-    };
+    use crate::codec::{Reader, Writer};
+    use crate::{bytes::PlaintextBytes, log::LogEntry};
 
     #[proptest]
-    fn test_round_trip(entry: LogEntry<OpaqueBytes<'static>>) {
+    fn test_round_trip(entry: LogEntry<PlaintextBytes<'static>>) {
         let mut w = Writer::new();
         entry.encode(&mut w).unwrap();
         let res = w.finalize();

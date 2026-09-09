@@ -10,7 +10,9 @@ pub trait ToStatic {
     fn to_static(self) -> Self::Static;
 }
 
-pub trait BytesWrapper: Borrow<[u8]> + std::fmt::Debug + From<Vec<u8>> + Default {
+pub trait BytesWrapper:
+    ToStatic + Borrow<[u8]> + std::fmt::Debug + From<Vec<u8>> + Default
+{
     fn is_empty(&self) -> bool;
 }
 
@@ -53,7 +55,7 @@ impl<'a> BytesWrapper for OpaqueBytes<'a> {
     }
 }
 
-#[cfg(test)]
+#[cfg(feature = "proptest")]
 impl proptest::arbitrary::Arbitrary for OpaqueBytes<'static> {
     type Parameters = ();
     type Strategy = proptest::strategy::BoxedStrategy<Self>;
@@ -109,7 +111,7 @@ impl<'a> BytesWrapper for PlaintextBytes<'a> {
     }
 }
 
-#[cfg(test)]
+#[cfg(feature = "proptest")]
 impl proptest::arbitrary::Arbitrary for PlaintextBytes<'static> {
     type Parameters = ();
     type Strategy = proptest::strategy::BoxedStrategy<Self>;

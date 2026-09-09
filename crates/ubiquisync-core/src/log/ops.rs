@@ -1,9 +1,12 @@
 use std::borrow::Borrow;
 
 use crate::{
+    bytes::{BytesWrapper, PlaintextBytes},
     codec::{ReadError, Reader, Writer},
     crypto::Hash256,
-    log::LogEncodeError,
+    hlc::Timestamp,
+    log::{LogDecodeError, LogEncodeError, LogValidationError},
+    uuid::Uuid,
 };
 
 /// A batch of one or more operations in an op vocabulary.
@@ -40,8 +43,7 @@ use crate::{
 /// extend to the server attested user id or first divergent op slot, and then its hash
 /// would be input to key derivation for future entrying keeping their contents protected.)
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(test, derive(test_strategy::Arbitrary))]
-pub struct OpBatch<B: alloc::fmt::Debug> {
+pub struct OpBatch<B: BytesWrapper> {
     /// HLC timestamp — monotonically non-decreasing within a peer's stream.
     /// Entries written in one atomic transaction share a tick, so they are
     /// treated as one logical write by LWW comparisons.
@@ -70,17 +72,56 @@ pub struct OpBatch<B: alloc::fmt::Debug> {
 /// for hashing and then encryption, but the possibility of multiple ops with per-slot expungement
 /// was retained because it is otherwise cheap and would be expensive to add back later.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(test, derive(test_strategy::Arbitrary))]
-pub enum OpOrExpunge<Op> {
+#[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
+pub enum OpOrExpunge<Op: BytesWrapper> {
     Op(Op),
     Expunge(Hash256),
 }
 
-impl<B: alloc::fmt::Debug> OpBatch<B> {
+impl<'a> OpBatch<PlaintextBytes<'a>> {
+    pub fn new(
+        timestamp: Timestamp,
+        server_attested_user_id: Option<Uuid>,
+        op_bytes: Vec<PlaintextBytes<'a>>,
+    ) -> Self {
+        let server_attested_user_id = if let Some(id) = server_attested_user_id {
+            PlaintextBytes::from(Vec::from(id))
+        } else {
+            PlaintextBytes::default()
+        };
+        Self {
+            timestamp: Vec::from(timestamp.raw().to_le_bytes()).into(),
+            server_attested_user_id,
+            ops: op_bytes
+                .into_iter()
+                .map(OpOrExpunge::Op)
+                .collect::<Vec<_>>(),
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), LogValidationError> {
+        if self.timestamp.0.len() != 8 {
+            return Err(LogValidationError::InvalidTimestamp);
+        }
+        let n = self.server_attested_user_id.0.len();
+        if !(n == 0 || n == 16) {
+            return Err(LogValidationError::InvalidServerAttestedUserId);
+        }
+        if self.ops.is_empty() {
+            return Err(LogValidationError::EmptyOps);
+        }
+        Ok(())
+    }
+}
+
+impl<B: BytesWrapper> OpBatch<B> {
     pub fn encode(&self, writer: &mut Writer) -> Result<(), LogEncodeError>
     where
         B: Borrow<[u8]>,
     {
+        if self.ops.is_empty() {
+            return Err(LogEncodeError::EmptyOps);
+        }
         writer.write_len_prefixed(self.timestamp.borrow());
         writer.write_len_prefixed(self.server_attested_user_id.borrow());
         writer.write_var_usize(self.ops.len());
@@ -90,7 +131,7 @@ impl<B: alloc::fmt::Debug> OpBatch<B> {
         Ok(())
     }
 
-    pub fn decode<'a>(reader: &mut Reader<'a>) -> Result<Self, ReadError>
+    pub fn decode<'a>(reader: &mut Reader<'a>) -> Result<Self, LogDecodeError>
     where
         B: From<&'a [u8]>,
     {
@@ -103,6 +144,9 @@ impl<B: alloc::fmt::Debug> OpBatch<B> {
             let op = OpOrExpunge::decode(reader)?;
             ops.push(op);
         }
+        if ops.is_empty() {
+            return Err(LogDecodeError::EmptyOps);
+        }
         Ok(Self {
             timestamp,
             server_attested_user_id,
@@ -111,7 +155,7 @@ impl<B: alloc::fmt::Debug> OpBatch<B> {
     }
 }
 
-impl<B> OpOrExpunge<B> {
+impl<B: BytesWrapper> OpOrExpunge<B> {
     pub fn encode(&self, writer: &mut Writer) -> Result<(), LogEncodeError>
     where
         B: Borrow<[u8]>,
@@ -120,7 +164,7 @@ impl<B> OpOrExpunge<B> {
             OpOrExpunge::Op(op) => {
                 let bz = op.borrow();
                 if bz.is_empty() {
-                    return Err(LogEncodeError::EmptyOp);
+                    return Err(LogEncodeError::EmptyOps);
                 }
                 writer.write_len_prefixed(bz);
             }
@@ -152,25 +196,43 @@ mod tests {
     use std::assert_matches;
     use std::borrow::Cow;
 
+    use proptest::prelude::*;
     use test_strategy::proptest;
 
-    #[cfg(test)]
-    use crate::bytes::OpaqueBytes;
     use crate::{
-        bytes::PlaintextBytes,
+        bytes::{BytesWrapper, PlaintextBytes},
         codec::{Reader, Writer},
         log::{LogEncodeError, OpBatch, OpOrExpunge},
     };
 
+    impl<B: BytesWrapper + Arbitrary + 'static> Arbitrary for OpBatch<B> {
+        type Parameters = ();
+        type Strategy = BoxedStrategy<Self>;
+
+        fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
+            (
+                any::<[u8; 8]>(),
+                prop_oneof![Just(vec![]), any::<[u8; 16]>().prop_map(|uid| uid.to_vec())],
+                proptest::collection::vec(any::<OpOrExpunge<B>>(), 1..16),
+            )
+                .prop_map(|(ts, uid, ops)| OpBatch {
+                    timestamp: ts.to_vec().into(),
+                    server_attested_user_id: uid.into(),
+                    ops,
+                })
+                .boxed()
+        }
+    }
+
     #[proptest]
-    fn test_roundtrip(op_batch: OpBatch<OpaqueBytes<'static>>) {
+    fn test_roundtrip(op_batch: OpBatch<PlaintextBytes<'static>>) {
         // TODO we only test for opaque and that should be equivalent to plaintext otherwise,
         // but if we wanted we could use a macro to duplicate - the generic lifetimes make it really hard with just generics
         let mut w = Writer::new();
         op_batch.encode(&mut w).unwrap();
         let res = w.finalize();
         let mut r = Reader::new(&res);
-        let decoded = OpBatch::<OpaqueBytes>::decode(&mut r).unwrap();
+        let decoded = OpBatch::<PlaintextBytes>::decode(&mut r).unwrap();
         assert_eq!(op_batch, decoded);
     }
 
@@ -179,6 +241,6 @@ mod tests {
         let op = OpOrExpunge::Op(PlaintextBytes(Cow::Owned(vec![])));
         let mut w = Writer::new();
         let res = op.encode(&mut w);
-        assert_matches!(res, Err(LogEncodeError::EmptyOp))
+        assert_matches!(res, Err(LogEncodeError::EmptyOps))
     }
 }

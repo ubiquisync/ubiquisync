@@ -1,14 +1,20 @@
 //! The SQL backend abstraction: values, rows, batches, and the [`Db`] trait.
 
 mod batch;
+mod col;
 mod error;
+mod macros;
+mod row;
 mod schema;
+pub mod sea_query;
 mod value;
 
-pub use batch::{DbBatch, DbStatementResult, StmtId};
-pub use error::DbError;
-pub use schema::{DbColumnDescription, DbTableDescriptor, DbType};
-pub use value::{DbRow, DbValue, ValueBinder};
+pub use batch::*;
+pub use col::*;
+pub use error::*;
+pub use row::*;
+pub use schema::*;
+pub use value::*;
 
 use async_trait::async_trait;
 
@@ -36,6 +42,10 @@ pub trait Db: Send + Sync {
     /// (`CREATE TABLE`, `ALTER TABLE ... ADD COLUMN`) and one-off writes.
     /// Returns the number of rows affected.
     async fn exec(&self, sql: &str, params: &[DbValue]) -> Result<usize, DbError>;
+
+    /// Execute a single statement outside any batch (autocommit) that returns
+    /// some data as rows (such as an INSERT with a RETURNING clause).
+    async fn exec_returning(&self, sql: &str, params: &[DbValue]) -> Result<Vec<DbRow>, DbError>;
 
     /// Run a read query and return every row. Materializes the full result
     /// set; not for unbounded scans.

@@ -82,7 +82,7 @@ impl SigningKey for AppleP256SigningKey {
         ))
     }
 
-    fn get_verifying_key(&self) -> crate::crypto::VerifyingKey {
+    fn verifying_key(&self) -> crate::crypto::VerifyingKey {
         self.verifying_key
     }
 }
@@ -98,8 +98,6 @@ mod test {
     fn test_apple_signing_key(msg: Vec<u8>) {
         let key = AppleP256SigningKey::new_from_gen_opts(GenerateKeyOptions::default()).unwrap();
         let sig = key.sign(&msg).unwrap();
-        key.get_verifying_key()
-            .verify_signature(&msg, &sig)
-            .unwrap();
+        key.verifying_key().verify_signature(&msg, &sig).unwrap();
     }
 }

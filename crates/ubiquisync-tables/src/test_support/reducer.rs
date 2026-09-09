@@ -3,9 +3,7 @@
 //! the physical table back to assert LWW convergence and checks the emitted
 //! [`ChangeEvent`].
 //!
-//! The reducer is driven directly (not via the crate-private `Processor`), so
-//! these tests exercise exactly the SQL it builds without pulling in the HLC or
-//! tracker. Every scenario uses a distinct table index, so they all share one
+//! Every scenario uses a distinct table index, so they all share one
 //! database without colliding.
 
 use crate::col_type::ColType;
@@ -15,7 +13,9 @@ use crate::physical_schema::{DELETED_TS_COL, UPSERT_TS_COL};
 use crate::reducer::Reducer;
 use crate::schema::{ColumnSchema, TableSchema};
 use crate::watch::{ChangeEvent, DeleteEvent, UpsertEvent};
+use ubiquisync_core::event::event_bus;
 use ubiquisync_core::hlc::Timestamp;
+use ubiquisync_core::ids::ContainerId;
 use ubiquisync_sql::db::{Db, DbValue};
 // The reducer's three-phase contract is a trait; bring its methods into scope
 // without shadowing the concrete `Reducer` struct above.
@@ -23,6 +23,7 @@ use ubiquisync_sql::reducer::Reducer as _;
 use ubiquisync_sql::util::quote_ident;
 
 const PREFIX: &str = "app";
+const CONTAINER_ID: ContainerId = ContainerId([3; 16]);
 
 /// Runs every reducer scenario against `db`. Call with a freshly opened, empty
 /// database.
@@ -47,6 +48,13 @@ pub async fn run_reducer_suite<D: Db>(db: D) {
     composite_pk_and_mixed_types(db).await;
     view_exposes_live_rows_under_declared_names(db).await;
     rejects_duplicate_declared_tables(db).await;
+}
+
+async fn new_reducer(db: &dyn Db) -> Reducer {
+    let (eh, _) = event_bus();
+    Reducer::new(CONTAINER_ID, PREFIX, &[], db, eh)
+        .await
+        .unwrap()
 }
 
 // ── Scenarios ────────────────────────────────────────────────────────────────
@@ -90,13 +98,37 @@ async fn newer_upsert_wins_and_converges(db: &dyn Db) {
     let mut reducer = named(db, id, &[(body, "body")]).await;
 
     // Row 1: old then new.
-    apply(&mut reducer, db, 100, &upsert(id, pk1(1), &[(body, text("old"))])).await;
-    let win = apply(&mut reducer, db, 200, &upsert(id, pk1(1), &[(body, text("new"))])).await;
+    apply(
+        &mut reducer,
+        db,
+        100,
+        &upsert(id, pk1(1), &[(body, text("old"))]),
+    )
+    .await;
+    let win = apply(
+        &mut reducer,
+        db,
+        200,
+        &upsert(id, pk1(1), &[(body, text("new"))]),
+    )
+    .await;
     expect_upsert(win);
 
     // Row 2: new then old — the old arrival loses and is silent.
-    apply(&mut reducer, db, 200, &upsert(id, pk1(2), &[(body, text("new"))])).await;
-    let lost = apply(&mut reducer, db, 100, &upsert(id, pk1(2), &[(body, text("old"))])).await;
+    apply(
+        &mut reducer,
+        db,
+        200,
+        &upsert(id, pk1(2), &[(body, text("new"))]),
+    )
+    .await;
+    let lost = apply(
+        &mut reducer,
+        db,
+        100,
+        &upsert(id, pk1(2), &[(body, text("old"))]),
+    )
+    .await;
     expect_none(lost);
 
     let expected = Some((tv("new"), 200));
@@ -111,11 +143,35 @@ async fn same_timestamp_breaks_tie_by_value(db: &dyn Db) {
     let body = col(0, ColType::Text);
     let mut reducer = named(db, id, &[(body, "body")]).await;
 
-    apply(&mut reducer, db, 100, &upsert(id, pk1(1), &[(body, text("aaa"))])).await;
-    apply(&mut reducer, db, 100, &upsert(id, pk1(1), &[(body, text("bbb"))])).await;
+    apply(
+        &mut reducer,
+        db,
+        100,
+        &upsert(id, pk1(1), &[(body, text("aaa"))]),
+    )
+    .await;
+    apply(
+        &mut reducer,
+        db,
+        100,
+        &upsert(id, pk1(1), &[(body, text("bbb"))]),
+    )
+    .await;
 
-    apply(&mut reducer, db, 100, &upsert(id, pk1(2), &[(body, text("bbb"))])).await;
-    apply(&mut reducer, db, 100, &upsert(id, pk1(2), &[(body, text("aaa"))])).await;
+    apply(
+        &mut reducer,
+        db,
+        100,
+        &upsert(id, pk1(2), &[(body, text("bbb"))]),
+    )
+    .await;
+    apply(
+        &mut reducer,
+        db,
+        100,
+        &upsert(id, pk1(2), &[(body, text("aaa"))]),
+    )
+    .await;
 
     let winner = Some((tv("bbb"), 100));
     assert_eq!(read_col(db, id, &pk1(1), body).await, winner);
@@ -129,7 +185,13 @@ async fn disjoint_columns_merge_independently(db: &dyn Db) {
     let (a, b) = (col(0, ColType::Text), col(1, ColType::I64));
     let mut reducer = named(db, id, &[(a, "a"), (b, "b")]).await;
 
-    apply(&mut reducer, db, 100, &upsert(id, pk1(1), &[(a, text("x"))])).await;
+    apply(
+        &mut reducer,
+        db,
+        100,
+        &upsert(id, pk1(1), &[(a, text("x"))]),
+    )
+    .await;
     apply(&mut reducer, db, 50, &upsert(id, pk1(1), &[(b, int(9))])).await;
 
     assert_eq!(read_col(db, id, &pk1(1), a).await, Some((tv("x"), 100)));
@@ -146,7 +208,13 @@ async fn delete_tombstones_and_nulls_columns(db: &dyn Db) {
     let (a, b) = (col(0, ColType::Text), col(1, ColType::I64));
     let mut reducer = named(db, id, &[(a, "a"), (b, "b")]).await;
 
-    apply(&mut reducer, db, 100, &upsert(id, pk1(1), &[(a, text("x")), (b, int(9))])).await;
+    apply(
+        &mut reducer,
+        db,
+        100,
+        &upsert(id, pk1(1), &[(a, text("x")), (b, int(9))]),
+    )
+    .await;
     let ev = apply(&mut reducer, db, 200, &delete(id, pk1(1))).await;
     expect_delete(ev);
 
@@ -163,11 +231,26 @@ async fn column_written_after_delete_survives(db: &dyn Db) {
     let (old, fresh) = (col(0, ColType::Text), col(1, ColType::I64));
     let mut reducer = named(db, id, &[(old, "old"), (fresh, "fresh")]).await;
 
-    apply(&mut reducer, db, 100, &upsert(id, pk1(1), &[(old, text("x"))])).await;
-    apply(&mut reducer, db, 300, &upsert(id, pk1(1), &[(fresh, int(9))])).await;
+    apply(
+        &mut reducer,
+        db,
+        100,
+        &upsert(id, pk1(1), &[(old, text("x"))]),
+    )
+    .await;
+    apply(
+        &mut reducer,
+        db,
+        300,
+        &upsert(id, pk1(1), &[(fresh, int(9))]),
+    )
+    .await;
     apply(&mut reducer, db, 200, &delete(id, pk1(1))).await;
 
-    assert_eq!(read_col(db, id, &pk1(1), old).await, Some((DbValue::Null, 0)));
+    assert_eq!(
+        read_col(db, id, &pk1(1), old).await,
+        Some((DbValue::Null, 0))
+    );
     assert_eq!(read_col(db, id, &pk1(1), fresh).await, Some((iv(9), 300)));
     assert_eq!(read_ts(db, id, &pk1(1)).await, Some((300, 200)));
 }
@@ -180,10 +263,19 @@ async fn delete_then_newer_upsert_resurrects(db: &dyn Db) {
     let mut reducer = named(db, id, &[(body, "body")]).await;
 
     apply(&mut reducer, db, 100, &delete(id, pk1(1))).await;
-    let ev = apply(&mut reducer, db, 200, &upsert(id, pk1(1), &[(body, text("back"))])).await;
+    let ev = apply(
+        &mut reducer,
+        db,
+        200,
+        &upsert(id, pk1(1), &[(body, text("back"))]),
+    )
+    .await;
     expect_upsert(ev);
 
-    assert_eq!(read_col(db, id, &pk1(1), body).await, Some((tv("back"), 200)));
+    assert_eq!(
+        read_col(db, id, &pk1(1), body).await,
+        Some((tv("back"), 200))
+    );
     assert_eq!(read_ts(db, id, &pk1(1)).await, Some((200, 100)));
 }
 
@@ -196,13 +288,28 @@ async fn delete_then_equal_ts_upsert_resurrects(db: &dyn Db) {
     let body = col(0, ColType::Text);
     let mut reducer = named(db, id, &[(body, "body")]).await;
 
-    apply(&mut reducer, db, 100, &upsert(id, pk1(1), &[(body, text("gone"))])).await;
+    apply(
+        &mut reducer,
+        db,
+        100,
+        &upsert(id, pk1(1), &[(body, text("gone"))]),
+    )
+    .await;
     apply(&mut reducer, db, 200, &delete(id, pk1(1))).await;
     // The column is now cleared to (NULL, 0); the delete stamped __deleted_ts=200.
-    let ev = apply(&mut reducer, db, 200, &upsert(id, pk1(1), &[(body, text("back"))])).await;
+    let ev = apply(
+        &mut reducer,
+        db,
+        200,
+        &upsert(id, pk1(1), &[(body, text("back"))]),
+    )
+    .await;
     expect_upsert(ev);
 
-    assert_eq!(read_col(db, id, &pk1(1), body).await, Some((tv("back"), 200)));
+    assert_eq!(
+        read_col(db, id, &pk1(1), body).await,
+        Some((tv("back"), 200))
+    );
     assert_eq!(read_ts(db, id, &pk1(1)).await, Some((200, 200)));
 }
 
@@ -214,10 +321,19 @@ async fn delete_blocks_older_upsert(db: &dyn Db) {
     let mut reducer = named(db, id, &[(body, "body")]).await;
 
     apply(&mut reducer, db, 200, &delete(id, pk1(1))).await;
-    let ev = apply(&mut reducer, db, 100, &upsert(id, pk1(1), &[(body, text("nope"))])).await;
+    let ev = apply(
+        &mut reducer,
+        db,
+        100,
+        &upsert(id, pk1(1), &[(body, text("nope"))]),
+    )
+    .await;
     expect_none(ev);
 
-    assert_eq!(read_col(db, id, &pk1(1), body).await, Some((DbValue::Null, 0)));
+    assert_eq!(
+        read_col(db, id, &pk1(1), body).await,
+        Some((DbValue::Null, 0))
+    );
     assert_eq!(read_ts(db, id, &pk1(1)).await, Some((0, 200)));
 }
 
@@ -241,7 +357,13 @@ async fn event_reports_only_winning_columns(db: &dyn Db) {
     let mut reducer = named(db, id, &[(a, "a"), (b, "b")]).await;
 
     // Seed `b` at a high timestamp.
-    apply(&mut reducer, db, 200, &upsert(id, pk1(1), &[(b, text("keep"))])).await;
+    apply(
+        &mut reducer,
+        db,
+        200,
+        &upsert(id, pk1(1), &[(b, text("keep"))]),
+    )
+    .await;
     // Now write both: `a` is new (wins), `b` is older than the seed (loses).
     let ev = apply(
         &mut reducer,
@@ -282,16 +404,28 @@ async fn surrogate_table_emits_no_event(db: &dyn Db) {
     let id = TableId::new(&[ColType::I64], 12);
     let (body, extra) = (col(0, ColType::Text), col(1, ColType::I64));
     // No named tables registered.
-    let mut reducer = Reducer::new(PREFIX, &[], db).await.unwrap();
+    let mut reducer = new_reducer(db).await;
 
     // First op creates the surrogate table with just `body`.
-    let ev = apply(&mut reducer, db, 100, &upsert(id, pk1(1), &[(body, text("x"))])).await;
+    let ev = apply(
+        &mut reducer,
+        db,
+        100,
+        &upsert(id, pk1(1), &[(body, text("x"))]),
+    )
+    .await;
     expect_none(ev);
     assert_eq!(read_col(db, id, &pk1(1), body).await, Some((tv("x"), 100)));
 
     // A later op references a column the table doesn't have yet: `prepare` must
     // ALTER it in, then the write lands alongside the original column.
-    let ev = apply(&mut reducer, db, 200, &upsert(id, pk1(1), &[(extra, int(9))])).await;
+    let ev = apply(
+        &mut reducer,
+        db,
+        200,
+        &upsert(id, pk1(1), &[(extra, int(9))]),
+    )
+    .await;
     expect_none(ev);
     assert_eq!(read_col(db, id, &pk1(1), extra).await, Some((iv(9), 200)));
     assert_eq!(read_col(db, id, &pk1(1), body).await, Some((tv("x"), 100)));
@@ -306,13 +440,28 @@ async fn explicit_null_set_merges_by_lww(db: &dyn Db) {
     let mut reducer = named(db, id, &[(a, "a")]).await;
 
     // A newer null clears a prior value and reports the column as changed-to-None.
-    apply(&mut reducer, db, 100, &upsert(id, pk1(1), &[(a, text("x"))])).await;
+    apply(
+        &mut reducer,
+        db,
+        100,
+        &upsert(id, pk1(1), &[(a, text("x"))]),
+    )
+    .await;
     let up = expect_upsert(apply(&mut reducer, db, 200, &upsert_nulls(id, pk1(1), &[a])).await);
     assert_eq!(changed(&up), vec![("a".into(), None)]);
-    assert_eq!(read_col(db, id, &pk1(1), a).await, Some((DbValue::Null, 200)));
+    assert_eq!(
+        read_col(db, id, &pk1(1), a).await,
+        Some((DbValue::Null, 200))
+    );
 
     // An older null loses to a newer value and is silent.
-    apply(&mut reducer, db, 400, &upsert(id, pk1(2), &[(a, text("keep"))])).await;
+    apply(
+        &mut reducer,
+        db,
+        400,
+        &upsert(id, pk1(2), &[(a, text("keep"))]),
+    )
+    .await;
     expect_none(apply(&mut reducer, db, 300, &upsert_nulls(id, pk1(2), &[a])).await);
     assert_eq!(read_col(db, id, &pk1(2), a).await, Some((tv("keep"), 400)));
 }
@@ -327,8 +476,20 @@ async fn tiebreak_loser_is_not_reported(db: &dyn Db) {
     let mut reducer = named(db, id, &[(a, "a"), (b, "b")]).await;
 
     // Seed: `a="zzz"` at ts=100, `b="old"` at ts=50 (so a later `b` will win).
-    apply(&mut reducer, db, 100, &upsert(id, pk1(1), &[(a, text("zzz"))])).await;
-    apply(&mut reducer, db, 50, &upsert(id, pk1(1), &[(b, text("old"))])).await;
+    apply(
+        &mut reducer,
+        db,
+        100,
+        &upsert(id, pk1(1), &[(a, text("zzz"))]),
+    )
+    .await;
+    apply(
+        &mut reducer,
+        db,
+        50,
+        &upsert(id, pk1(1), &[(b, text("old"))]),
+    )
+    .await;
 
     // A new op at ts=100 sets `a="aaa"` (SAME ts as stored `a` → value tiebreak,
     // and "aaa" < "zzz" so it loses) and `b="new"` (newer than 50 → wins, so the
@@ -357,13 +518,28 @@ async fn rejects_invalid_ops(db: &dyn Db) {
     let mut reducer = named(db, id, &[(a, "a")]).await;
 
     // Wrong PK type (Text where the table declares an I64 PK).
-    expect_rejected(&mut reducer, db, &upsert(id, vec![text("x")], &[(a, text("v"))])).await;
+    expect_rejected(
+        &mut reducer,
+        db,
+        &upsert(id, vec![text("x")], &[(a, text("v"))]),
+    )
+    .await;
     // Wrong PK arity (two values for a single-column PK).
-    expect_rejected(&mut reducer, db, &upsert(id, vec![int(1), int(2)], &[(a, text("v"))])).await;
+    expect_rejected(
+        &mut reducer,
+        db,
+        &upsert(id, vec![int(1), int(2)], &[(a, text("v"))]),
+    )
+    .await;
     // Value type doesn't match the column (I64 into a Text column).
     expect_rejected(&mut reducer, db, &upsert(id, pk1(1), &[(a, int(5))])).await;
     // Same column set twice.
-    expect_rejected(&mut reducer, db, &upsert(id, pk1(1), &[(a, text("v")), (a, text("w"))])).await;
+    expect_rejected(
+        &mut reducer,
+        db,
+        &upsert(id, pk1(1), &[(a, text("v")), (a, text("w"))]),
+    )
+    .await;
     // Same column both set and nulled.
     expect_rejected(
         &mut reducer,
@@ -383,7 +559,15 @@ async fn rejects_invalid_ops(db: &dyn Db) {
     expect_rejected(&mut reducer, db, &delete(id, vec![text("x")])).await;
 
     // Sanity: a well-formed op is still accepted and applies.
-    expect_upsert(apply(&mut reducer, db, 100, &upsert(id, pk1(1), &[(a, text("ok"))])).await);
+    expect_upsert(
+        apply(
+            &mut reducer,
+            db,
+            100,
+            &upsert(id, pk1(1), &[(a, text("ok"))]),
+        )
+        .await,
+    );
 }
 
 /// Composite primary keys and every column/PK type round-trip through bind and
@@ -398,11 +582,24 @@ async fn composite_pk_and_mixed_types(db: &dyn Db) {
         &mut reducer,
         db,
         100,
-        &upsert(id, key.clone(), &[(blob, Value::Bytes(vec![1, 2, 3])), (uuid, Value::Uuid([7; 16]))]),
+        &upsert(
+            id,
+            key.clone(),
+            &[
+                (blob, Value::Bytes(vec![1, 2, 3])),
+                (uuid, Value::Uuid([7; 16])),
+            ],
+        ),
     )
     .await;
     // A newer write to one column wins; the other is untouched.
-    apply(&mut reducer, db, 200, &upsert(id, key.clone(), &[(blob, Value::Bytes(vec![9]))])).await;
+    apply(
+        &mut reducer,
+        db,
+        200,
+        &upsert(id, key.clone(), &[(blob, Value::Bytes(vec![9]))]),
+    )
+    .await;
 
     assert_eq!(
         read_col(db, id, &key, blob).await,
@@ -435,14 +632,28 @@ async fn view_exposes_live_rows_under_declared_names(db: &dyn Db) {
         "widgets".into(),
         vec!["widget_id".into()],
         vec![
-            ColumnSchema { name: "body".into(), id: body },
-            ColumnSchema { name: "n".into(), id: n },
+            ColumnSchema {
+                name: "body".into(),
+                id: body,
+            },
+            ColumnSchema {
+                name: "n".into(),
+                id: n,
+            },
         ],
     )
     .unwrap();
-    let mut reducer = Reducer::new(PREFIX, &[schema], db).await.unwrap();
+    let mut reducer = Reducer::new(CONTAINER_ID, PREFIX, &[schema], db, event_bus().0)
+        .await
+        .unwrap();
 
-    apply(&mut reducer, db, 100, &upsert(id, pk1(1), &[(body, text("hi")), (n, int(7))])).await;
+    apply(
+        &mut reducer,
+        db,
+        100,
+        &upsert(id, pk1(1), &[(body, text("hi")), (n, int(7))]),
+    )
+    .await;
 
     // Live row is visible through the VIEW under the declared names.
     let cols = ["widget_id", "body", "n"];
@@ -460,7 +671,13 @@ async fn view_exposes_live_rows_under_declared_names(db: &dyn Db) {
     );
 
     // A newer upsert resurrects it; visible again.
-    apply(&mut reducer, db, 300, &upsert(id, pk1(1), &[(body, text("back"))])).await;
+    apply(
+        &mut reducer,
+        db,
+        300,
+        &upsert(id, pk1(1), &[(body, text("back"))]),
+    )
+    .await;
     assert_eq!(
         view_row(db, "widgets", &["widget_id", "body"], 1).await,
         Some(vec![iv(1), tv("back")]),
@@ -469,7 +686,13 @@ async fn view_exposes_live_rows_under_declared_names(db: &dyn Db) {
     // Tie: an upsert and a delete at the SAME timestamp leave the row visible —
     // `upsert_ts == deleted_ts` satisfies the view's `>=` predicate, and the
     // equal-timestamp column survives the delete's null-out.
-    apply(&mut reducer, db, 500, &upsert(id, pk1(2), &[(body, text("tie"))])).await;
+    apply(
+        &mut reducer,
+        db,
+        500,
+        &upsert(id, pk1(2), &[(body, text("tie"))]),
+    )
+    .await;
     apply(&mut reducer, db, 500, &delete(id, pk1(2))).await;
     assert_eq!(
         view_row(db, "widgets", &["widget_id", "body"], 2).await,
@@ -490,7 +713,9 @@ async fn rejects_duplicate_declared_tables(db: &dyn Db) {
         TableSchema::new(b, "dup".into(), vec!["id".into()], vec![]).unwrap(),
     ];
     assert!(
-        Reducer::new(PREFIX, &dup_name, db).await.is_err(),
+        Reducer::new(CONTAINER_ID, PREFIX, &dup_name, db, event_bus().0)
+            .await
+            .is_err(),
         "duplicate view name must be rejected",
     );
 
@@ -500,7 +725,9 @@ async fn rejects_duplicate_declared_tables(db: &dyn Db) {
         TableSchema::new(a, "two".into(), vec!["id".into()], vec![]).unwrap(),
     ];
     assert!(
-        Reducer::new(PREFIX, &dup_id, db).await.is_err(),
+        Reducer::new(CONTAINER_ID, PREFIX, &dup_id, db, event_bus().0)
+            .await
+            .is_err(),
         "duplicate table id must be rejected",
     );
 }
@@ -530,22 +757,23 @@ async fn view_row(db: &dyn Db, view: &str, cols: &[&str], k: i64) -> Option<Vec<
 /// `apply` (emit statements), `commit`, then `post_apply` (build the event).
 async fn apply(reducer: &mut Reducer, db: &dyn Db, raw_ts: u64, op: &Op) -> Option<ChangeEvent> {
     let ts = Timestamp::from_raw(raw_ts);
-    reducer.prepare(db, op).await.expect("prepare");
+    let read_state = reducer.prepare(db, op).await.expect("prepare");
     let mut batch = db.new_batch();
-    let state = reducer.apply(batch.as_mut(), ts, op, ()).expect("apply");
+    let state = reducer
+        .apply(batch.as_mut(), ts, op, read_state)
+        .expect("apply");
     let result = batch.commit().await.expect("commit");
-    // A table op emits at most one event; collapse the reducer's 0-or-many `Vec`
-    // back to the `Option` these tests assert on, failing loudly if that
-    // invariant ever breaks (a duplicate or multi-event regression).
-    let mut events = reducer.post_apply(state, &result).expect("post_apply");
-    assert!(events.len() <= 1, "a table op must emit at most one event, got {}", events.len());
-    events.pop()
+    reducer.do_post_apply(state, &result).expect("post_apply")
 }
 
 /// Assert an op is rejected by validation in `prepare`, before any batch runs.
 async fn expect_rejected(reducer: &mut Reducer, db: &dyn Db, op: &Op) {
     let result = reducer.prepare(db, op).await;
-    assert!(result.is_err(), "expected op to be rejected, got {result:?}");
+    assert!(
+        result.is_err(),
+        "expected op to be rejected, got {0:?}",
+        result.err()
+    );
 }
 
 /// A reducer that knows `id` as a named table with the given (column, view-name)
@@ -560,7 +788,9 @@ async fn named(db: &dyn Db, id: TableId, cols: &[(ColumnId, &str)]) -> Reducer {
         })
         .collect();
     let schema = TableSchema::new(id, "t".into(), pk_names, value_cols).unwrap();
-    Reducer::new(PREFIX, &[schema], db).await.unwrap()
+    Reducer::new(CONTAINER_ID, PREFIX, &[schema], db, event_bus().0)
+        .await
+        .unwrap()
 }
 
 // ── Reading physical state back ──────────────────────────────────────────────
