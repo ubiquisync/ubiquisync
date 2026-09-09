@@ -38,13 +38,13 @@ fn table_defs() -> Vec<CreateTableDef> {
     ]
 }
 
-def_table_with_auto_id!(peers (id) => {
+def_table_with_auto_id!(peers as __replica_peers (id) => {
     peer_id: [u8; 32], // TODO UNIQUE
     commitment_bytes: Vec<u8>,
     signature: super::Signature
 });
 
-def_table_with_auto_id!(streams (id) => {
+def_table_with_auto_id!(streams __replica_streams (id) => {
    peer_id: i64, // TODO ref peers
    container_id: [u8;16],
    head_size: u64, // TODO default 0
@@ -83,7 +83,7 @@ codeable_col_repr!(Signature);
 // TODO: CREATE UNIQUE INDEX streams_root ON streams(peer_id, container_id) WHERE parent_id IS NULL;
 // TODO: we might also want a unique on (parent_id, fork_idx, fork_hash) to avoid races
 
-def_table!(segments (stream_id: i64, end_size: u64) => { // TODO ref streams
+def_table!(segments as __replica_segments (stream_id: i64, end_size: u64) => { // TODO ref streams
     start_idx: u64,
     body: Vec<u8>,
     // WITH ROWID!

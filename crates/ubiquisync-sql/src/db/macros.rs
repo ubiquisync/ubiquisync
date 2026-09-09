@@ -1,13 +1,13 @@
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __def_table_struct {
-    ($name:ident) => {
+    ($name:ident, $dbname:ident) => {
         #[derive(Clone, Copy)]
         #[allow(dead_code)]
         pub struct Table;
         impl sea_query::types::Iden for Table {
             fn unquoted(&self) -> &str {
-                stringify!($name)
+                stringify!($dbname)
             }
         }
     };
@@ -15,10 +15,10 @@ macro_rules! __def_table_struct {
 
 #[macro_export]
 macro_rules! def_table {
-    ($name:ident ( $($pk_name:ident: $pk_typ:ty),+ $(,)?) => { $($col_name:ident: $col_typ:ty),* $(,)?}) => {
+    ($name:ident as $dbname:ident ( $($pk_name:ident: $pk_typ:ty),+ $(,)?) => { $($col_name:ident: $col_typ:ty),* $(,)?}) => {
         pastey::paste! {
             pub mod $name {
-                $crate::__def_table_struct!($name);
+                $crate::__def_table_struct!($name, $dbname);
 
 
                 #[allow(dead_code)]
@@ -40,10 +40,10 @@ macro_rules! def_table {
 
 #[macro_export]
 macro_rules! def_table_with_auto_id {
-    ($name:ident ($id_col:ident) => { $($col_name:ident: $col_typ:ty),* $(,)?}) => {
+    ($name:ident as $dbname:ident ($id_col:ident) => { $($col_name:ident: $col_typ:ty),* $(,)?}) => {
         pastey::paste! {
             pub mod $name {
-                $crate::__def_table_struct!($name);
+                $crate::__def_table_struct!($name, $dbname);
 
                 #[allow(dead_code)]
                 pub fn create_table_def() -> $crate::db::CreateTableDef {
