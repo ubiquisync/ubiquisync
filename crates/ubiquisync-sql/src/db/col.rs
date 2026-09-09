@@ -45,6 +45,7 @@ impl ColType for u64 {
     }
 
     fn to_db_val(value: u64) -> DbValue {
+        debug_assert!(value <= i64::MAX as u64);
         DbValue::Integer(value as i64)
     }
 }

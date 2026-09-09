@@ -40,4 +40,6 @@ pub enum DbError {
     UnexpectedNull,
     #[error("unexpected row count: {got}")]
     UnexpectedRowCount { got: usize },
+    #[error("statement in readonly context was not readonly")]
+    ReadonlyViolation,
 }
