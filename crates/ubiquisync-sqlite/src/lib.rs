@@ -14,6 +14,7 @@
 
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use rusqlite::types::{ToSqlOutput, ValueRef};
@@ -40,6 +41,15 @@ impl SqliteDb {
     /// Open (creating if needed) a database file at `path`.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, DbError> {
         let conn = Connection::open(path).map_err(map_err)?;
+        // fail fast if the db is already opened by another connection
+        conn.busy_timeout(Duration::ZERO).map_err(map_err)?;
+        // ensure that only a single connection can write to the database!
+        // this makes it possible for our internal mutex locking to enforce ordering
+        conn.pragma_update(None, "locking_mode", "EXCLUSIVE")
+            .map_err(map_err)?;
+        // ensure we're in WAL mode
+        conn.pragma_update(None, "journal_mode", "WAL")
+            .map_err(map_err)?;
         Ok(Self::from_connection(conn))
     }
 
@@ -56,14 +66,8 @@ impl SqliteDb {
         }
     }
 
-    /// Acquire the connection, mapping a poisoned mutex to a [`DbError`] rather
-    /// than panicking. A poison means a prior caller panicked mid-statement, so
-    /// the connection may be mid-transaction; we surface that as an error and
-    /// let the caller decide, instead of crashing the whole process.
-    fn lock(&self) -> Result<MutexGuard<'_, Connection>, DbError> {
-        self.conn
-            .lock()
-            .map_err(|_| DbError::Sql("sqlite connection mutex poisoned".to_string()))
+    fn lock(&self) -> MutexGuard<'_, Connection> {
+        self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -74,7 +78,7 @@ impl Db for SqliteDb {
     }
 
     async fn describe_table(&self, name: &str) -> Result<Option<DbTableDescriptor>, DbError> {
-        let conn = self.lock()?;
+        let conn = self.lock();
 
         // `pragma_table_info` is a table-valued function, so the table name can
         // be bound as a parameter (a bare `PRAGMA table_info(...)` cannot). It
@@ -127,14 +131,14 @@ impl Db for SqliteDb {
     }
 
     async fn exec(&self, sql: &str, params: &[DbValue]) -> Result<usize, DbError> {
-        let conn = self.lock()?;
-        let result = run_statement(&conn, sql, params)?;
+        let conn = self.lock();
+        let result = run_statement(&conn, sql, params, false)?;
         Ok(result.rows_affected)
     }
 
     async fn query(&self, sql: &str, params: &[DbValue]) -> Result<Vec<DbRow>, DbError> {
-        let conn = self.lock()?;
-        let result = run_statement(&conn, sql, params)?;
+        let conn = self.lock();
+        let result = run_statement(&conn, sql, params, true)?;
         Ok(result.rows)
     }
 
@@ -176,7 +180,7 @@ impl DbBatch for SqliteBatch {
         let txn = conn.unchecked_transaction().map_err(map_err)?;
         let mut results = Vec::with_capacity(self.statements.len());
         for (sql, params) in &self.statements {
-            results.push(run_statement(&txn, sql, params)?);
+            results.push(run_statement(&txn, sql, params, false)?);
         }
         txn.commit().map_err(map_err)?;
         Ok(results)
@@ -208,8 +212,12 @@ fn run_statement(
     conn: &Connection,
     sql: &str,
     params: &[DbValue],
+    readonly: bool,
 ) -> Result<DbStatementResult, DbError> {
     let mut stmt = conn.prepare(sql).map_err(map_err)?;
+    if readonly && !stmt.readonly() {
+        return Err(DbError::ReadonlyViolation);
+    }
     let col_count = stmt.column_count();
 
     let mut rows_out = Vec::new();
@@ -265,7 +273,9 @@ fn value_from_ref(value: ValueRef<'_>) -> Result<DbValue, DbError> {
         ),
         ValueRef::Blob(bytes) => DbValue::Blob(bytes.to_vec()),
         ValueRef::Real(_) => {
-            return Err(DbError::Sql("unexpected REAL value from sqlite".to_string()));
+            return Err(DbError::Sql(
+                "unexpected REAL value from sqlite".to_string(),
+            ));
         }
     })
 }
@@ -410,8 +420,7 @@ mod tests {
             ))
             .unwrap();
         }
-        let updated =
-            block_on(db.exec("UPDATE t SET name = 'y' WHERE id <= 2", &[])).unwrap();
+        let updated = block_on(db.exec("UPDATE t SET name = 'y' WHERE id <= 2", &[])).unwrap();
         assert_eq!(updated, 2);
         let deleted = block_on(db.exec("DELETE FROM t", &[])).unwrap();
         assert_eq!(deleted, 3);
@@ -437,7 +446,11 @@ mod tests {
         let up = |val: &str, ts: i64| {
             block_on(db.exec(
                 upsert,
-                &[DbValue::Integer(1), DbValue::Text(val.into()), DbValue::Integer(ts)],
+                &[
+                    DbValue::Integer(1),
+                    DbValue::Text(val.into()),
+                    DbValue::Integer(ts),
+                ],
             ))
         };
 
@@ -466,8 +479,11 @@ mod tests {
         ))
         .unwrap();
         let desc = block_on(db.describe_table("m")).unwrap().unwrap();
-        let by_name: std::collections::HashMap<_, _> =
-            desc.cols.iter().map(|c| (c.name.as_str(), c.db_type)).collect();
+        let by_name: std::collections::HashMap<_, _> = desc
+            .cols
+            .iter()
+            .map(|c| (c.name.as_str(), c.db_type))
+            .collect();
         assert_eq!(by_name["a"], DbType::Integer);
         assert_eq!(by_name["s"], DbType::Text);
         assert_eq!(by_name["b"], DbType::Blob);
