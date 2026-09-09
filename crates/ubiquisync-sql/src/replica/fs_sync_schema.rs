@@ -1,7 +1,7 @@
 use crate::{def_table, def_table_with_auto_id};
 
 def_table_with_auto_id!(remotes as __replica_remotes (id) => {});
-def_table_with_auto_id!(topics as __pack_published (id) => {
+def_table_with_auto_id!(topics as __pack_topics (id) => {
     dirty: bool,
 });
 

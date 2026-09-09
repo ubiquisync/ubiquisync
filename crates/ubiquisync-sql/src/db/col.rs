@@ -210,10 +210,7 @@ macro_rules! try_from_into_col_repr {
             fn from_repr<'a>(
                 value: <Self::Repr as $crate::db::ColType>::BorrowedType<'a>,
             ) -> Result<Self, $crate::db::DbError> {
-                Self::try_from(value).map_err(|_| $crate::db::DbError::TypeMismatch {
-                    expected: std::any::type_name::<Self>(),
-                    actual: Some($crate::db::DbType::Integer),
-                })
+                Self::try_from(value).map_err(|e| $crate::db::DbError::DecodeError(Box::new(e)))
             }
         }
     };

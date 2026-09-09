@@ -115,7 +115,15 @@ impl CreateTableDef {
         let unique_clause = self
             .unique
             .iter()
-            .map(|uq| format!(", UNIQUE({0})", uq.join(", ")))
+            .map(|uq| {
+                format!(
+                    ", UNIQUE({0})",
+                    uq.iter()
+                        .map(|s| quote_ident(s))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })
             .collect::<Vec<_>>()
             .join("");
         format!(

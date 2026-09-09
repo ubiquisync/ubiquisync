@@ -129,7 +129,7 @@ pub enum InitCreationError {
     SigningError(#[from] SigningError),
     #[error("unsupported version: {0:?}")]
     UnsupportedVersion(Version),
-    #[error("unsupported version: {0:?}")]
+    #[error("init verify error: {0}")]
     InitVerifyError(#[from] InitVerifyError),
 }
 

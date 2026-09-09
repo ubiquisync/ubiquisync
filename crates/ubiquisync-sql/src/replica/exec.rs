@@ -1,4 +1,4 @@
-use sea_query::{Expr, ExprTrait, Query};
+use sea_query::{Expr, ExprTrait, Query, value::prelude::Uuid as SeaUuid};
 use ubiquisync_core::{
     ids::LogId,
     log::{
@@ -44,7 +44,9 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
             Query::select()
                 .from(streams::Table)
                 .and_where(Expr::column(streams::PeerId).eq(self.self_db_id))
-                .and_where(Expr::column(streams::ContainerId).eq(container_id.as_ref())),
+                .and_where(
+                    Expr::column(streams::ContainerId).eq(SeaUuid::from_bytes(container_id.0)),
+                ),
         )
         .await
         .map_err(ExecError::Db)?;
@@ -83,7 +85,7 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
                 todo!("cipher not supported yet");
             }
 
-            if commit_err.is_some() && commit_size != head_size {
+            if commit_err.is_none() && commit_size != head_size {
                 return Err(ExecError::Internal(format!(
                     "commit status is okay but head {head_size} and commit {commit_size} sizes do not match"
                 )));
