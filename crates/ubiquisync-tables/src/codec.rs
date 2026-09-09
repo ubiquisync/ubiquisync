@@ -348,14 +348,12 @@ mod tests {
 
     #[proptest]
     fn roundtrip_op(op: Op) {
-        let mut w = Writer::new();
-        encode_one_op(&mut w, &op).unwrap();
-        let buf = w.finalize();
-
-        let mut r = Reader::new(&buf);
-        let decoded = decode_one_op(&mut r).unwrap();
+        let cdc = Codec {
+            container_id: ContainerId([0; 16]),
+        };
+        let (cid, buf) = cdc.encode(&op).unwrap();
+        let decoded = cdc.decode(&cid, &buf).unwrap();
         assert_eq!(op, decoded);
-        assert!(r.is_empty())
     }
 }
 
