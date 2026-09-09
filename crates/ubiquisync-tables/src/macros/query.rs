@@ -95,7 +95,7 @@ macro_rules! __define_table_query {
                 $crate::macros::support::sea_query::Expr::col(Col::$pk_name)
                     .eq($crate::__q_pk_bind!($pk_name, $pk_type)),
             );)+
-            let (sql, params) = $crate::macros::support::build_select(&stmt, store.dialect())?;
+            let (sql, params) = $crate::macros::support::build_sql(&stmt, store.dialect())?;
             let rows = store.query(&sql, &params).await?;
             match rows.first() {
                 ::core::option::Option::Some(row) =>
@@ -114,7 +114,7 @@ macro_rules! __define_table_query {
         {
             let mut stmt = $crate::macros::support::sea_query::Query::select();
             stmt.columns([$(Col::$pk_name,)+ $(Col::$col_name,)*]).from(Table);
-            let (sql, params) = $crate::macros::support::build_select(&stmt, store.dialect())?;
+            let (sql, params) = $crate::macros::support::build_sql(&stmt, store.dialect())?;
             let rows = store.query(&sql, &params).await?;
             rows.iter().map(Row::from_row).collect()
         }
@@ -145,7 +145,7 @@ macro_rules! __define_table_query {
             let mut stmt = $crate::macros::support::sea_query::Query::select();
             stmt.from(Table).columns([$(Col::$pk_name,)+ $(Col::$col_name,)*]);
             compose(&mut stmt);
-            let (sql, params) = $crate::macros::support::build_select(&stmt, store.dialect())?;
+            let (sql, params) = $crate::macros::support::build_sql(&stmt, store.dialect())?;
             let rows = store.query(&sql, &params).await?;
             rows.iter().map(Row::from_row).collect()
         }

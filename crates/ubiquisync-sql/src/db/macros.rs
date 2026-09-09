@@ -24,7 +24,7 @@ macro_rules! def_table {
                 #[allow(dead_code)]
                 pub fn create_table_def() -> $crate::db::CreateTableDef {
                     $crate::db::table(
-                        stringify!($name),
+                        stringify!($dbname),
                         &[ $(< [<$pk_name:camel>] as $crate::db::Col>::create_col_def(),)+ ],
                         &[ $(< [<$col_name:camel>] as $crate::db::Col>::create_col_def(),)* ],
                     )
@@ -48,7 +48,7 @@ macro_rules! def_table_with_auto_id {
                 #[allow(dead_code)]
                 pub fn create_table_def() -> $crate::db::CreateTableDef {
                     $crate::db::table_with_auto_id(
-                        stringify!($name),
+                        stringify!($dbname),
                         stringify!($id_col),
                         &[ $(< [< $col_name:camel >] as $crate::db::Col>::create_col_def(),)* ],
                     )

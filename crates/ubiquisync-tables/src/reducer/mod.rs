@@ -15,7 +15,7 @@ use crate::id::TableId;
 use crate::op::Op;
 use crate::physical_schema::PhysicalTableSchema;
 use crate::schema::TableSchema;
-use crate::watch::{ChangeEvent, WatchTarget};
+use crate::watch::ChangeEvent;
 use crate::{codec::Codec, error::TablesError};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;

@@ -1,6 +1,6 @@
 use sea_query::{
-    ColumnName, ColumnRef, DeleteStatement, Expr, InsertStatement, PostgresQueryBuilder,
-    QueryStatementBuilder, SelectStatement, SqliteQueryBuilder, UpdateStatement, Value, Values,
+    ColumnName, ColumnRef, Expr, InsertStatement, PostgresQueryBuilder, QueryStatementBuilder,
+    SelectStatement, SqliteQueryBuilder, UpdateStatement, Value, Values,
 };
 
 use crate::{

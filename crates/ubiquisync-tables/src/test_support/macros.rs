@@ -11,16 +11,13 @@
 
 use futures::{FutureExt, StreamExt};
 use ubiquisync_core::crypto::credentials::software::SoftwareCredentials;
-use ubiquisync_core::event::EventBus;
 use ubiquisync_core::ids::{AppId, ContainerId};
 use ubiquisync_sql::Exec;
 use ubiquisync_sql::db::Db;
 
-use crate::op::Op;
-use crate::reducer::Reducer;
 use crate::sea_query::{Expr, ExprTrait, Order};
 use crate::store::StoreImpl;
-use crate::watch::{ChangeEvent, ColumnChange};
+use crate::watch::ColumnChange;
 
 // A single-PK table covering all four column types, a composite-PK table, and a
 // key-only table (empty value-column list).

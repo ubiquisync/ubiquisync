@@ -1,6 +1,3 @@
-use std::time::Duration;
-
-use backon::{ConstantBuilder, Retryable};
 use sea_query::{Expr, ExprTrait, Query};
 use ubiquisync_core::{
     ids::LogId,
@@ -13,10 +10,7 @@ use ubiquisync_core::{
 
 use crate::{
     Exec, ExecError,
-    db::{
-        DbError,
-        sea_query::{insert_cols, insert_cols_batch, select_cols, update_cols_batch},
-    },
+    db::sea_query::{insert_cols, insert_cols_batch, select_cols, update_cols_batch},
     reducer::Reducer,
     replica::{
         Replica,
@@ -29,26 +23,7 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
     /// Apply a local write, minting a fresh log entry for it.
     #[tracing::instrument(skip_all)]
     async fn exec(&self, server_user_id: Option<Uuid>, op: R::Op) -> Result<(), ExecError> {
-        (|| self.do_exec(server_user_id, &op))
-            .retry(
-                ConstantBuilder::new()
-                    .with_delay(Duration::from_millis(10))
-                    .with_jitter()
-                    .with_max_times(5),
-            )
-            .when(|e| match e {
-                // TODO check other errors, maybe extract into a helper if used elsewhere
-                ExecError::Db(DbError::UniqueViolation) => true,
-                _ => false,
-            })
-            .notify(|err, _| tracing::debug!(%err, "retrying"))
-            .await
-    }
-}
-
-impl<R: Reducer> Replica<R> {
-    async fn do_exec(&self, server_user_id: Option<Uuid>, op: &R::Op) -> Result<(), ExecError> {
-        let (container_id, op_bytes) = self.reducer.codec().encode(op)?;
+        let (container_id, op_bytes) = self.reducer.codec().encode(&op)?;
         let log_id = LogId {
             peer_id: self.self_id,
             container_id,
@@ -174,7 +149,7 @@ impl<R: Reducer> Replica<R> {
             // log from another peer
             let read_state = self
                 .reducer
-                .prepare(self.db.as_ref(), op)
+                .prepare(self.db.as_ref(), &op)
                 .await
                 .map_err(|e| ExecError::Reducer(Box::new(e)))?;
 
@@ -192,7 +167,7 @@ impl<R: Reducer> Replica<R> {
 
             let apply_state = self
                 .reducer
-                .apply(batch.as_mut(), timestamp, op, read_state)
+                .apply(batch.as_mut(), timestamp, &op, read_state)
                 .map_err(|e| ExecError::Reducer(Box::new(e)))?;
 
             let batch_result = batch.commit().await?;

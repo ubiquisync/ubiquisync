@@ -1,7 +1,7 @@
 ---
 source: crates/ubiquisync-sql/src/replica/schema.rs
-expression: "create_table_sql(crate::dialect::SqlDialect::Sqlite)"
+expression: "create_table_sql(crate::dialect::SqlDialect::Sqlite).join(\";\\n\")"
 ---
-CREATE TABLE IF NOT EXISTS "peers" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "peer_id" BLOB NOT NULL, "commitment_bytes" BLOB NOT NULL, "signature" BLOB NOT NULL);;
-CREATE TABLE IF NOT EXISTS "streams" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "peer_id" INTEGER NOT NULL, "container_id" BLOB NOT NULL, "head_size" INTEGER NOT NULL, "head_hash" BLOB NOT NULL, "head_cipher" BLOB NULL, "head_status" BLOB NULL, "commit_size" INTEGER NOT NULL, "commit_cipher" BLOB NULL, "commit_status" INTEGER NOT NULL, "commit_status_data" BLOB NULL, "parent_id" INTEGER NULL, "fork_idx" INTEGER NULL, "fork_hash" BLOB NULL);;
-CREATE TABLE IF NOT EXISTS "segments" ("stream_id" INTEGER NOT NULL, "end_size" INTEGER NOT NULL, "start_idx" INTEGER NOT NULL, "body" BLOB NOT NULL, PRIMARY KEY("stream_id", "end_size")) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS "__replica_peers" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "peer_id" BLOB NOT NULL, "commitment_bytes" BLOB NOT NULL, "signature" BLOB NOT NULL);;
+CREATE TABLE IF NOT EXISTS "__replica_streams" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "peer_id" INTEGER NOT NULL, "container_id" BLOB NOT NULL, "head_size" INTEGER NOT NULL, "head_hash" BLOB NOT NULL, "head_cipher" BLOB NULL, "head_status" BLOB NULL, "commit_size" INTEGER NOT NULL, "commit_cipher" BLOB NULL, "commit_status" INTEGER NOT NULL, "commit_status_data" BLOB NULL, "parent_id" INTEGER NULL, "fork_idx" INTEGER NULL, "fork_hash" BLOB NULL);;
+CREATE TABLE IF NOT EXISTS "__replica_segments" ("stream_id" INTEGER NOT NULL, "end_size" INTEGER NOT NULL, "start_idx" INTEGER NOT NULL, "body" BLOB NOT NULL, PRIMARY KEY("stream_id", "end_size")) WITHOUT ROWID;

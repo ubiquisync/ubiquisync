@@ -11,7 +11,6 @@
 #![allow(missing_docs)]
 
 pub use sea_query;
-use ubiquisync_sql::db::sea_query::value_to_db;
 pub use uuid;
 
 pub use futures::Stream;
@@ -19,12 +18,11 @@ pub use pastey;
 pub use ubiquisync_core::event::{RoutableEvent, Subscribe};
 pub use ubiquisync_core::uuid::Uuid as CoreUuid;
 pub use ubiquisync_sql::SqlQueryStore;
+pub use ubiquisync_sql::db::sea_query::build_sql;
 pub use ubiquisync_sql::db::{DbError, DbRow, DbValue};
 
 use futures::{StreamExt, future::ready};
-use sea_query::{PostgresQueryBuilder, SelectStatement, SqliteQueryBuilder};
 use ubiquisync_core::event::Subscription;
-use ubiquisync_sql::dialect::SqlDialect;
 
 use crate::col_type::ColType;
 use crate::id::ColumnId;
@@ -54,23 +52,4 @@ where
     T: TryFrom<ChangeEvent>,
 {
     sub.filter_map(|event| ready(T::try_from(event).ok()))
-}
-
-/// Render `stmt` to dialect-correct SQL plus its ordered params, ready to hand to
-/// [`SqlStore::query`](ubiquisync_sql::store::SqlStore::query). The dialect fixes
-/// placeholder style (`?` vs `$1`) and
-/// identifier quoting.
-pub fn build_select(
-    stmt: &SelectStatement,
-    dialect: SqlDialect,
-) -> Result<(String, Vec<DbValue>), DbError> {
-    let (sql, values) = match dialect {
-        SqlDialect::Sqlite => stmt.build_any(&SqliteQueryBuilder),
-        SqlDialect::Postgres => stmt.build_any(&PostgresQueryBuilder),
-    };
-    let params = values
-        .into_iter()
-        .map(value_to_db)
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok((sql, params))
 }
