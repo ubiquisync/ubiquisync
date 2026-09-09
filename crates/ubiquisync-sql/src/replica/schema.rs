@@ -32,14 +32,14 @@ fn create_table_sql(dialect: SqlDialect) -> Vec<String> {
 
 fn table_defs() -> Vec<CreateTableDef> {
     vec![
-        peers::create_table_def(),
+        peers::create_table_def().with_unique(&["peer_id"]),
         streams::create_table_def(),
         segments::create_table_def(),
     ]
 }
 
 def_table_with_auto_id!(peers as __replica_peers (id) => {
-    peer_id: [u8; 32], // TODO UNIQUE
+    peer_id: [u8; 32],
     commitment_bytes: Vec<u8>,
     signature: super::Signature
 });

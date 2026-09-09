@@ -18,13 +18,12 @@
 
 extern crate alloc;
 
+pub mod bytes;
 pub mod codec;
 pub mod crypto;
 pub mod event;
 pub mod hlc;
 pub mod ids;
-pub mod log;
-//pub mod sync;
-pub mod bytes;
 pub mod init;
+pub mod log;
 pub mod uuid;
