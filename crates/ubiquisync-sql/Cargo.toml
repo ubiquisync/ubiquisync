@@ -23,6 +23,7 @@ pastey = { workspace = true }
 backon = { workspace = true }
 tracing = { workspace = true }
 num_enum = { workspace = true }
+anyhow = "1"  # TODO: remove this before merging!! just for prototyping
 
 [dev-dependencies]
 ubiquisync-core = { workspace = true, features = ["proptest"] }

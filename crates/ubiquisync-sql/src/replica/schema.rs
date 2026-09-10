@@ -21,9 +21,15 @@ def_table_with_auto_id!(peers as __replica_peers (id) => {
     signature: super::Signature
 });
 
+// TODO when we intialize a container we should resolve its topic
+def_table_with_auto_id!(containers as __replica_containers (id) => {
+    container_id: [u8; 16],
+    topic_id: i64,
+});
+
 def_table_with_auto_id!(streams as __replica_streams (id) => {
    peer_id: i64, // TODO ref peers
-   container_id: [u8;16],
+   container_id: [u8; 16], // TODO should we ref containers.id or not here?
    head_size: u64, // TODO default 0
    head_hash: [u8; 32], // TODO could be non-null and default to seed
    head_cipher: Option<super::CipherInfo>,
@@ -62,6 +68,7 @@ fn create_table_sql(dialect: SqlDialect) -> Vec<String> {
 fn table_defs() -> Vec<CreateTableDef> {
     vec![
         peers::create_table_def().with_unique(&["peer_id"]),
+        containers::create_table_def().with_unique(&["container_id"]),
         streams::create_table_def(),
         segments::create_table_def(),
     ]

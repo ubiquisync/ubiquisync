@@ -1,6 +1,7 @@
 mod exec;
 mod fs_read;
 mod fs_sync_schema;
+mod fs_write;
 mod init;
 mod peers;
 mod query;

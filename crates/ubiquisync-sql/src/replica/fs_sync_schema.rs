@@ -2,6 +2,10 @@ use crate::{def_table, def_table_with_auto_id};
 
 def_table_with_auto_id!(remotes as __replica_remotes (id) => {});
 def_table_with_auto_id!(topics as __pack_topics (id) => {
+    topic: String,
+});
+
+def_table!(topic_state as __pack_topic_state (remote_id: i64, topic_id: i64) => {
     dirty: bool,
 });
 
