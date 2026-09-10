@@ -2,6 +2,7 @@ use thiserror::Error;
 use ubiquisync_core::{
     codec::{ReadError, Reader, Writer},
     crypto::{CipherInfo, RootKey256Fingerprint, Signature},
+    hlc::Timestamp,
     ids::{ContainerId, PeerId},
     log::ChainHash,
 };
@@ -78,16 +79,25 @@ codeable_col_repr!(Signature);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub enum HeadErr {
-    Todo,
-    //Sealed(u64)
-    //Closed
+    /// Entry admission is blocked at the specified size.
+    /// If the specified size is less than the current head size,
+    /// more entries may be admitted up to that point.
+    Blocked(u64),
+    /// Key rotation is needed and the next entry MUST be
+    /// a UseKey op with the specified key.
+    /// In the case of local operations, the system will insert this.
+    /// For remote peers, the state machine will quarantine peers who
+    /// don't rotate keys when expected.
+    NeedUseKey(RootKey256Fingerprint),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub enum CommitErr {
-    NeedKey(RootKey256Fingerprint),
-    HLCForwardSkew,
+    /// The key specified by the commit_cipher field could not
+    /// be resolved so committing is stalled on that key arriving.
+    NeedKey,
+    HLCForwardSkew(Timestamp),
     NeedPeerCommit {
         peer_id: PeerId,
         // None if same container
@@ -95,6 +105,7 @@ pub enum CommitErr {
         head: ChainHash,
     },
     IncompatibleSoftware(UnknownSoftwareVersion),
+    Frozen,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,37 +128,38 @@ impl HeadErr {
     pub fn encode(&self, _: &mut Writer) {}
 
     pub fn decode<'a>(_: &mut Reader<'a>) -> Result<Self, ReadError> {
-        Ok(HeadErr::Todo)
+        todo!()
     }
 }
 
 impl CommitErr {
     pub fn encode(&self, writer: &mut Writer) {
-        match self {
-            CommitErr::NeedKey(root_key256_fingerprint) => {
-                writer.write_byte(0);
-                writer.write_array(&root_key256_fingerprint.0);
-            }
-            CommitErr::HLCForwardSkew => writer.write_byte(1),
-            CommitErr::NeedPeerCommit {
-                peer_id,
-                container_id,
-                head,
-            } => {
-                if let Some(container_id) = container_id {
-                    writer.write_byte(2);
-                    writer.write_array(&container_id.0);
-                } else {
-                    writer.write_byte(3);
-                }
-                writer.write_array(&peer_id.0);
-                head.encode(writer);
-            }
-            CommitErr::IncompatibleSoftware(unknown_software_version) => {
-                writer.write_byte(4);
-                unknown_software_version.encode(writer);
-            }
-        }
+        todo!()
+        // match self {
+        //     CommitErr::NeedKey(root_key256_fingerprint) => {
+        //         writer.write_byte(0);
+        //         writer.write_array(&root_key256_fingerprint.0);
+        //     }
+        //     CommitErr::HLCForwardSkew => writer.write_byte(1),
+        //     CommitErr::NeedPeerCommit {
+        //         peer_id,
+        //         container_id,
+        //         head,
+        //     } => {
+        //         if let Some(container_id) = container_id {
+        //             writer.write_byte(2);
+        //             writer.write_array(&container_id.0);
+        //         } else {
+        //             writer.write_byte(3);
+        //         }
+        //         writer.write_array(&peer_id.0);
+        //         head.encode(writer);
+        //     }
+        //     CommitErr::IncompatibleSoftware(unknown_software_version) => {
+        //         writer.write_byte(4);
+        //         unknown_software_version.encode(writer);
+        //     }
+        // }
     }
 
     pub fn decode<'a>(reader: &mut Reader<'a>) -> Result<Self, StatusDecodeError> {
