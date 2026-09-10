@@ -210,7 +210,9 @@ fn to_plaintext<'a>(
     }
 }
 
-// TODO: we actually should be able to accomodate key changes mid segment
+// TODO: we actually want to be able to accomodate key changes mid segment
+// it's just that this requires a trait to resolve those keys on the fly
+// and likely that would be async so there's a bit of refactoring/coordination needed
 fn check_use_key<E: BytesWrapper>(
     cipher: &Option<EntryCipher>,
     e: &LogEntry<E>,

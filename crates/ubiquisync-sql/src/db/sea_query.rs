@@ -12,7 +12,7 @@ pub async fn select_cols<C: Cols>(
     db: &dyn Db,
     stmt: &mut SelectStatement,
 ) -> Result<Rows<C>, DbError> {
-    stmt.columns(C::idens());
+    stmt.columns(C::column_refs());
     let (sql, params) = build_sql(stmt, db.dialect())?;
     let res = db.query(&sql, &params).await?;
     Ok(res.into())
@@ -66,7 +66,7 @@ pub fn prep_insert_cols<Inserting: Cols, Returning: Cols>(
         for i in returning_idens {
             col_refs.push(ColumnRef::Column(ColumnName(None, i)))
         }
-        stmt.returning(sea_query::ReturningClause::Columns(col_refs));
+        stmt.returning(sea_query::ReturningClause::Columns(Returning::column_refs()));
     }
 
     build_sql(stmt, dialect)

@@ -1,8 +1,5 @@
 use std::{
-    collections::{
-        HashMap, HashSet,
-        hash_map::{self, Entry},
-    },
+    collections::{HashMap, HashSet, hash_map::Entry},
     ops::Range,
 };
 
@@ -79,25 +76,3 @@ impl PackReadState {
 //         to_read,
 //     }
 // }
-
-/// Dedupes files and chooses the latest valid generation of a pack.
-/// NOTE: if a generation file is corrupted garbage we could inspect
-/// earlier generations at read time, but if this happens in a shared folder
-/// there are bigger problems (noting this here so that reviewers don't keep
-/// flagging a thread that doesn't match the threat model).
-pub fn dedupe_pack_files(files: &[PackFileName]) -> Vec<PackFileName> {
-    let mut files_by_ref = HashMap::<PackRef, PackFileName>::new();
-    for f in files.iter() {
-        match files_by_ref.entry(f.get_ref()) {
-            Entry::Occupied(mut e) => {
-                if e.get().generation < f.generation {
-                    e.insert(f.clone());
-                }
-            }
-            Entry::Vacant(e) => {
-                e.insert(f.clone());
-            }
-        }
-    }
-    files_by_ref.into_values().collect::<Vec<_>>()
-}

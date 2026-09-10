@@ -6,10 +6,14 @@ use thiserror::Error;
 use crate::{
     bytes::{BytesWrapper, PlaintextBytes, ToStatic},
     codec::{ReadError, Reader, WriteError, Writer},
-    crypto::{CipherError, CipherInfo, CryptoDecodeError, SegmentCipher, Signature},
+    crypto::{
+        CipherError, CipherInfo, CryptoDecodeError, EntryCipher, SegmentCipher, Signature,
+        SignatureVerifyError, VerifyingKey,
+    },
     log::{
-        ChainHash, LogDecodeError, LogEncodeError, LogEntry, LogValidationError, OpaqueLogEntry,
-        PlaintextLogEntry,
+        ChainHash, ChainSeed, LogDecodeError, LogEncodeError, LogEntry, LogValidationError,
+        LogVerifyError, OpaqueLogEntry, PlaintextLogEntry, SegmentCipherError, verify_opaque,
+        verify_plaintext,
     },
 };
 
@@ -100,6 +104,43 @@ impl<'a> SegmentReader<'a> {
             }
         })
     }
+
+    pub fn verify(
+        self,
+        verifying_key: &VerifyingKey,
+        entry_cipher: &Option<EntryCipher>,
+        segment_cipher: &Option<SegmentCipher>,
+        seed: &ChainSeed,
+    ) -> Result<(DecodedSegment<'a>, ChainHash), SegmentVerifyError> {
+        let header = self.header.clone();
+        let decoded = self.read(segment_cipher)?;
+        let ch = match decoded {
+            DecodedSegment::Opaque(ref entries) => {
+                verify_opaque(verifying_key, seed, &header.prev_chain, entries.iter())?
+            }
+            DecodedSegment::Plaintext(ref entries) => verify_plaintext(
+                verifying_key,
+                entry_cipher,
+                seed,
+                &header.prev_chain,
+                entries.iter(),
+            )?,
+        };
+        verifying_key.verify_signature(&ch.sign_bytes(seed), &header.signature)?;
+        Ok((decoded, ch))
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum SegmentVerifyError {
+    #[error("decode error: {0}")]
+    Decode(#[from] SegmentDecodeError),
+    #[error("cipher error: {0}")]
+    Cipher(#[from] SegmentCipherError),
+    #[error("signature: {0}")]
+    Signature(#[from] SignatureVerifyError),
+    #[error("signature: {0}")]
+    Verify(#[from] LogVerifyError),
 }
 
 pub fn encode_segment_opaque<'a>(

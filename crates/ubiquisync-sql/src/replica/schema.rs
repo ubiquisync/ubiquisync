@@ -14,6 +14,34 @@ use crate::{
     try_from_into_col_repr,
 };
 
+def_table_with_auto_id!(peers as __replica_peers (id) => {
+    peer_id: [u8; 32],
+    commitment_bytes: Vec<u8>,
+    signature: super::Signature
+});
+
+def_table_with_auto_id!(streams as __replica_streams (id) => {
+   peer_id: i64, // TODO ref peers
+   container_id: [u8;16],
+   head_size: u64, // TODO default 0
+   head_hash: [u8; 32], // TODO could be non-null and default to seed
+   head_cipher: Option<super::CipherInfo>,
+   head_err: Option<super::HeadErr>,
+   commit_size: u64, // TODO default 0
+   commit_cipher: Option<super::CipherInfo>,
+   commit_err: Option<super::CommitErr>,
+   parent_id: Option<i64>, // TODO ref streams
+   fork_idx: Option<u64>,
+   fork_hash: Option<[u8;32]>,
+   // TODO CHECK(commit_size <= head_size)
+});
+
+def_table!(segments as __replica_segments (stream_id: i64, end_size: u64) => { // TODO ref streams
+    start_idx: u64,
+    body: Vec<u8>,
+    // WITH ROWID!
+});
+
 pub(crate) async fn create_tables(db: &dyn Db) -> Result<(), DbError> {
     let mut batch = db.new_batch();
     for st in create_table_sql(db.dialect()) {
@@ -38,42 +66,14 @@ fn table_defs() -> Vec<CreateTableDef> {
     ]
 }
 
-def_table_with_auto_id!(peers as __replica_peers (id) => {
-    peer_id: [u8; 32],
-    commitment_bytes: Vec<u8>,
-    signature: super::Signature
-});
-
-def_table_with_auto_id!(streams as __replica_streams (id) => {
-   peer_id: i64, // TODO ref peers
-   container_id: [u8;16],
-   head_size: u64, // TODO default 0
-   head_hash: [u8; 32], // TODO could be non-null and default to seed
-   head_cipher: Option<super::CipherInfo>,
-   head_err: Option<super::HeadErr>,
-   commit_size: u64, // TODO default 0
-   commit_cipher: Option<super::CipherInfo>,
-   commit_err: Option<super::CommitErr>,
-   parent_id: Option<i64>, // TODO ref streams
-   fork_idx: Option<u64>,
-   fork_hash: Option<[u8;32]>,
-   // TODO CHECK(commit_size <= head_size)
-});
+// TODO: CREATE UNIQUE INDEX streams_root ON streams(peer_id, container_id) WHERE parent_id IS NULL;
+// TODO: we might also want a unique on (parent_id, fork_idx, fork_hash) to avoid races
 
 try_from_into_col_repr!([u8; 32], Vec<u8>);
 codeable_col_repr!(CipherInfo);
 codeable_col_repr!(CommitErr);
 codeable_col_repr!(HeadErr);
 codeable_col_repr!(Signature);
-
-// TODO: CREATE UNIQUE INDEX streams_root ON streams(peer_id, container_id) WHERE parent_id IS NULL;
-// TODO: we might also want a unique on (parent_id, fork_idx, fork_hash) to avoid races
-
-def_table!(segments as __replica_segments (stream_id: i64, end_size: u64) => { // TODO ref streams
-    start_idx: u64,
-    body: Vec<u8>,
-    // WITH ROWID!
-});
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]

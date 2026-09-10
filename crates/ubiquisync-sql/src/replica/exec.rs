@@ -1,4 +1,4 @@
-use sea_query::{Expr, ExprTrait, Query, value::prelude::Uuid as SeaUuid};
+use sea_query::{Expr, ExprTrait, Query};
 use ubiquisync_core::{
     ids::LogId,
     log::{
@@ -10,11 +10,12 @@ use ubiquisync_core::{
 
 use crate::{
     Exec, ExecError,
-    db::sea_query::{insert_cols, insert_cols_batch, select_cols, update_cols_batch},
+    db::sea_query::{insert_cols, insert_cols_batch, update_cols_batch},
     reducer::Reducer,
     replica::{
         Replica,
         schema::{segments, streams},
+        streams::StreamLog,
     },
 };
 
@@ -24,33 +25,18 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
     #[tracing::instrument(skip_all)]
     async fn exec(&self, server_user_id: Option<Uuid>, op: R::Op) -> Result<(), ExecError> {
         let (container_id, op_bytes) = self.reducer.codec().encode(&op)?;
+        // per-stream mutex guard to prevent ensures only one thread touches a single stream
+        let stream__guard = self
+            .stream_locks
+            .lock(&StreamLog::new(self.self_db_id, container_id))
+            .await;
+
+        let stream_rows = self.resolve_streams(&stream__guard).await?;
+
         let log_id = LogId {
             peer_id: self.self_id,
             container_id,
         };
-        // per-stream mutex guard to prevent ensures only one thread touches a single stream
-        let _guard = self.stream_locks.lock(&log_id).await;
-
-        let stream_rows = select_cols::<(
-            streams::Id,
-            streams::HeadSize,
-            streams::HeadHash,
-            streams::HeadCipher,
-            streams::HeadErr,
-            streams::CommitSize,
-            streams::CommitErr,
-        )>(
-            self.db.as_ref(),
-            Query::select()
-                .from(streams::Table)
-                .and_where(Expr::column(streams::PeerId).eq(self.self_db_id))
-                .and_where(
-                    Expr::column(streams::ContainerId).eq(SeaUuid::from_bytes(container_id.0)),
-                ),
-        )
-        .await
-        .map_err(ExecError::Db)?;
-
         let seed = ChainSeed::new(&log_id);
 
         let (stream_id, chain_head, commit_err) = if stream_rows.is_empty() {
@@ -74,29 +60,24 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
         } else if stream_rows.len() > 1 {
             todo!("found multiple rows, this means we have a fork and need to know what to do")
         } else {
-            let (stream_id, head_size, head_hash, head_cipher, head_err, commit_size, commit_err) =
-                stream_rows.exactly_one()?;
+            let stream = stream_rows[0];
 
-            if head_err.is_some() {
+            if stream.head_err.is_some() {
                 todo!("handle some unexpected status")
             }
 
-            if head_cipher.is_some() {
+            if stream.head_cipher.is_some() {
                 todo!("cipher not supported yet");
             }
 
-            if commit_err.is_none() && commit_size != head_size {
+            if stream.commit_err.is_none() && stream.commit_size != stream.head_chain.size {
                 return Err(ExecError::Internal(format!(
-                    "commit status is okay but head {head_size} and commit {commit_size} sizes do not match"
+                    "commit status is okay but head {} and commit {} sizes do not match",
+                    stream.head_chain.size, stream.commit_size,
                 )));
             }
 
-            let chain_head = ChainHash {
-                hash: head_hash,
-                size: head_size,
-            };
-
-            (stream_id, chain_head, commit_err)
+            (stream.id, stream.head_chain, stream.commit_err)
         };
 
         let mut batch = self.db.new_batch();

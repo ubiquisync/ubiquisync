@@ -43,6 +43,12 @@ impl<K: std::hash::Hash + Eq + Clone> KeyedLock<K> {
     }
 }
 
+impl<K: std::hash::Hash + Eq + Clone> KeyedLockGuard<K> {
+    pub fn key(&self) -> &K {
+        &self.key
+    }
+}
+
 impl<K: std::hash::Hash + Eq + Clone> Drop for KeyedLockGuard<K> {
     fn drop(&mut self) {
         // release the lock first decrementing the strong count

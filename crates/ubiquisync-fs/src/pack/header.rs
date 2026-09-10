@@ -10,10 +10,6 @@ use crate::pack::PackFileName;
 
 #[derive(Debug, Clone)]
 pub struct PackHeader {
-    /// The max of all the ranks + 1 of the pack files
-    /// this pack supersedes (0 if an original uncompressed pack
-    /// which doesn't supersede anything).
-    pub rank: u64,
     pub parents: Vec<PackRef>,
     /// The list of packs this pack file supersedes directly.
     /// This is used by GC to know when it is safe to delete a pack
@@ -55,7 +51,7 @@ pub struct SegmentDescriptor {
     pub idx_range: Range<u64>,
     pub prev_chain: Hash256,
     pub end_chain: Hash256,
-    pub body_loc: Range<u64>,
+    pub body_loc: Range<usize>,
 }
 
 impl PackHeader {
