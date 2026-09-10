@@ -1688,6 +1688,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ubiquisync-fs"
+version = "0.0.4"
+dependencies = [
+ "proptest",
+ "test-case",
+ "test-strategy",
+ "ubiquisync-core",
+]
+
+[[package]]
 name = "ubiquisync-postgres"
 version = "0.0.4"
 dependencies = [
