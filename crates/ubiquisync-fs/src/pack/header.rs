@@ -6,8 +6,14 @@ use ubiquisync_core::{
     ids::{ContainerId, PeerId},
 };
 
+use crate::pack::PackFileName;
+
 #[derive(Debug, Clone)]
 pub struct PackHeader {
+    /// The max of all the ranks + 1 of the pack files
+    /// this pack supersedes (0 if an original uncompressed pack
+    /// which doesn't supersede anything).
+    pub rank: u64,
     pub parents: Vec<PackRef>,
     /// The list of packs this pack file supersedes directly.
     /// This is used by GC to know when it is safe to delete a pack
@@ -19,7 +25,7 @@ pub struct PackHeader {
     /// names the pack ref in its file name (with a later generation)
     /// or in its supersedes list directly, and has a sufficient amount
     /// of time elapsed since that file was written (as a safety buffer).
-    pub supersedes: Vec<PackRef>,
+    pub self_supersedes: Vec<PackRef>,
     pub self_segments: Vec<SegmentDescriptor>,
     pub peer_data: Vec<PeerData>,
 }
@@ -33,7 +39,13 @@ pub struct PackRef {
 #[derive(Debug, Clone)]
 pub struct PeerData {
     pub peer_id: PeerId,
-    pub supersedes: Vec<PackRef>,
+    /// Names precisely a peer file this pack supersedes.
+    /// Note we MUST include generation because there
+    /// could be race condition in which the peer compresses
+    /// two packs into the PackRef we're targetting - we
+    /// need to know _which_ actual file range/generation
+    /// we're targetting.
+    pub supersedes: Vec<PackFileName>,
     pub segments: Vec<SegmentDescriptor>,
 }
 
