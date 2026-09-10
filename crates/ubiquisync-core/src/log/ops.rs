@@ -112,6 +112,30 @@ impl<'a> OpBatch<PlaintextBytes<'a>> {
         }
         Ok(())
     }
+
+    pub fn get_timestamp(&self) -> Result<Timestamp, LogValidationError> {
+        if self.timestamp.0.len() != 8 {
+            return Err(LogValidationError::InvalidTimestamp);
+        }
+
+        let bytes: &[u8] = self.timestamp.borrow();
+        Ok(Timestamp::from_raw(u64::from_le_bytes(
+            bytes.try_into().expect("8 bytes"),
+        )))
+    }
+
+    pub fn get_server_attested_user_id(&self) -> Result<Option<Uuid>, LogValidationError> {
+        let n = self.server_attested_user_id.0.len();
+        if n == 0 {
+            return Ok(None);
+        }
+        if n != 16 {
+            return Err(LogValidationError::InvalidServerAttestedUserId);
+        }
+
+        let bytes: &[u8] = self.server_attested_user_id.borrow();
+        Ok(Some(bytes.try_into().expect("16 bytes")))
+    }
 }
 
 impl<B: BytesWrapper> OpBatch<B> {

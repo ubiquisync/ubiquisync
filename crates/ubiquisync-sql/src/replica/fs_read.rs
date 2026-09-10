@@ -3,20 +3,30 @@ use std::{collections::HashSet, ops::Range};
 use sea_query::{Expr, ExprTrait, Query, value::prelude::Uuid};
 use thiserror::Error;
 use ubiquisync_core::{
+    hlc::{HlcError, wall_ms},
     ids::{LogId, PeerId},
-    log::segment::{
-        DecodedSegment, PlaintextSegmentEncoding, SegmentDecodeError, SegmentEncoding,
-        SegmentReader,
+    log::{
+        ChainSeed, LogEntry, LogValidationError, SegmentCipherError,
+        segment::{
+            DecodedSegment, PlaintextSegmentEncoding, SegmentDecodeError, SegmentEncoding,
+            SegmentReader, SegmentVerifyError, VerifiedSegment,
+        },
     },
 };
 use ubiquisync_fs::pack::{PackFileName, PackHeader, PackRef, SegmentDescriptor};
 
 use crate::{
-    db::{DbError, sea_query::select_cols},
+    db::{
+        DbError,
+        sea_query::{insert_cols_batch, select_cols, update_cols_batch},
+    },
+    op::OpDecodeError,
+    reducer::Reducer,
     replica::{
         Replica,
         peers::{PeerInfo, PeerResolveError},
         schema::{peers, segments, streams},
+        stream_lock::KeyedLockGuard,
         streams::{StreamInfo, StreamLog},
     },
 };
@@ -81,14 +91,17 @@ pub enum ProcessPackError {
     PeerResolve(#[from] PeerResolveError),
 }
 
-impl<R> Replica<R> {
+impl<R: Reducer> Replica<R> {
     async fn process_pack(&self, state: &mut PackProcessState) -> Result<(), ProcessPackError> {
         // TODO maybe we want this to be a stateful consumption of segments to resume after shutdown
         for segment in state.header.self_segments.iter() {
             // first aquire the lock for this log
             let stream_guard = self
                 .stream_locks
-                .lock(&StreamLog::new(state.peer_db_id, segment.container_id))
+                .lock(&StreamLog::new(
+                    state.peer_info.peer_db_id,
+                    segment.container_id,
+                ))
                 .await;
 
             let Range { start, end } = segment.idx_range;
@@ -106,6 +119,13 @@ impl<R> Replica<R> {
                 let mut candidate_streams = vec![];
                 let mut probably_have_segment = false;
                 for s in streams.iter() {
+                    if s.head_err.is_some() {
+                        // TODO in the future we can check the err and see if
+                        // we can maybe place some of this segment but we avoid
+                        // that complexity for now
+                        continue;
+                    }
+
                     let size = s.head_chain.size;
                     if size == end {
                         // TODO we can check directly if we have this segment already by hash
@@ -160,15 +180,97 @@ impl<R> Replica<R> {
 
     async fn place_pack_segment_direct(
         &self,
+        _guard: &KeyedLockGuard<StreamLog>,
         pack_state: &mut PackProcessState,
-        segment: &SegmentDescriptor,
+        segment_desc: &SegmentDescriptor,
         stream: &StreamInfo,
-    ) {
-        debug_assert_eq!(segment.idx_range.start, stream.head_chain.size);
-        debug_assert_eq!(segment.prev_chain, stream.head_chain.hash);
+    ) -> Result<(), SegmentProcessError> {
+        debug_assert_eq!(segment_desc.idx_range.start, stream.head_chain.size);
+        debug_assert_eq!(segment_desc.prev_chain, stream.head_chain.hash);
+        debug_assert!(stream.head_err.is_none());
+        debug_assert!(stream.head_cipher.is_none());
 
-        // let mut batch = self.db.new_batch();
-        // let timestamp = self.hlc.observe(batch.as_mut())?;
+        let segment = pack_state.resolve_segment(segment_desc)?;
+        let chain_hash = segment.verified.chain_hash;
+
+        // we always commit in 2 phases:
+        // 1. save the segment and advance stream head
+        // 2. iterate over each entry we CAN decode and commit
+
+        // 1. save the segment
+        let mut batch = self.db.new_batch();
+        // TODO should we use original bytes from the pack or re-encode?
+        insert_cols_batch::<(
+            segments::StreamId,
+            segments::StartIdx,
+            segments::EndSize,
+            segments::Body,
+        )>(
+            batch.as_mut(),
+            (
+                stream.id,
+                segment_desc.idx_range.start,
+                chain_hash.size,
+                segment.bytes.to_vec(),
+            ),
+            Query::insert().into_table(segments::Table),
+        )?;
+
+        update_cols_batch::<(streams::HeadSize, streams::HeadHash)>(
+            batch.as_mut(),
+            (chain_hash.size, chain_hash.hash),
+            Query::update()
+                .table(streams::Table)
+                .and_where(Expr::column(streams::Id).eq(stream.id)),
+        )?;
+
+        batch.commit().await?;
+
+        // 2. attempt to commit the segment
+
+        if stream.commit_err.is_some() {
+            // we actually can't commit now be committing is stalled with an error
+            return Ok(());
+        }
+
+        if stream.commit_cipher.is_some() {
+            todo!("support encryption")
+        }
+
+        if stream.commit_size != stream.head_chain.size {
+            todo!("internal error, stream sizes don't match expected based on no err")
+        }
+
+        let decoded = segment.verified.to_plaintext(&None)?;
+
+        let local_ts = wall_ms();
+        for entry in decoded {
+            match entry {
+                LogEntry::IndexedEntry(entry) => match entry {
+                    ubiquisync_core::log::EntryBody::OpBatch(op_batch) => {
+                        let mut batch = self.db.new_batch();
+                        let ts = op_batch.get_timestamp()?;
+                        match self.hlc.observe(ts, local_ts, batch.as_mut()) {
+                            Ok(_) => {}
+                            Err(HlcError::Skew(_)) => todo!("hlc skew stall"),
+                            Err(HlcError::Storage(e)) => {
+                                return Err(e.into());
+                            }
+                        }
+
+                        let op = self
+                            .reducer
+                            .codec()
+                            .decode(&segment_desc.container_id, &op_batch.ops)?;
+                    }
+                    ubiquisync_core::log::EntryBody::UseKey(cipher_info) => {
+                        todo!("commit & head cipher update & stall on missing key")
+                    }
+                    ubiquisync_core::log::EntryBody::Expunged(_) => {}
+                },
+                LogEntry::Signature(_) => {}
+            }
+        }
 
         // let entry = PlaintextLogEntry::IndexedEntry(EntryBody::OpBatch(OpBatch::new(
         //     timestamp,
@@ -244,7 +346,22 @@ impl<R> Replica<R> {
 
         //     // TODO should we return any kind of pending status to the caller? maybe not and this would be more of an alerting watch channel that could propogate to UI sync status or something
         // }
+        Ok(())
     }
+}
+
+#[derive(Error, Debug)]
+enum SegmentProcessError {
+    #[error("db error: {0}")]
+    Db(#[from] DbError),
+    #[error("resolve error: {0}")]
+    Resolve(#[from] SegmentResolveError),
+    #[error("cipher error: {0}")]
+    Cipher(#[from] SegmentCipherError),
+    #[error("log validation error: {0}")]
+    LogValidation(#[from] LogValidationError),
+    #[error("op decode error: {0}")]
+    OpDecode(#[from] OpDecodeError),
 }
 
 struct PackProcessState {
@@ -262,7 +379,7 @@ impl PackProcessState {
     fn resolve_segment<'a>(
         &'a mut self,
         segment_desc: &SegmentDescriptor,
-    ) -> Result<DecodedSegment<'a>, SegmentResolveError> {
+    ) -> Result<ResolvedSegment<'a>, SegmentResolveError> {
         let body = self.resolve_body()?;
         let segment_bytes = &body[segment_desc.body_loc.clone()];
         let reader = SegmentReader::start(segment_bytes)?;
@@ -274,9 +391,27 @@ impl PackProcessState {
         {
             todo!("encryption not supported yet!");
         }
-        let segment = reader.read(&None)?;
-        Ok(segment)
+        let log_id = LogId {
+            peer_id: self.peer_info.peer,
+            container_id: segment_desc.container_id,
+        };
+        let seed = ChainSeed::new(&log_id);
+        let segment = reader.verify(
+            &self.peer_info.commitment.sig_verify_key,
+            &None,
+            &None,
+            &seed,
+        )?;
+        Ok(ResolvedSegment {
+            bytes: segment_bytes,
+            verified: segment,
+        })
     }
+}
+
+struct ResolvedSegment<'a> {
+    pub bytes: &'a [u8],
+    pub verified: VerifiedSegment<'a>,
 }
 
 #[derive(Error, Debug)]
@@ -289,4 +424,6 @@ enum SegmentResolveError {
     BodyResolve(#[from] PackBodyResolveError),
     #[error("segment decode: {0}")]
     SegmentDecode(#[from] SegmentDecodeError),
+    #[error("verify error: {0}")]
+    Verify(#[from] SegmentVerifyError),
 }

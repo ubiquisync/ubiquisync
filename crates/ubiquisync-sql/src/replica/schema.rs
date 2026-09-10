@@ -79,6 +79,8 @@ codeable_col_repr!(Signature);
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub enum HeadErr {
     Todo,
+    //Sealed(u64)
+    //Closed
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

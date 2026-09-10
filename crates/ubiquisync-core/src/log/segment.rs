@@ -12,8 +12,8 @@ use crate::{
     },
     log::{
         ChainHash, ChainSeed, LogDecodeError, LogEncodeError, LogEntry, LogValidationError,
-        LogVerifyError, OpaqueLogEntry, PlaintextLogEntry, SegmentCipherError, verify_opaque,
-        verify_plaintext,
+        LogVerifyError, OpaqueLogEntry, PlaintextLogEntry, SegmentCipherError,
+        entries_to_plaintext, verify_opaque, verify_plaintext,
     },
 };
 
@@ -47,6 +47,14 @@ pub struct EncryptionInfo {
 #[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
 pub enum Compression {
     Zstd = 0,
+}
+
+pub struct VerifiedSegment<'a> {
+    pub entries: DecodedSegment<'a>,
+    pub prev_chain: ChainHash,
+    pub chain_hash: ChainHash,
+    pub signature: Signature,
+    pub chain_seed: ChainSeed,
 }
 
 pub enum DecodedSegment<'a> {
@@ -111,10 +119,10 @@ impl<'a> SegmentReader<'a> {
         entry_cipher: &Option<EntryCipher>,
         segment_cipher: &Option<SegmentCipher>,
         seed: &ChainSeed,
-    ) -> Result<(DecodedSegment<'a>, ChainHash), SegmentVerifyError> {
+    ) -> Result<VerifiedSegment<'a>, SegmentVerifyError> {
         let header = self.header.clone();
-        let decoded = self.read(segment_cipher)?;
-        let ch = match decoded {
+        let entries = self.read(segment_cipher)?;
+        let chain_hash = match entries {
             DecodedSegment::Opaque(ref entries) => {
                 verify_opaque(verifying_key, seed, &header.prev_chain, entries.iter())?
             }
@@ -126,8 +134,14 @@ impl<'a> SegmentReader<'a> {
                 entries.iter(),
             )?,
         };
-        verifying_key.verify_signature(&ch.sign_bytes(seed), &header.signature)?;
-        Ok((decoded, ch))
+        verifying_key.verify_signature(&chain_hash.sign_bytes(seed), &header.signature)?;
+        Ok(VerifiedSegment {
+            entries,
+            chain_hash,
+            prev_chain: header.prev_chain,
+            signature: header.signature,
+            chain_seed: *seed,
+        })
     }
 }
 
@@ -434,6 +448,38 @@ impl SegmentDecodeError {
 
 const SEGMENT_ENCODING_OPAQUE: u8 = 0;
 const SEGMENT_ENCODING_PLAINTEXT: u8 = 1;
+
+impl<'a> VerifiedSegment<'a> {
+    pub fn to_plaintext(
+        self,
+        cipher: &Option<EntryCipher>,
+    ) -> Result<Vec<PlaintextLogEntry<'a>>, SegmentCipherError> {
+        let VerifiedSegment {
+            chain_seed,
+            prev_chain,
+            entries,
+            ..
+        } = self;
+        entries.to_plaintext(&chain_seed, &prev_chain, cipher)
+    }
+}
+
+impl<'a> DecodedSegment<'a> {
+    pub fn to_plaintext(
+        self,
+        seed: &ChainSeed,
+        prev_chain: &ChainHash,
+        cipher: &Option<EntryCipher>,
+    ) -> Result<Vec<PlaintextLogEntry<'a>>, SegmentCipherError> {
+        match self {
+            DecodedSegment::Opaque(items) => {
+                let (e, _) = entries_to_plaintext(cipher, seed, prev_chain, items.iter())?;
+                Ok(e)
+            }
+            DecodedSegment::Plaintext(items) => Ok(items),
+        }
+    }
+}
 
 #[cfg(test)]
 pub(crate) mod tests {

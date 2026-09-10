@@ -26,12 +26,12 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
     async fn exec(&self, server_user_id: Option<Uuid>, op: R::Op) -> Result<(), ExecError> {
         let (container_id, op_bytes) = self.reducer.codec().encode(&op)?;
         // per-stream mutex guard to prevent ensures only one thread touches a single stream
-        let stream__guard = self
+        let stream_guard = self
             .stream_locks
             .lock(&StreamLog::new(self.self_db_id, container_id))
             .await;
 
-        let stream_rows = self.resolve_streams(&stream__guard).await?;
+        let stream_rows = self.resolve_streams(&stream_guard).await?;
 
         let log_id = LogId {
             peer_id: self.self_id,

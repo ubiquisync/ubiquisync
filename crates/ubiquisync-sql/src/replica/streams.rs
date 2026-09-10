@@ -29,7 +29,7 @@ impl StreamLog {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct StreamInfo {
     pub id: i64,
     pub head_chain: ChainHash,
@@ -37,6 +37,7 @@ pub(crate) struct StreamInfo {
     pub head_err: Option<HeadErr>,
     pub commit_size: u64,
     pub commit_err: Option<CommitErr>,
+    pub commit_cipher: Option<CipherInfo>,
 }
 
 impl<R> Replica<R> {
@@ -53,6 +54,7 @@ impl<R> Replica<R> {
             streams::HeadErr,
             streams::CommitSize,
             streams::CommitErr,
+            streams::CommitCipher,
         )>(
             self.db.as_ref(),
             Query::select()
@@ -65,7 +67,16 @@ impl<R> Replica<R> {
         .await?;
         let mut res = vec![];
         for r in rows.iter() {
-            let (id, head_size, head_hash, head_cipher, head_err, commit_size, commit_err) = r?;
+            let (
+                id,
+                head_size,
+                head_hash,
+                head_cipher,
+                head_err,
+                commit_size,
+                commit_err,
+                commit_cipher,
+            ) = r?;
             let info = StreamInfo {
                 id,
                 head_chain: ChainHash {
@@ -76,6 +87,7 @@ impl<R> Replica<R> {
                 head_err,
                 commit_size,
                 commit_err,
+                commit_cipher,
             };
             res.push(info);
         }
