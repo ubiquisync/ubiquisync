@@ -48,7 +48,7 @@ pub fn prep_insert_cols<Inserting: Cols, Returning: Cols>(
     let db_vals = Inserting::encode(params)?;
     let mut vals = vec![];
     for v in db_vals {
-        vals.push(Expr::Constant(db_to_value(v)))
+        vals.push(Expr::Value(db_to_value(v)))
     }
     stmt.values(vals).map_err(|e| match e {
         sea_query::error::Error::ColValNumMismatch { col_len, val_len } => {
