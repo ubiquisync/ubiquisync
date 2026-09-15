@@ -1,3 +1,5 @@
+mod join;
+
 use std::io::Read;
 
 use num_enum::{IntoPrimitive, TryFromPrimitive};
