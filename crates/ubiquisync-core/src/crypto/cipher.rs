@@ -69,20 +69,37 @@ pub struct CipherInfo {
     pub fingerprint: RootKey256Fingerprint,
 }
 
-pub struct EntryCipher {
-    base: CipherBase,
+pub struct EntryCipher<'a> {
+    base: CipherBase<'a>,
     kdf: Hmac<Sha256>,
 }
 
-pub struct SegmentCipher {
-    base: CipherBase,
+pub struct SegmentCipher<'a> {
+    base: CipherBase<'a>,
     cipher: XChaCha20Poly1305,
+}
+
+#[async_trait::async_trait]
+pub trait CipherKeyResolver {
+    async fn resolve_container_key(
+        &self,
+        fingerprint: &RootKey256Fingerprint,
+        container_id: &ContainerId,
+    ) -> Option<ContainerKey256>;
+}
+
+#[derive(Error, Debug)]
+pub enum CipherKeyResolveError {
+    #[error("not found")]
+    NotFound,
+    #[error("unknown cipher suite {0}")]
+    UnknownSuite(u8),
 }
 
 const DERIVE_PREFIX_LEN: usize = 1 + 32 + 32 + 16;
 
-struct CipherBase {
-    key: ContainerKey256,
+struct CipherBase<'a> {
+    key: &'a ContainerKey256,
     derive_prefix: [u8; DERIVE_PREFIX_LEN],
 }
 
@@ -102,8 +119,8 @@ impl SegmentCipherSuite {
     }
 }
 
-impl CipherBase {
-    fn new(suite: u8, key: ContainerKey256, log_id: &LogId) -> Self {
+impl<'a> CipherBase<'a> {
+    fn new(suite: u8, key: &'a ContainerKey256, log_id: &LogId) -> Self {
         let mut derive_prefix = [0; DERIVE_PREFIX_LEN];
         derive_prefix[0] = suite;
         derive_prefix[1..33].copy_from_slice(&key.root_fingerprint.0[..]);
@@ -184,8 +201,22 @@ pub struct SlotCipher {
     slot_index: u64,
 }
 
-impl EntryCipher {
-    pub fn new(suite: EntryCipherSuite, key: ContainerKey256, log_id: &LogId) -> Self {
+impl<'a> EntryCipher<'a> {
+    // pub async fn resolve(
+    //     cipher_info: CipherInfo,
+    //     log_id: &LogId,
+    //     resolver: &dyn CipherKeyResolver,
+    // ) -> Result<Self, CipherKeyResolveError> {
+    //     let suite = EntryCipherSuite::try_from(cipher_info.cipher_suite)
+    //         .map_err(|_| CipherKeyResolveError::UnknownSuite(cipher_info.cipher_suite))?;
+    //     let key = resolver
+    //         .resolve_container_key(&cipher_info.fingerprint, &log_id.container_id)
+    //         .await
+    //         .ok_or(CipherKeyResolveError::NotFound)?;
+    //     Ok(Self::new(suite, key, log_id))
+    // }
+
+    pub fn new(suite: EntryCipherSuite, key: &'a ContainerKey256, log_id: &LogId) -> Self {
         assert_eq!(
             suite,
             EntryCipherSuite::ChaCha20,
@@ -220,6 +251,14 @@ impl EntryCipher {
             fingerprint: self.base.key.root_fingerprint,
         }
     }
+
+    // pub fn segment_cipher(&self) -> SegmentCipher {
+    //     SegmentCipher::new(
+    //         SegmentCipherSuite::XChaCha20Poly1305,
+    //         self.base.key,
+    //         &self.base.log_id,
+    //     )
+    // }
 }
 
 impl SlotCipher {
@@ -263,8 +302,8 @@ impl SlotCipher {
     }
 }
 
-impl SegmentCipher {
-    pub fn new(suite: SegmentCipherSuite, key: ContainerKey256, log_id: &LogId) -> Self {
+impl<'a> SegmentCipher<'a> {
+    pub fn new(suite: SegmentCipherSuite, key: &'a ContainerKey256, log_id: &LogId) -> Self {
         assert_eq!(
             suite,
             SegmentCipherSuite::XChaCha20Poly1305,
@@ -376,7 +415,7 @@ mod tests {
             container_id: ContainerId(container_id),
         };
         let container_key = key.container_key(&log_id.container_id);
-        let cipher = EntryCipher::new(EntryCipherSuite::ChaCha20, container_key, &log_id);
+        let cipher = EntryCipher::new(EntryCipherSuite::ChaCha20, &container_key, &log_id);
         let mut slot_cipher = cipher.slot_cipher(entry_idx);
         let mut encrypted = vec![];
         for slot in slots.iter() {
