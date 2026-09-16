@@ -1,8 +1,11 @@
 use thiserror::Error;
 
 use crate::{
-    bytes::{BytesWrapper, OpaqueBytes, PlaintextBytes},
-    crypto::{CipherError, EntryCipher, Hash256, RootKey256Fingerprint, SlotCipher},
+    bytes::{OpaqueBytes, PlaintextBytes},
+    crypto::{
+        CipherError, CipherInfo, CipherKeyResolveError, CipherKeyResolver, EntryCipher, Hash256,
+        SlotCipher,
+    },
     log::{
         ChainHash, ChainHashError, ChainSeed, EntryBody, LogEntry, LogValidationError,
         OpBatchHasher, OpaqueLogEntry, PlaintextLogEntry,
@@ -14,106 +17,60 @@ pub enum SegmentCipherError {
     #[error("cipher error {0}")]
     CipherError(#[from] CipherError),
 
-    /// When processing a well-defined "segment", it is an error for the cipher key or suite to change
-    /// mid-segment or to transition from an unencrypted to encrypted segment.
-    /// A plaintext segment should be batch encryptable with a single cipher suite.
-    #[error("cipher changed to {0:?} mid-segment")]
-    CipherChanged(RootKey256Fingerprint),
-
     #[error("chain update error: {0}")]
     ChainHashError(#[from] ChainHashError),
 
     #[error("log validation error: {0}")]
     LogValidation(#[from] LogValidationError),
+
+    #[error("key resolve error: {0}")]
+    KeyResolve(#[from] CipherKeyResolveError),
 }
 
-/// Converts a segment of log entries from plaintext (not encrypted) to opaque (possibly encrypted)
-/// and returns the resulting chain hash.
-/// Entries are encrypted depending on whether or not a cipher is passed in.
-/// The provided [EntryCipher] MUST match whatever cipher was declared by the latest `UseKey` entry in the log (if any).
-/// It is an error for the segment to change its cipher mid-stream. Cipher changes MUST result in separate
-/// segments with respect to encryption/decryption
-pub fn entries_to_opaque<'a: 'b, 'b>(
-    cipher: &Option<EntryCipher>,
+pub async fn entries_to_opaque<'a: 'b, 'b>(
     seed: &ChainSeed,
-    prev_chain: &ChainHash,
+    head_cipher: &mut Option<CipherInfo>,
+    head_chain: &ChainHash,
+    key_resolver: &dyn CipherKeyResolver,
     entries: impl Iterator<Item = &'b PlaintextLogEntry<'a>>,
-) -> Result<(Vec<OpaqueLogEntry<'a>>, ChainHash), SegmentCipherError> {
+) -> Result<Vec<(OpaqueLogEntry<'a>, ChainHash)>, SegmentCipherError> {
+    let mut head_chain = *head_chain;
+    let mut entry_cipher = if let Some(ci) = head_cipher {
+        Some(EntryCipher::resolve(ci, seed.log_id(), key_resolver).await?)
+    } else {
+        None
+    };
     let mut res = vec![];
-    let mut cur_chain = *prev_chain;
-    for e in entries_to_opaque_iter(cipher, seed, prev_chain, entries) {
-        let (e, chain) = e?;
-        res.push(e);
-        cur_chain = chain;
+    for e in entries {
+        let (e2, maybe_hash) = to_opaque(e, &entry_cipher, seed, &head_chain)?;
+        head_chain = head_chain.next(&e2, maybe_hash, seed)?;
+        check_use_key(e, head_cipher, &mut entry_cipher, seed, key_resolver).await?;
+        res.push((e2, head_chain));
     }
-    Ok((res, cur_chain))
+    Ok(res)
 }
 
-pub fn entries_to_opaque_iter<'a: 'b, 'b>(
-    cipher: &Option<EntryCipher>,
+pub async fn entries_to_plaintext<'a: 'b, 'b>(
     seed: &ChainSeed,
-    prev_chain: &ChainHash,
-    entries: impl Iterator<Item = &'b PlaintextLogEntry<'a>>,
-) -> impl Iterator<Item = Result<(OpaqueLogEntry<'a>, ChainHash), SegmentCipherError>> {
-    let mut cur_chain = *prev_chain;
-    entries.scan(false, move |failed, e| {
-        if *failed {
-            return None;
-        }
-        let res = (|| {
-            check_use_key(cipher, e)?;
-            let (e2, maybe_hash) = to_opaque(e, cipher, seed, &cur_chain)?;
-            cur_chain = cur_chain.next(&e2, maybe_hash, seed)?;
-            Ok((e2, cur_chain))
-        })();
-        if res.is_err() {
-            *failed = true
-        }
-        Some(res)
-    })
-}
-
-/// Converts a segment of log entries from opaque (possibly encrypted) to plaintext (not encrypted)
-/// and returns the resulting chain hash.
-/// This function has the same behavior as [entries_to_opaque] with regards to ciphers.
-pub fn entries_to_plaintext<'a: 'b, 'b>(
-    cipher: &Option<EntryCipher>,
-    seed: &ChainSeed,
-    prev_chain: &ChainHash,
+    head_cipher: &mut Option<CipherInfo>,
+    head_chain: &ChainHash,
+    key_resolver: &dyn CipherKeyResolver,
     entries: impl Iterator<Item = &'b OpaqueLogEntry<'a>>,
-) -> Result<(Vec<PlaintextLogEntry<'a>>, ChainHash), SegmentCipherError> {
+) -> Result<Vec<(PlaintextLogEntry<'a>, ChainHash)>, SegmentCipherError> {
+    let mut head_chain = *head_chain;
+    let mut entry_cipher = if let Some(ci) = head_cipher {
+        Some(EntryCipher::resolve(ci, seed.log_id(), key_resolver).await?)
+    } else {
+        None
+    };
     let mut res = vec![];
-    let mut cur_chain = *prev_chain;
-    for e in entries_to_plaintext_iter(cipher, seed, prev_chain, entries) {
-        let (e, chain) = e?;
-        res.push(e);
-        cur_chain = chain;
+    for e in entries {
+        let (e2, maybe_hash) = to_plaintext(e, &entry_cipher, seed, &head_chain)?;
+        head_chain = head_chain.next(e, maybe_hash, seed)?;
+        check_use_key(&e2, head_cipher, &mut entry_cipher, seed, key_resolver).await?;
+        res.push((e2, head_chain));
     }
-    Ok((res, cur_chain))
-}
-
-pub fn entries_to_plaintext_iter<'a: 'b, 'b>(
-    cipher: &Option<EntryCipher>,
-    seed: &ChainSeed,
-    prev_chain: &ChainHash,
-    entries: impl Iterator<Item = &'b OpaqueLogEntry<'a>>,
-) -> impl Iterator<Item = Result<(PlaintextLogEntry<'a>, ChainHash), SegmentCipherError>> {
-    let mut cur_chain = *prev_chain;
-    entries.scan(false, move |failed, e| {
-        if *failed {
-            return None;
-        }
-        let res = (|| {
-            let (e2, maybe_hash) = to_plaintext(e, cipher, seed, &cur_chain)?;
-            check_use_key(cipher, &e2)?;
-            cur_chain = cur_chain.next(e, maybe_hash, seed)?;
-            Ok((e2, cur_chain))
-        })();
-        if res.is_err() {
-            *failed = true
-        }
-        Some(res)
-    })
+    Ok(res)
 }
 
 struct OpBatchHashState {
@@ -210,22 +167,21 @@ fn to_plaintext<'a>(
     }
 }
 
-// TODO: we actually should be able to accomodate key changes mid segment
-fn check_use_key<E: BytesWrapper>(
-    cipher: &Option<EntryCipher>,
-    e: &LogEntry<E>,
+async fn check_use_key(
+    e: &PlaintextLogEntry<'_>,
+    head_ci: &mut Option<CipherInfo>,
+    cipher: &mut Option<EntryCipher>,
+    seed: &ChainSeed,
+    key_resolver: &dyn CipherKeyResolver,
 ) -> Result<(), SegmentCipherError> {
     let LogEntry::IndexedEntry(EntryBody::UseKey(cipher_info)) = e else {
         return Ok(());
     };
 
-    if let Some(cipher) = cipher
-        && cipher_info == &cipher.cipher_info()
-    {
-        // only okay if fingerprint and cipher suite match
-        return Ok(());
-    };
-    Err(SegmentCipherError::CipherChanged(cipher_info.fingerprint))
+    *head_ci = Some(*cipher_info);
+    *cipher = Some(EntryCipher::resolve(cipher_info, seed.log_id(), key_resolver).await?);
+
+    Ok(())
 }
 
 #[cfg(test)]

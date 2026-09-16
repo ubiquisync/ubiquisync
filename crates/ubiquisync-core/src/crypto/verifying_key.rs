@@ -13,7 +13,7 @@ pub enum VerifyingKey {
 }
 
 #[derive(Error, Debug)]
-pub enum SignatureVerificationError {
+pub enum SignatureVerifyError {
     #[error("invalid key")]
     InvalidKey,
     #[error("invalid signature")]
@@ -27,35 +27,35 @@ impl VerifyingKey {
         &self,
         message: &[u8],
         signature: &Signature,
-    ) -> Result<(), SignatureVerificationError> {
+    ) -> Result<(), SignatureVerifyError> {
         match self {
             VerifyingKey::Ed25519(key) => {
                 let sig = match signature {
                     Signature::Ed25519(sig) => sig,
-                    Signature::P256(_) => return Err(SignatureVerificationError::InvalidSignature),
+                    Signature::P256(_) => return Err(SignatureVerifyError::InvalidSignature),
                 };
                 let sig = ed25519_dalek::Signature::from_bytes(sig);
                 let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(key)
-                    .map_err(|_| SignatureVerificationError::InvalidKey)?;
+                    .map_err(|_| SignatureVerifyError::InvalidKey)?;
                 verifying_key
                     .verify_strict(message, &sig)
-                    .map_err(|_| SignatureVerificationError::SignatureVerificationFailed)?;
+                    .map_err(|_| SignatureVerifyError::SignatureVerificationFailed)?;
             }
             VerifyingKey::P256(key) => {
                 use p256::ecdsa::signature::Verifier;
                 let sig = match signature {
                     Signature::P256(sig) => sig,
                     Signature::Ed25519(_) => {
-                        return Err(SignatureVerificationError::InvalidSignature);
+                        return Err(SignatureVerifyError::InvalidSignature);
                     }
                 };
                 let sig = p256::ecdsa::Signature::from_bytes(sig.into())
-                    .map_err(|_| SignatureVerificationError::InvalidSignature)?;
+                    .map_err(|_| SignatureVerifyError::InvalidSignature)?;
                 let verifying_key = p256::ecdsa::VerifyingKey::from_sec1_bytes(&key[..])
-                    .map_err(|_| SignatureVerificationError::InvalidKey)?;
+                    .map_err(|_| SignatureVerifyError::InvalidKey)?;
                 verifying_key
                     .verify(message, &sig)
-                    .map_err(|_| SignatureVerificationError::SignatureVerificationFailed)?;
+                    .map_err(|_| SignatureVerifyError::SignatureVerificationFailed)?;
             }
         }
         Ok(())

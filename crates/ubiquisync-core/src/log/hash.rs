@@ -5,7 +5,7 @@ use thiserror::Error;
 use crate::{
     bytes::OpaqueBytes,
     codec::{ReadError, Reader, Writer},
-    crypto::{CipherInfo, EntryCipher, Hash256, Hasher, TaggedHashDomain, new_tagged_hasher},
+    crypto::{CipherInfo, CipherKeyResolver, Hash256, Hasher, TaggedHashDomain, new_tagged_hasher},
     ids::LogId,
     log::{
         EntryBody, LogEntry, OpBatch, OpOrExpunge, OpaqueLogEntry, PlaintextLogEntry,
@@ -27,12 +27,15 @@ pub enum ChainHashError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ChainSeed(Hash256);
+pub struct ChainSeed {
+    log_id: LogId,
+    hash: Hash256,
+}
 
 impl ChainHash {
     pub fn empty(seed: &ChainSeed) -> Self {
         Self {
-            hash: seed.0,
+            hash: seed.hash,
             size: 0,
         }
     }
@@ -65,14 +68,20 @@ impl ChainHash {
         }
     }
 
-    pub fn compute_next_plaintext<'a: 'b, 'b>(
+    pub async fn compute_next_plaintext<'a: 'b, 'b>(
         &self,
         seed: &ChainSeed,
-        cipher: &Option<EntryCipher>,
+        head_cipher: &mut Option<CipherInfo>,
+        key_resolver: &dyn CipherKeyResolver,
         entries: impl Iterator<Item = &'b PlaintextLogEntry<'a>>,
     ) -> Result<Self, SegmentCipherError> {
-        let (_, h) = entries_to_opaque(cipher, seed, self, entries)?;
-        Ok(h)
+        let opaque = entries_to_opaque(seed, head_cipher, self, key_resolver, entries).await?;
+        if opaque.is_empty() {
+            // TODO: maybe this should be a hard error, but if there are no entries we can validly just clone self
+            return Ok(self.clone());
+        }
+        // we take the last chain hash in the segment
+        Ok(opaque.last().expect("non-empty entries").1)
     }
 
     pub fn compute_next_opaque<'a: 'b, 'b>(
@@ -89,7 +98,7 @@ impl ChainHash {
 
     pub fn sign_bytes(&self, seed: &ChainSeed) -> Hash256 {
         let mut hasher = new_tagged_hasher(TaggedHashDomain::LogSignBytes);
-        hasher.update(&seed.0);
+        hasher.update(&seed.hash);
         hasher.update(&self.size.to_le_bytes());
         hasher.update(&self.hash);
         hasher.finalize()
@@ -112,12 +121,19 @@ impl ChainSeed {
         let mut hasher = new_tagged_hasher(TaggedHashDomain::ChainSeed);
         hasher.update(&log_id.peer_id.0);
         hasher.update(&log_id.container_id.0);
-        let seed = hasher.finalize();
-        Self(seed)
+        let hash = hasher.finalize();
+        Self {
+            hash,
+            log_id: *log_id,
+        }
     }
 
     pub fn hash(&self) -> &Hash256 {
-        &self.0
+        &self.hash
+    }
+
+    pub fn log_id(&self) -> &LogId {
+        &self.log_id
     }
 }
 
@@ -160,7 +176,7 @@ pub(crate) struct OpBatchHasher {
 impl OpBatchHasher {
     pub(crate) fn new(seed: &ChainSeed, entry_idx: u64, num_ops: usize) -> Self {
         let mut hasher = new_tagged_hasher(TaggedHashDomain::LogEntryOpBatch);
-        hasher.update(&seed.0);
+        hasher.update(&seed.hash);
         hasher.update(&entry_idx.to_le_bytes());
         let num_ops = num_ops as u64;
         hasher.update(&num_ops.to_le_bytes());
@@ -179,7 +195,7 @@ impl OpBatchHasher {
 
     pub(crate) fn hash_slot(&mut self, bytes: &OpaqueBytes) -> Hash256 {
         let mut slot_hasher = new_tagged_hasher(TaggedHashDomain::OpBatchSlot);
-        slot_hasher.update(&self.seed.0);
+        slot_hasher.update(&self.seed.hash);
         slot_hasher.update(&self.entry_idx.to_le_bytes());
         slot_hasher.update(&self.slot_idx.to_le_bytes());
         slot_hasher.update(bytes.borrow());
@@ -196,7 +212,7 @@ impl OpBatchHasher {
 
 fn hash_use_key(seed: &ChainSeed, entry_index: u64, cipher_info: &CipherInfo) -> Hash256 {
     let mut hasher = new_tagged_hasher(TaggedHashDomain::LogEntryUseKey);
-    hasher.update(&seed.0);
+    hasher.update(&seed.hash);
     hasher.update(&entry_index.to_le_bytes());
     hasher.update(&[cipher_info.cipher_suite]);
     hasher.update(&cipher_info.fingerprint.0);

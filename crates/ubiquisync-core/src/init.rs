@@ -4,7 +4,7 @@ use thiserror::Error;
 use crate::{
     codec::{ReadError, Reader, Writer},
     crypto::{
-        CryptoDecodeError, Hash256Suite, Signature, SignatureVerificationError, SigningError,
+        CryptoDecodeError, Hash256Suite, Signature, SignatureVerifyError, SigningError,
         SigningKey, TaggedHashDomain, VerifyingKey, kem::EncapsulationKey, new_tagged_hasher,
     },
     ids::{AppId, PeerId},
@@ -140,7 +140,7 @@ pub enum InitVerifyError {
     #[error("hash mismatch")]
     HashMismatch,
     #[error("signature verification error: {0}")]
-    SignatureError(#[from] SignatureVerificationError),
+    SignatureError(#[from] SignatureVerifyError),
 }
 
 #[derive(Error, Debug)]
