@@ -41,10 +41,21 @@ impl ChainHash {
         }
     }
 
-    fn add_one(&self, entry_hash: &Hash256) -> Result<Self, ChainHashError> {
+    fn add_one(
+        &self,
+        entry_hash: &Hash256,
+        active_cipher: &Option<CipherInfo>,
+    ) -> Result<Self, ChainHashError> {
         let mut hasher = new_tagged_hasher(TaggedHashDomain::ChainHash);
         hasher.update(&self.hash);
         hasher.update(entry_hash);
+        if let Some(ci) = active_cipher {
+            hasher.update(&[1]);
+            hasher.update(&[ci.cipher_suite]);
+            hasher.update(&ci.fingerprint.0);
+        } else {
+            hasher.update(&[0]);
+        }
         let hash = hasher.finalize();
         let size = self
             .size
@@ -59,11 +70,13 @@ impl ChainHash {
         entry: &OpaqueLogEntry,
         precomputed_hash: Option<Hash256>,
         seed: &ChainSeed,
+        active_cipher: &mut Option<CipherInfo>,
     ) -> Result<Self, ChainHashError> {
         match entry {
             LogEntry::IndexedEntry(entry) => {
-                let entry_hash = precomputed_hash.unwrap_or_else(|| entry.hash(seed, self.size));
-                Ok(self.add_one(&entry_hash)?)
+                let entry_hash =
+                    precomputed_hash.unwrap_or_else(|| entry.hash(seed, self.size, active_cipher));
+                Ok(self.add_one(&entry_hash, active_cipher)?)
             }
             LogEntry::Signature(_) => Ok(*self),
         }
@@ -88,11 +101,12 @@ impl ChainHash {
     pub fn compute_next_opaque<'a: 'b, 'b>(
         &self,
         seed: &ChainSeed,
+        active_cipher: &mut Option<CipherInfo>,
         entries: impl Iterator<Item = &'a OpaqueLogEntry<'a>>,
     ) -> Result<Self, ChainHashError> {
         let mut h: ChainHash = *self;
         for e in entries {
-            h = h.next(e, None, seed)?;
+            h = h.next(e, None, seed, active_cipher)?;
         }
         Ok(h)
     }
@@ -139,10 +153,18 @@ impl ChainSeed {
 }
 
 impl<'a> EntryBody<OpaqueBytes<'a>> {
-    pub fn hash(&self, seed: &ChainSeed, entry_index: u64) -> Hash256 {
+    pub fn hash(
+        &self,
+        seed: &ChainSeed,
+        entry_index: u64,
+        active_cipher: &mut Option<CipherInfo>,
+    ) -> Hash256 {
         match self {
             EntryBody::OpBatch(op_batch) => op_batch.hash(seed, entry_index),
-            EntryBody::UseKey(cipher_info) => hash_use_key(seed, entry_index, cipher_info),
+            EntryBody::UseKey(cipher_info) => {
+                *active_cipher = Some(*cipher_info);
+                hash_use_key(seed, entry_index, cipher_info)
+            }
             EntryBody::Expunged(hash) => *hash,
         }
     }

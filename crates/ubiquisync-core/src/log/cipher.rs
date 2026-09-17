@@ -46,7 +46,7 @@ pub async fn entries_to_opaque<'a: 'b, 'b>(
     let mut res = vec![];
     for e in entries {
         let (e2, maybe_hash) = to_opaque(e, &entry_cipher, seed, &head_chain)?;
-        head_chain = head_chain.next(&e2, maybe_hash, seed)?;
+        head_chain = head_chain.next(&e2, maybe_hash, seed, head_cipher)?;
         check_use_key(e, head_cipher, &mut entry_cipher, seed, key_resolver).await?;
         res.push((e2, head_chain));
     }
@@ -72,7 +72,7 @@ pub async fn entries_to_plaintext<'a: 'b, 'b>(
     let mut res = vec![];
     for e in entries {
         let (e2, maybe_hash) = to_plaintext(e, &entry_cipher, seed, &head_chain)?;
-        head_chain = head_chain.next(e, maybe_hash, seed)?;
+        head_chain = head_chain.next(e, maybe_hash, seed, head_cipher)?;
         check_use_key(&e2, head_cipher, &mut entry_cipher, seed, key_resolver).await?;
         res.push((e2, head_chain));
     }
