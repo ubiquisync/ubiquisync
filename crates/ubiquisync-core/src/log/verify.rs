@@ -11,16 +11,17 @@ use crate::{
 pub fn verify_opaque<'a: 'b, 'b>(
     verifying_key: &VerifyingKey,
     seed: &ChainSeed,
-    prev_chain: &ChainHash,
+    head_chain: &ChainHash,
+    head_cipher: &mut Option<CipherInfo>,
     entries: impl Iterator<Item = &'b OpaqueLogEntry<'a>>,
 ) -> Result<ChainHash, LogVerifyError> {
-    let mut ch = *prev_chain;
+    let mut ch = *head_chain;
     for e in entries {
         match e {
             LogEntry::Signature(signature) => {
                 verifying_key.verify_signature(&ch.sign_bytes(seed), signature)?;
             }
-            e @ LogEntry::IndexedEntry(_) => ch = ch.next(e, None, seed)?,
+            e @ LogEntry::IndexedEntry(_) => ch = ch.next(e, None, seed, head_cipher)?,
         }
     }
     Ok(ch)

@@ -49,6 +49,18 @@ impl ChainHash {
         let mut hasher = new_tagged_hasher(TaggedHashDomain::ChainHash);
         hasher.update(&self.hash);
         hasher.update(entry_hash);
+        // We bind the active cipher so that claims about which cipher is used
+        // are authoratative. We always use the latest cipher is the current entry
+        // is a UseKey entry, not the prior cipher.
+        // Without this, it would be feasible to package an opaque segment as a plaintext
+        // segment and claim that it is actually a plaintext segment with no cipher at all
+        // which is totally wrong. This is somewhat redundant because the caller could
+        // figure out which segment should be active, but because plaintext segments package
+        // their cipher, including this in the hash ensures that the segment is self-contained
+        // and that cipher claims in segment headers are verifiable.
+        // We could include this in the entry hash itself, but then a segment of all expunged
+        // entries could contain any cipher claim and it would be unverifiable - it's an edge
+        // case for sure, but this approach is slightly more correct.
         if let Some(ci) = active_cipher {
             hasher.update(&[1]);
             hasher.update(&[ci.cipher_suite]);
@@ -70,13 +82,14 @@ impl ChainHash {
         entry: &OpaqueLogEntry,
         precomputed_hash: Option<Hash256>,
         seed: &ChainSeed,
-        active_cipher: &mut Option<CipherInfo>,
+        active_cipher: &Option<CipherInfo>,
     ) -> Result<Self, ChainHashError> {
+        let mut active_cipher = *active_cipher;
         match entry {
             LogEntry::IndexedEntry(entry) => {
-                let entry_hash =
-                    precomputed_hash.unwrap_or_else(|| entry.hash(seed, self.size, active_cipher));
-                Ok(self.add_one(&entry_hash, active_cipher)?)
+                let entry_hash = precomputed_hash
+                    .unwrap_or_else(|| entry.hash(seed, self.size, &mut active_cipher));
+                Ok(self.add_one(&entry_hash, &active_cipher)?)
             }
             LogEntry::Signature(_) => Ok(*self),
         }
