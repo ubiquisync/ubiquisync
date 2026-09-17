@@ -157,16 +157,17 @@ pub enum SegmentVerifyError {
     Verify(#[from] LogVerifyError),
 }
 
-pub fn encode_segment_opaque<'a>(
+pub fn encode_segment_opaque<'a: 'b, 'b>(
     signature: &Signature,
     prev_chain: &ChainHash,
     start_cipher: &Option<CipherInfo>,
-    entries: &[OpaqueLogEntry<'a>],
+    entries: impl Iterator<Item = &'b OpaqueLogEntry<'a>>,
 ) -> Result<Vec<u8>, SegmentEncodeError> {
     let mut w = Writer::new();
-    let header = SegmentHeader::init_opaque(*signature, *prev_chain, *start_cipher, entries);
+    let mut entries = entries.peekable();
+    let header = SegmentHeader::init_opaque(*signature, *prev_chain, *start_cipher, entries.peek());
     header.encode(&mut w)?;
-    encode_entries(entries.iter(), &mut w)?;
+    encode_entries(entries, &mut w)?;
     Ok(w.finalize())
 }
 
@@ -341,7 +342,12 @@ impl SegmentHeader {
         entries: &[PlaintextLogEntry<'_>],
     ) -> Result<(Self, Option<(SegmentCipher, Vec<u8>)>), SegmentEncodeError> {
         let mut end_cipher = start_cipher;
-        let mut header = Self::init_opaque(signature, prev_chain, start_cipher, entries);
+        let mut header = Self::init_opaque(
+            signature,
+            prev_chain,
+            start_cipher,
+            entries.first().as_ref(),
+        );
 
         for e in entries {
             if let LogEntry::IndexedEntry(EntryBody::UseKey(ci)) = e {
@@ -394,10 +400,10 @@ impl SegmentHeader {
         signature: Signature,
         prev_chain: ChainHash,
         mut start_cipher: Option<CipherInfo>,
-        entries: &[LogEntry<B>],
+        first_entry: Option<&&LogEntry<B>>,
     ) -> Self {
         // if the first entry is a UseKey entry, no point in encoding start_cipher
-        if let Some(LogEntry::IndexedEntry(EntryBody::UseKey(_))) = entries.first() {
+        if let Some(LogEntry::IndexedEntry(EntryBody::UseKey(_))) = first_entry {
             start_cipher = None;
         }
         Self {
@@ -648,6 +654,7 @@ pub(crate) mod tests {
         key_resolver: TestKeyResolver,
         signature: Signature,
         verifying_key: VerifyingKey,
+        seed: ChainSeed,
     }
 
     type TestKeyResolver = HashMap<RootKey256Fingerprint, RootKey256>;
@@ -708,6 +715,7 @@ pub(crate) mod tests {
                 signature: signing_key.sign(&head_chain.sign_bytes(&seed)).unwrap(),
                 verifying_key: signing_key.verifying_key(),
                 prev_chain,
+                seed,
             }
         }
     }
@@ -730,18 +738,47 @@ pub(crate) mod tests {
             &data.signature,
             &data.prev_chain,
             &data.start_cipher,
-            &case.log_id,
+            &data.log_id,
             &data.key_resolver,
             &data.entries,
         )
         .await
         .unwrap();
-        let reader = SegmentReader::start(&plaintext_segment).unwrap();
-        let decoded = reader.read(&data.key_resolver, &case.log_id).await.unwrap();
+        check_decode(&plaintext_segment, &data).await;
+
+        let mut head_cipher = data.start_cipher;
+        let opaque = entries_to_opaque(
+            &data.seed,
+            &mut head_cipher,
+            &data.prev_chain,
+            &data.key_resolver,
+            data.entries.iter(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(data.end_cipher, head_cipher);
+        assert_eq!(data.head_chain, opaque.last().unwrap().1);
+
+        let opaque_segment = encode_segment_opaque(
+            &data.signature,
+            &data.prev_chain,
+            &data.start_cipher,
+            opaque.iter().map(|(e, _)| e),
+        )
+        .unwrap();
+        check_decode(&opaque_segment, &data).await;
+    }
+
+    async fn check_decode(segment: &[u8], data: &TestCaseData) {
+        let reader = SegmentReader::start(segment).unwrap();
+        let decoded = reader.read(&data.key_resolver, &data.log_id).await.unwrap();
         let verified = decoded
             .verify(&data.verifying_key, &data.key_resolver)
             .await
             .unwrap();
+        assert_eq!(data.prev_chain, verified.decoded.header.prev_chain);
+        assert_eq!(data.head_chain, verified.head_chain);
+        assert_eq!(data.end_cipher, verified.head_cipher);
         let (decoded_plaintext, end_cipher) =
             verified.to_plaintext(&data.key_resolver).await.unwrap();
         assert_eq!(data.entries, decoded_plaintext);
