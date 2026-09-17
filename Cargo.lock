@@ -1683,6 +1683,7 @@ dependencies = [
  "test-case",
  "test-strategy",
  "thiserror",
+ "tokio",
  "ubiquisync-core",
  "x25519-dalek",
  "zeroize",

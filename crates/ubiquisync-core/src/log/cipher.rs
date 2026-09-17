@@ -193,7 +193,7 @@ async fn check_use_key(
 #[cfg(test)]
 mod tests {
     use secrecy::SecretBox;
-    use test_strategy::proptest;
+    use test_strategy::{Arbitrary, proptest};
 
     use crate::bytes::PlaintextBytes;
     use crate::crypto::Hash256;
@@ -204,7 +204,7 @@ mod tests {
     use crate::log::cipher::{to_opaque, to_plaintext};
     #[cfg(test)]
     use crate::log::segment::tests::GeneratedEntries;
-    use crate::log::{ChainHash, entries_to_opaque};
+    use crate::log::{ChainHash, OpBatch, entries_to_opaque};
     use crate::log::{LogEntry, entries_to_plaintext};
 
     #[proptest]

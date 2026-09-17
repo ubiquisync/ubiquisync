@@ -73,6 +73,7 @@ pub struct VerifiedSegment<'a> {
 pub struct DecodedSegment<'a> {
     pub header: SegmentHeader,
     pub entries: DecodedEntries<'a>,
+    pub log_id: LogId,
 }
 
 pub enum DecodedEntries<'a> {
@@ -136,48 +137,10 @@ impl<'a> SegmentReader<'a> {
                 })
             }
         };
-        Ok(DecodedSegment { header, entries })
-    }
-
-    pub async fn verify(
-        self,
-        verifying_key: &VerifyingKey,
-        key_resolver: &dyn CipherKeyResolver,
-        seed: &ChainSeed,
-    ) -> Result<VerifiedSegment<'a>, SegmentVerifyError> {
-        let header = self.header.clone();
-        let decoded = self.read(key_resolver, seed.log_id()).await?;
-        let mut cipher = header.start_cipher;
-        let chain_hash = match decoded.entries {
-            DecodedEntries::Opaque(ref entries) => {
-                // make sure we update the end cipher here too
-                let chain_hash =
-                    verify_opaque(verifying_key, seed, &header.prev_chain, entries.iter())?;
-                for e in entries.iter() {
-                    if let LogEntry::IndexedEntry(EntryBody::UseKey(ci)) = e {
-                        cipher = Some(*ci)
-                    }
-                }
-                chain_hash
-            }
-            DecodedEntries::Plaintext(ref entries) => {
-                verify_plaintext(
-                    verifying_key,
-                    seed,
-                    &mut cipher,
-                    &header.prev_chain,
-                    key_resolver,
-                    entries.iter(),
-                )
-                .await?
-            }
-        };
-        verifying_key.verify_signature(&chain_hash.sign_bytes(seed), &header.signature)?;
-        Ok(VerifiedSegment {
-            decoded,
-            head_chain: chain_hash,
-            head_cipher: cipher,
-            chain_seed: *seed,
+        Ok(DecodedSegment {
+            header,
+            entries,
+            log_id: *log_id,
         })
     }
 }
@@ -540,20 +503,68 @@ const SEGMENT_ENCODING_PLAINTEXT: u8 = 1;
 impl<'a> VerifiedSegment<'a> {
     pub async fn to_plaintext(
         self,
-        head_cipher: &mut Option<CipherInfo>,
         key_resolver: &dyn CipherKeyResolver,
-    ) -> Result<Vec<PlaintextLogEntry<'a>>, SegmentCipherError> {
+    ) -> Result<(Vec<PlaintextLogEntry<'a>>, Option<CipherInfo>), SegmentCipherError> {
         let VerifiedSegment {
             chain_seed,
             decoded,
             ..
         } = self;
         let header = decoded.header;
+        let mut head_cipher = header.start_cipher;
         let res = decoded
             .entries
-            .to_plaintext(&chain_seed, head_cipher, &header.prev_chain, key_resolver)
+            .to_plaintext(
+                &chain_seed,
+                &mut head_cipher,
+                &header.prev_chain,
+                key_resolver,
+            )
             .await?;
-        Ok(res)
+        Ok((res, head_cipher))
+    }
+}
+
+impl<'a> DecodedSegment<'a> {
+    pub async fn verify(
+        self,
+        verifying_key: &VerifyingKey,
+        key_resolver: &dyn CipherKeyResolver,
+    ) -> Result<VerifiedSegment<'a>, SegmentVerifyError> {
+        let header = &self.header;
+        let mut cipher = header.start_cipher;
+        let seed = ChainSeed::new(&self.log_id);
+        let chain_hash = match self.entries {
+            DecodedEntries::Opaque(ref entries) => {
+                // make sure we update the end cipher here too
+                let chain_hash =
+                    verify_opaque(verifying_key, &seed, &header.prev_chain, entries.iter())?;
+                for e in entries.iter() {
+                    if let LogEntry::IndexedEntry(EntryBody::UseKey(ci)) = e {
+                        cipher = Some(*ci)
+                    }
+                }
+                chain_hash
+            }
+            DecodedEntries::Plaintext(ref entries) => {
+                verify_plaintext(
+                    verifying_key,
+                    &seed,
+                    &mut cipher,
+                    &header.prev_chain,
+                    key_resolver,
+                    entries.iter(),
+                )
+                .await?
+            }
+        };
+        verifying_key.verify_signature(&chain_hash.sign_bytes(&seed), &header.signature)?;
+        Ok(VerifiedSegment {
+            decoded: self,
+            head_chain: chain_hash,
+            head_cipher: cipher,
+            chain_seed: seed,
+        })
     }
 }
 
@@ -587,133 +598,153 @@ impl<'a> DecodedEntries<'a> {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::collections::HashMap;
+
     use secrecy::SecretBox;
     use test_strategy::{Arbitrary, proptest};
 
     use crate::{
         bytes::PlaintextBytes,
-        crypto::{RootKey256, Signature},
-        ids::LogId,
+        crypto::{
+            CipherInfo, CipherKeyResolver, CipherSuite, ContainerKey256, RootKey256,
+            RootKey256Fingerprint, Signature, SigningKey, VerifyingKey, ed25519::Ed25519SigningKey,
+        },
+        ids::{ContainerId, LogId},
         log::{
-            ChainHash, LogEntry, OpBatch, PlaintextLogEntry, entries_to_opaque,
-            segment::{SegmentEncoding, encode_segment_opaque},
+            ChainHash, EntryBody, LogEntry, OpBatch, PlaintextLogEntry, entries_to_opaque,
+            segment::{SegmentEncoding, encode_segment_opaque, encode_segment_plaintext},
         },
     };
+
     #[cfg(test)]
     use crate::{
-        crypto::{SegmentCipher, SegmentCipherSuite},
-        log::{
-            ChainSeed,
-            segment::{SegmentReader, encode_segment_plaintext_iter},
-        },
+        crypto::SegmentCipher,
+        log::{ChainSeed, segment::SegmentReader},
     };
 
-    #[derive(Arbitrary, Debug)]
-    pub(crate) enum GeneratedEntry {
+    #[derive(Debug, Arbitrary)]
+    enum TestEntry {
+        UseKey([u8; 32]),
         Ops(OpBatch<PlaintextBytes<'static>>),
-        Signature(Signature),
+        Signature,
     }
 
-    #[derive(Arbitrary, Debug)]
-    pub(crate) struct GeneratedEntries(Vec<GeneratedEntry>);
-
-    impl GeneratedEntries {
-        pub(crate) fn into_entries(self) -> Vec<PlaintextLogEntry<'static>> {
-            self.0
-                .into_iter()
-                .map(move |e| match e {
-                    GeneratedEntry::Ops(ops) => {
-                        LogEntry::IndexedEntry(crate::log::EntryBody::OpBatch(ops))
-                    }
-                    GeneratedEntry::Signature(signature) => LogEntry::Signature(signature),
-                })
-                .collect::<Vec<_>>()
-        }
-    }
-
-    #[proptest(cases = 10)]
-    fn test_segments_no_cipher(
-        #[strategy(0u64..1<<24)] start_idx: u64,
-        entries: GeneratedEntries,
+    #[derive(Debug, Arbitrary)]
+    struct TestCase {
+        start_key: Option<[u8; 32]>,
+        entries: Vec<TestEntry>,
+        signing_key: [u8; 32],
         log_id: LogId,
-    ) {
-        let entries = entries.into_entries();
-        let seed = ChainSeed::new(&log_id);
-        let start_chain = ChainHash {
-            size: start_idx,
-            hash: [3; 32],
-        };
-        let sig = Signature::Ed25519([2; 64]);
-
-        // test opaque encoding
-        {
-            let (opaque, _) =
-                entries_to_opaque(&None, &seed, &start_chain, entries.iter()).unwrap();
-            let segment = encode_segment_opaque(&sig, &start_chain, opaque.iter()).unwrap();
-            let reader = SegmentReader::start(&segment).unwrap();
-            let header = reader.header();
-            assert_eq!(sig, header.signature);
-            assert_eq!(start_chain, header.prev_chain);
-            assert_eq!(header.encoding, SegmentEncoding::Opaque);
-            let decoded = reader.read(&None).unwrap();
-            match decoded {
-                crate::log::segment::DecodedEntries::Opaque(items) => {
-                    assert_eq!(opaque, items);
-                }
-                crate::log::segment::DecodedEntries::Plaintext(_) => unreachable!(),
-            }
-        }
-
-        // test plaintext encoding (basically just compression)
-        {
-            let segment =
-                encode_segment_plaintext_iter(&sig, &start_chain, &None, entries.iter()).unwrap();
-            let reader = SegmentReader::start(&segment).unwrap();
-            let header = reader.header();
-            assert_eq!(sig, header.signature);
-            assert_eq!(start_chain, header.prev_chain);
-            let decoded = reader.read(&None).unwrap();
-            match decoded {
-                crate::log::segment::DecodedEntries::Plaintext(items) => {
-                    assert_eq!(entries, items);
-                }
-                crate::log::segment::DecodedEntries::Opaque(_) => unreachable!(),
-            }
-        }
+        prev_chain: ChainHash,
     }
 
-    #[proptest(cases = 10)]
-    fn test_segments_with_cipher(
-        #[strategy(0u64..1<<24)] start_idx: u64,
-        // safe to use random entries which include UseKey entries since we're not doing per-entry encryption
+    struct TestCaseData {
+        start_cipher: Option<CipherInfo>,
+        end_cipher: Option<CipherInfo>,
+        log_id: LogId,
+        prev_chain: ChainHash,
+        head_chain: ChainHash,
         entries: Vec<PlaintextLogEntry<'static>>,
-        log_id: LogId,
-        key: [u8; 32],
-    ) {
-        let key = RootKey256::new(SecretBox::new(Box::new(key)));
-        let cipher = Some(SegmentCipher::new(
-            SegmentCipherSuite::XChaCha20Poly1305,
-            key.container_key(&log_id.container_id),
-            &log_id,
-        ));
-        let chain_start = ChainHash {
-            size: start_idx,
-            hash: [3; 32],
-        };
-        let sig = Signature::Ed25519([2; 64]);
+        key_resolver: TestKeyResolver,
+        signature: Signature,
+        verifying_key: VerifyingKey,
+    }
 
-        let segment =
-            encode_segment_plaintext_iter(&sig, &chain_start, &cipher, entries.iter()).unwrap();
-        let reader = SegmentReader::start(&segment).unwrap();
-        let header = reader.header();
-        assert_eq!(sig, header.signature);
-        assert_eq!(chain_start, header.prev_chain);
-        let decoded = reader.read(&cipher).unwrap();
-        match decoded {
-            crate::log::segment::DecodedEntries::Plaintext(items) => {
-                assert_eq!(entries, items);
+    type TestKeyResolver = HashMap<RootKey256Fingerprint, RootKey256>;
+
+    impl TestCase {
+        async fn data(&self) -> TestCaseData {
+            let mut entries = vec![];
+            let signing_key = Ed25519SigningKey::new(SecretBox::new(Box::new(self.signing_key)));
+            let mut key_resolver = TestKeyResolver::new();
+            let prev_chain = self.prev_chain;
+            let mut head_chain = prev_chain;
+            let switch_key = |k: [u8; 32], kr: &mut TestKeyResolver| {
+                let k = RootKey256::new(SecretBox::new(Box::new(k)));
+                let fingerprint = *k.fingerprint();
+                kr.insert(fingerprint, k);
+                CipherInfo {
+                    cipher_suite: CipherSuite::ChaCha20.into(),
+                    fingerprint,
+                }
+            };
+            let start_cipher = if let Some(k) = self.start_key {
+                Some(switch_key(k, &mut key_resolver))
+            } else {
+                None
+            };
+            let mut head_cipher = start_cipher;
+            let seed = ChainSeed::new(&self.log_id);
+            for e in self.entries.iter() {
+                let e = match e {
+                    TestEntry::Ops(op_batch) => {
+                        LogEntry::IndexedEntry(EntryBody::OpBatch(op_batch.clone()))
+                    }
+                    TestEntry::UseKey(k) => {
+                        LogEntry::IndexedEntry(EntryBody::UseKey(switch_key(*k, &mut key_resolver)))
+                    }
+                    TestEntry::Signature => LogEntry::Signature(
+                        signing_key.sign(&head_chain.sign_bytes(&seed)).unwrap(),
+                    ),
+                };
+                head_chain = head_chain
+                    .compute_next_plaintext(
+                        &seed,
+                        &mut head_cipher,
+                        &key_resolver,
+                        [e.clone()].iter(),
+                    )
+                    .await
+                    .unwrap();
+                entries.push(e);
             }
-            crate::log::segment::DecodedEntries::Opaque(_) => unreachable!(),
+            TestCaseData {
+                start_cipher,
+                end_cipher: head_cipher,
+                log_id: self.log_id,
+                head_chain,
+                entries,
+                key_resolver,
+                signature: signing_key.sign(&head_chain.sign_bytes(&seed)).unwrap(),
+                verifying_key: signing_key.verifying_key(),
+                prev_chain,
+            }
         }
+    }
+
+    #[async_trait::async_trait]
+    impl CipherKeyResolver for HashMap<RootKey256Fingerprint, RootKey256> {
+        async fn resolve_container_key(
+            &self,
+            fingerprint: &RootKey256Fingerprint,
+            container_id: &ContainerId,
+        ) -> Option<ContainerKey256> {
+            self.get(fingerprint).map(|k| k.container_key(container_id))
+        }
+    }
+
+    #[proptest(async = "tokio", cases = 10)]
+    async fn roundtrip_segments(case: TestCase) {
+        let data = case.data().await;
+        let plaintext_segment = encode_segment_plaintext(
+            &data.signature,
+            &data.prev_chain,
+            &data.start_cipher,
+            &case.log_id,
+            &data.key_resolver,
+            &data.entries,
+        )
+        .await
+        .unwrap();
+        let reader = SegmentReader::start(&plaintext_segment).unwrap();
+        let decoded = reader.read(&data.key_resolver, &case.log_id).await.unwrap();
+        let verified = decoded
+            .verify(&data.verifying_key, &data.key_resolver)
+            .await
+            .unwrap();
+        let (decoded_plaintext, end_cipher) =
+            verified.to_plaintext(&data.key_resolver).await.unwrap();
+        assert_eq!(data.entries, decoded_plaintext);
+        assert_eq!(data.end_cipher, end_cipher);
     }
 }

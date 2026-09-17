@@ -17,6 +17,7 @@ use crate::{
 #[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
 pub struct ChainHash {
     pub hash: Hash256,
+    #[cfg_attr(feature = "proptest", strategy(0u64..1<<24))]
     pub size: u64,
 }
 

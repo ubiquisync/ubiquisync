@@ -103,7 +103,7 @@ struct CipherBase {
     log_id: LogId,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
 pub struct RootKey256Fingerprint(pub [u8; 32]);
 
@@ -171,6 +171,10 @@ impl RootKey256 {
             root_fingerprint: self.fingerprint,
             key,
         }))
+    }
+
+    pub fn fingerprint(&self) -> &RootKey256Fingerprint {
+        &self.fingerprint
     }
 }
 
