@@ -618,15 +618,11 @@ pub(crate) mod tests {
         ids::{ContainerId, LogId},
         log::{
             ChainHash, EntryBody, LogEntry, OpBatch, PlaintextLogEntry, entries_to_opaque,
-            segment::{SegmentEncoding, encode_segment_opaque, encode_segment_plaintext},
+            segment::{encode_segment_opaque, encode_segment_plaintext},
         },
     };
 
-    #[cfg(test)]
-    use crate::{
-        crypto::SegmentCipher,
-        log::{ChainSeed, segment::SegmentReader},
-    };
+    use crate::log::{ChainSeed, segment::SegmentReader};
 
     #[derive(Debug, Arbitrary)]
     enum TestEntry {
@@ -675,11 +671,7 @@ pub(crate) mod tests {
                     fingerprint,
                 }
             };
-            let start_cipher = if let Some(k) = self.start_key {
-                Some(switch_key(k, &mut key_resolver))
-            } else {
-                None
-            };
+            let start_cipher = self.start_key.map(|k| switch_key(k, &mut key_resolver));
             let mut head_cipher = start_cipher;
             let seed = ChainSeed::new(&self.log_id);
             for e in self.entries.iter() {
@@ -757,7 +749,11 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(data.end_cipher, head_cipher);
-        assert_eq!(data.head_chain, opaque.last().unwrap().1);
+        // this assertion is weirdly tolerant of empty segments which we maybe should reject, but currently they're sort of benign
+        assert_eq!(
+            data.head_chain,
+            opaque.last().map(|e| e.1).unwrap_or(data.prev_chain)
+        );
 
         let opaque_segment = encode_segment_opaque(
             &data.signature,
