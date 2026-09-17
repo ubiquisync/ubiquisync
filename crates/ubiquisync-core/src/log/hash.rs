@@ -79,7 +79,7 @@ impl ChainHash {
         let opaque = entries_to_opaque(seed, head_cipher, self, key_resolver, entries).await?;
         if opaque.is_empty() {
             // TODO: maybe this should be a hard error, but if there are no entries we can validly just clone self
-            return Ok(self.clone());
+            return Ok(*self);
         }
         // we take the last chain hash in the segment
         Ok(opaque.last().expect("non-empty entries").1)
