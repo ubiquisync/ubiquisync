@@ -52,7 +52,6 @@ def_table_with_auto_id!(streams as __replica_streams (id) => {
    head_cipher: Option<super::CipherInfo>,
    head_err: Option<super::HeadErr>,
    commit_size: u64, // TODO default 0
-   commit_cipher: Option<super::CipherInfo>,
    commit_err: Option<super::CommitErr>,
    parent_id: Option<i64>, // TODO ref streams
    fork_idx: Option<u64>,

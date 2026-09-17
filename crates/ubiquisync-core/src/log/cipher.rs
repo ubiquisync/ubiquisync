@@ -191,7 +191,7 @@ mod tests {
 
     use crate::bytes::PlaintextBytes;
     use crate::crypto::Hash256;
-    use crate::crypto::{EntryCipher, EntryCipherSuite, RootKey256};
+    use crate::crypto::{CipherSuite, EntryCipher, RootKey256};
     use crate::ids::LogId;
     #[cfg(test)]
     use crate::log::ChainSeed;
@@ -211,7 +211,7 @@ mod tests {
             let key = RootKey256::new(SecretBox::new(Box::new(key)));
             let container_key = key.container_key(&log_id.container_id);
             Some(EntryCipher::new(
-                EntryCipherSuite::ChaCha20,
+                CipherSuite::ChaCha20,
                 container_key,
                 &log_id,
             ))
@@ -245,7 +245,7 @@ mod tests {
         let cipher = if let Some(key) = key {
             let key = RootKey256::new(SecretBox::new(Box::new(key)));
             let container_key = key.container_key(&log_id.container_id);
-            let cipher = EntryCipher::new(EntryCipherSuite::ChaCha20, container_key, &log_id);
+            let cipher = EntryCipher::new(CipherSuite::ChaCha20, container_key, &log_id);
             if start_idx > 0 {
                 // if we're not at the very start, inject a UseKey entry at the beginning with our cipher to test this case
                 // random UseKey entries in other places are not valid

@@ -48,15 +48,9 @@ use crate::log::ChainHash;
 #[repr(u8)]
 #[derive(IntoPrimitive, TryFromPrimitive, Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
-pub enum EntryCipherSuite {
+pub enum CipherSuite {
+    /// ChaCha20 as the entry cipher and XChaCha20Poly1305 as the segment cipher.
     ChaCha20 = 0,
-}
-
-#[repr(u8)]
-#[derive(IntoPrimitive, TryFromPrimitive, Clone, Copy, PartialEq, Eq, Debug)]
-#[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
-pub enum SegmentCipherSuite {
-    XChaCha20Poly1305 = 0,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,7 +75,7 @@ pub struct SegmentCipher {
 }
 
 #[async_trait::async_trait]
-pub trait CipherKeyResolver {
+pub trait CipherKeyResolver: Send + Sync {
     /// Resolves a container key.
     ///
     /// For now, just returns Option for not found.
@@ -117,10 +111,10 @@ pub struct RootKey256Fingerprint(pub [u8; 32]);
 #[error("cipher error")]
 pub struct CipherError;
 
-impl SegmentCipherSuite {
-    pub fn nonce_size(&self) -> usize {
+impl CipherSuite {
+    pub fn segment_nonce_size(&self) -> usize {
         match self {
-            SegmentCipherSuite::XChaCha20Poly1305 => 24,
+            CipherSuite::ChaCha20 => 24,
         }
     }
 }
@@ -220,7 +214,7 @@ impl EntryCipher {
         log_id: &LogId,
         resolver: &dyn CipherKeyResolver,
     ) -> Result<Self, CipherKeyResolveError> {
-        let suite = EntryCipherSuite::try_from(cipher_info.cipher_suite)
+        let suite = CipherSuite::try_from(cipher_info.cipher_suite)
             .map_err(|_| CipherKeyResolveError::UnknownSuite(cipher_info.cipher_suite))?;
         let key = resolver
             .resolve_container_key(&cipher_info.fingerprint, &log_id.container_id)
@@ -229,10 +223,10 @@ impl EntryCipher {
         Ok(Self::new(suite, key, log_id))
     }
 
-    pub fn new(suite: EntryCipherSuite, key: ContainerKey256, log_id: &LogId) -> Self {
+    pub fn new(suite: CipherSuite, key: ContainerKey256, log_id: &LogId) -> Self {
         assert_eq!(
             suite,
-            EntryCipherSuite::ChaCha20,
+            CipherSuite::ChaCha20,
             "if this gets triggered it means we need to support new cipher suites",
         );
         let mut kdf = <Hmac<Sha256> as KeyInit>::new_from_slice(key.0.key.expose_secret())
@@ -254,8 +248,8 @@ impl EntryCipher {
         &self.base.key.0.root_fingerprint
     }
 
-    pub fn cipher_suite(&self) -> EntryCipherSuite {
-        EntryCipherSuite::ChaCha20
+    pub fn cipher_suite(&self) -> CipherSuite {
+        CipherSuite::ChaCha20
     }
 
     pub fn cipher_info(&self) -> CipherInfo {
@@ -267,7 +261,7 @@ impl EntryCipher {
 
     pub fn segment_cipher(&self) -> SegmentCipher {
         SegmentCipher::new(
-            SegmentCipherSuite::XChaCha20Poly1305,
+            CipherSuite::ChaCha20,
             self.base.key.clone(),
             &self.base.log_id,
         )
@@ -316,10 +310,10 @@ impl SlotCipher {
 }
 
 impl SegmentCipher {
-    pub fn new(suite: SegmentCipherSuite, key: ContainerKey256, log_id: &LogId) -> Self {
+    pub fn new(suite: CipherSuite, key: ContainerKey256, log_id: &LogId) -> Self {
         assert_eq!(
             suite,
-            SegmentCipherSuite::XChaCha20Poly1305,
+            CipherSuite::ChaCha20,
             "if this gets triggered it means we need to support new cipher suites",
         );
 
@@ -373,8 +367,8 @@ impl SegmentCipher {
         &self.base.key.0.root_fingerprint
     }
 
-    pub fn cipher_suite(&self) -> SegmentCipherSuite {
-        SegmentCipherSuite::XChaCha20Poly1305
+    pub fn cipher_suite(&self) -> CipherSuite {
+        CipherSuite::ChaCha20
     }
 
     pub fn cipher_info(&self) -> CipherInfo {
@@ -422,7 +416,7 @@ mod tests {
     use crate::crypto::RootKey256;
     use crate::ids::{ContainerId, LogId};
     use crate::{
-        crypto::{EntryCipher, EntryCipherSuite},
+        crypto::{CipherSuite, EntryCipher},
         ids::PeerId,
     };
 
@@ -441,7 +435,7 @@ mod tests {
             container_id: ContainerId(container_id),
         };
         let container_key = key.container_key(&log_id.container_id);
-        let cipher = EntryCipher::new(EntryCipherSuite::ChaCha20, container_key, &log_id);
+        let cipher = EntryCipher::new(CipherSuite::ChaCha20, container_key, &log_id);
         let mut slot_cipher = cipher.slot_cipher(entry_idx);
         let mut encrypted = vec![];
         for slot in slots.iter() {

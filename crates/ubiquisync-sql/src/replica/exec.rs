@@ -54,7 +54,7 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
 
         let seed = ChainSeed::new(&log_id);
 
-        let (stream_id, chain_head, head_cipher, commit_err) = if stream_rows.is_empty() {
+        let (stream_id, chain_head, mut head_cipher, commit_err) = if stream_rows.is_empty() {
             let res = insert_cols::<
                 (
                     streams::PeerId,
@@ -119,7 +119,15 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
 
         let signature = self.credentials.signing_key().sign(&sign_bytes)?;
 
-        let segment = encode_segment_plaintext(&signature, &chain_head, &None, &entries)?;
+        let segment = encode_segment_plaintext(
+            &signature,
+            &chain_head,
+            &head_cipher,
+            &log_id,
+            &NullCipherKeyResolver,
+            &entries,
+        )
+        .await?;
 
         insert_cols_batch::<(
             segments::StreamId,
