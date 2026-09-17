@@ -626,8 +626,11 @@ pub(crate) mod tests {
 
     #[derive(Debug, Arbitrary)]
     enum TestEntry {
-        UseKey([u8; 32]),
+        #[weight(5)]
         Ops(OpBatch<PlaintextBytes<'static>>),
+        #[weight(2)]
+        UseKey([u8; 32]),
+        #[weight(1)]
         Signature,
     }
 
