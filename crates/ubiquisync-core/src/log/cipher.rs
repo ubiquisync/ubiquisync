@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 use crate::{
-    bytes::{OpaqueBytes, PlaintextBytes},
+    bytes::{BytesWrapper, OpaqueBytes, PlaintextBytes},
     crypto::{
         CipherError, CipherInfo, CipherKeyResolveError, CipherKeyResolver, EntryCipher, Hash256,
         SlotCipher,
@@ -188,4 +188,22 @@ async fn check_use_key(
     *cipher = Some(EntryCipher::resolve(cipher_info, seed.log_id(), key_resolver).await?);
 
     Ok(())
+}
+
+/// This method should be used when consuming remote segment
+/// to capture any UseKey entries which change the active cipher
+///
+/// `head_cipher` should point to the current cipher at the head
+/// of the log if any and will be updated if there is a `UseKey`
+/// in `entries`.
+/// Must be called only after verifying the segment signature.
+pub fn track_cipher_change<'a, B: BytesWrapper + 'a>(
+    head_cipher: &mut Option<CipherInfo>,
+    entries: impl Iterator<Item = &'a LogEntry<B>>,
+) {
+    for e in entries {
+        if let LogEntry::IndexedEntry(EntryBody::UseKey(ci)) = e {
+            *head_cipher = Some(*ci);
+        }
+    }
 }

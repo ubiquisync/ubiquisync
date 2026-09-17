@@ -15,8 +15,8 @@ use crate::{
     ids::LogId,
     log::{
         ChainHash, ChainSeed, LogDecodeError, LogEncodeError, LogEntry, LogValidationError,
-        LogVerifyError, OpaqueLogEntry, PlaintextLogEntry, SegmentCipherError,
-        entries_to_plaintext, verify_opaque, verify_plaintext,
+        LogVerifyError, OpaqueLogEntry, PlaintextLogEntry, SegmentCipherError, verify_opaque,
+        verify_plaintext,
     },
 };
 
@@ -26,10 +26,6 @@ use super::EntryBody;
 pub struct SegmentHeader {
     pub signature: Signature,
     pub prev_chain: ChainHash,
-    /// The cipher used at the start of the segment (if any).
-    /// This field is omitted if the first entry is a `UseKey`
-    /// entry which sets the cipher.
-    pub start_cipher: Option<CipherInfo>,
     pub encoding: SegmentEncoding,
 }
 
@@ -47,13 +43,33 @@ pub struct PlaintextSegmentEncoding {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncryptionInfo {
-    /// The cipher for the whole compressed, plaintext segment payload.
-    /// If there is a cipher change in the middle of a segment, the
-    /// last entry cipher should be used.
-    /// TODO: we can make this field optional when it is redundant
-    /// with start_cipher (requires a mapping from entry cipher suite -> segment cipher suite, but that is trivial)
-    pub cipher: Option<CipherInfo>,
+    /// Indicates whether to use a different cipher or even no cipher,
+    /// at the start of the segment for hashing.
+
+    /// Specifies which cipher to start hashing with.
+    pub start_cipher: StartCipher,
+
+    /// The cipher used to encrypt the whole segment.
+    /// This will _always_ be the last cipher used in the segment
+    /// if there were any cipher changes.
+    pub segment_cipher: CipherInfo,
     pub nonce: Vec<u8>,
+}
+
+/// Specifies which cipher to start hashing plaintext segments with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StartCipher {
+    /// Specifies that we can start hashing with no cipher, either:
+    /// - the segment starts unencrypted (and then gets a cipher later), or
+    /// - the first entry is `UseKey` so started with a cipher is unneeded
+    None,
+    /// Start hashing with the segment cipher.
+    SegmentCipher,
+    /// Start hashing with this other cipher.
+    /// This should be used if the segment starts with some other cipher, but
+    /// switches to the cipher specified by [EncryptionInfo::segment_cipher]
+    /// by the end.
+    Other(CipherInfo),
 }
 
 #[repr(u8)]
@@ -66,7 +82,6 @@ pub enum Compression {
 pub struct VerifiedSegment<'a> {
     pub decoded: DecodedSegment<'a>,
     pub head_chain: ChainHash,
-    pub head_cipher: Option<CipherInfo>,
     pub chain_seed: ChainSeed,
 }
 
@@ -114,22 +129,24 @@ impl<'a> SegmentReader<'a> {
             }
             SegmentEncoding::Plaintext(enc) => {
                 DecodedEntries::Plaintext(match &enc.outer_encryption {
-                    Some(c) => {
-                        let ci = c
-                            .cipher
-                            .or(header.start_cipher)
-                            .ok_or(SegmentDecodeError::MissingSegmentCipher)?;
-                        let suite = CipherSuite::try_from(ci.cipher_suite)
-                            .map_err(|_| SegmentDecodeError::UnknownCipherSuite(ci.cipher_suite))?;
+                    Some(enc) => {
+                        let segment_cipher = enc.segment_cipher;
+                        let suite =
+                            CipherSuite::try_from(segment_cipher.cipher_suite).map_err(|_| {
+                                SegmentDecodeError::UnknownCipherSuite(segment_cipher.cipher_suite)
+                            })?;
                         let key = key_resolver
-                            .resolve_container_key(&ci.fingerprint, &log_id.container_id)
+                            .resolve_container_key(
+                                &segment_cipher.fingerprint,
+                                &log_id.container_id,
+                            )
                             .await
-                            .ok_or(SegmentDecodeError::MissingSegmentKey(ci))?;
+                            .ok_or(SegmentDecodeError::MissingSegmentKey(segment_cipher))?;
                         let cipher = SegmentCipher::new(suite, key, log_id);
                         decrypt_decompress_decode_entries(
                             &cipher,
                             &header.prev_chain,
-                            &c.nonce,
+                            &enc.nonce,
                             buf,
                         )?
                     }
@@ -160,12 +177,14 @@ pub enum SegmentVerifyError {
 pub fn encode_segment_opaque<'a: 'b, 'b>(
     signature: &Signature,
     prev_chain: &ChainHash,
-    start_cipher: &Option<CipherInfo>,
     entries: impl Iterator<Item = &'b OpaqueLogEntry<'a>>,
 ) -> Result<Vec<u8>, SegmentEncodeError> {
     let mut w = Writer::new();
-    let mut entries = entries.peekable();
-    let header = SegmentHeader::init_opaque(*signature, *prev_chain, *start_cipher, entries.peek());
+    let header = SegmentHeader {
+        signature: *signature,
+        prev_chain: *prev_chain,
+        encoding: SegmentEncoding::Opaque,
+    };
     header.encode(&mut w)?;
     encode_entries(entries, &mut w)?;
     Ok(w.finalize())
@@ -277,6 +296,8 @@ pub enum SegmentDecodeError {
     CompressionOverflow,
     #[error("entry validation error: {0}")]
     Validation(#[from] LogValidationError),
+    #[error("unknown start cipher tag {0}")]
+    UnknownStartCipherTag(u8),
 }
 
 fn encode_compress_encrypt_entries<'a>(
@@ -342,18 +363,24 @@ impl SegmentHeader {
         entries: &[PlaintextLogEntry<'_>],
     ) -> Result<(Self, Option<(SegmentCipher, Vec<u8>)>), SegmentEncodeError> {
         let mut end_cipher = start_cipher;
-        let mut header = Self::init_opaque(
-            signature,
-            prev_chain,
-            start_cipher,
-            entries.first().as_ref(),
-        );
-
         for e in entries {
             if let LogEntry::IndexedEntry(EntryBody::UseKey(ci)) = e {
                 end_cipher = Some(*ci);
             }
         }
+
+        let start_cipher = match start_cipher {
+            None => StartCipher::None,
+            Some(ci) => {
+                if let Some(LogEntry::IndexedEntry(EntryBody::UseKey(_))) = entries.first() {
+                    StartCipher::None
+                } else if Some(ci) == end_cipher {
+                    StartCipher::SegmentCipher
+                } else {
+                    StartCipher::Other(ci)
+                }
+            }
+        };
 
         let (enc, cipher) = if let Some(ci) = end_cipher {
             let cipher_suite = CipherSuite::try_from(ci.cipher_suite)
@@ -370,17 +397,10 @@ impl SegmentHeader {
                 .ok_or(SegmentEncodeError::MissingSegmentKey(ci))?;
             let segment_cipher = SegmentCipher::new(cipher_suite, key, log_id);
 
-            // we only store the cipher here if it is different from what is recorded in start_cipher
-            // otherwise we can just use what's in start cipher
-            let cipher = if end_cipher == header.start_cipher {
-                None
-            } else {
-                Some(ci)
-            };
-
             (
                 Some(EncryptionInfo {
-                    cipher,
+                    start_cipher,
+                    segment_cipher: ci,
                     nonce: nonce.clone(),
                 }),
                 Some((segment_cipher, nonce)),
@@ -388,37 +408,24 @@ impl SegmentHeader {
         } else {
             (None, None)
         };
-        header.encoding = SegmentEncoding::Plaintext(PlaintextSegmentEncoding {
-            outer_encryption: enc,
-            inner_compression: Compression::Zstd,
-        });
 
-        Ok((header, cipher))
-    }
-
-    fn init_opaque<B: BytesWrapper>(
-        signature: Signature,
-        prev_chain: ChainHash,
-        mut start_cipher: Option<CipherInfo>,
-        first_entry: Option<&&LogEntry<B>>,
-    ) -> Self {
-        // if the first entry is a UseKey entry, no point in encoding start_cipher
-        if let Some(LogEntry::IndexedEntry(EntryBody::UseKey(_))) = first_entry {
-            start_cipher = None;
-        }
-        Self {
-            prev_chain,
-            start_cipher,
-            signature,
-            encoding: SegmentEncoding::Opaque,
-        }
+        Ok((
+            Self {
+                signature,
+                prev_chain,
+                encoding: SegmentEncoding::Plaintext(PlaintextSegmentEncoding {
+                    outer_encryption: enc,
+                    inner_compression: Compression::Zstd,
+                }),
+            },
+            cipher,
+        ))
     }
 
     pub fn encode(&self, w: &mut Writer) -> Result<(), WriteError> {
         self.prev_chain.encode(w);
         self.signature.encode(w);
         self.encoding.encode(w)?;
-        w.write_option(&self.start_cipher, |w, c| c.encode(w));
         Ok(())
     }
 
@@ -426,12 +433,10 @@ impl SegmentHeader {
         let prev_chain = ChainHash::decode(r)?;
         let signature = Signature::decode(r).map_err(SegmentDecodeError::from_sig_decode_err)?;
         let encoding = SegmentEncoding::decode(r)?;
-        let start_cipher = r.read_option(|r| CipherInfo::decode(r))?;
         Ok(Self {
             signature,
             encoding,
             prev_chain,
-            start_cipher,
         })
     }
 }
@@ -478,16 +483,42 @@ impl PlaintextSegmentEncoding {
 
 impl EncryptionInfo {
     pub fn encode(&self, w: &mut Writer) {
-        w.write_option(&self.cipher, |w, c| c.encode(w));
+        self.start_cipher.encode(w);
+        self.segment_cipher.encode(w);
         w.write_len_prefixed(&self.nonce);
     }
 
     pub fn decode(r: &mut Reader) -> Result<Self, SegmentDecodeError> {
-        let cipher = r.read_option(|r| CipherInfo::decode(r))?;
+        let start_cipher = StartCipher::decode(r)?;
+        let segment_cipher = CipherInfo::decode(r)?;
         let nonce = r.read_len_prefixed()?;
         Ok(Self {
-            cipher,
+            start_cipher,
+            segment_cipher,
             nonce: nonce.into(),
+        })
+    }
+}
+
+impl StartCipher {
+    pub fn encode(&self, w: &mut Writer) {
+        match self {
+            StartCipher::None => w.write_byte(0),
+            StartCipher::SegmentCipher => w.write_byte(1),
+            StartCipher::Other(cipher_info) => {
+                w.write_byte(2);
+                cipher_info.encode(w);
+            }
+        }
+    }
+
+    pub fn decode(r: &mut Reader) -> Result<Self, SegmentDecodeError> {
+        let b = r.read_byte()?;
+        Ok(match b {
+            0 => Self::None,
+            1 => Self::SegmentCipher,
+            2 => Self::Other(CipherInfo::decode(r)?),
+            _ => return Err(SegmentDecodeError::UnknownStartCipherTag(b)),
         })
     }
 }
@@ -506,31 +537,6 @@ impl SegmentDecodeError {
 const SEGMENT_ENCODING_OPAQUE: u8 = 0;
 const SEGMENT_ENCODING_PLAINTEXT: u8 = 1;
 
-impl<'a> VerifiedSegment<'a> {
-    pub async fn to_plaintext(
-        self,
-        key_resolver: &dyn CipherKeyResolver,
-    ) -> Result<(Vec<PlaintextLogEntry<'a>>, Option<CipherInfo>), SegmentCipherError> {
-        let VerifiedSegment {
-            chain_seed,
-            decoded,
-            ..
-        } = self;
-        let header = decoded.header;
-        let mut head_cipher = header.start_cipher;
-        let res = decoded
-            .entries
-            .to_plaintext(
-                &chain_seed,
-                &mut head_cipher,
-                &header.prev_chain,
-                key_resolver,
-            )
-            .await?;
-        Ok((res, head_cipher))
-    }
-}
-
 impl<'a> DecodedSegment<'a> {
     pub async fn verify(
         self,
@@ -538,21 +544,25 @@ impl<'a> DecodedSegment<'a> {
         key_resolver: &dyn CipherKeyResolver,
     ) -> Result<VerifiedSegment<'a>, SegmentVerifyError> {
         let header = &self.header;
-        let mut cipher = header.start_cipher;
         let seed = ChainSeed::new(&self.log_id);
         let chain_hash = match self.entries {
             DecodedEntries::Opaque(ref entries) => {
-                // make sure we update the end cipher here too
-                let chain_hash =
-                    verify_opaque(verifying_key, &seed, &header.prev_chain, entries.iter())?;
-                for e in entries.iter() {
-                    if let LogEntry::IndexedEntry(EntryBody::UseKey(ci)) = e {
-                        cipher = Some(*ci)
-                    }
-                }
-                chain_hash
+                verify_opaque(verifying_key, &seed, &header.prev_chain, entries.iter())?
             }
             DecodedEntries::Plaintext(ref entries) => {
+                let mut cipher = if let SegmentEncoding::Plaintext(PlaintextSegmentEncoding {
+                    outer_encryption: Some(ref enc),
+                    ..
+                }) = header.encoding
+                {
+                    match enc.start_cipher {
+                        StartCipher::None => None,
+                        StartCipher::SegmentCipher => Some(enc.segment_cipher),
+                        StartCipher::Other(cipher_info) => Some(cipher_info),
+                    }
+                } else {
+                    None
+                };
                 verify_plaintext(
                     verifying_key,
                     &seed,
@@ -568,37 +578,8 @@ impl<'a> DecodedSegment<'a> {
         Ok(VerifiedSegment {
             decoded: self,
             head_chain: chain_hash,
-            head_cipher: cipher,
             chain_seed: seed,
         })
-    }
-}
-
-impl<'a> DecodedEntries<'a> {
-    pub async fn to_plaintext(
-        self,
-        seed: &ChainSeed,
-        head_cipher: &mut Option<CipherInfo>,
-        head_chain: &ChainHash,
-        key_resolver: &dyn CipherKeyResolver,
-    ) -> Result<Vec<PlaintextLogEntry<'a>>, SegmentCipherError> {
-        match self {
-            DecodedEntries::Opaque(items) => {
-                let e =
-                    entries_to_plaintext(seed, head_cipher, head_chain, key_resolver, items.iter())
-                        .await?;
-                Ok(e.into_iter().map(|e| e.0).collect())
-            }
-            DecodedEntries::Plaintext(items) => {
-                // capture key rotation state
-                for e in items.iter() {
-                    if let LogEntry::IndexedEntry(EntryBody::UseKey(ci)) = e {
-                        *head_cipher = Some(*ci);
-                    }
-                }
-                Ok(items)
-            }
-        }
     }
 }
 
@@ -618,7 +599,9 @@ pub(crate) mod tests {
         ids::{ContainerId, LogId},
         log::{
             ChainHash, EntryBody, LogEntry, OpBatch, PlaintextLogEntry, entries_to_opaque,
+            entries_to_plaintext,
             segment::{encode_segment_opaque, encode_segment_plaintext},
+            track_cipher_change,
         },
     };
 
@@ -761,7 +744,6 @@ pub(crate) mod tests {
         let opaque_segment = encode_segment_opaque(
             &data.signature,
             &data.prev_chain,
-            &data.start_cipher,
             opaque.iter().map(|(e, _)| e),
         )
         .unwrap();
@@ -777,10 +759,45 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(data.prev_chain, verified.decoded.header.prev_chain);
         assert_eq!(data.head_chain, verified.head_chain);
-        assert_eq!(data.end_cipher, verified.head_cipher);
-        let (decoded_plaintext, end_cipher) =
-            verified.to_plaintext(&data.key_resolver).await.unwrap();
-        assert_eq!(data.entries, decoded_plaintext);
-        assert_eq!(data.end_cipher, end_cipher);
+        match verified.decoded.entries {
+            crate::log::segment::DecodedEntries::Opaque(items) => {
+                let mut head_cipher = data.start_cipher;
+                let plaintext = entries_to_plaintext(
+                    &data.seed,
+                    &mut head_cipher,
+                    &data.prev_chain,
+                    &data.key_resolver,
+                    items.iter(),
+                )
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|e| e.0)
+                .collect::<Vec<_>>();
+                assert_eq!(data.entries, plaintext);
+                assert_eq!(data.end_cipher, head_cipher);
+            }
+            crate::log::segment::DecodedEntries::Plaintext(items) => {
+                assert_eq!(data.entries, items);
+
+                let mut head_cipher = data.start_cipher;
+                track_cipher_change(&mut head_cipher, items.iter());
+                assert_eq!(data.end_cipher, head_cipher);
+
+                let mut head_cipher = data.start_cipher;
+                let head_chain = data
+                    .prev_chain
+                    .compute_next_plaintext(
+                        &data.seed,
+                        &mut head_cipher,
+                        &data.key_resolver,
+                        items.iter(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(data.end_cipher, head_cipher);
+                assert_eq!(data.head_chain, head_chain);
+            }
+        }
     }
 }
