@@ -1,5 +1,6 @@
 use sea_query::{Expr, ExprTrait, Query, value::prelude::Uuid as SeaUuid};
 use ubiquisync_core::{
+    crypto::NullCipherKeyResolver,
     ids::LogId,
     log::{
         ChainHash, ChainSeed, EntryBody, OpBatch, PlaintextLogEntry,
@@ -53,7 +54,7 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
 
         let seed = ChainSeed::new(&log_id);
 
-        let (stream_id, chain_head, commit_err) = if stream_rows.is_empty() {
+        let (stream_id, chain_head, mut head_cipher, commit_err) = if stream_rows.is_empty() {
             let res = insert_cols::<
                 (
                     streams::PeerId,
@@ -70,7 +71,7 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
             )
             .await?;
             let (stream_id,) = res.exactly_one()?;
-            (stream_id, ChainHash::empty(&seed), None)
+            (stream_id, ChainHash::empty(&seed), None, None)
         } else if stream_rows.len() > 1 {
             todo!("found multiple rows, this means we have a fork and need to know what to do")
         } else {
@@ -79,10 +80,6 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
 
             if head_err.is_some() {
                 todo!("handle some unexpected status")
-            }
-
-            if head_cipher.is_some() {
-                todo!("cipher not supported yet");
             }
 
             if commit_err.is_none() && commit_size != head_size {
@@ -96,7 +93,7 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
                 size: head_size,
             };
 
-            (stream_id, chain_head, commit_err)
+            (stream_id, chain_head, head_cipher, commit_err)
         };
 
         let mut batch = self.db.new_batch();
@@ -109,13 +106,28 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
         )));
         let entries = vec![entry];
 
-        let next_chain_head = chain_head.compute_next_plaintext(&seed, &None, entries.iter())?;
+        let next_chain_head = chain_head
+            .compute_next_plaintext(
+                &seed,
+                &mut head_cipher,
+                &NullCipherKeyResolver,
+                entries.iter(),
+            )
+            .await?;
 
         let sign_bytes = next_chain_head.sign_bytes(&seed);
 
         let signature = self.credentials.signing_key().sign(&sign_bytes)?;
 
-        let segment = encode_segment_plaintext(&signature, &chain_head, &None, &entries)?;
+        let segment = encode_segment_plaintext(
+            &signature,
+            &chain_head,
+            &head_cipher,
+            &log_id,
+            &NullCipherKeyResolver,
+            &entries,
+        )
+        .await?;
 
         insert_cols_batch::<(
             segments::StreamId,
@@ -140,12 +152,18 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
                 .await
                 .map_err(|e| ExecError::Reducer(Box::new(e)))?;
 
-            update_cols_batch::<(streams::HeadSize, streams::HeadHash, streams::CommitSize)>(
+            update_cols_batch::<(
+                streams::HeadSize,
+                streams::HeadHash,
+                streams::CommitSize,
+                streams::HeadCipher,
+            )>(
                 batch.as_mut(),
                 (
                     next_chain_head.size,
                     next_chain_head.hash,
                     next_chain_head.size,
+                    head_cipher,
                 ), // head and commit sizes match
                 Query::update()
                     .table(streams::Table)
@@ -164,9 +182,9 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
                 .map_err(|e| ExecError::Reducer(Box::new(e)))?;
         } else {
             // we cannot commit because our commit status is non-Ok, so we just update the head size and hash
-            update_cols_batch::<(streams::HeadSize, streams::HeadHash)>(
+            update_cols_batch::<(streams::HeadSize, streams::HeadHash, streams::HeadCipher)>(
                 batch.as_mut(),
-                (next_chain_head.size, next_chain_head.hash),
+                (next_chain_head.size, next_chain_head.hash, head_cipher),
                 Query::update()
                     .table(streams::Table)
                     .and_where(Expr::column(streams::Id).eq(stream_id)),

@@ -47,6 +47,7 @@ futures-test = { workspace = true }
 test-case = { workspace = true }
 insta = { workspace = true }
 divan = { workspace = true }
+tokio = { workspace = true }
 
 [lints]
 workspace = true

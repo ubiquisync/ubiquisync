@@ -5,7 +5,7 @@ use thiserror::Error;
 use crate::{
     bytes::OpaqueBytes,
     codec::{ReadError, Reader, Writer},
-    crypto::{CipherInfo, EntryCipher, Hash256, Hasher, TaggedHashDomain, new_tagged_hasher},
+    crypto::{CipherInfo, CipherKeyResolver, Hash256, Hasher, TaggedHashDomain, new_tagged_hasher},
     ids::LogId,
     log::{
         EntryBody, LogEntry, OpBatch, OpOrExpunge, OpaqueLogEntry, PlaintextLogEntry,
@@ -17,6 +17,7 @@ use crate::{
 #[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
 pub struct ChainHash {
     pub hash: Hash256,
+    #[cfg_attr(feature = "proptest", strategy(0u64..1<<24))]
     pub size: u64,
 }
 
@@ -27,20 +28,46 @@ pub enum ChainHashError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ChainSeed(Hash256);
+pub struct ChainSeed {
+    log_id: LogId,
+    hash: Hash256,
+}
 
 impl ChainHash {
     pub fn empty(seed: &ChainSeed) -> Self {
         Self {
-            hash: seed.0,
+            hash: seed.hash,
             size: 0,
         }
     }
 
-    fn add_one(&self, entry_hash: &Hash256) -> Result<Self, ChainHashError> {
+    fn add_one(
+        &self,
+        entry_hash: &Hash256,
+        active_cipher: &Option<CipherInfo>,
+    ) -> Result<Self, ChainHashError> {
         let mut hasher = new_tagged_hasher(TaggedHashDomain::ChainHash);
         hasher.update(&self.hash);
         hasher.update(entry_hash);
+        // We bind the active cipher so that claims about which cipher is used
+        // are authoratative. We always use the latest cipher is the current entry
+        // is a UseKey entry, not the prior cipher.
+        // Without this, it would be feasible to package an opaque segment as a plaintext
+        // segment and claim that it is actually a plaintext segment with no cipher at all
+        // which is totally wrong. This is somewhat redundant because the caller could
+        // figure out which segment should be active, but because plaintext segments package
+        // their cipher, including this in the hash ensures that the segment is self-contained
+        // and that cipher claims in segment headers are verifiable.
+        // We could include this in the entry hash itself, but then a segment of all expunged
+        // entries could contain any cipher claim and it would be unverifiable - it's an edge
+        // case for sure, but this approach is slightly more correct.
+        if let Some(ci) = active_cipher {
+            hasher.update(&[1]);
+            hasher.update(&[ci.cipher_suite]);
+            hasher.update(&ci.fingerprint.0);
+        } else {
+            hasher.update(&[0]);
+        }
         let hash = hasher.finalize();
         let size = self
             .size
@@ -55,41 +82,50 @@ impl ChainHash {
         entry: &OpaqueLogEntry,
         precomputed_hash: Option<Hash256>,
         seed: &ChainSeed,
+        active_cipher: &mut Option<CipherInfo>,
     ) -> Result<Self, ChainHashError> {
         match entry {
             LogEntry::IndexedEntry(entry) => {
-                let entry_hash = precomputed_hash.unwrap_or_else(|| entry.hash(seed, self.size));
-                Ok(self.add_one(&entry_hash)?)
+                let entry_hash =
+                    precomputed_hash.unwrap_or_else(|| entry.hash(seed, self.size, active_cipher));
+                Ok(self.add_one(&entry_hash, active_cipher)?)
             }
             LogEntry::Signature(_) => Ok(*self),
         }
     }
 
-    pub fn compute_next_plaintext<'a: 'b, 'b>(
+    pub async fn compute_next_plaintext<'a: 'b, 'b>(
         &self,
         seed: &ChainSeed,
-        cipher: &Option<EntryCipher>,
+        head_cipher: &mut Option<CipherInfo>,
+        key_resolver: &dyn CipherKeyResolver,
         entries: impl Iterator<Item = &'b PlaintextLogEntry<'a>>,
     ) -> Result<Self, SegmentCipherError> {
-        let (_, h) = entries_to_opaque(cipher, seed, self, entries)?;
-        Ok(h)
+        let opaque = entries_to_opaque(seed, head_cipher, self, key_resolver, entries).await?;
+        if opaque.is_empty() {
+            // TODO: maybe this should be a hard error, but if there are no entries we can validly just clone self
+            return Ok(*self);
+        }
+        // we take the last chain hash in the segment
+        Ok(opaque.last().expect("non-empty entries").1)
     }
 
     pub fn compute_next_opaque<'a: 'b, 'b>(
         &self,
         seed: &ChainSeed,
+        active_cipher: &mut Option<CipherInfo>,
         entries: impl Iterator<Item = &'a OpaqueLogEntry<'a>>,
     ) -> Result<Self, ChainHashError> {
         let mut h: ChainHash = *self;
         for e in entries {
-            h = h.next(e, None, seed)?;
+            h = h.next(e, None, seed, active_cipher)?;
         }
         Ok(h)
     }
 
     pub fn sign_bytes(&self, seed: &ChainSeed) -> Hash256 {
         let mut hasher = new_tagged_hasher(TaggedHashDomain::LogSignBytes);
-        hasher.update(&seed.0);
+        hasher.update(&seed.hash);
         hasher.update(&self.size.to_le_bytes());
         hasher.update(&self.hash);
         hasher.finalize()
@@ -112,20 +148,35 @@ impl ChainSeed {
         let mut hasher = new_tagged_hasher(TaggedHashDomain::ChainSeed);
         hasher.update(&log_id.peer_id.0);
         hasher.update(&log_id.container_id.0);
-        let seed = hasher.finalize();
-        Self(seed)
+        let hash = hasher.finalize();
+        Self {
+            hash,
+            log_id: *log_id,
+        }
     }
 
     pub fn hash(&self) -> &Hash256 {
-        &self.0
+        &self.hash
+    }
+
+    pub fn log_id(&self) -> &LogId {
+        &self.log_id
     }
 }
 
 impl<'a> EntryBody<OpaqueBytes<'a>> {
-    pub fn hash(&self, seed: &ChainSeed, entry_index: u64) -> Hash256 {
+    pub fn hash(
+        &self,
+        seed: &ChainSeed,
+        entry_index: u64,
+        active_cipher: &mut Option<CipherInfo>,
+    ) -> Hash256 {
         match self {
             EntryBody::OpBatch(op_batch) => op_batch.hash(seed, entry_index),
-            EntryBody::UseKey(cipher_info) => hash_use_key(seed, entry_index, cipher_info),
+            EntryBody::UseKey(cipher_info) => {
+                *active_cipher = Some(*cipher_info);
+                hash_use_key(seed, entry_index, cipher_info)
+            }
             EntryBody::Expunged(hash) => *hash,
         }
     }
@@ -160,7 +211,7 @@ pub(crate) struct OpBatchHasher {
 impl OpBatchHasher {
     pub(crate) fn new(seed: &ChainSeed, entry_idx: u64, num_ops: usize) -> Self {
         let mut hasher = new_tagged_hasher(TaggedHashDomain::LogEntryOpBatch);
-        hasher.update(&seed.0);
+        hasher.update(&seed.hash);
         hasher.update(&entry_idx.to_le_bytes());
         let num_ops = num_ops as u64;
         hasher.update(&num_ops.to_le_bytes());
@@ -179,7 +230,7 @@ impl OpBatchHasher {
 
     pub(crate) fn hash_slot(&mut self, bytes: &OpaqueBytes) -> Hash256 {
         let mut slot_hasher = new_tagged_hasher(TaggedHashDomain::OpBatchSlot);
-        slot_hasher.update(&self.seed.0);
+        slot_hasher.update(&self.seed.hash);
         slot_hasher.update(&self.entry_idx.to_le_bytes());
         slot_hasher.update(&self.slot_idx.to_le_bytes());
         slot_hasher.update(bytes.borrow());
@@ -196,7 +247,7 @@ impl OpBatchHasher {
 
 fn hash_use_key(seed: &ChainSeed, entry_index: u64, cipher_info: &CipherInfo) -> Hash256 {
     let mut hasher = new_tagged_hasher(TaggedHashDomain::LogEntryUseKey);
-    hasher.update(&seed.0);
+    hasher.update(&seed.hash);
     hasher.update(&entry_index.to_le_bytes());
     hasher.update(&[cipher_info.cipher_suite]);
     hasher.update(&cipher_info.fingerprint.0);

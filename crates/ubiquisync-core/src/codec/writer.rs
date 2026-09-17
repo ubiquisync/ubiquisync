@@ -74,6 +74,18 @@ impl Writer {
         Ok(())
     }
 
+    pub fn write_option<T, F>(&mut self, t: &Option<T>, mut f: F)
+    where
+        F: FnMut(&mut Self, &T),
+    {
+        if let Some(t) = t {
+            self.write_byte(1);
+            f(self, t);
+        } else {
+            self.write_byte(0);
+        }
+    }
+
     pub fn finalize(self) -> Vec<u8> {
         self.buf
     }

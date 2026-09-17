@@ -21,6 +21,8 @@ pub enum ReadError {
     InvalidRange { start: u64, span: u64 },
     #[error("trailing bytes")]
     TrailingBytes,
+    #[error("error reading Option<T>")]
+    InvalidOption,
 }
 
 impl<'a> Reader<'a> {
@@ -88,6 +90,18 @@ impl<'a> Reader<'a> {
             .checked_add(span)
             .ok_or(ReadError::InvalidRange { start, span })?;
         Ok(Range { start, end })
+    }
+
+    pub fn read_option<T, F, E>(&mut self, mut on_some: F) -> Result<Option<T>, E>
+    where
+        F: FnMut(&mut Self) -> Result<T, E>,
+        E: From<ReadError>,
+    {
+        match self.read_byte()? {
+            0 => Ok(None),
+            1 => Ok(Some(on_some(self)?)),
+            _ => Err(ReadError::InvalidOption.into()),
+        }
     }
 
     pub fn is_empty(&self) -> bool {
