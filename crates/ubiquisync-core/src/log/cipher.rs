@@ -7,8 +7,8 @@ use crate::{
         SlotCipher,
     },
     log::{
-        ChainHash, ChainHashError, ChainSeed, EntryBody, LogEntry, LogValidationError,
-        OpBatchHasher, OpaqueLogEntry, PlaintextLogEntry,
+        ChainHash, ChainHashError, ChainSeed, LogValidationError, OpBatchHasher, OpaqueLogEntry,
+        PlaintextLogEntry,
     },
 };
 
@@ -47,7 +47,7 @@ pub async fn entries_to_opaque<'a: 'b, 'b>(
     for e in entries {
         let (e2, maybe_hash) = to_opaque(e, &entry_cipher, seed, &head_chain)?;
         head_chain = head_chain.next(&e2, maybe_hash, seed, head_cipher)?;
-        check_use_key(e, head_cipher, &mut entry_cipher, seed, key_resolver).await?;
+        check_cipher_change(head_cipher, &mut entry_cipher, seed, key_resolver).await?;
         res.push((e2, head_chain));
     }
     Ok(res)
@@ -73,7 +73,7 @@ pub async fn entries_to_plaintext<'a: 'b, 'b>(
     for e in entries {
         let (e2, maybe_hash) = to_plaintext(e, &entry_cipher, seed, &head_chain)?;
         head_chain = head_chain.next(e, maybe_hash, seed, head_cipher)?;
-        check_use_key(&e2, head_cipher, &mut entry_cipher, seed, key_resolver).await?;
+        check_cipher_change(head_cipher, &mut entry_cipher, seed, key_resolver).await?;
         res.push((e2, head_chain));
     }
     Ok(res)
@@ -173,19 +173,20 @@ fn to_plaintext<'a>(
     }
 }
 
-async fn check_use_key(
-    e: &PlaintextLogEntry<'_>,
-    head_ci: &mut Option<CipherInfo>,
+async fn check_cipher_change(
+    head_ci: &Option<CipherInfo>,
     cipher: &mut Option<EntryCipher>,
     seed: &ChainSeed,
     key_resolver: &dyn CipherKeyResolver,
 ) -> Result<(), SegmentCipherError> {
-    let LogEntry::IndexedEntry(EntryBody::UseKey(cipher_info)) = e else {
-        return Ok(());
-    };
+    if let Some(ci) = head_ci {
+        if let Some(cipher) = cipher
+            && cipher.cipher_info() == *ci
+        {
+            return Ok(());
+        }
 
-    *head_ci = Some(*cipher_info);
-    *cipher = Some(EntryCipher::resolve(cipher_info, seed.log_id(), key_resolver).await?);
-
+        *cipher = Some(EntryCipher::resolve(ci, seed.log_id(), key_resolver).await?);
+    }
     Ok(())
 }

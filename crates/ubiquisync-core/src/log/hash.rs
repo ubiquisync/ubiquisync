@@ -82,14 +82,13 @@ impl ChainHash {
         entry: &OpaqueLogEntry,
         precomputed_hash: Option<Hash256>,
         seed: &ChainSeed,
-        active_cipher: &Option<CipherInfo>,
+        active_cipher: &mut Option<CipherInfo>,
     ) -> Result<Self, ChainHashError> {
-        let mut active_cipher = *active_cipher;
         match entry {
             LogEntry::IndexedEntry(entry) => {
-                let entry_hash = precomputed_hash
-                    .unwrap_or_else(|| entry.hash(seed, self.size, &mut active_cipher));
-                Ok(self.add_one(&entry_hash, &active_cipher)?)
+                let entry_hash =
+                    precomputed_hash.unwrap_or_else(|| entry.hash(seed, self.size, active_cipher));
+                Ok(self.add_one(&entry_hash, active_cipher)?)
             }
             LogEntry::Signature(_) => Ok(*self),
         }
