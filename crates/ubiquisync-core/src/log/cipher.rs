@@ -27,6 +27,9 @@ pub enum SegmentCipherError {
     KeyResolve(#[from] CipherKeyResolveError),
 }
 
+/// Head cipher is the cipher at the start of the segment.
+/// It is unnecessary to pass this if the segment starts with UseKey
+/// and doing so will result in unnecessarily resolving the head cipher key.
 pub async fn entries_to_opaque<'a: 'b, 'b>(
     seed: &ChainSeed,
     head_cipher: &mut Option<CipherInfo>,
@@ -50,6 +53,9 @@ pub async fn entries_to_opaque<'a: 'b, 'b>(
     Ok(res)
 }
 
+/// Head cipher is the cipher at the start of the segment.
+/// It is unnecessary to pass this if the segment starts with UseKey
+/// and doing so will result in unnecessarily resolving the head cipher key.
 pub async fn entries_to_plaintext<'a: 'b, 'b>(
     seed: &ChainSeed,
     head_cipher: &mut Option<CipherInfo>,

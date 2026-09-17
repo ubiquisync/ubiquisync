@@ -572,7 +572,15 @@ impl<'a> DecodedEntries<'a> {
                         .await?;
                 Ok(e.into_iter().map(|e| e.0).collect())
             }
-            DecodedEntries::Plaintext(items) => Ok(items),
+            DecodedEntries::Plaintext(items) => {
+                // capture key rotation state
+                for e in items.iter() {
+                    if let LogEntry::IndexedEntry(EntryBody::UseKey(ci)) = e {
+                        *head_cipher = Some(*ci);
+                    }
+                }
+                Ok(items)
+            }
         }
     }
 }
