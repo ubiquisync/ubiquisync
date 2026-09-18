@@ -1,13 +1,16 @@
 use std::collections::{HashMap, HashSet};
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use dioxus::signals::{Signal, WritableHashSetExt};
+use dioxus::{
+    signals::{ReadableExt, Signal, WritableHashSetExt},
+    stores::Store,
+};
 use ubiquisync_core::{hlc, uuid::Uuid};
 
 use crate::{
     def_state,
     state::{
-        lww::{Apply, Lww, StateMap},
+        lww::{Apply, Lww},
         sort::SortOrder,
     },
 };
@@ -19,13 +22,11 @@ pub struct DrawingState {
 }
 
 def_state!(Drawing {
-    ellipse: Signal<HashMap<Uuid, Ellipse>>,
-    text: Signal<HashMap<Uuid, Text>>,
-    path: Signal<HashMap<Uuid, Path>>,
-
-    // these don't need signals because we can detect membership with the indexes
-    sub_path: StateMap<SubPath>,
-    vertex: StateMap<Vertex>,
+    ellipse: Store<HashMap<Uuid, Ellipse>>,
+    text: Store<HashMap<Uuid, Text>>,
+    path: Store<HashMap<Uuid, Path>>,
+    sub_path: Store<HashMap<Uuid, SubPath>>,
+    vertex: Store<HashMap<Uuid, Vertex>>,
 
     deleted: Lww<bool>
 });
@@ -104,16 +105,14 @@ impl Apply for DrawingState {
     }
 }
 
-fn get_parent<F, S>(state: &StateMap<S>, id: &Uuid, accessor: F) -> Uuid
+fn get_parent<F, S: 'static>(state: &Store<HashMap<Uuid, S>>, id: &Uuid, accessor: F) -> Uuid
 where
     F: Fn(&S) -> &Lww<Uuid>,
 {
     state
-        .0
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
+        .peek()
         .get(id)
-        .map(|s| accessor(s).peek())
+        .map(|s| accessor(s).peek().clone())
         .unwrap_or_default()
 }
 
