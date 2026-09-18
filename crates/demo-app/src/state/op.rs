@@ -1,7 +1,7 @@
 use ubiquisync_core::uuid::Uuid;
 
-pub enum Op {
-    Drawing { doc: Uuid, op: DrawingOp },
-}
+use crate::state::DrawingOp;
 
-pub enum DrawingOp {}
+pub enum Op {
+    Drawing { doc: Uuid, op: Vec<DrawingOp> },
+}
