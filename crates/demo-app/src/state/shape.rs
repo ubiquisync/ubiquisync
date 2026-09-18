@@ -70,7 +70,7 @@ def_state!(FillStroke {
 def_state!(Text {
     text: Lww<String>,
     position: Lww<Option<XY>>,
-    fill: Lww<String>,
+    fill_stroke: FillStroke,
     font: Lww<String>,
     size: Lww<u64>,
     deleted: Lww<bool>
