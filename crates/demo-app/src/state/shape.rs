@@ -109,6 +109,7 @@ where
     F: Fn(&S) -> &Lww<Uuid>,
 {
     state
+        .0
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .get(id)

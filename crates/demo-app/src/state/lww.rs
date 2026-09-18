@@ -1,6 +1,7 @@
 use std::{
     cmp::Ordering,
     collections::HashMap,
+    ops::Deref,
     sync::{Arc, RwLock, RwLockReadGuard},
 };
 
@@ -42,37 +43,54 @@ impl<T: Default + Ord + 'static> Apply for Lww<T> {
     }
 }
 
-impl<T: Default + Ord + Clone + 'static> Lww<T> {
-    /// Read a value and subscribe to change updates.
-    pub fn read(&self) -> ReadSignal<T> {
-        self.read_guard().value.into()
+impl<T: Default + Ord + 'static> Lww<T> {
+    /// Read value and subscribe to change updates.
+    pub fn read(&self) -> impl Deref<Target = T> + '_ {
+        self.signal().read_unchecked()
     }
 
-    /// Read a value without subscribing to change updates.
-    pub fn peek(&self) -> T {
-        self.read_guard().value.peek().clone()
+    /// Read value without subscribing to change updates.
+    pub fn peek(&self) -> impl Deref<Target = T> + '_ {
+        self.signal().peek_unchecked()
+    }
+
+    pub fn signal(&self) -> ReadSignal<T> {
+        self.read_guard().value.into()
     }
 
     pub fn timestamp(&self) -> Timestamp {
         self.read_guard().timestamp
     }
 
-    fn read_guard(&self) -> RwLockReadGuard<LwwInner<T>> {
+    fn read_guard(&self) -> RwLockReadGuard<'_, LwwInner<T>> {
         self.0.read().unwrap_or_else(|e| e.into_inner())
     }
 }
 
-pub type StateMap<T> = Arc<RwLock<HashMap<Uuid, T>>>;
+impl<T: Default + Ord + Clone + 'static> PartialEq for Lww<T> {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+#[derive(Default, Clone)]
+pub struct StateMap<T>(pub Arc<RwLock<HashMap<Uuid, T>>>);
 
 impl<T: Apply + Default + Clone> Apply for StateMap<T> {
     type Op = (Uuid, Vec<T::Op>);
 
     fn apply(&mut self, ts: Timestamp, op: Self::Op) {
-        let mut guard = self.write().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self.0.write().unwrap_or_else(|e| e.into_inner());
         let e = guard.entry(op.0).or_default();
         for o in op.1 {
             e.apply(ts, o);
         }
+    }
+}
+
+impl<T: Apply + Default + Clone> PartialEq for StateMap<T> {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
     }
 }
 
@@ -92,12 +110,12 @@ impl<T: Apply + Default + 'static> Apply for Signal<HashMap<Uuid, T>> {
 macro_rules! def_state {
     ($name:ident { $($f_name:ident: $f_type:ty),* $(,)?}) => {
         pastey::paste! {
-            #[derive(Default, Clone)]
+            #[derive(Default, Clone, PartialEq)]
             pub struct $name {
                 $(pub $f_name: $f_type),*
             }
 
-            #[derive(Debug, Clone, borsh::BorshSerialize, borsh::BorshDeserialize)]
+            #[derive(Debug, Clone, PartialEq, Eq, borsh::BorshSerialize, borsh::BorshDeserialize)]
             #[cfg_attr(test, derive(test_strategy::Arbitrary))]
             #[borsh(use_discriminant = true)]
             #[repr(u8)]

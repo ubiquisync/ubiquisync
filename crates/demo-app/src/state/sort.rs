@@ -3,7 +3,7 @@ use ubiquisync_core::hlc::Timestamp;
 
 use crate::state::lww::{Apply, Lww};
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, PartialEq)]
 pub struct SortOrder {
     state: Lww<FractionalIndex>,
 }
