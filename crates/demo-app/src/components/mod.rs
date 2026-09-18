@@ -5,6 +5,7 @@
 pub mod ellipse;
 pub mod fill_stroke;
 mod hero;
+pub mod path;
 pub mod sub_path;
 pub mod text;
 pub use hero::Hero;

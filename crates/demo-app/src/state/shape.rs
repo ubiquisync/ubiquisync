@@ -10,6 +10,7 @@ use ubiquisync_core::{hlc, uuid::Uuid};
 use crate::{
     def_state,
     state::{
+        Init,
         lww::{Apply, Lww},
         sort::SortOrder,
     },
@@ -17,8 +18,18 @@ use crate::{
 
 pub struct DrawingState {
     pub drawing: Drawing,
-    pub path_sub_paths: HashMap<Uuid, Signal<HashSet<Uuid>>>,
-    pub sub_path_vertices: HashMap<Uuid, Signal<HashSet<Uuid>>>,
+    pub path_sub_paths: Store<HashMap<Uuid, Signal<HashSet<Uuid>>>>,
+    pub sub_path_vertices: Store<HashMap<Uuid, Signal<HashSet<Uuid>>>>,
+}
+
+impl Init for DrawingState {
+    fn init() -> Self {
+        Self {
+            drawing: Drawing::init(),
+            path_sub_paths: Init::init(),
+            sub_path_vertices: Init::init(),
+        }
+    }
 }
 
 def_state!(Drawing {
@@ -88,7 +99,12 @@ impl Apply for DrawingState {
 
     fn apply(&mut self, ts: hlc::Timestamp, op: Self::Op) {
         match op {
+            DrawingOp::Path((id, _)) => {
+                ensure_membership(&mut self.path_sub_paths, id);
+                self.drawing.apply(ts, op);
+            }
             DrawingOp::SubPath((id, _)) => {
+                ensure_membership(&mut self.sub_path_vertices, id);
                 let cur_parent = get_parent(&self.drawing.sub_path, &id, |s| &s.parent);
                 self.drawing.apply(ts, op);
                 let new_parent = get_parent(&self.drawing.sub_path, &id, |s| &s.parent);
@@ -116,8 +132,22 @@ where
         .unwrap_or_default()
 }
 
+// Preserve the signal identity, including when children arrive before their parent.
+fn ensure_membership(
+    index: &mut Store<HashMap<Uuid, Signal<HashSet<Uuid>>>>,
+    id: Uuid,
+) -> Signal<HashSet<Uuid>> {
+    let existing = index.peek().get(&id).copied();
+    if let Some(members) = existing {
+        return members;
+    }
+    let members = Signal::default();
+    index.insert(id, members);
+    members
+}
+
 fn update_parent_index(
-    index: &mut HashMap<Uuid, Signal<HashSet<Uuid>>>,
+    index: &mut Store<HashMap<Uuid, Signal<HashSet<Uuid>>>>,
     cur_parent: Uuid,
     new_parent: Uuid,
     id: Uuid,
@@ -127,12 +157,12 @@ fn update_parent_index(
     }
 
     if cur_parent != [0; 16]
-        && let Some(cur) = index.get_mut(&cur_parent)
+        && let Some(mut cur) = index.peek().get(&cur_parent).copied()
     {
         cur.remove(&id);
     }
 
     if new_parent != [0; 16] {
-        index.entry(new_parent).or_default().insert(id);
+        ensure_membership(index, new_parent).insert(id);
     }
 }
