@@ -3,5 +3,8 @@
 //! component  to be used in our app.
 
 pub mod ellipse;
+pub mod fill_stroke;
 mod hero;
+pub mod sub_path;
+pub mod text;
 pub use hero::Hero;
