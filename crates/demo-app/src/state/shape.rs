@@ -7,7 +7,7 @@ use ubiquisync_core::{hlc, uuid::Uuid};
 use crate::{
     def_state,
     state::{
-        lww::{Apply, Lww},
+        lww::{Apply, Lww, StateMap},
         sort::SortOrder,
     },
 };
@@ -23,9 +23,9 @@ def_state!(Drawing {
     text: Signal<HashMap<Uuid, Text>>,
     path: Signal<HashMap<Uuid, Path>>,
 
-    // these don't need signals because we detect membership with the indexes
-    sub_path: HashMap<Uuid, SubPath>,
-    vertex: HashMap<Uuid, Vertex>,
+    // these don't need signals because we can detect membership with the indexes
+    sub_path: StateMap<SubPath>,
+    vertex: StateMap<Vertex>,
 
     deleted: Lww<bool>
 });
@@ -104,13 +104,15 @@ impl Apply for DrawingState {
     }
 }
 
-fn get_parent<F, S>(state: &HashMap<Uuid, S>, id: &Uuid, accessor: F) -> Uuid
+fn get_parent<F, S>(state: &StateMap<S>, id: &Uuid, accessor: F) -> Uuid
 where
     F: Fn(&S) -> &Lww<Uuid>,
 {
     state
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
         .get(id)
-        .map(|s| *accessor(s).peek())
+        .map(|s| accessor(s).peek())
         .unwrap_or_default()
 }
 
