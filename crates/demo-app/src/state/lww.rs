@@ -61,6 +61,14 @@ impl<T: Apply + Default> Apply for HashMap<Uuid, T> {
     }
 }
 
+impl<T: Apply + Default + 'static> Apply for Signal<T> {
+    type Op = T::Op;
+
+    fn apply(&mut self, ts: Timestamp, op: Self::Op) {
+        self.write().apply(ts, op);
+    }
+}
+
 #[macro_export]
 macro_rules! def_state {
     ($name:ident { $($f_name:ident: $f_type:ty),* $(,)?}) => {

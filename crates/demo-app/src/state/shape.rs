@@ -19,11 +19,14 @@ pub struct DrawingState {
 }
 
 def_state!(Drawing {
-    ellipse: HashMap<Uuid, Ellipse>,
-    text: HashMap<Uuid, Text>,
-    path: HashMap<Uuid, Path>,
+    ellipse: Signal<HashMap<Uuid, Ellipse>>,
+    text: Signal<HashMap<Uuid, Text>>,
+    path: Signal<HashMap<Uuid, Path>>,
+
+    // these don't need signals because we detect membership with the indexes
     sub_path: HashMap<Uuid, SubPath>,
     vertex: HashMap<Uuid, Vertex>,
+
     deleted: Lww<bool>
 });
 
@@ -117,8 +120,17 @@ fn update_parent_index(
     new_parent: Uuid,
     id: Uuid,
 ) {
-    if cur_parent != new_parent && new_parent != [0; 16] {
-        index.entry(cur_parent).or_default().remove(&id);
+    if cur_parent == new_parent {
+        return;
+    }
+
+    if cur_parent != [0; 16]
+        && let Some(cur) = index.get_mut(&cur_parent)
+    {
+        cur.remove(&id);
+    }
+
+    if new_parent != [0; 16] {
         index.entry(new_parent).or_default().insert(id);
     }
 }
