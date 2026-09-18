@@ -7,6 +7,7 @@ members = [
   "crates/ubiquisync-postgres",
   "crates/ubiquisync-sqlite",
   "crates/ubiquisync-tables",
+  "crates/demo-app", 
 ]
 
 [workspace.package]

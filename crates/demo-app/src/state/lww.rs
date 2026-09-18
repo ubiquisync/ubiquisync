@@ -52,7 +52,8 @@ macro_rules! def_state {
                 $(pub $f_name: $f_type),*
             }
 
-            #[derive(borsh::BorshSerialize, borsh::BorshDeserialize)]
+            #[derive(Debug, borsh::BorshSerialize, borsh::BorshDeserialize)]
+            #[cfg_attr(test, derive(test_strategy::Arbitrary))]
             #[borsh(use_discriminant = true)]
             #[repr(u8)]
             pub enum [< $name Op >] {

@@ -10,7 +10,9 @@ def_state!(NumberFormat {
      // TODO date time format options
 });
 
-#[derive(Default, Clone, PartialEq, PartialOrd, Eq, Ord, BorshSerialize, BorshDeserialize)]
+#[derive(
+    Debug, Default, Clone, PartialEq, PartialOrd, Eq, Ord, BorshSerialize, BorshDeserialize,
+)]
 #[borsh(use_discriminant = true)]
 #[repr(u8)]
 pub enum DecimalPlaces {
@@ -19,7 +21,9 @@ pub enum DecimalPlaces {
     Fixed(u8) = 1,
 }
 
-#[derive(Default, Clone, PartialEq, PartialOrd, Eq, Ord, BorshSerialize, BorshDeserialize)]
+#[derive(
+    Debug, Default, Clone, PartialEq, PartialOrd, Eq, Ord, BorshSerialize, BorshDeserialize,
+)]
 #[borsh(use_discriminant = true)]
 #[repr(u8)]
 pub enum NumberFormatType {

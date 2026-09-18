@@ -16,6 +16,10 @@ ubiquisync-sql = { workspace = true }
 ubiquisync-tables = { workspace = true }
 pastey = { workspace = true }
 
+[dev-dependencies]
+proptest = { workspace = true }
+test-strategy = { workspace = true }
+insta = { workspace = true }
 
 [features]
 default = ["desktop"]
