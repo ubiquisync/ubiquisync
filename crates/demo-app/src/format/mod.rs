@@ -1,3 +1,5 @@
+use borsh::{BorshDeserialize, BorshSerialize};
+
 use crate::{def_state, state::lww::Lww};
 
 def_state!(NumberFormat {
@@ -8,21 +10,25 @@ def_state!(NumberFormat {
      // TODO date time format options
 });
 
-#[derive(Default, Clone, PartialEq, PartialOrd, Eq, Ord)]
+#[derive(Default, Clone, PartialEq, PartialOrd, Eq, Ord, BorshSerialize, BorshDeserialize)]
+#[borsh(use_discriminant = true)]
+#[repr(u8)]
 pub enum DecimalPlaces {
     #[default]
-    Auto,
-    Fixed(u8),
+    Auto = 0,
+    Fixed(u8) = 1,
 }
 
-#[derive(Default, Clone, PartialEq, PartialOrd, Eq, Ord)]
+#[derive(Default, Clone, PartialEq, PartialOrd, Eq, Ord, BorshSerialize, BorshDeserialize)]
+#[borsh(use_discriminant = true)]
+#[repr(u8)]
 pub enum NumberFormatType {
     #[default]
-    General,
-    Text,
-    Number,
-    Scientific,
-    Percentage,
-    Currency,
-    DateTime,
+    General = 0,
+    Text = 1,
+    Number = 2,
+    Scientific = 3,
+    Percentage = 4,
+    Currency = 5,
+    DateTime = 6,
 }

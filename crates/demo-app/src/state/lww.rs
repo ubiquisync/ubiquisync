@@ -52,6 +52,9 @@ macro_rules! def_state {
                 $(pub $f_name: $f_type),*
             }
 
+            #[derive(borsh::BorshSerialize, borsh::BorshDeserialize)]
+            #[borsh(use_discriminant = true)]
+            #[repr(u8)]
             pub enum [< $name Op >] {
                 $([< $f_name:camel >](<$f_type as $crate::state::lww::Apply>::Op)),*
             }
