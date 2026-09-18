@@ -1,6 +1,6 @@
 use ubiquisync_core::uuid::Uuid;
 
-use crate::formula::Value;
+use crate::{format::NumberFormatOp, formula::Value, state::AxisMetaOp};
 
 pub enum Op {
     Workbook { workbook: Uuid, op: WorkbookOp },
@@ -22,20 +22,17 @@ pub enum SheetOp {
     SetCellMeta {
         rows: Vec<Uuid>,
         cols: Vec<Uuid>,
-        meta: Vec<CellMeta>,
+        meta: Vec<CellMetaOp>,
     },
     SetAxisMeta {
         axis: Axis,
         ids: Vec<Uuid>,
-        meta: Vec<AxisMeta>,
+        meta: Vec<AxisMetaOp>,
     },
 }
 
-pub enum CellMeta {}
-
-pub enum AxisMeta {
-    Live(bool),
-    Sort(Vec<u8>),
+pub enum CellMetaOp {
+    NumberFormat(NumberFormatOp),
 }
 
 pub enum Axis {

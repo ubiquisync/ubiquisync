@@ -1,32 +1,17 @@
 use ubiquisync_core::hlc::Timestamp;
 
-use crate::formula::Value;
+use crate::{def_state, format::NumberFormat, formula::Value, state::lww::Lww};
 
 pub struct SheetData {}
 
 pub struct CellData {
-    value: Value,
-    ts: Timestamp,
+    pub value: Lww<Value>,
+    pub number_format: NumberFormat,
 }
 
-pub struct RowMeta {
-    sort_order: String,
-    delete_ts: Timestamp,
-    upsert_ts: Timestamp,
-}
-
-pub struct ColMeta {
-    sort_order: String,
-    delete_ts: Timestamp,
-    upsert_ts: Timestamp,
-}
-
-pub struct AxisMeta {
-    pub sort: Lww<Vec<u8>>,
-    pub deleted: Lww<bool>,
-}
-
-pub struct Lww<T> {
-    pub value: T,
-    pub timestamp: Timestamp,
-}
+def_state!(AxisMeta {
+    sort: Lww<Vec<u8>>,
+    deleted: Lww<bool>,
+    size: Lww<u16>,
+    default_number_format: NumberFormat,
+});

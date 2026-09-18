@@ -1,10 +1,12 @@
 use ubiquisync_core::uuid::Uuid;
 
+#[derive(Clone, PartialEq, PartialOrd, Eq, Ord)]
 pub enum Value {
     Value(String),
     Formula(Expr),
 }
 
+#[derive(Clone, PartialEq, PartialOrd, Eq, Ord)]
 pub enum Expr {
     Num(String),
     Str(String),
@@ -19,6 +21,7 @@ pub enum Expr {
     Binary {},
 }
 
+#[derive(Clone, PartialEq, PartialOrd, Eq, Ord)]
 pub enum RangeExpr {
     /// Single cell, ex. A1
     Cell(CellRef),
@@ -30,28 +33,23 @@ pub enum RangeExpr {
     FullCols { start: CoordRef, end: CoordRef },
     /// Full row, ex. 3:3
     FullRow(CoordRef),
-    /// Full columns, ex. 3:5
-    FullCols { start: CoordRef, end: CoordRef },
-    /// Start at cell and go all the way to the end of the row, ex. C3:3
-    OpenEndedRow(CellRef),
-    /// Start and cell and go all the way to the end of specified row, ex. C3:5
-    OpenEndedRowRect { start: CellRef, end_row: CoordRef },
-    /// Start at cell and go all the way to the end of the col, ex. C3:C
-    OpenEndedCol(CellRef),
-    /// Start at cell and go all the way to the end of specified col, ex. C3:E
-    OpenEndedColRect { start: CellRef, end_col: CoordRef },
+    /// Full rows, ex. 3:5
+    FullRows { start: CoordRef, end: CoordRef },
 }
 
+#[derive(Clone, PartialEq, PartialOrd, Eq, Ord)]
 pub struct CellRef {
     pub row: CoordRef,
     pub col: CoordRef,
 }
 
+#[derive(Clone, PartialEq, PartialOrd, Eq, Ord)]
 pub struct CoordRef {
     pub coord: Uuid,
     pub locked: bool,
 }
 
+#[derive(Clone, PartialEq, PartialOrd, Eq, Ord)]
 pub enum BinaryOp {
     Add,
     Sub,
@@ -66,4 +64,11 @@ pub enum BinaryOp {
     NotEq,
 }
 
+#[derive(Clone, PartialEq, PartialOrd, Eq, Ord)]
 pub enum UnaryOp {}
+
+impl Default for Value {
+    fn default() -> Self {
+        Self::Value("".into())
+    }
+}
