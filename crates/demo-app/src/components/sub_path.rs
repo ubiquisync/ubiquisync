@@ -1,5 +1,15 @@
-use crate::state::XY;
-use std::fmt::Write;
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Write,
+};
+
+use dioxus::{
+    signals::{ReadableExt, Signal},
+    stores::Store,
+};
+use ubiquisync_core::uuid::Uuid;
+
+use crate::state::{SubPath, Vertex, XY};
 
 #[derive(Clone, Copy)]
 pub struct ResolvedVertex {
@@ -8,12 +18,52 @@ pub struct ResolvedVertex {
     pub out_handle: Option<XY>,
 }
 
-// widen output to avoid overflow
-fn add_xy(pos: &XY, offset: &XY) -> (i128, i128) {
-    (
-        pos.x as i128 + offset.x as i128,
-        pos.y as i128 + offset.y as i128,
-    )
+/// Append geometry while tracking membership and the fields used to render it.
+pub fn append_subpath_state(
+    out: &mut String,
+    state: &SubPath,
+    members: &Signal<HashSet<Uuid>>,
+    vertices: &Store<HashMap<Uuid, Vertex>>,
+) {
+    if *state.deleted.read() {
+        return;
+    }
+
+    let closed = *state.closed.read();
+    let mut resolved = {
+        // Subscribe to changes
+        let ids = members.read();
+        // Avoid subscribing to all changes here!
+        let objects = vertices.peek();
+
+        ids.iter()
+            .filter_map(|id| {
+                let vertex = objects.get(id)?;
+                if *vertex.deleted.read() {
+                    return None;
+                }
+
+                let pos = (*vertex.position.read())?;
+                let order = vertex.sort_order.read().clone();
+                Some((
+                    order,
+                    *id,
+                    ResolvedVertex {
+                        pos,
+                        in_handle: *vertex.incoming_handle.read(),
+                        out_handle: *vertex.outgoing_handle.read(),
+                    },
+                ))
+            })
+            .collect::<Vec<_>>()
+    };
+
+    resolved.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    render_subpath(
+        out,
+        resolved.into_iter().map(|(_, _, vertex)| vertex),
+        closed,
+    );
 }
 
 fn render_subpath(
@@ -56,4 +106,12 @@ fn append_segment(out: &mut String, from: &ResolvedVertex, to: &ResolvedVertex) 
         (Some((cx1, cy1)), Some((cx2, cy2))) => write!(out, " C {cx1} {cy1} {cx2} {cy2} {x} {y}"),
     }
     .unwrap()
+}
+
+// widen output to avoid overflow
+fn add_xy(pos: &XY, offset: &XY) -> (i128, i128) {
+    (
+        pos.x as i128 + offset.x as i128,
+        pos.y as i128 + offset.y as i128,
+    )
 }

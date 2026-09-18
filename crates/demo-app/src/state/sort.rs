@@ -1,12 +1,18 @@
 use loro_fractional_index::FractionalIndex;
 use ubiquisync_core::hlc::Timestamp;
 
-use crate::state::lww::{Apply, Lww};
 use crate::state::Init;
+use crate::state::lww::{Apply, Lww};
 
 #[derive(Default, Clone, PartialEq)]
 pub struct SortOrder {
     state: Lww<FractionalIndex>,
+}
+
+impl SortOrder {
+    pub fn read(&self) -> impl std::ops::Deref<Target = FractionalIndex> + '_ {
+        self.state.read()
+    }
 }
 
 impl Init for SortOrder {
