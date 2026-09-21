@@ -9,8 +9,8 @@ use chacha20poly1305::XChaCha20Poly1305;
 use chacha20poly1305::XNonce;
 use crypto_common::KeyInit;
 use hkdf::Hkdf;
+use hkdf::HmacImpl;
 use hmac::Hmac;
-use hmac::Mac;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use secrecy::ExposeSecret;
 use secrecy::SecretBox;
@@ -21,9 +21,11 @@ use zeroize::Zeroizing;
 
 use crate::bytes::OpaqueBytes;
 use crate::bytes::PlaintextBytes;
+use crate::codec::MAX_VAR_U64_SIZE;
 use crate::codec::ReadError;
 use crate::codec::Reader;
 use crate::codec::Writer;
+use crate::codec::encode_var_u64;
 use crate::ids::ContainerId;
 use crate::ids::LogId;
 use crate::log::ChainHash;
@@ -65,7 +67,7 @@ pub struct CipherInfo {
 
 pub struct EntryCipher {
     base: CipherBase,
-    kdf: Hmac<Sha256>,
+    kdf: Kdf,
 }
 
 pub struct SegmentCipher {
@@ -207,8 +209,7 @@ const KDF_DOMAIN_LOG_ENTRY: &str = "ubq/v1/kdf/LogEntry";
 const KDF_DOMAIN_LOG_SEGMENT: &str = "ubq/v1/kdf/LogSegment";
 
 pub struct SlotCipher {
-    kdf: Hmac<Sha256>,
-    slot_index: u64,
+    kdf: Kdf,
 }
 
 impl EntryCipher {
@@ -232,19 +233,21 @@ impl EntryCipher {
             CipherSuite::ChaCha20,
             "if this gets triggered it means we need to support new cipher suites",
         );
-        let mut kdf = <Hmac<Sha256> as KeyInit>::new_from_slice(key.0.key.expose_secret())
-            .expect("32 byte key");
+        let mut kdf = Kdf(
+            <Hmac<Sha256> as KeyInit>::new_from_slice(key.0.key.expose_secret())
+                .expect("32 byte key"),
+        );
         let base = CipherBase::new(suite.into(), key, log_id);
-        kdf.update(&[KDF_DOMAIN_LOG_ENTRY.len() as u8]);
-        kdf.update(KDF_DOMAIN_LOG_ENTRY.as_bytes());
+        kdf.update_len_prefixed(KDF_DOMAIN_LOG_ENTRY.as_bytes());
         kdf.update(&base.derive_prefix);
         Self { kdf, base }
     }
 
-    pub fn slot_cipher(&self, entry_idx: u64) -> SlotCipher {
+    pub fn slot_cipher(&self, prev_chain: &ChainHash) -> SlotCipher {
         let mut kdf = self.kdf.clone();
-        kdf.update(&entry_idx.to_le_bytes());
-        SlotCipher { kdf, slot_index: 0 }
+        kdf.update_varint(prev_chain.size);
+        kdf.update(&prev_chain.hash);
+        SlotCipher { kdf }
     }
 
     pub fn key_fingerprint(&self) -> &RootKey256Fingerprint {
@@ -272,44 +275,32 @@ impl EntryCipher {
 }
 
 impl SlotCipher {
-    fn cipher_slot_in_place(&mut self, context: &[u8], buf: &mut [u8]) {
+    fn cipher_slot_in_place(&mut self, buf: &mut [u8]) {
         let mut kdf = self.kdf.clone();
-        let slot_index = self.slot_index;
-        self.slot_index += 1;
-        kdf.update(&slot_index.to_le_bytes());
-        kdf.update(&(context.len() as u64).to_le_bytes());
-        kdf.update(context);
         kdf.update(&[1u8]); // this results in essentially the same behavior as HKDF expand-only
-        let okm: Zeroizing<[u8; 32]> = Zeroizing::new(kdf.finalize_fixed().into());
+        let okm: Zeroizing<[u8; 32]> = Zeroizing::new(kdf.0.finalize_fixed().into());
         let mut cipher = ChaCha20::new((&*okm).into(), &[0; 12].into());
         cipher.apply_keystream(buf);
+        // update the KDF with the current ciphertext for the next slot
+        self.kdf.update_len_prefixed(buf);
     }
 
-    fn cipher_slot(&mut self, prev_context: &[u8], bytes: &[u8]) -> Vec<u8> {
+    fn cipher_slot(&mut self, bytes: &[u8]) -> Vec<u8> {
         let mut res = Vec::from(bytes);
-        self.cipher_slot_in_place(prev_context, res.as_mut_slice());
+        self.cipher_slot_in_place(res.as_mut_slice());
         res
     }
 
-    pub fn encrypt_slot(
-        &mut self,
-        prev_context: &[u8],
-        bytes: &PlaintextBytes,
-    ) -> OpaqueBytes<'static> {
-        self.cipher_slot(prev_context, bytes.borrow()).into()
+    pub fn add_context(&mut self, bytes: &[u8]) {
+        self.kdf.update_len_prefixed(bytes);
     }
 
-    /// Advances the slot index without doing any encryption/decryption. ONLY to be used when skipping over expunged slots.
-    pub fn skip_slot(&mut self) {
-        self.slot_index += 1;
+    pub fn encrypt_slot(&mut self, bytes: &PlaintextBytes) -> OpaqueBytes<'static> {
+        self.cipher_slot(bytes.borrow()).into()
     }
 
-    pub fn decrypt_slot(
-        &mut self,
-        prev_context: &[u8],
-        bytes: &OpaqueBytes,
-    ) -> PlaintextBytes<'static> {
-        self.cipher_slot(prev_context, bytes.borrow()).into()
+    pub fn decrypt_slot(&mut self, bytes: &OpaqueBytes) -> PlaintextBytes<'static> {
+        self.cipher_slot(bytes.borrow()).into()
     }
 }
 
@@ -400,6 +391,25 @@ impl CipherInfo {
 
 pub struct NullCipherKeyResolver;
 
+#[derive(Clone)]
+struct Kdf(Hmac<Sha256>);
+
+impl Kdf {
+    pub fn update(&mut self, data: &[u8]) {
+        self.0.update(data);
+    }
+
+    pub fn update_varint(&mut self, value: u64) {
+        let mut buf = [0; MAX_VAR_U64_SIZE];
+        self.update(encode_var_u64(value, &mut buf));
+    }
+
+    pub fn update_len_prefixed(&mut self, data: &[u8]) {
+        self.update_varint(data.len() as u64);
+        self.update(data);
+    }
+}
+
 #[async_trait::async_trait]
 impl CipherKeyResolver for NullCipherKeyResolver {
     async fn resolve_container_key(
@@ -419,6 +429,7 @@ mod tests {
     use crate::bytes::PlaintextBytes;
     use crate::crypto::RootKey256;
     use crate::ids::{ContainerId, LogId};
+    use crate::log::ChainHash;
     use crate::{
         crypto::{CipherSuite, EntryCipher},
         ids::PeerId,
@@ -429,8 +440,7 @@ mod tests {
         key: [u8; 32],
         peer_id: [u8; 32],
         container_id: [u8; 16],
-        last_hash: [u8; 32],
-        entry_idx: u64,
+        prev_chain: ChainHash,
         slots: Vec<PlaintextBytes<'static>>,
     ) {
         let key = RootKey256::new(SecretBox::new(Box::new(key)));
@@ -440,15 +450,15 @@ mod tests {
         };
         let container_key = key.container_key(&log_id.container_id);
         let cipher = EntryCipher::new(CipherSuite::ChaCha20, container_key, &log_id);
-        let mut slot_cipher = cipher.slot_cipher(entry_idx);
+        let mut slot_cipher = cipher.slot_cipher(&prev_chain);
         let mut encrypted = vec![];
         for slot in slots.iter() {
-            encrypted.push(slot_cipher.encrypt_slot(&last_hash, slot))
+            encrypted.push(slot_cipher.encrypt_slot(slot))
         }
-        let mut slot_cipher = cipher.slot_cipher(entry_idx);
+        let mut slot_cipher = cipher.slot_cipher(&prev_chain);
         let mut decrypted = vec![];
         for slot in encrypted.iter() {
-            decrypted.push(slot_cipher.decrypt_slot(&last_hash, slot))
+            decrypted.push(slot_cipher.decrypt_slot(slot))
         }
         assert_eq!(slots, decrypted);
     }

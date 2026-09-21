@@ -81,7 +81,6 @@ fn to_opaque<'a>(
     cipher: &Option<EntryCipher>,
     prev_chain: &ChainHash,
 ) -> Result<OpaqueLogEntry<'a>, CipherError> {
-    let entry_index = prev_chain.size;
     if let Some(cipher) = cipher {
         entry.transform(
             |OpEntry {
@@ -89,17 +88,16 @@ fn to_opaque<'a>(
                  server_attested_user_id,
                  op,
              }| {
-                let mut slot_cipher = cipher.slot_cipher(entry_index);
-                let timestamp = slot_cipher.encrypt_slot(
-                    &prev_chain.hash,
-                    &PlaintextBytes::from(&timestamp.raw().to_le_bytes()[..]),
-                );
+                let mut slot_cipher = cipher.slot_cipher(prev_chain);
+                let timestamp = slot_cipher
+                    .encrypt_slot(&PlaintextBytes::from(&timestamp.raw().to_le_bytes()[..]));
                 let server_attested_user_id = if !server_attested_user_id.is_empty() {
-                    slot_cipher.encrypt_slot(&prev_chain.hash, server_attested_user_id)
+                    slot_cipher.encrypt_slot(server_attested_user_id)
                 } else {
-                    OpaqueBytes::default()
+                    slot_cipher.add_context(&[]);
+                    Default::default()
                 };
-                let op = slot_cipher.encrypt_slot(&prev_chain.hash, op);
+                let op = slot_cipher.encrypt_slot(op);
                 Ok(OpEntry {
                     timestamp,
                     server_attested_user_id,
@@ -129,7 +127,6 @@ fn to_plaintext<'a>(
     cipher: &Option<EntryCipher>,
     prev_chain: &ChainHash,
 ) -> Result<PlaintextLogEntry<'a>, SegmentCipherError> {
-    let entry_index = prev_chain.size;
     if let Some(cipher) = cipher {
         entry.transform(
             |OpEntry {
@@ -137,20 +134,20 @@ fn to_plaintext<'a>(
                  server_attested_user_id,
                  op,
              }| {
-                let mut slot_cipher = cipher.slot_cipher(entry_index);
-                let timestamp: PlaintextBytes<'_> =
-                    slot_cipher.decrypt_slot(&prev_chain.hash, timestamp);
+                let mut slot_cipher = cipher.slot_cipher(prev_chain);
+                let timestamp: PlaintextBytes<'_> = slot_cipher.decrypt_slot(timestamp);
                 let timestamp: u64 = u64::from_le_bytes(
                     Borrow::<[u8]>::borrow(&timestamp)
                         .try_into()
                         .map_err(|_| SegmentCipherError::InvalidTimestamp)?,
                 );
                 let server_attested_user_id = if !server_attested_user_id.is_empty() {
-                    slot_cipher.decrypt_slot(&prev_chain.hash, server_attested_user_id)
+                    slot_cipher.decrypt_slot(server_attested_user_id)
                 } else {
+                    slot_cipher.add_context(&[]);
                     PlaintextBytes::default()
                 };
-                let op = slot_cipher.decrypt_slot(&prev_chain.hash, op);
+                let op = slot_cipher.decrypt_slot(op);
                 Ok(OpEntry {
                     timestamp: Timestamp::from_raw(timestamp),
                     server_attested_user_id,
