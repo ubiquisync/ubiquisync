@@ -13,7 +13,7 @@ impl<B: BytesWrapper, T: TimestampRepr> LogEntry<B, T> {
     {
         Ok(match self {
             LogEntry::IndexedEntry(entry_body) => LogEntry::IndexedEntry(match entry_body {
-                EntryBody::OpBatch(e) => EntryBody::OpBatch(transform_op(e)?),
+                EntryBody::Op(e) => EntryBody::Op(transform_op(e)?),
                 EntryBody::UseKey(cipher_info) => EntryBody::UseKey(*cipher_info),
                 EntryBody::Expunged(hash) => EntryBody::Expunged(*hash),
             }),
@@ -56,7 +56,7 @@ where
     fn to_static(self) -> Self::Static {
         match self {
             LogEntry::IndexedEntry(entry) => LogEntry::IndexedEntry(match entry {
-                EntryBody::OpBatch(op_batch) => EntryBody::OpBatch(op_batch.to_static()),
+                EntryBody::Op(op) => EntryBody::Op(op.to_static()),
                 EntryBody::UseKey(cipher_info) => EntryBody::UseKey(cipher_info),
                 EntryBody::Expunged(hash) => EntryBody::Expunged(hash),
             }),

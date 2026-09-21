@@ -9,8 +9,8 @@ use chacha20poly1305::XChaCha20Poly1305;
 use chacha20poly1305::XNonce;
 use crypto_common::KeyInit;
 use hkdf::Hkdf;
-use hkdf::HmacImpl;
 use hmac::Hmac;
+use hmac::Mac;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use secrecy::ExposeSecret;
 use secrecy::SecretBox;
@@ -46,7 +46,7 @@ use crate::log::ChainHash;
 /// 3. For blind relays which can't compress entries, tag overhead (32-48 bytes/entry because of per-slot encryption)
 ///    is relatively large compared to many realistic entry payloads (ex. keystroke edits).
 ///
-/// See [crate::log::OpBatch] for additional details on how this works.
+/// See [crate::log::OpEntry] for additional details on how this works.
 #[repr(u8)]
 #[derive(IntoPrimitive, TryFromPrimitive, Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
@@ -195,7 +195,7 @@ const KDF_DOMAIN_CONTAINER: &str = "ubq/v1/kdf/Container";
 const KDF_DOMAIN_LOG_ENTRY: &str = "ubq/v1/kdf/LogEntry";
 const KDF_DOMAIN_LOG_SEGMENT: &str = "ubq/v1/kdf/LogSegment";
 
-pub struct SlotCipher {
+pub(crate) struct SlotCipher {
     kdf: Kdf,
 }
 
@@ -228,7 +228,9 @@ impl EntryCipher {
         let mut first_block = [0; 64];
         first_block[0] = suite.into();
         // pad the domain to fit in 31 bytes followed by zeroes
-        assert!(KDF_DOMAIN_LOG_ENTRY.len() <= 31);
+        const {
+            assert!(KDF_DOMAIN_LOG_ENTRY.len() <= 31);
+        }
         first_block[1..1 + KDF_DOMAIN_LOG_ENTRY.len()]
             .copy_from_slice(KDF_DOMAIN_LOG_ENTRY.as_bytes());
         first_block[32..64].copy_from_slice(&peer_id.0);
@@ -240,7 +242,7 @@ impl EntryCipher {
         }
     }
 
-    pub fn slot_cipher(&self, prev_chain: &ChainHash) -> SlotCipher {
+    pub(crate) fn slot_cipher(&self, prev_chain: &ChainHash) -> SlotCipher {
         let mut kdf = self.kdf.clone();
         kdf.update_varint(prev_chain.size);
         kdf.update(&prev_chain.hash);
@@ -282,15 +284,15 @@ impl SlotCipher {
         res
     }
 
-    pub fn add_context(&mut self, bytes: &[u8]) {
+    pub(crate) fn add_context(&mut self, bytes: &[u8]) {
         self.kdf.update_len_prefixed(bytes);
     }
 
-    pub fn encrypt_slot(&mut self, bytes: &PlaintextBytes) -> OpaqueBytes<'static> {
+    pub(crate) fn encrypt_slot(&mut self, bytes: &PlaintextBytes) -> OpaqueBytes<'static> {
         self.cipher_slot(bytes.borrow()).into()
     }
 
-    pub fn decrypt_slot(&mut self, bytes: &OpaqueBytes) -> PlaintextBytes<'static> {
+    pub(crate) fn decrypt_slot(&mut self, bytes: &OpaqueBytes) -> PlaintextBytes<'static> {
         self.cipher_slot(bytes.borrow()).into()
     }
 }

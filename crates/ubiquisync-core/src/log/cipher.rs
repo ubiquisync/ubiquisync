@@ -6,7 +6,10 @@ use crate::{
     bytes::{BytesWrapper, OpaqueBytes, PlaintextBytes},
     crypto::{CipherError, CipherInfo, CipherKeyResolveError, CipherKeyResolver, EntryCipher},
     hlc::Timestamp,
-    log::{ChainHash, ChainHashError, LogHashContext, OpEntry, OpaqueLogEntry, PlaintextLogEntry},
+    log::{
+        ChainHash, ChainHashError, LogHashContext, LogValidationError, OpEntry, OpaqueLogEntry,
+        PlaintextLogEntry,
+    },
 };
 
 #[derive(Error, Debug)]
@@ -17,11 +20,14 @@ pub enum SegmentCipherError {
     #[error("chain update error: {0}")]
     ChainHashError(#[from] ChainHashError),
 
+    #[error("key resolve error: {0}")]
+    KeyResolve(#[from] CipherKeyResolveError),
+
     #[error("invalid timestamp")]
     InvalidTimestamp,
 
-    #[error("key resolve error: {0}")]
-    KeyResolve(#[from] CipherKeyResolveError),
+    #[error("log validation failed: {0}")]
+    Validation(#[from] LogValidationError),
 }
 
 /// Head cipher is the cipher at the start of the segment.
@@ -128,7 +134,7 @@ fn to_plaintext<'a>(
     cipher: &Option<EntryCipher>,
     prev_chain: &ChainHash,
 ) -> Result<PlaintextLogEntry<'a>, SegmentCipherError> {
-    if let Some(cipher) = cipher {
+    let e: Result<PlaintextLogEntry<'a>, SegmentCipherError> = if let Some(cipher) = cipher {
         entry.transform(|opaque| {
             let mut slot_cipher = cipher.slot_cipher(prev_chain);
             let timestamp: PlaintextBytes<'_> = slot_cipher.decrypt_slot(&opaque.timestamp);
@@ -170,7 +176,10 @@ fn to_plaintext<'a>(
                 })
             },
         )
-    }
+    };
+    let e = e?;
+    e.validate()?;
+    Ok(e)
 }
 
 async fn check_cipher_change(

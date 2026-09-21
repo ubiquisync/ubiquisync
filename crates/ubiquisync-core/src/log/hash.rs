@@ -172,7 +172,7 @@ impl<'a> EntryBody<OpaqueBytes<'a>, OpaqueBytes<'a>> {
         active_cipher: &mut Option<CipherInfo>,
     ) -> Hash256 {
         match self {
-            EntryBody::OpBatch(op_batch) => op_batch.hash(seed, entry_index),
+            EntryBody::Op(op) => op.hash(seed, entry_index),
             EntryBody::UseKey(cipher_info) => {
                 *active_cipher = Some(*cipher_info);
                 hash_use_key(seed, entry_index, cipher_info)

@@ -686,9 +686,7 @@ pub(crate) mod tests {
             let seed = LogHashContext::new(&self.log_id);
             for e in self.entries.iter() {
                 let e = match e {
-                    TestEntry::Ops(op_batch) => {
-                        LogEntry::IndexedEntry(EntryBody::OpBatch(op_batch.clone()))
-                    }
+                    TestEntry::Ops(op) => LogEntry::IndexedEntry(EntryBody::Op(op.clone())),
                     TestEntry::UseKey(k) => {
                         LogEntry::IndexedEntry(EntryBody::UseKey(switch_key(*k, &mut key_resolver)))
                     }
