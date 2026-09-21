@@ -4,10 +4,7 @@ use thiserror::Error;
 
 use crate::{
     bytes::{BytesWrapper, OpaqueBytes, PlaintextBytes},
-    crypto::{
-        CipherError, CipherInfo, CipherKeyResolveError, CipherKeyResolver, EntryCipher, Hash256,
-        SlotCipher,
-    },
+    crypto::{CipherError, CipherInfo, CipherKeyResolveError, CipherKeyResolver, EntryCipher},
     hlc::Timestamp,
     log::{ChainHash, ChainHashError, ChainSeed, OpEntry, OpaqueLogEntry, PlaintextLogEntry},
 };
@@ -79,11 +76,6 @@ pub async fn entries_to_plaintext<'a: 'b, 'b>(
     Ok(res)
 }
 
-struct OpBatchHashState {
-    slot_cipher: SlotCipher,
-    last_hash: Hash256,
-}
-
 fn to_opaque<'a>(
     entry: &PlaintextLogEntry<'a>,
     cipher: &Option<EntryCipher>,
@@ -103,11 +95,11 @@ fn to_opaque<'a>(
                     &PlaintextBytes::from(&timestamp.raw().to_le_bytes()[..]),
                 );
                 let server_attested_user_id = if !server_attested_user_id.is_empty() {
-                    slot_cipher.encrypt_slot(&prev_chain.hash, server_attested_user_id.borrow())
+                    slot_cipher.encrypt_slot(&prev_chain.hash, server_attested_user_id)
                 } else {
                     OpaqueBytes::default()
                 };
-                let op = slot_cipher.encrypt_slot(&prev_chain.hash, op.borrow());
+                let op = slot_cipher.encrypt_slot(&prev_chain.hash, op);
                 Ok(OpEntry {
                     timestamp,
                     server_attested_user_id,
@@ -147,18 +139,18 @@ fn to_plaintext<'a>(
              }| {
                 let mut slot_cipher = cipher.slot_cipher(entry_index);
                 let timestamp: PlaintextBytes<'_> =
-                    slot_cipher.decrypt_slot(&prev_chain.hash, &timestamp);
+                    slot_cipher.decrypt_slot(&prev_chain.hash, timestamp);
                 let timestamp: u64 = u64::from_le_bytes(
                     Borrow::<[u8]>::borrow(&timestamp)
                         .try_into()
                         .map_err(|_| SegmentCipherError::InvalidTimestamp)?,
                 );
                 let server_attested_user_id = if !server_attested_user_id.is_empty() {
-                    slot_cipher.decrypt_slot(&prev_chain.hash, server_attested_user_id.borrow())
+                    slot_cipher.decrypt_slot(&prev_chain.hash, server_attested_user_id)
                 } else {
                     PlaintextBytes::default()
                 };
-                let op = slot_cipher.decrypt_slot(&prev_chain.hash, op.borrow());
+                let op = slot_cipher.decrypt_slot(&prev_chain.hash, op);
                 Ok(OpEntry {
                     timestamp: Timestamp::from_raw(timestamp),
                     server_attested_user_id,

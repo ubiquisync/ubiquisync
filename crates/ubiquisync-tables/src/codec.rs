@@ -26,23 +26,20 @@ impl OpCodec<Op> for Codec {
         &self,
         op: &Op,
     ) -> Result<
-        (
-            ContainerId,
-            Vec<ubiquisync_core::bytes::PlaintextBytes<'static>>,
-        ),
+        (ContainerId, ubiquisync_core::bytes::PlaintextBytes<'static>),
         ubiquisync_sql::op::OpEncodeError,
     > {
         let mut w = Writer::new();
         encode_one_op(&mut w, op).map_err(|e| OpEncodeError::Invalid(Box::new(e)))?;
-        Ok((self.container_id, vec![w.finalize().into()]))
+        Ok((self.container_id, w.finalize().into()))
     }
 
     fn decode(
         &self,
         container_id: &ContainerId,
-        ops: &[ubiquisync_core::bytes::PlaintextBytes],
+        op: &ubiquisync_core::bytes::PlaintextBytes,
     ) -> Result<Op, ubiquisync_sql::op::OpDecodeError> {
-        self.do_decode(container_id, ops)
+        self.do_decode(container_id, op)
             .map_err(|e| OpDecodeError::Invalid(Box::new(e)))
     }
 }
@@ -55,7 +52,7 @@ impl Codec {
     fn do_decode(
         &self,
         container_id: &ContainerId,
-        ops: &[ubiquisync_core::bytes::PlaintextBytes],
+        buf: &ubiquisync_core::bytes::PlaintextBytes,
     ) -> Result<Op, DecodeOpError> {
         if self.container_id != *container_id {
             return Err(DecodeOpError::WrongContainer {
@@ -63,10 +60,7 @@ impl Codec {
                 expected: self.container_id,
             });
         }
-        if ops.len() != 1 {
-            return Err(DecodeOpError::InvalidOpCount(ops.len()));
-        }
-        let mut r = Reader::new(ops[0].borrow());
+        let mut r = Reader::new(buf.borrow());
         let op = decode_one_op(&mut r)?;
         if !r.is_empty() {
             return Err(DecodeOpError::TrailingBytes);
@@ -228,8 +222,6 @@ pub(crate) enum DecodeOpError {
         actual: ContainerId,
         expected: ContainerId,
     },
-    #[error("invalid op count {0} expected 1")]
-    InvalidOpCount(usize),
     #[error("trailing bytes")]
     TrailingBytes,
 }
@@ -396,21 +388,15 @@ mod tests {
         decode_one_op(&mut Reader::new(&buf)).unwrap_err()
     }
 
-    #[test_case(ContainerId([1; 16]), vec![one_good_slot()] =>
+    #[test_case(ContainerId([1; 16]), one_good_op() =>
         matches DecodeOpError::WrongContainer { .. };
         "wrong container")]
-    #[test_case(CONTAINER_ID_0, vec![]
-        => matches DecodeOpError::InvalidOpCount(0);
-        "zero ops")]
-    #[test_case(CONTAINER_ID_0, vec![one_good_slot(), one_good_slot()]
-        => matches DecodeOpError::InvalidOpCount(2);
-        "two ops")]
-    #[test_case(CONTAINER_ID_0, vec![with_trailing_bytes(one_good_slot())]
+    #[test_case(CONTAINER_ID_0, with_trailing_bytes(one_good_op())
         => matches DecodeOpError::TrailingBytes;
         "trailing bytes")]
-    fn codec_rejects(container: ContainerId, ops: Vec<PlaintextBytes<'static>>) -> DecodeOpError {
+    fn codec_rejects(container: ContainerId, op: PlaintextBytes<'static>) -> DecodeOpError {
         Codec::new(CONTAINER_ID_0)
-            .do_decode(&container, &ops)
+            .do_decode(&container, &op)
             .unwrap_err()
     }
 
@@ -446,11 +432,11 @@ mod tests {
         })
     }
 
-    fn one_good_slot() -> PlaintextBytes<'static> {
-        let (_, mut slots) = Codec::new(CONTAINER_ID_0)
+    fn one_good_op() -> PlaintextBytes<'static> {
+        let (_, op) = Codec::new(CONTAINER_ID_0)
             .encode(&delete(TABLE_TEXT, &[text("k")]))
             .unwrap();
-        slots.remove(0)
+        op
     }
 
     fn with_trailing_bytes(slot: PlaintextBytes<'static>) -> PlaintextBytes<'static> {

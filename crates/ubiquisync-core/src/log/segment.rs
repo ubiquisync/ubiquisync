@@ -6,17 +6,18 @@ use num_enum::{IntoPrimitive, TryFromPrimitive};
 use thiserror::Error;
 
 use crate::{
-    bytes::{PlaintextBytes, ToStatic},
+    bytes::{BytesWrapper, PlaintextBytes, ToStatic},
     codec::{ReadError, Reader, WriteError, Writer},
     crypto::{
         CipherError, CipherInfo, CipherKeyResolver, CipherSuite, CryptoDecodeError, SegmentCipher,
         Signature, SignatureVerifyError, VerifyingKey,
     },
+    hlc::Timestamp,
     ids::LogId,
     log::{
-        ChainHash, ChainSeed, LogDecodeError, LogEncodeError, LogEntry, LogValidationError,
-        LogVerifyError, OpBytesWrapper, OpaqueLogEntry, PlaintextLogEntry, SegmentCipherError,
-        entries_to_plaintext, verify_opaque, verify_plaintext,
+        ChainHash, ChainSeed, DecodeTimestamp, LogDecodeError, LogEncodeError, LogEntry,
+        LogValidationError, LogVerifyError, OpaqueLogEntry, PlaintextLogEntry, SegmentCipherError,
+        TimestampRepr, entries_to_plaintext, verify_opaque, verify_plaintext,
     },
 };
 
@@ -197,11 +198,12 @@ pub async fn encode_segment_plaintext<'a: 'b, 'b>(
     Ok(w.finalize())
 }
 
-pub fn decode_entries<'a, E>(
+pub fn decode_entries<'a, B, T>(
     bytes: &'a [u8],
-) -> impl Iterator<Item = Result<LogEntry<E>, LogDecodeError>>
+) -> impl Iterator<Item = Result<LogEntry<B, T>, LogDecodeError>>
 where
-    E: From<&'a [u8]> + OpBytesWrapper<'a>,
+    B: From<&'a [u8]> + BytesWrapper,
+    T: DecodeTimestamp<'a>,
 {
     let mut reader = Reader::new(bytes);
     let mut failed = false;
@@ -218,12 +220,13 @@ where
     })
 }
 
-pub fn encode_entries<'a: 'b, 'b, E>(
-    entries: impl Iterator<Item = &'b LogEntry<'a, E>>,
+pub fn encode_entries<'a, B, T>(
+    entries: impl Iterator<Item = &'a LogEntry<B, T>>,
     writer: &mut Writer,
 ) -> Result<(), LogEncodeError>
 where
-    E: OpBytesWrapper<'a> + 'a,
+    B: BytesWrapper + 'a,
+    T: TimestampRepr + 'a,
 {
     for e in entries {
         e.encode(writer)?;
@@ -309,7 +312,7 @@ fn decompress_decode_entries(
     if out.len() as u64 > ZSTD_DECODE_LIMIT {
         return Err(SegmentDecodeError::CompressionOverflow);
     }
-    let it = decode_entries::<PlaintextBytes>(&out);
+    let it = decode_entries::<PlaintextBytes, Timestamp>(&out);
     let mut res = vec![];
     for e in it {
         let e = e?;
@@ -394,11 +397,11 @@ impl SegmentHeader {
         Ok((header, cipher))
     }
 
-    fn init_opaque<'a, B: OpBytesWrapper<'a>>(
+    fn init_opaque<B: BytesWrapper, T: TimestampRepr>(
         signature: Signature,
         prev_chain: ChainHash,
         mut start_cipher: Option<CipherInfo>,
-        first_entry: Option<&&LogEntry<'a, B>>,
+        first_entry: Option<&&LogEntry<B, T>>,
     ) -> Self {
         // if the first entry is a UseKey entry, no point in encoding start_cipher
         if let Some(LogEntry::IndexedEntry(EntryBody::UseKey(_))) = first_entry {
@@ -618,6 +621,7 @@ pub(crate) mod tests {
             CipherInfo, CipherKeyResolver, CipherSuite, ContainerKey256, RootKey256,
             RootKey256Fingerprint, Signature, SigningKey, VerifyingKey, ed25519::Ed25519SigningKey,
         },
+        hlc::Timestamp,
         ids::{ContainerId, LogId},
         log::{
             ChainHash, EntryBody, LogEntry, OpEntry, PlaintextLogEntry, entries_to_opaque,
@@ -630,7 +634,7 @@ pub(crate) mod tests {
     #[derive(Debug, Arbitrary)]
     enum TestEntry {
         #[weight(5)]
-        Ops(OpEntry<PlaintextBytes<'static>>),
+        Ops(OpEntry<PlaintextBytes<'static>, Timestamp>),
         #[weight(2)]
         UseKey([u8; 32]),
         #[weight(1)]

@@ -41,11 +41,11 @@ use crate::{
 /// extend to the server attested user id or first divergent op slot, and then its hash
 /// would be input to key derivation for future entrying keeping their contents protected.)
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OpEntry<'a, B: OpBytesWrapper<'a>> {
+pub struct OpEntry<B: BytesWrapper, T: TimestampRepr> {
     /// HLC timestamp — monotonically non-decreasing within a peer's stream.
     /// Entries written in one atomic transaction share a tick, so they are
     /// treated as one logical write by LWW comparisons.
-    pub timestamp: B::Timestamp,
+    pub timestamp: T,
     /// The **server-attested** user id for this entry. Every entry originates
     /// from *some* user, but this field specifically carries the identity a
     /// server vouched for — it is populated only in server-mode segments, where
@@ -62,39 +62,40 @@ pub struct OpEntry<'a, B: OpBytesWrapper<'a>> {
     pub op: B,
 }
 
-pub trait OpBytesWrapper<'a>: BytesWrapper {
-    type Timestamp: std::fmt::Debug + Clone + PartialEq + Eq + ToStatic;
-
-    fn encode_ts(ts: &Self::Timestamp, w: &mut Writer);
-    fn decode_ts(r: &mut Reader<'a>) -> Result<Self::Timestamp, LogDecodeError>;
+pub trait TimestampRepr: Sized + std::fmt::Debug + Clone + PartialEq + Eq + ToStatic {
+    fn encode(&self, w: &mut Writer);
 }
 
-impl<'a> OpBytesWrapper<'a> for PlaintextBytes<'a> {
-    type Timestamp = Timestamp;
+pub trait DecodeTimestamp<'a>: TimestampRepr {
+    fn decode(r: &mut Reader<'a>) -> Result<Self, LogDecodeError>;
+}
 
-    fn encode_ts(ts: &Self::Timestamp, w: &mut Writer) {
-        w.write_le_u64(ts.raw());
-    }
-
-    fn decode_ts(r: &mut Reader<'a>) -> Result<Self::Timestamp, LogDecodeError> {
-        Ok(Timestamp::from_raw(r.read_le_u64()?))
+impl TimestampRepr for Timestamp {
+    fn encode(&self, w: &mut Writer) {
+        w.write_le_u64(self.raw());
     }
 }
 
-impl<'a> OpBytesWrapper<'a> for OpaqueBytes<'a> {
-    type Timestamp = Self;
-
-    fn encode_ts(ts: &Self::Timestamp, w: &mut Writer) {
-        w.write_len_prefixed(ts.borrow());
+impl<'a> DecodeTimestamp<'a> for Timestamp {
+    fn decode(r: &mut Reader<'a>) -> Result<Self, LogDecodeError> {
+        Ok(Self::from_raw(r.read_le_u64()?))
     }
+}
 
-    fn decode_ts(r: &mut Reader<'a>) -> Result<Self::Timestamp, LogDecodeError> {
+impl<'a> TimestampRepr for OpaqueBytes<'a> {
+    fn encode(&self, w: &mut Writer) {
+        w.write_len_prefixed(self.borrow());
+    }
+}
+
+impl<'a> DecodeTimestamp<'a> for OpaqueBytes<'a> {
+    fn decode(r: &mut Reader<'a>) -> Result<Self, LogDecodeError> {
         let b = r.read_len_prefixed()?;
         Ok(b.into())
     }
 }
 
-impl<'a> OpEntry<'a, PlaintextBytes<'a>> {
+impl<'a> OpEntry<PlaintextBytes<'a>, Timestamp> {
     pub fn new(
         timestamp: Timestamp,
         server_attested_user_id: PlaintextBytes<'a>,
@@ -108,22 +109,20 @@ impl<'a> OpEntry<'a, PlaintextBytes<'a>> {
     }
 }
 
-impl<'a, B: OpBytesWrapper<'a>> OpEntry<'a, B> {
-    pub fn encode(&self, writer: &mut Writer) -> Result<(), LogEncodeError>
-    where
-        B: Borrow<[u8]>,
-    {
-        B::encode_ts(&self.timestamp, writer);
+impl<B: BytesWrapper, T: TimestampRepr> OpEntry<B, T> {
+    pub fn encode(&self, writer: &mut Writer) -> Result<(), LogEncodeError> {
+        self.timestamp.encode(writer);
         writer.write_len_prefixed(self.server_attested_user_id.borrow());
         writer.write_len_prefixed(self.op.borrow());
         Ok(())
     }
 
-    pub fn decode(reader: &mut Reader<'a>) -> Result<Self, LogDecodeError>
+    pub fn decode<'a>(reader: &mut Reader<'a>) -> Result<Self, LogDecodeError>
     where
         B: From<&'a [u8]>,
+        T: DecodeTimestamp<'a>,
     {
-        let timestamp = B::decode_ts(reader)?;
+        let timestamp = T::decode(reader)?;
         let server_attested_user_id = reader.read_len_prefixed()?.into();
         let op = reader.read_len_prefixed()?.into();
         Ok(Self {
@@ -144,54 +143,46 @@ impl<'a, B: OpBytesWrapper<'a>> OpEntry<'a, B> {
 
 #[cfg(test)]
 mod tests {
-    use std::assert_matches;
-    use std::borrow::Cow;
-
     use proptest::prelude::*;
     use test_strategy::proptest;
 
     use crate::{
         bytes::{BytesWrapper, PlaintextBytes},
         codec::{Reader, Writer},
-        log::{LogEncodeError, OpEntry, OpOrExpunge},
+        hlc::Timestamp,
+        log::{OpEntry, TimestampRepr},
     };
 
-    impl<B: BytesWrapper + Arbitrary + 'static> Arbitrary for OpEntry<B> {
+    impl<B: BytesWrapper + Arbitrary + 'static, T: TimestampRepr + Arbitrary + 'static> Arbitrary
+        for OpEntry<B, T>
+    {
         type Parameters = ();
         type Strategy = BoxedStrategy<Self>;
 
         fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
             (
-                any::<[u8; 8]>(),
+                any::<T>(),
                 prop_oneof![Just(vec![]), any::<[u8; 16]>().prop_map(|uid| uid.to_vec())],
-                proptest::collection::vec(any::<OpOrExpunge<B>>(), 1..16),
+                any::<B>(),
             )
-                .prop_map(|(ts, uid, ops)| OpEntry {
-                    timestamp: ts.to_vec().into(),
+                .prop_map(|(ts, uid, op)| OpEntry {
+                    timestamp: ts,
                     server_attested_user_id: uid.into(),
-                    ops,
+                    op,
                 })
                 .boxed()
         }
     }
 
     #[proptest]
-    fn test_roundtrip(op_batch: OpEntry<PlaintextBytes<'static>>) {
+    fn test_roundtrip(op_batch: OpEntry<PlaintextBytes<'static>, Timestamp>) {
         // TODO we only test for opaque and that should be equivalent to plaintext otherwise,
         // but if we wanted we could use a macro to duplicate - the generic lifetimes make it really hard with just generics
         let mut w = Writer::new();
         op_batch.encode(&mut w).unwrap();
         let res = w.finalize();
         let mut r = Reader::new(&res);
-        let decoded = OpEntry::<PlaintextBytes>::decode(&mut r).unwrap();
+        let decoded = OpEntry::<PlaintextBytes, Timestamp>::decode(&mut r).unwrap();
         assert_eq!(op_batch, decoded);
-    }
-
-    #[test]
-    fn test_empty_op() {
-        let op = OpOrExpunge::Op(PlaintextBytes(Cow::Owned(vec![])));
-        let mut w = Writer::new();
-        let res = op.encode(&mut w);
-        assert_matches!(res, Err(LogEncodeError::EmptyOps))
     }
 }

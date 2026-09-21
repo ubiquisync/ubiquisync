@@ -101,7 +101,9 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
 
         let entry = PlaintextLogEntry::IndexedEntry(EntryBody::OpBatch(OpEntry::new(
             timestamp,
-            server_user_id,
+            server_user_id
+                .map(|b| b.to_vec().into())
+                .unwrap_or_default(),
             op_bytes,
         )));
         let entries = vec![entry];

@@ -443,12 +443,12 @@ mod tests {
         let mut slot_cipher = cipher.slot_cipher(entry_idx);
         let mut encrypted = vec![];
         for slot in slots.iter() {
-            encrypted.push(slot_cipher.encrypt_slot(&last_hash, slot).unwrap())
+            encrypted.push(slot_cipher.encrypt_slot(&last_hash, slot))
         }
         let mut slot_cipher = cipher.slot_cipher(entry_idx);
         let mut decrypted = vec![];
         for slot in encrypted.iter() {
-            decrypted.push(slot_cipher.decrypt_slot(&last_hash, slot).unwrap())
+            decrypted.push(slot_cipher.decrypt_slot(&last_hash, slot))
         }
         assert_eq!(slots, decrypted);
     }

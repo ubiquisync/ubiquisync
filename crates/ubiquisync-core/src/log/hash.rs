@@ -160,7 +160,7 @@ impl ChainSeed {
     }
 }
 
-impl<'a> EntryBody<'a, OpaqueBytes<'a>> {
+impl<'a> EntryBody<OpaqueBytes<'a>, OpaqueBytes<'a>> {
     pub fn hash(
         &self,
         seed: &ChainSeed,
@@ -178,7 +178,7 @@ impl<'a> EntryBody<'a, OpaqueBytes<'a>> {
     }
 }
 
-impl<'a> OpEntry<'a, OpaqueBytes<'a>> {
+impl<'a> OpEntry<OpaqueBytes<'a>, OpaqueBytes<'a>> {
     pub fn hash(&self, seed: &ChainSeed, entry_idx: u64) -> Hash256 {
         let mut hasher = new_tagged_hasher(TaggedHashDomain::LogEntryOp);
         hasher.update(&seed.hash);
