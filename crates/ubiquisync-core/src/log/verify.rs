@@ -21,7 +21,7 @@ pub fn verify_opaque<'a: 'b, 'b>(
             LogEntry::Signature(signature) => {
                 verifying_key.verify_signature(&ch.sign_bytes(seed), signature)?;
             }
-            e @ LogEntry::IndexedEntry(_) => ch = ch.next(e, None, seed, head_cipher)?,
+            e @ LogEntry::IndexedEntry(_) => ch = ch.next(e, seed, head_cipher)?,
         }
     }
     Ok(ch)

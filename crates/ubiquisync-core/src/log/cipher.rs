@@ -3,18 +3,14 @@ use std::borrow::Borrow;
 use thiserror::Error;
 
 use crate::{
-    bytes::{OpaqueBytes, PlaintextBytes},
+    bytes::{BytesWrapper, OpaqueBytes, PlaintextBytes},
     crypto::{
         CipherError, CipherInfo, CipherKeyResolveError, CipherKeyResolver, EntryCipher, Hash256,
         SlotCipher,
     },
-    log::{
-        ChainHash, ChainHashError, ChainSeed, LogValidationError, OpEntry, OpaqueLogEntry,
-        PlaintextLogEntry,
-    },
+    hlc::Timestamp,
+    log::{ChainHash, ChainHashError, ChainSeed, OpEntry, OpaqueLogEntry, PlaintextLogEntry},
 };
-
-use super::{EntryBody, LogEntry};
 
 #[derive(Error, Debug)]
 pub enum SegmentCipherError {
@@ -24,8 +20,8 @@ pub enum SegmentCipherError {
     #[error("chain update error: {0}")]
     ChainHashError(#[from] ChainHashError),
 
-    #[error("log validation error: {0}")]
-    LogValidation(#[from] LogValidationError),
+    #[error("invalid timestamp")]
+    InvalidTimestamp,
 
     #[error("key resolve error: {0}")]
     KeyResolve(#[from] CipherKeyResolveError),
@@ -49,8 +45,8 @@ pub async fn entries_to_opaque<'a: 'b, 'b>(
     };
     let mut res = vec![];
     for e in entries {
-        let (e2, maybe_hash) = to_opaque(e, &entry_cipher, seed, &head_chain)?;
-        head_chain = head_chain.next(&e2, maybe_hash, seed, head_cipher)?;
+        let e2 = to_opaque(e, &entry_cipher, &head_chain)?;
+        head_chain = head_chain.next(&e2, seed, head_cipher)?;
         check_cipher_change(head_cipher, &mut entry_cipher, seed, key_resolver).await?;
         res.push((e2, head_chain));
     }
@@ -75,8 +71,8 @@ pub async fn entries_to_plaintext<'a: 'b, 'b>(
     };
     let mut res = vec![];
     for e in entries {
-        let (e2, maybe_hash) = to_plaintext(e, &entry_cipher, seed, &head_chain)?;
-        head_chain = head_chain.next(e, maybe_hash, seed, head_cipher)?;
+        let e2 = to_plaintext(e, &entry_cipher, &head_chain)?;
+        head_chain = head_chain.next(e, seed, head_cipher)?;
         check_cipher_change(head_cipher, &mut entry_cipher, seed, key_resolver).await?;
         res.push((e2, head_chain));
     }
@@ -91,79 +87,104 @@ struct OpBatchHashState {
 fn to_opaque<'a>(
     entry: &PlaintextLogEntry<'a>,
     cipher: &Option<EntryCipher>,
-    seed: &ChainSeed,
     prev_chain: &ChainHash,
-) -> Result<(OpaqueLogEntry<'a>, Option<Hash256>), CipherError> {
+) -> Result<OpaqueLogEntry<'a>, CipherError> {
     let entry_index = prev_chain.size;
     if let Some(cipher) = cipher {
-        todo!()
-    } else {
-        Ok((
-            match entry {
-                LogEntry::IndexedEntry(entry_body) => LogEntry::IndexedEntry(match entry_body {
-                    EntryBody::OpBatch(OpEntry {
-                        timestamp,
-                        server_attested_user_id,
-                        op,
-                    }) => EntryBody::OpBatch(OpEntry {
-                        timestamp: timestamp.raw().to_le_bytes().to_vec().into(),
-                        server_attested_user_id: OpaqueBytes(server_attested_user_id.0.clone()),
-                        op: OpaqueBytes(op.0.clone()),
-                    }),
-                    EntryBody::UseKey(cipher_info) => EntryBody::UseKey(*cipher_info),
-                    EntryBody::Expunged(hash) => EntryBody::Expunged(*hash),
-                }),
-                LogEntry::Signature(signature) => LogEntry::Signature(*signature),
+        entry.transform(
+            |OpEntry {
+                 timestamp,
+                 server_attested_user_id,
+                 op,
+             }| {
+                let mut slot_cipher = cipher.slot_cipher(entry_index);
+                let timestamp = slot_cipher.encrypt_slot(
+                    &prev_chain.hash,
+                    &PlaintextBytes::from(&timestamp.raw().to_le_bytes()[..]),
+                );
+                let server_attested_user_id = if !server_attested_user_id.is_empty() {
+                    slot_cipher.encrypt_slot(&prev_chain.hash, server_attested_user_id.borrow())
+                } else {
+                    OpaqueBytes::default()
+                };
+                let op = slot_cipher.encrypt_slot(&prev_chain.hash, op.borrow());
+                Ok(OpEntry {
+                    timestamp,
+                    server_attested_user_id,
+                    op,
+                })
             },
-            None,
-        ))
+        )
+    } else {
+        Ok(entry.transform(
+            |OpEntry {
+                 timestamp,
+                 server_attested_user_id,
+                 op,
+             }| {
+                Ok(OpEntry {
+                    timestamp: timestamp.raw().to_le_bytes().to_vec().into(),
+                    server_attested_user_id: OpaqueBytes(server_attested_user_id.0.clone()),
+                    op: OpaqueBytes(op.0.clone()),
+                })
+            },
+        )?)
     }
 }
 
 fn to_plaintext<'a>(
     entry: &OpaqueLogEntry<'a>,
     cipher: &Option<EntryCipher>,
-    seed: &ChainSeed,
     prev_chain: &ChainHash,
-) -> Result<(PlaintextLogEntry<'a>, Option<Hash256>), SegmentCipherError> {
+) -> Result<PlaintextLogEntry<'a>, SegmentCipherError> {
     let entry_index = prev_chain.size;
     if let Some(cipher) = cipher {
-        let (e2, maybe_hash_state) = entry
-            .transform(
-                entry_index,
-                |entry_idx, op_batch| {
-                    Ok(OpBatchHashState {
-                        last_hash: prev_chain.hash,
-                        hasher: OpBatchHasher::new(seed, entry_idx, op_batch.ops.len()),
-                        slot_cipher: cipher.slot_cipher(entry_idx),
-                    })
-                },
-                |slot_cipher, st| {
-                    let op = st.slot_cipher.decrypt_slot(&st.last_hash, slot_cipher)?;
-                    st.last_hash = st.hasher.hash_slot(slot_cipher);
-                    Ok(op)
-                },
-                |expunge_hash, st| {
-                    st.last_hash = *expunge_hash;
-                    st.hasher.hash_expunge(expunge_hash);
-                    st.slot_cipher.skip_slot();
-                    Ok(())
-                },
-            )
-            .map_err(SegmentCipherError::CipherError)?;
-        e2.validate()?;
-        Ok((e2, maybe_hash_state.map(|st| st.hasher.finalize())))
+        entry.transform(
+            |OpEntry {
+                 timestamp,
+                 server_attested_user_id,
+                 op,
+             }| {
+                let mut slot_cipher = cipher.slot_cipher(entry_index);
+                let timestamp: PlaintextBytes<'_> =
+                    slot_cipher.decrypt_slot(&prev_chain.hash, &timestamp);
+                let timestamp: u64 = u64::from_le_bytes(
+                    Borrow::<[u8]>::borrow(&timestamp)
+                        .try_into()
+                        .map_err(|_| SegmentCipherError::InvalidTimestamp)?,
+                );
+                let server_attested_user_id = if !server_attested_user_id.is_empty() {
+                    slot_cipher.decrypt_slot(&prev_chain.hash, server_attested_user_id.borrow())
+                } else {
+                    PlaintextBytes::default()
+                };
+                let op = slot_cipher.decrypt_slot(&prev_chain.hash, op.borrow());
+                Ok(OpEntry {
+                    timestamp: Timestamp::from_raw(timestamp),
+                    server_attested_user_id,
+                    op,
+                })
+            },
+        )
     } else {
-        let (e2, _) = entry
-            .transform(
-                entry_index,
-                |_, _| Ok(()),
-                |s, _| Ok(PlaintextBytes(s.0.clone())),
-                |_, _| Ok(()),
-            )
-            .map_err(SegmentCipherError::CipherError)?;
-        e2.validate()?;
-        Ok((e2, None))
+        entry.transform(
+            |OpEntry {
+                 timestamp,
+                 server_attested_user_id,
+                 op,
+             }| {
+                let timestamp = Timestamp::from_raw(u64::from_le_bytes(
+                    Borrow::<[u8]>::borrow(timestamp)
+                        .try_into()
+                        .map_err(|_| SegmentCipherError::InvalidTimestamp)?,
+                ));
+                Ok(OpEntry {
+                    timestamp,
+                    server_attested_user_id: PlaintextBytes(server_attested_user_id.0.clone()),
+                    op: PlaintextBytes(op.0.clone()),
+                })
+            },
+        )
     }
 }
 

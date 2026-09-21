@@ -6,7 +6,7 @@ use num_enum::{IntoPrimitive, TryFromPrimitive};
 use thiserror::Error;
 
 use crate::{
-    bytes::{BytesWrapper, PlaintextBytes, ToStatic},
+    bytes::{PlaintextBytes, ToStatic},
     codec::{ReadError, Reader, WriteError, Writer},
     crypto::{
         CipherError, CipherInfo, CipherKeyResolver, CipherSuite, CryptoDecodeError, SegmentCipher,
@@ -169,13 +169,13 @@ pub fn encode_segment_opaque<'a: 'b, 'b>(
     Ok(w.finalize())
 }
 
-pub async fn encode_segment_plaintext<'a>(
+pub async fn encode_segment_plaintext<'a: 'b, 'b>(
     signature: &Signature,
     prev_chain: &ChainHash,
     start_cipher: &Option<CipherInfo>,
     log_id: &LogId,
     key_resolver: &dyn CipherKeyResolver,
-    entries: &[PlaintextLogEntry<'a>],
+    entries: &'b [PlaintextLogEntry<'a>],
 ) -> Result<Vec<u8>, SegmentEncodeError> {
     let mut w = Writer::new();
     let (header, cipher) = SegmentHeader::init_plaintext(
@@ -277,19 +277,19 @@ pub enum SegmentDecodeError {
     Validation(#[from] LogValidationError),
 }
 
-fn encode_compress_encrypt_entries<'a>(
+fn encode_compress_encrypt_entries<'a: 'b, 'b>(
     segment_cipher: &SegmentCipher,
     prev_chain: &ChainHash,
     nonce: &[u8],
-    entries: impl Iterator<Item = &'a PlaintextLogEntry<'a>>,
+    entries: impl Iterator<Item = &'b PlaintextLogEntry<'a>>,
 ) -> Result<Vec<u8>, SegmentEncodeError> {
     let mut inout = encode_compress_entries(entries)?;
     segment_cipher.encrypt_segment(prev_chain, nonce, &mut inout)?;
     Ok(inout)
 }
 
-fn encode_compress_entries<'a>(
-    entries: impl Iterator<Item = &'a PlaintextLogEntry<'a>>,
+fn encode_compress_entries<'a: 'b, 'b>(
+    entries: impl Iterator<Item = &'b PlaintextLogEntry<'a>>,
 ) -> Result<Vec<u8>, SegmentEncodeError> {
     let mut w = Writer::new();
     encode_entries(entries, &mut w)?;
@@ -398,7 +398,7 @@ impl SegmentHeader {
         signature: Signature,
         prev_chain: ChainHash,
         mut start_cipher: Option<CipherInfo>,
-        first_entry: Option<&LogEntry<'a, B>>,
+        first_entry: Option<&&LogEntry<'a, B>>,
     ) -> Self {
         // if the first entry is a UseKey entry, no point in encoding start_cipher
         if let Some(LogEntry::IndexedEntry(EntryBody::UseKey(_))) = first_entry {

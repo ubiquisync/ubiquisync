@@ -1,8 +1,25 @@
 use crate::{
-    bytes::{BytesWrapper, ToStatic},
+    bytes::ToStatic,
     hlc::Timestamp,
     log::{EntryBody, LogEntry, OpBytesWrapper, OpEntry},
 };
+
+impl<'a, B: OpBytesWrapper<'a>> LogEntry<'a, B> {
+    pub(crate) fn transform<C, F, Err>(&self, transform_op: F) -> Result<LogEntry<'a, C>, Err>
+    where
+        C: OpBytesWrapper<'a>,
+        F: Fn(&OpEntry<'a, B>) -> Result<OpEntry<'a, C>, Err>,
+    {
+        Ok(match self {
+            LogEntry::IndexedEntry(entry_body) => LogEntry::IndexedEntry(match entry_body {
+                EntryBody::OpBatch(e) => EntryBody::OpBatch(transform_op(e)?),
+                EntryBody::UseKey(cipher_info) => EntryBody::UseKey(*cipher_info),
+                EntryBody::Expunged(hash) => EntryBody::Expunged(*hash),
+            }),
+            LogEntry::Signature(signature) => LogEntry::Signature(*signature),
+        })
+    }
+}
 
 impl ToStatic for Timestamp {
     type Static = Self;
@@ -15,6 +32,7 @@ impl ToStatic for Timestamp {
 impl<'a, B: OpBytesWrapper<'a>> ToStatic for OpEntry<'a, B>
 where
     B::Static: OpBytesWrapper<'static>,
+    B::Timestamp: ToStatic<Static = <B::Static as OpBytesWrapper<'static>>::Timestamp>,
 {
     type Static = OpEntry<'static, B::Static>;
 
@@ -30,6 +48,7 @@ where
 impl<'a, B: OpBytesWrapper<'a>> ToStatic for LogEntry<'a, B>
 where
     B::Static: OpBytesWrapper<'static>,
+    B::Timestamp: ToStatic<Static = <B::Static as OpBytesWrapper<'static>>::Timestamp>,
 {
     type Static = LogEntry<'static, B::Static>;
 

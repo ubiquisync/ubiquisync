@@ -24,7 +24,6 @@ use crate::bytes::PlaintextBytes;
 use crate::codec::ReadError;
 use crate::codec::Reader;
 use crate::codec::Writer;
-use crate::crypto::Hash256;
 use crate::ids::ContainerId;
 use crate::ids::LogId;
 use crate::log::ChainHash;
@@ -273,30 +272,31 @@ impl EntryCipher {
 }
 
 impl SlotCipher {
-    fn cipher_slot_in_place(&mut self, prev_hash: &Hash256, buf: &mut [u8]) {
+    fn cipher_slot_in_place(&mut self, context: &[u8], buf: &mut [u8]) {
         let mut kdf = self.kdf.clone();
         let slot_index = self.slot_index;
         self.slot_index += 1;
         kdf.update(&slot_index.to_le_bytes());
-        kdf.update(prev_hash);
+        kdf.update(&context.len().to_le_bytes());
+        kdf.update(context);
         kdf.update(&[1u8]); // this results in essentially the same behavior as HKDF expand-only
         let okm: Zeroizing<[u8; 32]> = Zeroizing::new(kdf.finalize_fixed().into());
         let mut cipher = ChaCha20::new((&*okm).into(), &[0; 12].into());
         cipher.apply_keystream(buf);
     }
 
-    fn cipher_slot(&mut self, prev_hash: &Hash256, bytes: &[u8]) -> Vec<u8> {
+    fn cipher_slot(&mut self, prev_context: &[u8], bytes: &[u8]) -> Vec<u8> {
         let mut res = Vec::from(bytes);
-        self.cipher_slot_in_place(prev_hash, res.as_mut_slice());
+        self.cipher_slot_in_place(prev_context, res.as_mut_slice());
         res
     }
 
     pub fn encrypt_slot(
         &mut self,
-        prev_hash: &Hash256,
+        prev_context: &[u8],
         bytes: &PlaintextBytes,
-    ) -> Result<OpaqueBytes<'static>, CipherError> {
-        Ok(self.cipher_slot(prev_hash, bytes.borrow()).into())
+    ) -> OpaqueBytes<'static> {
+        self.cipher_slot(prev_context, bytes.borrow()).into()
     }
 
     /// Advances the slot index without doing any encryption/decryption. ONLY to be used when skipping over expunged slots.
@@ -306,10 +306,10 @@ impl SlotCipher {
 
     pub fn decrypt_slot(
         &mut self,
-        prev_hash: &Hash256,
+        prev_context: &[u8],
         bytes: &OpaqueBytes,
-    ) -> Result<PlaintextBytes<'static>, CipherError> {
-        Ok(self.cipher_slot(prev_hash, bytes.borrow()).into())
+    ) -> PlaintextBytes<'static> {
+        self.cipher_slot(prev_context, bytes.borrow()).into()
     }
 }
 
