@@ -281,8 +281,6 @@ impl SlotCipher {
         let okm: Zeroizing<[u8; 32]> = Zeroizing::new(kdf.0.finalize_fixed().into());
         let mut cipher = ChaCha20::new((&*okm).into(), &[0; 12].into());
         cipher.apply_keystream(buf);
-        // update the KDF with the current ciphertext for the next slot
-        self.kdf.update_len_prefixed(buf);
     }
 
     fn cipher_slot(&mut self, bytes: &[u8]) -> Vec<u8> {

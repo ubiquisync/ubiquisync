@@ -91,12 +91,13 @@ fn to_opaque<'a>(
                 let mut slot_cipher = cipher.slot_cipher(prev_chain);
                 let timestamp = slot_cipher
                     .encrypt_slot(&PlaintextBytes::from(&timestamp.raw().to_le_bytes()[..]));
+                slot_cipher.add_context(timestamp.borrow());
                 let server_attested_user_id = if !server_attested_user_id.is_empty() {
                     slot_cipher.encrypt_slot(server_attested_user_id)
                 } else {
-                    slot_cipher.add_context(&[]);
                     Default::default()
                 };
+                slot_cipher.add_context(server_attested_user_id.borrow());
                 let op = slot_cipher.encrypt_slot(op);
                 Ok(OpEntry {
                     timestamp,
@@ -128,33 +129,28 @@ fn to_plaintext<'a>(
     prev_chain: &ChainHash,
 ) -> Result<PlaintextLogEntry<'a>, SegmentCipherError> {
     if let Some(cipher) = cipher {
-        entry.transform(
-            |OpEntry {
-                 timestamp,
-                 server_attested_user_id,
-                 op,
-             }| {
-                let mut slot_cipher = cipher.slot_cipher(prev_chain);
-                let timestamp: PlaintextBytes<'_> = slot_cipher.decrypt_slot(timestamp);
-                let timestamp: u64 = u64::from_le_bytes(
-                    Borrow::<[u8]>::borrow(&timestamp)
-                        .try_into()
-                        .map_err(|_| SegmentCipherError::InvalidTimestamp)?,
-                );
-                let server_attested_user_id = if !server_attested_user_id.is_empty() {
-                    slot_cipher.decrypt_slot(server_attested_user_id)
-                } else {
-                    slot_cipher.add_context(&[]);
-                    PlaintextBytes::default()
-                };
-                let op = slot_cipher.decrypt_slot(op);
-                Ok(OpEntry {
-                    timestamp: Timestamp::from_raw(timestamp),
-                    server_attested_user_id,
-                    op,
-                })
-            },
-        )
+        entry.transform(|opaque| {
+            let mut slot_cipher = cipher.slot_cipher(prev_chain);
+            let timestamp: PlaintextBytes<'_> = slot_cipher.decrypt_slot(&opaque.timestamp);
+            let timestamp: u64 = u64::from_le_bytes(
+                Borrow::<[u8]>::borrow(&timestamp)
+                    .try_into()
+                    .map_err(|_| SegmentCipherError::InvalidTimestamp)?,
+            );
+            slot_cipher.add_context(opaque.timestamp.borrow());
+            let server_attested_user_id = if !opaque.server_attested_user_id.is_empty() {
+                slot_cipher.decrypt_slot(&opaque.server_attested_user_id)
+            } else {
+                PlaintextBytes::default()
+            };
+            slot_cipher.add_context(opaque.server_attested_user_id.borrow());
+            let op = slot_cipher.decrypt_slot(&opaque.op);
+            Ok(OpEntry {
+                timestamp: Timestamp::from_raw(timestamp),
+                server_attested_user_id,
+                op,
+            })
+        })
     } else {
         entry.transform(
             |OpEntry {
