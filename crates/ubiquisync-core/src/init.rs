@@ -4,8 +4,8 @@ use thiserror::Error;
 use crate::{
     codec::{ReadError, Reader, Writer},
     crypto::{
-        CryptoDecodeError, Hash256Suite, Signature, SignatureVerifyError, SigningError,
-        SigningKey, TaggedHashDomain, VerifyingKey, kem::EncapsulationKey, new_tagged_hasher,
+        CryptoDecodeError, Hash256Suite, Signature, SignatureVerifyError, SigningError, SigningKey,
+        TaggedHashDomain, VerifyingKey, kem::EncapsulationKey, new_tagged_hasher,
     },
     ids::{AppId, PeerId},
 };
@@ -78,7 +78,7 @@ impl InitEntry {
         let mut w = Writer::new();
         commitment.encode(&mut w);
         let commitment_bytes = w.finalize();
-        let mut hasher = new_tagged_hasher(TaggedHashDomain::PeerInitCommitment);
+        let mut hasher = new_tagged_hasher(TaggedHashDomain::PeerInit);
         hasher.update(&app_magic.0[..]);
         hasher.update(&commitment_bytes);
         let peer_hash = hasher.finalize();
@@ -101,7 +101,7 @@ impl InitEntry {
 
     pub fn verify(&self, app_magic: &AppId) -> Result<InitCommitment, InitVerifyError> {
         let commitment = self.commitment_data()?;
-        let mut hasher = new_tagged_hasher(TaggedHashDomain::PeerInitCommitment);
+        let mut hasher = new_tagged_hasher(TaggedHashDomain::PeerInit);
         hasher.update(&app_magic.0[..]);
         hasher.update(&self.commitment_bytes);
         let peer_hash = hasher.finalize();

@@ -4,14 +4,17 @@ use crate::{
     bytes::{BytesWrapper, OpaqueBytes, PlaintextBytes},
     codec::{Reader, Writer},
     crypto::{CipherInfo, Hash256, Signature},
-    log::{LogDecodeError, LogEncodeError, LogValidationError, OpBatch},
+    hlc::Timestamp,
+    log::{
+        DecodeTimestamp, LogDecodeError, LogEncodeError, LogValidationError, OpEntry, TimestampRepr,
+    },
 };
 
 /// Represents a single entry in a stream of logs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
-pub enum LogEntry<B: BytesWrapper> {
-    IndexedEntry(EntryBody<B>),
+pub enum LogEntry<B: BytesWrapper, T: TimestampRepr> {
+    IndexedEntry(EntryBody<B, T>),
     Signature(Signature),
     // TODO we could consider adding some explicit forward-compatible support for unknown entries
     // where if an entry type byte has specific flags set we can hash and encrypt it and verify
@@ -20,16 +23,16 @@ pub enum LogEntry<B: BytesWrapper> {
 }
 
 /// Log entry where op and header are encoded as canonical hash bytes (may be encrypted)
-pub type OpaqueLogEntry<'a> = LogEntry<OpaqueBytes<'a>>;
+pub type OpaqueLogEntry<'a> = LogEntry<OpaqueBytes<'a>, OpaqueBytes<'a>>;
 
-pub type PlaintextLogEntry<'a> = LogEntry<PlaintextBytes<'a>>;
+pub type PlaintextLogEntry<'a> = LogEntry<PlaintextBytes<'a>, Timestamp>;
 
 /// The content of signed and indexed log entries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
-pub enum EntryBody<B: BytesWrapper> {
-    /// An operation batch in the app's op vocabulary.
-    OpBatch(OpBatch<B>),
+pub enum EntryBody<B: BytesWrapper, T: TimestampRepr> {
+    /// An operation in the app's op vocabulary.
+    Op(OpEntry<B, T>),
     /// Declares the fingerprint for the encryption key being used from
     /// this point forward until the next UseKey op changes the key.
     ///
@@ -69,16 +72,16 @@ pub enum EntryBody<B: BytesWrapper> {
     Expunged(Hash256),
 }
 
-impl<B: BytesWrapper> LogEntry<B> {
+impl<B: BytesWrapper, T: TimestampRepr> LogEntry<B, T> {
     pub fn encode(&self, writer: &mut Writer) -> Result<(), LogEncodeError>
     where
         B: Borrow<[u8]>,
     {
         match self {
             LogEntry::IndexedEntry(entry) => match entry {
-                EntryBody::OpBatch(op_batch) => {
-                    writer.write_byte(ENTRY_TYPE_OP_BATCH);
-                    op_batch.encode(writer)?;
+                EntryBody::Op(op) => {
+                    writer.write_byte(ENTRY_TYPE_OP);
+                    op.encode(writer)?;
                 }
                 EntryBody::UseKey(cipher_info) => {
                     writer.write_byte(ENTRY_TYPE_USE_KEY);
@@ -100,12 +103,13 @@ impl<B: BytesWrapper> LogEntry<B> {
     pub fn decode<'a>(reader: &mut Reader<'a>) -> Result<Self, LogDecodeError>
     where
         B: From<&'a [u8]>,
+        T: DecodeTimestamp<'a>,
     {
         let entry_type = reader.read_byte()?;
         Ok(match entry_type {
-            ENTRY_TYPE_OP_BATCH => Self::IndexedEntry(
+            ENTRY_TYPE_OP => Self::IndexedEntry(
                 // TODO max op length
-                EntryBody::OpBatch(OpBatch::decode(reader)?),
+                EntryBody::Op(OpEntry::decode(reader)?),
             ),
             ENTRY_TYPE_SIGNATURE => Self::Signature(
                 Signature::decode(reader).map_err(LogDecodeError::from_sig_decode_err)?,
@@ -124,13 +128,13 @@ impl<B: BytesWrapper> LogEntry<B> {
 impl<'a> PlaintextLogEntry<'a> {
     pub fn validate(&self) -> Result<(), LogValidationError> {
         match self {
-            LogEntry::IndexedEntry(EntryBody::OpBatch(ops)) => ops.validate(),
+            LogEntry::IndexedEntry(EntryBody::Op(ops)) => ops.validate(),
             _ => Ok(()),
         }
     }
 }
 
-const ENTRY_TYPE_OP_BATCH: u8 = 0x00;
+const ENTRY_TYPE_OP: u8 = 0x00;
 const ENTRY_TYPE_USE_KEY: u8 = 0x01;
 const ENTRY_TYPE_SIGNATURE: u8 = 0x02;
 const ENTRY_TYPE_EXPUNGED: u8 = 0x03;
@@ -140,10 +144,11 @@ mod tests {
     use test_strategy::proptest;
 
     use crate::codec::{Reader, Writer};
+    use crate::hlc::Timestamp;
     use crate::{bytes::PlaintextBytes, log::LogEntry};
 
     #[proptest]
-    fn test_round_trip(entry: LogEntry<PlaintextBytes<'static>>) {
+    fn test_round_trip(entry: LogEntry<PlaintextBytes<'static>, Timestamp>) {
         let mut w = Writer::new();
         entry.encode(&mut w).unwrap();
         let res = w.finalize();

@@ -4,13 +4,8 @@ use ubiquisync_core::{bytes::PlaintextBytes, ids::ContainerId};
 use crate::BoxError;
 
 pub trait OpCodec<Op> {
-    fn encode(&self, op: &Op)
-    -> Result<(ContainerId, Vec<PlaintextBytes<'static>>), OpEncodeError>;
-    fn decode(
-        &self,
-        container_id: &ContainerId,
-        ops: &[PlaintextBytes],
-    ) -> Result<Op, OpDecodeError>;
+    fn encode(&self, op: &Op) -> Result<(ContainerId, PlaintextBytes<'static>), OpEncodeError>;
+    fn decode(&self, container_id: &ContainerId, op: &PlaintextBytes) -> Result<Op, OpDecodeError>;
 }
 
 #[derive(Error, Debug)]

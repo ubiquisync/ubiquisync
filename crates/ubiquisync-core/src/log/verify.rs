@@ -3,14 +3,14 @@ use thiserror::Error;
 use crate::{
     crypto::{CipherInfo, CipherKeyResolver, SignatureVerifyError, VerifyingKey},
     log::{
-        ChainHash, ChainHashError, ChainSeed, LogEntry, OpaqueLogEntry, PlaintextLogEntry,
+        ChainHash, ChainHashError, LogHashContext, LogEntry, OpaqueLogEntry, PlaintextLogEntry,
         SegmentCipherError, entries_to_opaque,
     },
 };
 
 pub fn verify_opaque<'a: 'b, 'b>(
     verifying_key: &VerifyingKey,
-    seed: &ChainSeed,
+    seed: &LogHashContext,
     head_chain: &ChainHash,
     head_cipher: &mut Option<CipherInfo>,
     entries: impl Iterator<Item = &'b OpaqueLogEntry<'a>>,
@@ -21,7 +21,7 @@ pub fn verify_opaque<'a: 'b, 'b>(
             LogEntry::Signature(signature) => {
                 verifying_key.verify_signature(&ch.sign_bytes(seed), signature)?;
             }
-            e @ LogEntry::IndexedEntry(_) => ch = ch.next(e, None, seed, head_cipher)?,
+            e @ LogEntry::IndexedEntry(_) => ch = ch.next(e, seed, head_cipher)?,
         }
     }
     Ok(ch)
@@ -29,7 +29,7 @@ pub fn verify_opaque<'a: 'b, 'b>(
 
 pub async fn verify_plaintext<'a: 'b, 'b>(
     verifying_key: &VerifyingKey,
-    seed: &ChainSeed,
+    seed: &LogHashContext,
     head_cipher: &mut Option<CipherInfo>,
     head_chain: &ChainHash,
     key_resolver: &dyn CipherKeyResolver,

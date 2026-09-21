@@ -21,12 +21,14 @@ use zeroize::Zeroizing;
 
 use crate::bytes::OpaqueBytes;
 use crate::bytes::PlaintextBytes;
+use crate::codec::MAX_VAR_U64_SIZE;
 use crate::codec::ReadError;
 use crate::codec::Reader;
 use crate::codec::Writer;
-use crate::crypto::Hash256;
+use crate::codec::encode_var_u64;
 use crate::ids::ContainerId;
 use crate::ids::LogId;
+use crate::ids::PeerId;
 use crate::log::ChainHash;
 
 /// The cipher suite for per-entry encryption used for canonical entry hashing
@@ -44,7 +46,7 @@ use crate::log::ChainHash;
 /// 3. For blind relays which can't compress entries, tag overhead (32-48 bytes/entry because of per-slot encryption)
 ///    is relatively large compared to many realistic entry payloads (ex. keystroke edits).
 ///
-/// See [crate::log::OpBatch] for additional details on how this works.
+/// See [crate::log::OpEntry] for additional details on how this works.
 #[repr(u8)]
 #[derive(IntoPrimitive, TryFromPrimitive, Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
@@ -65,13 +67,16 @@ pub struct CipherInfo {
 }
 
 pub struct EntryCipher {
-    base: CipherBase,
-    kdf: Hmac<Sha256>,
+    key: ContainerKey256,
+    peer_id: PeerId,
+    kdf: Kdf,
 }
 
 pub struct SegmentCipher {
-    base: CipherBase,
     cipher: XChaCha20Poly1305,
+    suite: CipherSuite,
+    key: ContainerKey256,
+    peer_id: PeerId,
 }
 
 #[async_trait::async_trait]
@@ -95,14 +100,6 @@ pub enum CipherKeyResolveError {
     UnknownSuite(u8),
 }
 
-const DERIVE_PREFIX_LEN: usize = 1 + 32 + 32 + 16;
-
-struct CipherBase {
-    key: ContainerKey256,
-    derive_prefix: [u8; DERIVE_PREFIX_LEN],
-    log_id: LogId,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
 pub struct RootKey256Fingerprint(pub [u8; 32]);
@@ -115,21 +112,6 @@ impl CipherSuite {
     pub fn segment_nonce_size(&self) -> usize {
         match self {
             CipherSuite::ChaCha20 => 24,
-        }
-    }
-}
-
-impl CipherBase {
-    fn new(suite: u8, key: ContainerKey256, log_id: &LogId) -> Self {
-        let mut derive_prefix = [0; DERIVE_PREFIX_LEN];
-        derive_prefix[0] = suite;
-        derive_prefix[1..33].copy_from_slice(&key.0.root_fingerprint.0[..]);
-        derive_prefix[33..65].copy_from_slice(&log_id.peer_id.0[..]);
-        derive_prefix[65..].copy_from_slice(&log_id.container_id.0[..]);
-        Self {
-            key,
-            derive_prefix,
-            log_id: *log_id,
         }
     }
 }
@@ -170,6 +152,7 @@ impl RootKey256 {
         ContainerKey256(Arc::new(ContainerKey256Inner {
             root_fingerprint: self.fingerprint,
             key,
+            container_id: *container_id,
         }))
     }
 
@@ -194,11 +177,16 @@ pub struct ContainerKey256(Arc<ContainerKey256Inner>);
 struct ContainerKey256Inner {
     root_fingerprint: RootKey256Fingerprint,
     key: SecretBox<[u8; 32]>,
+    container_id: ContainerId,
 }
 
 impl ContainerKey256 {
     pub fn root_fingerprint(&self) -> &RootKey256Fingerprint {
         &self.0.root_fingerprint
+    }
+
+    fn container(&self) -> &ContainerId {
+        &self.0.container_id
     }
 }
 
@@ -207,9 +195,8 @@ const KDF_DOMAIN_CONTAINER: &str = "ubq/v1/kdf/Container";
 const KDF_DOMAIN_LOG_ENTRY: &str = "ubq/v1/kdf/LogEntry";
 const KDF_DOMAIN_LOG_SEGMENT: &str = "ubq/v1/kdf/LogSegment";
 
-pub struct SlotCipher {
-    kdf: Hmac<Sha256>,
-    slot_index: u64,
+pub(crate) struct SlotCipher {
+    kdf: Kdf,
 }
 
 impl EntryCipher {
@@ -224,32 +211,46 @@ impl EntryCipher {
             .resolve_container_key(&cipher_info.fingerprint, &log_id.container_id)
             .await
             .ok_or(CipherKeyResolveError::NotFound)?;
-        Ok(Self::new(suite, key, log_id))
+        Ok(Self::new(suite, key, &log_id.peer_id))
     }
 
-    pub fn new(suite: CipherSuite, key: ContainerKey256, log_id: &LogId) -> Self {
+    pub fn new(suite: CipherSuite, key: ContainerKey256, peer_id: &PeerId) -> Self {
         assert_eq!(
             suite,
             CipherSuite::ChaCha20,
             "if this gets triggered it means we need to support new cipher suites",
         );
-        let mut kdf = <Hmac<Sha256> as KeyInit>::new_from_slice(key.0.key.expose_secret())
-            .expect("32 byte key");
-        let base = CipherBase::new(suite.into(), key, log_id);
-        kdf.update(&[KDF_DOMAIN_LOG_ENTRY.len() as u8]);
-        kdf.update(KDF_DOMAIN_LOG_ENTRY.as_bytes());
-        kdf.update(&base.derive_prefix);
-        Self { kdf, base }
+        let mut kdf = Kdf(
+            <Hmac<Sha256> as KeyInit>::new_from_slice(key.0.key.expose_secret())
+                .expect("32 byte key"),
+        );
+        // we intialize the KDF with a single SHA256 block
+        let mut first_block = [0; 64];
+        first_block[0] = suite.into();
+        // pad the domain to fit in 31 bytes followed by zeroes
+        const {
+            assert!(KDF_DOMAIN_LOG_ENTRY.len() <= 31);
+        }
+        first_block[1..1 + KDF_DOMAIN_LOG_ENTRY.len()]
+            .copy_from_slice(KDF_DOMAIN_LOG_ENTRY.as_bytes());
+        first_block[32..64].copy_from_slice(&peer_id.0);
+        kdf.update(&first_block);
+        Self {
+            kdf,
+            key,
+            peer_id: *peer_id,
+        }
     }
 
-    pub fn slot_cipher(&self, entry_idx: u64) -> SlotCipher {
+    pub(crate) fn slot_cipher(&self, prev_chain: &ChainHash) -> SlotCipher {
         let mut kdf = self.kdf.clone();
-        kdf.update(&entry_idx.to_le_bytes());
-        SlotCipher { kdf, slot_index: 0 }
+        kdf.update_varint(prev_chain.size);
+        kdf.update(&prev_chain.hash);
+        SlotCipher { kdf }
     }
 
     pub fn key_fingerprint(&self) -> &RootKey256Fingerprint {
-        &self.base.key.0.root_fingerprint
+        &self.key.0.root_fingerprint
     }
 
     pub fn cipher_suite(&self) -> CipherSuite {
@@ -259,73 +260,65 @@ impl EntryCipher {
     pub fn cipher_info(&self) -> CipherInfo {
         CipherInfo {
             cipher_suite: self.cipher_suite().into(),
-            fingerprint: self.base.key.0.root_fingerprint,
+            fingerprint: self.key.0.root_fingerprint,
         }
     }
 
     pub fn segment_cipher(&self) -> SegmentCipher {
-        SegmentCipher::new(
-            CipherSuite::ChaCha20,
-            self.base.key.clone(),
-            &self.base.log_id,
-        )
+        SegmentCipher::new(CipherSuite::ChaCha20, self.key.clone(), &self.peer_id)
     }
 }
 
 impl SlotCipher {
-    fn cipher_slot_in_place(&mut self, prev_hash: &Hash256, buf: &mut [u8]) {
+    fn cipher_slot_in_place(&mut self, buf: &mut [u8]) {
         let mut kdf = self.kdf.clone();
-        let slot_index = self.slot_index;
-        self.slot_index += 1;
-        kdf.update(&slot_index.to_le_bytes());
-        kdf.update(prev_hash);
         kdf.update(&[1u8]); // this results in essentially the same behavior as HKDF expand-only
-        let okm: Zeroizing<[u8; 32]> = Zeroizing::new(kdf.finalize_fixed().into());
+        let okm: Zeroizing<[u8; 32]> = Zeroizing::new(kdf.0.finalize_fixed().into());
         let mut cipher = ChaCha20::new((&*okm).into(), &[0; 12].into());
         cipher.apply_keystream(buf);
     }
 
-    fn cipher_slot(&mut self, prev_hash: &Hash256, bytes: &[u8]) -> Vec<u8> {
+    fn cipher_slot(&mut self, bytes: &[u8]) -> Vec<u8> {
         let mut res = Vec::from(bytes);
-        self.cipher_slot_in_place(prev_hash, res.as_mut_slice());
+        self.cipher_slot_in_place(res.as_mut_slice());
         res
     }
 
-    pub fn encrypt_slot(
-        &mut self,
-        prev_hash: &Hash256,
-        bytes: &PlaintextBytes,
-    ) -> Result<OpaqueBytes<'static>, CipherError> {
-        Ok(self.cipher_slot(prev_hash, bytes.borrow()).into())
+    pub(crate) fn add_context(&mut self, bytes: &[u8]) {
+        self.kdf.update_len_prefixed(bytes);
     }
 
-    /// Advances the slot index without doing any encryption/decryption. ONLY to be used when skipping over expunged slots.
-    pub fn skip_slot(&mut self) {
-        self.slot_index += 1;
+    pub(crate) fn encrypt_slot(&mut self, bytes: &PlaintextBytes) -> OpaqueBytes<'static> {
+        self.cipher_slot(bytes.borrow()).into()
     }
 
-    pub fn decrypt_slot(
-        &mut self,
-        prev_hash: &Hash256,
-        bytes: &OpaqueBytes,
-    ) -> Result<PlaintextBytes<'static>, CipherError> {
-        Ok(self.cipher_slot(prev_hash, bytes.borrow()).into())
+    pub(crate) fn decrypt_slot(&mut self, bytes: &OpaqueBytes) -> PlaintextBytes<'static> {
+        self.cipher_slot(bytes.borrow()).into()
     }
 }
 
 impl SegmentCipher {
-    pub fn new(suite: CipherSuite, key: ContainerKey256, log_id: &LogId) -> Self {
+    pub fn new(suite: CipherSuite, key: ContainerKey256, peer_id: &PeerId) -> Self {
         assert_eq!(
             suite,
             CipherSuite::ChaCha20,
             "if this gets triggered it means we need to support new cipher suites",
         );
 
-        let base = CipherBase::new(suite.into(), key, log_id);
-        let mut key = Zeroizing::new([0; 32]);
-        kdf(KDF_DOMAIN_LOG_SEGMENT, &base.key.0.key, &[], &mut key);
-        let cipher = XChaCha20Poly1305::new((&*key).into());
-        Self { base, cipher }
+        let mut segment_key = Zeroizing::new([0; 32]);
+        kdf(
+            KDF_DOMAIN_LOG_SEGMENT,
+            &key.0.key,
+            &peer_id.0,
+            &mut segment_key,
+        );
+        let cipher = XChaCha20Poly1305::new((&*segment_key).into());
+        Self {
+            cipher,
+            key,
+            suite,
+            peer_id: *peer_id,
+        }
     }
 
     pub fn decrypt_segment(
@@ -360,7 +353,10 @@ impl SegmentCipher {
         nonce: &[u8],
     ) -> Result<(Vec<u8>, XNonce), CipherError> {
         let mut ad = Vec::new();
-        ad.extend_from_slice(self.base.derive_prefix.as_slice());
+        ad.extend_from_slice(&[self.suite.into()]);
+        ad.extend_from_slice(&self.key_fingerprint().0);
+        ad.extend_from_slice(&self.key.container().0);
+        ad.extend_from_slice(&self.peer_id.0);
         ad.extend_from_slice(&prev_chain.hash);
         ad.extend_from_slice(&prev_chain.size.to_le_bytes());
         let xnonce = nonce.try_into().map_err(|_| CipherError)?;
@@ -368,7 +364,7 @@ impl SegmentCipher {
     }
 
     pub fn key_fingerprint(&self) -> &RootKey256Fingerprint {
-        &self.base.key.0.root_fingerprint
+        &self.key.0.root_fingerprint
     }
 
     pub fn cipher_suite(&self) -> CipherSuite {
@@ -378,7 +374,7 @@ impl SegmentCipher {
     pub fn cipher_info(&self) -> CipherInfo {
         CipherInfo {
             cipher_suite: self.cipher_suite().into(),
-            fingerprint: self.base.key.0.root_fingerprint,
+            fingerprint: self.key.0.root_fingerprint,
         }
     }
 }
@@ -400,6 +396,25 @@ impl CipherInfo {
 
 pub struct NullCipherKeyResolver;
 
+#[derive(Clone)]
+struct Kdf(Hmac<Sha256>);
+
+impl Kdf {
+    pub fn update(&mut self, data: &[u8]) {
+        self.0.update(data);
+    }
+
+    pub fn update_varint(&mut self, value: u64) {
+        let mut buf = [0; MAX_VAR_U64_SIZE];
+        self.update(encode_var_u64(value, &mut buf));
+    }
+
+    pub fn update_len_prefixed(&mut self, data: &[u8]) {
+        self.update_varint(data.len() as u64);
+        self.update(data);
+    }
+}
+
 #[async_trait::async_trait]
 impl CipherKeyResolver for NullCipherKeyResolver {
     async fn resolve_container_key(
@@ -419,6 +434,7 @@ mod tests {
     use crate::bytes::PlaintextBytes;
     use crate::crypto::RootKey256;
     use crate::ids::{ContainerId, LogId};
+    use crate::log::ChainHash;
     use crate::{
         crypto::{CipherSuite, EntryCipher},
         ids::PeerId,
@@ -429,8 +445,7 @@ mod tests {
         key: [u8; 32],
         peer_id: [u8; 32],
         container_id: [u8; 16],
-        last_hash: [u8; 32],
-        entry_idx: u64,
+        prev_chain: ChainHash,
         slots: Vec<PlaintextBytes<'static>>,
     ) {
         let key = RootKey256::new(SecretBox::new(Box::new(key)));
@@ -439,16 +454,16 @@ mod tests {
             container_id: ContainerId(container_id),
         };
         let container_key = key.container_key(&log_id.container_id);
-        let cipher = EntryCipher::new(CipherSuite::ChaCha20, container_key, &log_id);
-        let mut slot_cipher = cipher.slot_cipher(entry_idx);
+        let cipher = EntryCipher::new(CipherSuite::ChaCha20, container_key, &log_id.peer_id);
+        let mut slot_cipher = cipher.slot_cipher(&prev_chain);
         let mut encrypted = vec![];
         for slot in slots.iter() {
-            encrypted.push(slot_cipher.encrypt_slot(&last_hash, slot).unwrap())
+            encrypted.push(slot_cipher.encrypt_slot(slot))
         }
-        let mut slot_cipher = cipher.slot_cipher(entry_idx);
+        let mut slot_cipher = cipher.slot_cipher(&prev_chain);
         let mut decrypted = vec![];
         for slot in encrypted.iter() {
-            decrypted.push(slot_cipher.decrypt_slot(&last_hash, slot).unwrap())
+            decrypted.push(slot_cipher.decrypt_slot(slot))
         }
         assert_eq!(slots, decrypted);
     }
