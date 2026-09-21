@@ -1,3 +1,5 @@
+use std::borrow::Borrow;
+
 use thiserror::Error;
 
 use crate::{
@@ -7,10 +9,12 @@ use crate::{
         SlotCipher,
     },
     log::{
-        ChainHash, ChainHashError, ChainSeed, LogValidationError, OpBatchHasher, OpaqueLogEntry,
+        ChainHash, ChainHashError, ChainSeed, LogValidationError, OpEntry, OpaqueLogEntry,
         PlaintextLogEntry,
     },
 };
+
+use super::{EntryBody, LogEntry};
 
 #[derive(Error, Debug)]
 pub enum SegmentCipherError {
@@ -80,7 +84,6 @@ pub async fn entries_to_plaintext<'a: 'b, 'b>(
 }
 
 struct OpBatchHashState {
-    hasher: OpBatchHasher,
     slot_cipher: SlotCipher,
     last_hash: Hash256,
 }
@@ -93,36 +96,27 @@ fn to_opaque<'a>(
 ) -> Result<(OpaqueLogEntry<'a>, Option<Hash256>), CipherError> {
     let entry_index = prev_chain.size;
     if let Some(cipher) = cipher {
-        let (e2, maybe_hash_state) = entry.transform(
-            entry_index,
-            |entry_idx, op_batch| {
-                Ok(OpBatchHashState {
-                    last_hash: prev_chain.hash,
-                    hasher: OpBatchHasher::new(seed, entry_idx, op_batch.ops.len()),
-                    slot_cipher: cipher.slot_cipher(entry_idx),
-                })
-            },
-            |slot, st| {
-                let slot_cipher = st.slot_cipher.encrypt_slot(&st.last_hash, slot)?;
-                st.last_hash = st.hasher.hash_slot(&slot_cipher);
-                Ok(slot_cipher)
-            },
-            |expunge_hash, st| {
-                st.last_hash = *expunge_hash;
-                st.hasher.hash_expunge(expunge_hash);
-                st.slot_cipher.skip_slot();
-                Ok(())
-            },
-        )?;
-        Ok((e2, maybe_hash_state.map(|st| st.hasher.finalize())))
+        todo!()
     } else {
-        let (e2, _) = entry.transform(
-            entry_index,
-            |_, _| Ok(()),
-            |s, _| Ok(OpaqueBytes(s.0.clone())),
-            |_, _| Ok(()),
-        )?;
-        Ok((e2, None))
+        Ok((
+            match entry {
+                LogEntry::IndexedEntry(entry_body) => LogEntry::IndexedEntry(match entry_body {
+                    EntryBody::OpBatch(OpEntry {
+                        timestamp,
+                        server_attested_user_id,
+                        op,
+                    }) => EntryBody::OpBatch(OpEntry {
+                        timestamp: timestamp.raw().to_le_bytes().to_vec().into(),
+                        server_attested_user_id: OpaqueBytes(server_attested_user_id.0.clone()),
+                        op: OpaqueBytes(op.0.clone()),
+                    }),
+                    EntryBody::UseKey(cipher_info) => EntryBody::UseKey(*cipher_info),
+                    EntryBody::Expunged(hash) => EntryBody::Expunged(*hash),
+                }),
+                LogEntry::Signature(signature) => LogEntry::Signature(*signature),
+            },
+            None,
+        ))
     }
 }
 

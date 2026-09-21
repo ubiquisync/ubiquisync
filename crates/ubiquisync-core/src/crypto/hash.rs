@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 use strum_macros::{EnumIter, IntoStaticStr};
 
 use crate::{
-    codec::{Reader, Writer},
+    codec::{MAX_VAR_U64_SIZE, Reader, Writer, encode_var_u64},
     crypto::CryptoDecodeError,
 };
 
@@ -27,9 +27,8 @@ pub enum TaggedHashDomain {
     ChainHash,
     LogSignBytes,
     PeerInitCommitment,
-    LogEntryOpBatch,
+    LogEntryOp,
     LogEntryUseKey,
-    OpBatchSlot,
 }
 
 impl Hash256Suite {
@@ -77,6 +76,16 @@ fn domain_len(domain: &str) -> u8 {
 impl Hasher {
     pub fn update(&mut self, data: &[u8]) {
         self.0.update(data)
+    }
+
+    pub fn update_varint(&mut self, value: u64) {
+        let mut buf = [0; MAX_VAR_U64_SIZE];
+        self.update(encode_var_u64(value, &mut buf));
+    }
+
+    pub fn update_len_prefixed(&mut self, data: &[u8]) {
+        self.update_varint(data.len() as u64);
+        self.update(data);
     }
 
     pub fn finalize(self) -> Hash256 {

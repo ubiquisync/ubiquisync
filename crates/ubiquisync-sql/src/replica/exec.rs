@@ -3,7 +3,7 @@ use ubiquisync_core::{
     crypto::NullCipherKeyResolver,
     ids::LogId,
     log::{
-        ChainHash, ChainSeed, EntryBody, OpBatch, PlaintextLogEntry,
+        ChainHash, ChainSeed, EntryBody, OpEntry, PlaintextLogEntry,
         segment::encode_segment_plaintext,
     },
     uuid::Uuid,
@@ -99,7 +99,7 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
         let mut batch = self.db.new_batch();
         let timestamp = self.hlc.now(batch.as_mut())?;
 
-        let entry = PlaintextLogEntry::IndexedEntry(EntryBody::OpBatch(OpBatch::new(
+        let entry = PlaintextLogEntry::IndexedEntry(EntryBody::OpBatch(OpEntry::new(
             timestamp,
             server_user_id,
             op_bytes,

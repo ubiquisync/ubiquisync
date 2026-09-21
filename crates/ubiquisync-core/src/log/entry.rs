@@ -1,17 +1,17 @@
 use alloc::borrow::Borrow;
 
 use crate::{
-    bytes::{BytesWrapper, OpaqueBytes, PlaintextBytes},
+    bytes::{OpaqueBytes, PlaintextBytes},
     codec::{Reader, Writer},
     crypto::{CipherInfo, Hash256, Signature},
-    log::{LogDecodeError, LogEncodeError, LogValidationError, OpBatch},
+    log::{LogDecodeError, LogEncodeError, LogValidationError, OpBytesWrapper, OpEntry},
 };
 
 /// Represents a single entry in a stream of logs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
-pub enum LogEntry<B: BytesWrapper> {
-    IndexedEntry(EntryBody<B>),
+pub enum LogEntry<'a, B: OpBytesWrapper<'a>> {
+    IndexedEntry(EntryBody<'a, B>),
     Signature(Signature),
     // TODO we could consider adding some explicit forward-compatible support for unknown entries
     // where if an entry type byte has specific flags set we can hash and encrypt it and verify
@@ -20,16 +20,16 @@ pub enum LogEntry<B: BytesWrapper> {
 }
 
 /// Log entry where op and header are encoded as canonical hash bytes (may be encrypted)
-pub type OpaqueLogEntry<'a> = LogEntry<OpaqueBytes<'a>>;
+pub type OpaqueLogEntry<'a> = LogEntry<'a, OpaqueBytes<'a>>;
 
-pub type PlaintextLogEntry<'a> = LogEntry<PlaintextBytes<'a>>;
+pub type PlaintextLogEntry<'a> = LogEntry<'a, PlaintextBytes<'a>>;
 
 /// The content of signed and indexed log entries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
-pub enum EntryBody<B: BytesWrapper> {
+pub enum EntryBody<'a, B: OpBytesWrapper<'a>> {
     /// An operation batch in the app's op vocabulary.
-    OpBatch(OpBatch<B>),
+    OpBatch(OpEntry<'a, B>),
     /// Declares the fingerprint for the encryption key being used from
     /// this point forward until the next UseKey op changes the key.
     ///
@@ -69,7 +69,7 @@ pub enum EntryBody<B: BytesWrapper> {
     Expunged(Hash256),
 }
 
-impl<B: BytesWrapper> LogEntry<B> {
+impl<'a, B: OpBytesWrapper<'a>> LogEntry<'a, B> {
     pub fn encode(&self, writer: &mut Writer) -> Result<(), LogEncodeError>
     where
         B: Borrow<[u8]>,
@@ -97,7 +97,7 @@ impl<B: BytesWrapper> LogEntry<B> {
         Ok(())
     }
 
-    pub fn decode<'a>(reader: &mut Reader<'a>) -> Result<Self, LogDecodeError>
+    pub fn decode(reader: &mut Reader<'a>) -> Result<Self, LogDecodeError>
     where
         B: From<&'a [u8]>,
     {
@@ -105,7 +105,7 @@ impl<B: BytesWrapper> LogEntry<B> {
         Ok(match entry_type {
             ENTRY_TYPE_OP_BATCH => Self::IndexedEntry(
                 // TODO max op length
-                EntryBody::OpBatch(OpBatch::decode(reader)?),
+                EntryBody::OpBatch(OpEntry::decode(reader)?),
             ),
             ENTRY_TYPE_SIGNATURE => Self::Signature(
                 Signature::decode(reader).map_err(LogDecodeError::from_sig_decode_err)?,

@@ -15,7 +15,7 @@ use crate::{
     ids::LogId,
     log::{
         ChainHash, ChainSeed, LogDecodeError, LogEncodeError, LogEntry, LogValidationError,
-        LogVerifyError, OpaqueLogEntry, PlaintextLogEntry, SegmentCipherError,
+        LogVerifyError, OpBytesWrapper, OpaqueLogEntry, PlaintextLogEntry, SegmentCipherError,
         entries_to_plaintext, verify_opaque, verify_plaintext,
     },
 };
@@ -201,7 +201,7 @@ pub fn decode_entries<'a, E>(
     bytes: &'a [u8],
 ) -> impl Iterator<Item = Result<LogEntry<E>, LogDecodeError>>
 where
-    E: From<&'a [u8]> + BytesWrapper,
+    E: From<&'a [u8]> + OpBytesWrapper<'a>,
 {
     let mut reader = Reader::new(bytes);
     let mut failed = false;
@@ -218,12 +218,12 @@ where
     })
 }
 
-pub fn encode_entries<'a, E>(
-    entries: impl Iterator<Item = &'a LogEntry<E>>,
+pub fn encode_entries<'a: 'b, 'b, E>(
+    entries: impl Iterator<Item = &'b LogEntry<'a, E>>,
     writer: &mut Writer,
 ) -> Result<(), LogEncodeError>
 where
-    E: BytesWrapper + 'a,
+    E: OpBytesWrapper<'a> + 'a,
 {
     for e in entries {
         e.encode(writer)?;
@@ -394,11 +394,11 @@ impl SegmentHeader {
         Ok((header, cipher))
     }
 
-    fn init_opaque<B: BytesWrapper>(
+    fn init_opaque<'a, B: OpBytesWrapper<'a>>(
         signature: Signature,
         prev_chain: ChainHash,
         mut start_cipher: Option<CipherInfo>,
-        first_entry: Option<&&LogEntry<B>>,
+        first_entry: Option<&LogEntry<'a, B>>,
     ) -> Self {
         // if the first entry is a UseKey entry, no point in encoding start_cipher
         if let Some(LogEntry::IndexedEntry(EntryBody::UseKey(_))) = first_entry {
@@ -620,7 +620,7 @@ pub(crate) mod tests {
         },
         ids::{ContainerId, LogId},
         log::{
-            ChainHash, EntryBody, LogEntry, OpBatch, PlaintextLogEntry, entries_to_opaque,
+            ChainHash, EntryBody, LogEntry, OpEntry, PlaintextLogEntry, entries_to_opaque,
             segment::{encode_segment_opaque, encode_segment_plaintext},
         },
     };
@@ -630,7 +630,7 @@ pub(crate) mod tests {
     #[derive(Debug, Arbitrary)]
     enum TestEntry {
         #[weight(5)]
-        Ops(OpBatch<PlaintextBytes<'static>>),
+        Ops(OpEntry<PlaintextBytes<'static>>),
         #[weight(2)]
         UseKey([u8; 32]),
         #[weight(1)]

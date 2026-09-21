@@ -1,15 +1,13 @@
-use std::borrow::Borrow;
-
 use thiserror::Error;
 
 use crate::{
     bytes::OpaqueBytes,
     codec::{ReadError, Reader, Writer},
-    crypto::{CipherInfo, CipherKeyResolver, Hash256, Hasher, TaggedHashDomain, new_tagged_hasher},
+    crypto::{CipherInfo, CipherKeyResolver, Hash256, TaggedHashDomain, new_tagged_hasher},
     ids::LogId,
     log::{
-        EntryBody, LogEntry, OpBatch, OpOrExpunge, OpaqueLogEntry, PlaintextLogEntry,
-        SegmentCipherError, entries_to_opaque,
+        EntryBody, LogEntry, OpEntry, OpaqueLogEntry, PlaintextLogEntry, SegmentCipherError,
+        entries_to_opaque,
     },
 };
 
@@ -164,7 +162,7 @@ impl ChainSeed {
     }
 }
 
-impl<'a> EntryBody<OpaqueBytes<'a>> {
+impl<'a> EntryBody<'a, OpaqueBytes<'a>> {
     pub fn hash(
         &self,
         seed: &ChainSeed,
@@ -182,73 +180,22 @@ impl<'a> EntryBody<OpaqueBytes<'a>> {
     }
 }
 
-impl<'a> OpBatch<OpaqueBytes<'a>> {
+impl<'a> OpEntry<'a, OpaqueBytes<'a>> {
     pub fn hash(&self, seed: &ChainSeed, entry_idx: u64) -> Hash256 {
-        let mut hasher = OpBatchHasher::new(seed, entry_idx, self.ops.len());
-        hasher.hash_slot(&self.timestamp);
-        if !self.server_attested_user_id.0.is_empty() {
-            hasher.hash_slot(&self.server_attested_user_id);
-        }
-        for e in self.ops.iter() {
-            match e {
-                OpOrExpunge::Op(e) => {
-                    hasher.hash_slot(e);
-                }
-                OpOrExpunge::Expunge(h) => hasher.hash_expunge(h),
-            }
-        }
-        hasher.finalize()
-    }
-}
-
-pub(crate) struct OpBatchHasher {
-    hasher: Hasher,
-    entry_idx: u64,
-    seed: ChainSeed,
-    slot_idx: u64,
-}
-
-impl OpBatchHasher {
-    pub(crate) fn new(seed: &ChainSeed, entry_idx: u64, num_ops: usize) -> Self {
-        let mut hasher = new_tagged_hasher(TaggedHashDomain::LogEntryOpBatch);
+        let mut hasher = new_tagged_hasher(TaggedHashDomain::LogEntryOp);
         hasher.update(&seed.hash);
-        hasher.update(&entry_idx.to_le_bytes());
-        let num_ops = num_ops as u64;
-        hasher.update(&num_ops.to_le_bytes());
-        Self {
-            hasher,
-            entry_idx,
-            seed: *seed,
-            slot_idx: 0,
-        }
-    }
-
-    pub(crate) fn hash_expunge(&mut self, h: &Hash256) {
-        self.slot_idx += 1;
-        self.hasher.update(h);
-    }
-
-    pub(crate) fn hash_slot(&mut self, bytes: &OpaqueBytes) -> Hash256 {
-        let mut slot_hasher = new_tagged_hasher(TaggedHashDomain::OpBatchSlot);
-        slot_hasher.update(&self.seed.hash);
-        slot_hasher.update(&self.entry_idx.to_le_bytes());
-        slot_hasher.update(&self.slot_idx.to_le_bytes());
-        slot_hasher.update(bytes.borrow());
-        let h = slot_hasher.finalize();
-        self.slot_idx += 1;
-        self.hasher.update(&h);
-        h
-    }
-
-    pub(crate) fn finalize(self) -> Hash256 {
-        self.hasher.finalize()
+        hasher.update_varint(entry_idx);
+        hasher.update_len_prefixed(&self.timestamp.0);
+        hasher.update_len_prefixed(&self.server_attested_user_id.0);
+        hasher.update_len_prefixed(&self.op.0);
+        hasher.finalize()
     }
 }
 
 fn hash_use_key(seed: &ChainSeed, entry_index: u64, cipher_info: &CipherInfo) -> Hash256 {
     let mut hasher = new_tagged_hasher(TaggedHashDomain::LogEntryUseKey);
     hasher.update(&seed.hash);
-    hasher.update(&entry_index.to_le_bytes());
+    hasher.update_varint(entry_index);
     hasher.update(&[cipher_info.cipher_suite]);
     hasher.update(&cipher_info.fingerprint.0);
     hasher.finalize()
