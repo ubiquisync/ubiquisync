@@ -17,18 +17,18 @@ pub enum Hash256Suite {
     Sha256 = 0,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Hasher(Sha256);
 
 #[derive(IntoStaticStr, EnumIter, Debug, Clone, Copy, PartialEq, Eq)]
-#[strum(prefix = "ubq/v1/hash/")]
+#[strum(prefix = "ubq1/h/")]
 pub enum TaggedHashDomain {
     ChainSeed,
     ChainHash,
-    LogSignBytes,
-    PeerInitCommitment,
-    LogEntryOp,
-    LogEntryUseKey,
+    PeerInit,
+    LogSign,
+    LogOp,
+    LogUseKey,
 }
 
 impl Hash256Suite {
@@ -59,18 +59,12 @@ pub fn new_tagged_hasher(domain: TaggedHashDomain) -> Hasher {
 }
 
 fn new_tagged_hasher_internal(domain: &str) -> Hasher {
-    let len: u8 = domain_len(domain);
+    assert!(domain.len() <= 16);
+    let mut buf = [0; 16];
+    buf[..domain.len()].copy_from_slice(domain.as_bytes());
     let mut hasher = Sha256::new();
-    hasher.update([len]);
-    hasher.update(domain);
+    hasher.update(&buf);
     Hasher(hasher)
-}
-
-fn domain_len(domain: &str) -> u8 {
-    domain
-        .len()
-        .try_into()
-        .expect("domain string should have len <= 255")
 }
 
 impl Hasher {
@@ -135,7 +129,7 @@ pub(crate) mod tests {
     fn test_domain_lengths() {
         for domain in TaggedHashDomain::iter() {
             let s: &str = domain.into();
-            assert!(s.len() <= 255);
+            assert!(s.len() <= 16, "{}", s);
         }
     }
 

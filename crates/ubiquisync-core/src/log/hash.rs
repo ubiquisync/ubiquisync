@@ -3,7 +3,7 @@ use thiserror::Error;
 use crate::{
     bytes::OpaqueBytes,
     codec::{ReadError, Reader, Writer},
-    crypto::{CipherInfo, CipherKeyResolver, Hash256, TaggedHashDomain, new_tagged_hasher},
+    crypto::{CipherInfo, CipherKeyResolver, Hash256, Hasher, TaggedHashDomain, new_tagged_hasher},
     ids::LogId,
     log::{
         EntryBody, LogEntry, OpEntry, OpaqueLogEntry, PlaintextLogEntry, SegmentCipherError,
@@ -25,10 +25,12 @@ pub enum ChainHashError {
     SizeOverflow,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct ChainSeed {
     log_id: LogId,
     hash: Hash256,
+    // op_hasher: Hasher,
+    // sign_bytes_hasher: Hasher,
 }
 
 impl ChainHash {
@@ -120,7 +122,7 @@ impl ChainHash {
     }
 
     pub fn sign_bytes(&self, seed: &ChainSeed) -> Hash256 {
-        let mut hasher = new_tagged_hasher(TaggedHashDomain::LogSignBytes);
+        let mut hasher = new_tagged_hasher(TaggedHashDomain::LogSign);
         hasher.update(&seed.hash);
         hasher.update(&self.size.to_le_bytes());
         hasher.update(&self.hash);
@@ -180,7 +182,7 @@ impl<'a> EntryBody<OpaqueBytes<'a>, OpaqueBytes<'a>> {
 
 impl<'a> OpEntry<OpaqueBytes<'a>, OpaqueBytes<'a>> {
     pub fn hash(&self, seed: &ChainSeed, entry_idx: u64) -> Hash256 {
-        let mut hasher = new_tagged_hasher(TaggedHashDomain::LogEntryOp);
+        let mut hasher = new_tagged_hasher(TaggedHashDomain::LogOp);
         hasher.update(&seed.hash);
         hasher.update_varint(entry_idx);
         hasher.update_len_prefixed(&self.timestamp.0);
@@ -191,7 +193,7 @@ impl<'a> OpEntry<OpaqueBytes<'a>, OpaqueBytes<'a>> {
 }
 
 fn hash_use_key(seed: &ChainSeed, entry_index: u64, cipher_info: &CipherInfo) -> Hash256 {
-    let mut hasher = new_tagged_hasher(TaggedHashDomain::LogEntryUseKey);
+    let mut hasher = new_tagged_hasher(TaggedHashDomain::LogUseKey);
     hasher.update(&seed.hash);
     hasher.update_varint(entry_index);
     hasher.update(&[cipher_info.cipher_suite]);
