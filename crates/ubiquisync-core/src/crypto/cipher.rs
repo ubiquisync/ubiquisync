@@ -277,7 +277,7 @@ impl SlotCipher {
         let slot_index = self.slot_index;
         self.slot_index += 1;
         kdf.update(&slot_index.to_le_bytes());
-        kdf.update(&context.len().to_le_bytes());
+        kdf.update(&(context.len() as u64).to_le_bytes());
         kdf.update(context);
         kdf.update(&[1u8]); // this results in essentially the same behavior as HKDF expand-only
         let okm: Zeroizing<[u8; 32]> = Zeroizing::new(kdf.finalize_fixed().into());
