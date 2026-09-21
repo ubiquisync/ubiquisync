@@ -11,7 +11,7 @@ use ubiquisync_core::uuid::Uuid;
 
 use crate::state::{SubPath, Vertex, XY};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct ResolvedVertex {
     pub pos: XY,
     pub in_handle: Option<XY>,
@@ -66,7 +66,7 @@ pub fn append_subpath_state(
     );
 }
 
-fn render_subpath(
+pub(super) fn render_subpath(
     out: &mut String,
     mut vertices: impl Iterator<Item = ResolvedVertex>,
     closed: bool,

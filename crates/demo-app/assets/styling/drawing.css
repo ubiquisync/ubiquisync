@@ -1,0 +1,15 @@
+body { margin: 0; background: #f8fafc; color: #0f172a; overflow: hidden; }
+.drawing-app { height: 100dvh; display: flex; flex-direction: column; }
+.drawing-toolbar { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 24px; background: white; border-bottom: 1px solid #e2e8f0; }
+.drawing-toolbar h1 { margin: 0 0 4px; font-size: 20px; font-weight: 600; }
+.drawing-toolbar p { margin: 0; color: #475569; font-size: 14px; }
+.drawing-badge { flex: none; color: #64748b; font-size: 12px; }
+.drawing-tools { display: flex; gap: 8px; flex: none; }
+.drawing-tools button { padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; background: white; color: #334155; cursor: pointer; white-space: nowrap; }
+.drawing-tools button.active { background: #0f766e; border-color: #0f766e; color: white; }
+.drawing-tools button:focus-visible { outline: 2px solid #2563eb; outline-offset: 3px; }
+.drawing-canvas { display: block; flex: 1; min-height: 0; touch-action: none; user-select: none; }
+@media (max-width: 600px) {
+    .drawing-toolbar { padding: 12px; align-items: flex-start; flex-wrap: wrap; }
+    .drawing-badge { display: none; }
+}

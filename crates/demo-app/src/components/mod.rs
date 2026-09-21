@@ -3,6 +3,9 @@
 //! component  to be used in our app.
 
 pub mod ellipse;
+pub mod drawing;
+mod editable_path;
+mod path_geometry;
 pub mod fill_stroke;
 mod hero;
 pub mod path;
