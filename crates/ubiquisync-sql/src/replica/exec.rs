@@ -3,7 +3,7 @@ use ubiquisync_core::{
     crypto::NullCipherKeyResolver,
     ids::LogId,
     log::{
-        ChainHash, LogHashContext, EntryBody, OpEntry, PlaintextLogEntry,
+        ChainHash, EntryBody, LogHashContext, OpEntry, PlaintextLogEntry,
         segment::encode_segment_plaintext,
     },
     uuid::Uuid,
@@ -72,7 +72,7 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
             )
             .await?;
             let (stream_id,) = res.exactly_one()?;
-            (stream_id, ChainHash::empty(&seed), None, None)
+            (stream_id, empty_chain, None, None)
         } else if stream_rows.len() > 1 {
             todo!("found multiple rows, this means we have a fork and need to know what to do")
         } else {
