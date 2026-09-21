@@ -124,7 +124,7 @@ impl<'a> SegmentReader<'a> {
                             .resolve_container_key(&ci.fingerprint, &log_id.container_id)
                             .await
                             .ok_or(SegmentDecodeError::MissingSegmentKey(ci))?;
-                        let cipher = SegmentCipher::new(suite, key, log_id);
+                        let cipher = SegmentCipher::new(suite, key, &log_id.peer_id);
                         decrypt_decompress_decode_entries(
                             &cipher,
                             &header.prev_chain,
@@ -369,7 +369,7 @@ impl SegmentHeader {
                 .resolve_container_key(&ci.fingerprint, &log_id.container_id)
                 .await
                 .ok_or(SegmentEncodeError::MissingSegmentKey(ci))?;
-            let segment_cipher = SegmentCipher::new(cipher_suite, key, log_id);
+            let segment_cipher = SegmentCipher::new(cipher_suite, key, &log_id.peer_id);
 
             // we only store the cipher here if it is different from what is recorded in start_cipher
             // otherwise we can just use what's in start cipher

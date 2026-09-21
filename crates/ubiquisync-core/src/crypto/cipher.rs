@@ -28,6 +28,7 @@ use crate::codec::Writer;
 use crate::codec::encode_var_u64;
 use crate::ids::ContainerId;
 use crate::ids::LogId;
+use crate::ids::PeerId;
 use crate::log::ChainHash;
 
 /// The cipher suite for per-entry encryption used for canonical entry hashing
@@ -66,13 +67,16 @@ pub struct CipherInfo {
 }
 
 pub struct EntryCipher {
-    base: CipherBase,
+    key: ContainerKey256,
+    peer_id: PeerId,
     kdf: Kdf,
 }
 
 pub struct SegmentCipher {
-    base: CipherBase,
     cipher: XChaCha20Poly1305,
+    suite: CipherSuite,
+    key: ContainerKey256,
+    peer_id: PeerId,
 }
 
 #[async_trait::async_trait]
@@ -96,14 +100,6 @@ pub enum CipherKeyResolveError {
     UnknownSuite(u8),
 }
 
-const DERIVE_PREFIX_LEN: usize = 1 + 32 + 32 + 16;
-
-struct CipherBase {
-    key: ContainerKey256,
-    derive_prefix: [u8; DERIVE_PREFIX_LEN],
-    log_id: LogId,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
 pub struct RootKey256Fingerprint(pub [u8; 32]);
@@ -116,21 +112,6 @@ impl CipherSuite {
     pub fn segment_nonce_size(&self) -> usize {
         match self {
             CipherSuite::ChaCha20 => 24,
-        }
-    }
-}
-
-impl CipherBase {
-    fn new(suite: u8, key: ContainerKey256, log_id: &LogId) -> Self {
-        let mut derive_prefix = [0; DERIVE_PREFIX_LEN];
-        derive_prefix[0] = suite;
-        derive_prefix[1..33].copy_from_slice(&key.0.root_fingerprint.0[..]);
-        derive_prefix[33..65].copy_from_slice(&log_id.peer_id.0[..]);
-        derive_prefix[65..].copy_from_slice(&log_id.container_id.0[..]);
-        Self {
-            key,
-            derive_prefix,
-            log_id: *log_id,
         }
     }
 }
@@ -171,6 +152,7 @@ impl RootKey256 {
         ContainerKey256(Arc::new(ContainerKey256Inner {
             root_fingerprint: self.fingerprint,
             key,
+            container_id: *container_id,
         }))
     }
 
@@ -195,11 +177,16 @@ pub struct ContainerKey256(Arc<ContainerKey256Inner>);
 struct ContainerKey256Inner {
     root_fingerprint: RootKey256Fingerprint,
     key: SecretBox<[u8; 32]>,
+    container_id: ContainerId,
 }
 
 impl ContainerKey256 {
     pub fn root_fingerprint(&self) -> &RootKey256Fingerprint {
         &self.0.root_fingerprint
+    }
+
+    fn container(&self) -> &ContainerId {
+        &self.0.container_id
     }
 }
 
@@ -224,10 +211,10 @@ impl EntryCipher {
             .resolve_container_key(&cipher_info.fingerprint, &log_id.container_id)
             .await
             .ok_or(CipherKeyResolveError::NotFound)?;
-        Ok(Self::new(suite, key, log_id))
+        Ok(Self::new(suite, key, &log_id.peer_id))
     }
 
-    pub fn new(suite: CipherSuite, key: ContainerKey256, log_id: &LogId) -> Self {
+    pub fn new(suite: CipherSuite, key: ContainerKey256, peer_id: &PeerId) -> Self {
         assert_eq!(
             suite,
             CipherSuite::ChaCha20,
@@ -237,10 +224,20 @@ impl EntryCipher {
             <Hmac<Sha256> as KeyInit>::new_from_slice(key.0.key.expose_secret())
                 .expect("32 byte key"),
         );
-        let base = CipherBase::new(suite.into(), key, log_id);
-        kdf.update_len_prefixed(KDF_DOMAIN_LOG_ENTRY.as_bytes());
-        kdf.update(&base.derive_prefix);
-        Self { kdf, base }
+        // we intialize the KDF with a single SHA256 block
+        let mut first_block = [0; 64];
+        first_block[0] = suite.into();
+        // pad the domain to fit in 31 bytes followed by zeroes
+        assert!(KDF_DOMAIN_LOG_ENTRY.len() <= 31);
+        first_block[1..1 + KDF_DOMAIN_LOG_ENTRY.len()]
+            .copy_from_slice(KDF_DOMAIN_LOG_ENTRY.as_bytes());
+        first_block[32..64].copy_from_slice(&peer_id.0);
+        kdf.update(&first_block);
+        Self {
+            kdf,
+            key,
+            peer_id: *peer_id,
+        }
     }
 
     pub fn slot_cipher(&self, prev_chain: &ChainHash) -> SlotCipher {
@@ -251,7 +248,7 @@ impl EntryCipher {
     }
 
     pub fn key_fingerprint(&self) -> &RootKey256Fingerprint {
-        &self.base.key.0.root_fingerprint
+        &self.key.0.root_fingerprint
     }
 
     pub fn cipher_suite(&self) -> CipherSuite {
@@ -261,16 +258,12 @@ impl EntryCipher {
     pub fn cipher_info(&self) -> CipherInfo {
         CipherInfo {
             cipher_suite: self.cipher_suite().into(),
-            fingerprint: self.base.key.0.root_fingerprint,
+            fingerprint: self.key.0.root_fingerprint,
         }
     }
 
     pub fn segment_cipher(&self) -> SegmentCipher {
-        SegmentCipher::new(
-            CipherSuite::ChaCha20,
-            self.base.key.clone(),
-            &self.base.log_id,
-        )
+        SegmentCipher::new(CipherSuite::ChaCha20, self.key.clone(), &self.peer_id)
     }
 }
 
@@ -303,18 +296,27 @@ impl SlotCipher {
 }
 
 impl SegmentCipher {
-    pub fn new(suite: CipherSuite, key: ContainerKey256, log_id: &LogId) -> Self {
+    pub fn new(suite: CipherSuite, key: ContainerKey256, peer_id: &PeerId) -> Self {
         assert_eq!(
             suite,
             CipherSuite::ChaCha20,
             "if this gets triggered it means we need to support new cipher suites",
         );
 
-        let base = CipherBase::new(suite.into(), key, log_id);
-        let mut key = Zeroizing::new([0; 32]);
-        kdf(KDF_DOMAIN_LOG_SEGMENT, &base.key.0.key, &[], &mut key);
-        let cipher = XChaCha20Poly1305::new((&*key).into());
-        Self { base, cipher }
+        let mut segment_key = Zeroizing::new([0; 32]);
+        kdf(
+            KDF_DOMAIN_LOG_SEGMENT,
+            &key.0.key,
+            &peer_id.0,
+            &mut segment_key,
+        );
+        let cipher = XChaCha20Poly1305::new((&*segment_key).into());
+        Self {
+            cipher,
+            key,
+            suite,
+            peer_id: *peer_id,
+        }
     }
 
     pub fn decrypt_segment(
@@ -349,7 +351,10 @@ impl SegmentCipher {
         nonce: &[u8],
     ) -> Result<(Vec<u8>, XNonce), CipherError> {
         let mut ad = Vec::new();
-        ad.extend_from_slice(self.base.derive_prefix.as_slice());
+        ad.extend_from_slice(&[self.suite.into()]);
+        ad.extend_from_slice(&self.key_fingerprint().0);
+        ad.extend_from_slice(&self.key.container().0);
+        ad.extend_from_slice(&self.peer_id.0);
         ad.extend_from_slice(&prev_chain.hash);
         ad.extend_from_slice(&prev_chain.size.to_le_bytes());
         let xnonce = nonce.try_into().map_err(|_| CipherError)?;
@@ -357,7 +362,7 @@ impl SegmentCipher {
     }
 
     pub fn key_fingerprint(&self) -> &RootKey256Fingerprint {
-        &self.base.key.0.root_fingerprint
+        &self.key.0.root_fingerprint
     }
 
     pub fn cipher_suite(&self) -> CipherSuite {
@@ -367,7 +372,7 @@ impl SegmentCipher {
     pub fn cipher_info(&self) -> CipherInfo {
         CipherInfo {
             cipher_suite: self.cipher_suite().into(),
-            fingerprint: self.base.key.0.root_fingerprint,
+            fingerprint: self.key.0.root_fingerprint,
         }
     }
 }
@@ -447,7 +452,7 @@ mod tests {
             container_id: ContainerId(container_id),
         };
         let container_key = key.container_key(&log_id.container_id);
-        let cipher = EntryCipher::new(CipherSuite::ChaCha20, container_key, &log_id);
+        let cipher = EntryCipher::new(CipherSuite::ChaCha20, container_key, &log_id.peer_id);
         let mut slot_cipher = cipher.slot_cipher(&prev_chain);
         let mut encrypted = vec![];
         for slot in slots.iter() {
