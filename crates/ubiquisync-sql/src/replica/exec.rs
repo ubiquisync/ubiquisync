@@ -3,7 +3,7 @@ use ubiquisync_core::{
     crypto::NullCipherKeyResolver,
     ids::LogId,
     log::{
-        ChainHash, ChainSeed, EntryBody, OpBatch, PlaintextLogEntry,
+        ChainHash, EntryBody, LogHashContext, OpEntry, PlaintextLogEntry,
         segment::encode_segment_plaintext,
     },
     uuid::Uuid,
@@ -52,9 +52,10 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
         .await
         .map_err(ExecError::Db)?;
 
-        let seed = ChainSeed::new(&log_id);
+        let seed = LogHashContext::new(&log_id);
 
         let (stream_id, chain_head, mut head_cipher, commit_err) = if stream_rows.is_empty() {
+            let empty_chain = ChainHash::empty(&seed);
             let res = insert_cols::<
                 (
                     streams::PeerId,
@@ -66,12 +67,12 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
                 (streams::Id,),
             >(
                 self.db.as_ref(),
-                (self.self_db_id, container_id.0, 0, *seed.hash(), 0),
+                (self.self_db_id, container_id.0, 0, empty_chain.hash, 0),
                 Query::insert().into_table(streams::Table),
             )
             .await?;
             let (stream_id,) = res.exactly_one()?;
-            (stream_id, ChainHash::empty(&seed), None, None)
+            (stream_id, empty_chain, None, None)
         } else if stream_rows.len() > 1 {
             todo!("found multiple rows, this means we have a fork and need to know what to do")
         } else {
@@ -99,9 +100,11 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
         let mut batch = self.db.new_batch();
         let timestamp = self.hlc.now(batch.as_mut())?;
 
-        let entry = PlaintextLogEntry::IndexedEntry(EntryBody::OpBatch(OpBatch::new(
+        let entry = PlaintextLogEntry::IndexedEntry(EntryBody::Op(OpEntry::new(
             timestamp,
-            server_user_id,
+            server_user_id
+                .map(|b| b.to_vec().into())
+                .unwrap_or_default(),
             op_bytes,
         )));
         let entries = vec![entry];

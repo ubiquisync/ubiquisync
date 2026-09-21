@@ -12,11 +12,12 @@ use crate::{
         CipherError, CipherInfo, CipherKeyResolver, CipherSuite, CryptoDecodeError, SegmentCipher,
         Signature, SignatureVerifyError, VerifyingKey,
     },
+    hlc::Timestamp,
     ids::LogId,
     log::{
-        ChainHash, ChainSeed, LogDecodeError, LogEncodeError, LogEntry, LogValidationError,
-        LogVerifyError, OpaqueLogEntry, PlaintextLogEntry, SegmentCipherError,
-        entries_to_plaintext, verify_opaque, verify_plaintext,
+        ChainHash, DecodeTimestamp, LogDecodeError, LogEncodeError, LogEntry, LogHashContext,
+        LogValidationError, LogVerifyError, OpaqueLogEntry, PlaintextLogEntry, SegmentCipherError,
+        TimestampRepr, entries_to_plaintext, verify_opaque, verify_plaintext,
     },
 };
 
@@ -65,7 +66,7 @@ pub struct VerifiedSegment<'a> {
     pub decoded: DecodedSegment<'a>,
     pub head_chain: ChainHash,
     pub head_cipher: Option<CipherInfo>,
-    pub chain_seed: ChainSeed,
+    pub chain_seed: LogHashContext,
 }
 
 pub struct DecodedSegment<'a> {
@@ -123,7 +124,7 @@ impl<'a> SegmentReader<'a> {
                             .resolve_container_key(&ci.fingerprint, &log_id.container_id)
                             .await
                             .ok_or(SegmentDecodeError::MissingSegmentKey(ci))?;
-                        let cipher = SegmentCipher::new(suite, key, log_id);
+                        let cipher = SegmentCipher::new(suite, key, &log_id.peer_id);
                         decrypt_decompress_decode_entries(
                             &cipher,
                             &header.prev_chain,
@@ -169,13 +170,13 @@ pub fn encode_segment_opaque<'a: 'b, 'b>(
     Ok(w.finalize())
 }
 
-pub async fn encode_segment_plaintext<'a>(
+pub async fn encode_segment_plaintext<'a: 'b, 'b>(
     signature: &Signature,
     prev_chain: &ChainHash,
     start_cipher: &Option<CipherInfo>,
     log_id: &LogId,
     key_resolver: &dyn CipherKeyResolver,
-    entries: &[PlaintextLogEntry<'a>],
+    entries: &'b [PlaintextLogEntry<'a>],
 ) -> Result<Vec<u8>, SegmentEncodeError> {
     let mut w = Writer::new();
     let (header, cipher) = SegmentHeader::init_plaintext(
@@ -197,11 +198,12 @@ pub async fn encode_segment_plaintext<'a>(
     Ok(w.finalize())
 }
 
-pub fn decode_entries<'a, E>(
+pub fn decode_entries<'a, B, T>(
     bytes: &'a [u8],
-) -> impl Iterator<Item = Result<LogEntry<E>, LogDecodeError>>
+) -> impl Iterator<Item = Result<LogEntry<B, T>, LogDecodeError>>
 where
-    E: From<&'a [u8]> + BytesWrapper,
+    B: From<&'a [u8]> + BytesWrapper,
+    T: DecodeTimestamp<'a>,
 {
     let mut reader = Reader::new(bytes);
     let mut failed = false;
@@ -218,12 +220,13 @@ where
     })
 }
 
-pub fn encode_entries<'a, E>(
-    entries: impl Iterator<Item = &'a LogEntry<E>>,
+pub fn encode_entries<'a, B, T>(
+    entries: impl Iterator<Item = &'a LogEntry<B, T>>,
     writer: &mut Writer,
 ) -> Result<(), LogEncodeError>
 where
-    E: BytesWrapper + 'a,
+    B: BytesWrapper + 'a,
+    T: TimestampRepr + 'a,
 {
     for e in entries {
         e.encode(writer)?;
@@ -277,19 +280,19 @@ pub enum SegmentDecodeError {
     Validation(#[from] LogValidationError),
 }
 
-fn encode_compress_encrypt_entries<'a>(
+fn encode_compress_encrypt_entries<'a: 'b, 'b>(
     segment_cipher: &SegmentCipher,
     prev_chain: &ChainHash,
     nonce: &[u8],
-    entries: impl Iterator<Item = &'a PlaintextLogEntry<'a>>,
+    entries: impl Iterator<Item = &'b PlaintextLogEntry<'a>>,
 ) -> Result<Vec<u8>, SegmentEncodeError> {
     let mut inout = encode_compress_entries(entries)?;
     segment_cipher.encrypt_segment(prev_chain, nonce, &mut inout)?;
     Ok(inout)
 }
 
-fn encode_compress_entries<'a>(
-    entries: impl Iterator<Item = &'a PlaintextLogEntry<'a>>,
+fn encode_compress_entries<'a: 'b, 'b>(
+    entries: impl Iterator<Item = &'b PlaintextLogEntry<'a>>,
 ) -> Result<Vec<u8>, SegmentEncodeError> {
     let mut w = Writer::new();
     encode_entries(entries, &mut w)?;
@@ -309,7 +312,7 @@ fn decompress_decode_entries(
     if out.len() as u64 > ZSTD_DECODE_LIMIT {
         return Err(SegmentDecodeError::CompressionOverflow);
     }
-    let it = decode_entries::<PlaintextBytes>(&out);
+    let it = decode_entries::<PlaintextBytes, Timestamp>(&out);
     let mut res = vec![];
     for e in it {
         let e = e?;
@@ -366,7 +369,7 @@ impl SegmentHeader {
                 .resolve_container_key(&ci.fingerprint, &log_id.container_id)
                 .await
                 .ok_or(SegmentEncodeError::MissingSegmentKey(ci))?;
-            let segment_cipher = SegmentCipher::new(cipher_suite, key, log_id);
+            let segment_cipher = SegmentCipher::new(cipher_suite, key, &log_id.peer_id);
 
             // we only store the cipher here if it is different from what is recorded in start_cipher
             // otherwise we can just use what's in start cipher
@@ -394,11 +397,11 @@ impl SegmentHeader {
         Ok((header, cipher))
     }
 
-    fn init_opaque<B: BytesWrapper>(
+    fn init_opaque<B: BytesWrapper, T: TimestampRepr>(
         signature: Signature,
         prev_chain: ChainHash,
         mut start_cipher: Option<CipherInfo>,
-        first_entry: Option<&&LogEntry<B>>,
+        first_entry: Option<&&LogEntry<B, T>>,
     ) -> Self {
         // if the first entry is a UseKey entry, no point in encoding start_cipher
         if let Some(LogEntry::IndexedEntry(EntryBody::UseKey(_))) = first_entry {
@@ -537,7 +540,7 @@ impl<'a> DecodedSegment<'a> {
     ) -> Result<VerifiedSegment<'a>, SegmentVerifyError> {
         let header = &self.header;
         let mut cipher = header.start_cipher;
-        let seed = ChainSeed::new(&self.log_id);
+        let seed = LogHashContext::new(&self.log_id);
         let chain_hash = match self.entries {
             DecodedEntries::Opaque(ref entries) => {
                 // make sure we update the end cipher here too
@@ -580,7 +583,7 @@ impl<'a> DecodedSegment<'a> {
 impl<'a> DecodedEntries<'a> {
     pub async fn to_plaintext(
         self,
-        seed: &ChainSeed,
+        seed: &LogHashContext,
         head_cipher: &mut Option<CipherInfo>,
         head_chain: &ChainHash,
         key_resolver: &dyn CipherKeyResolver,
@@ -618,19 +621,20 @@ pub(crate) mod tests {
             CipherInfo, CipherKeyResolver, CipherSuite, ContainerKey256, RootKey256,
             RootKey256Fingerprint, Signature, SigningKey, VerifyingKey, ed25519::Ed25519SigningKey,
         },
+        hlc::Timestamp,
         ids::{ContainerId, LogId},
         log::{
-            ChainHash, EntryBody, LogEntry, OpBatch, PlaintextLogEntry, entries_to_opaque,
+            ChainHash, EntryBody, LogEntry, OpEntry, PlaintextLogEntry, entries_to_opaque,
             segment::{encode_segment_opaque, encode_segment_plaintext},
         },
     };
 
-    use crate::log::{ChainSeed, segment::SegmentReader};
+    use crate::log::{LogHashContext, segment::SegmentReader};
 
     #[derive(Debug, Arbitrary)]
     enum TestEntry {
         #[weight(5)]
-        Ops(OpBatch<PlaintextBytes<'static>>),
+        Ops(OpEntry<PlaintextBytes<'static>, Timestamp>),
         #[weight(2)]
         UseKey([u8; 32]),
         #[weight(1)]
@@ -656,7 +660,7 @@ pub(crate) mod tests {
         key_resolver: TestKeyResolver,
         signature: Signature,
         verifying_key: VerifyingKey,
-        seed: ChainSeed,
+        seed: LogHashContext,
     }
 
     type TestKeyResolver = HashMap<RootKey256Fingerprint, RootKey256>;
@@ -679,12 +683,10 @@ pub(crate) mod tests {
             };
             let start_cipher = self.start_key.map(|k| switch_key(k, &mut key_resolver));
             let mut head_cipher = start_cipher;
-            let seed = ChainSeed::new(&self.log_id);
+            let seed = LogHashContext::new(&self.log_id);
             for e in self.entries.iter() {
                 let e = match e {
-                    TestEntry::Ops(op_batch) => {
-                        LogEntry::IndexedEntry(EntryBody::OpBatch(op_batch.clone()))
-                    }
+                    TestEntry::Ops(op) => LogEntry::IndexedEntry(EntryBody::Op(op.clone())),
                     TestEntry::UseKey(k) => {
                         LogEntry::IndexedEntry(EntryBody::UseKey(switch_key(*k, &mut key_resolver)))
                     }

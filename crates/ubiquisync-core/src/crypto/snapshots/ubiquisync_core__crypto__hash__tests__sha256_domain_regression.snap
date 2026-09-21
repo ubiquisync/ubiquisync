@@ -3,10 +3,9 @@ source: crates/ubiquisync-core/src/crypto/hash.rs
 expression: out
 ---
 Sha256
-ubq/v1/hash/ChainSeed = e88ccab3603922129631c76f3e6ced86bf0a71de59947046d168da4c043fb898
-ubq/v1/hash/ChainHash = 62e17553a9a9863fc3de48737e5ddac5c608935a89734ca28571c04223d831cb
-ubq/v1/hash/LogSignBytes = 21bd5af63803e0633a9456370918e398e05adbac701b328b9f2af688159270ee
-ubq/v1/hash/PeerInitCommitment = 5d753f57d35c3e3e5897bf864036dad0008b32f5e4d701bdd688245051af7e22
-ubq/v1/hash/LogEntryOpBatch = 8ea93b7dc32173a9d9f7195ff9855a034994d36ee91d4f09f3989e61df03d2da
-ubq/v1/hash/LogEntryUseKey = d44ba5d14a17bfd6b83cbacd4d2d9c41a4fb6c1910f7ac26d5de79a65911a970
-ubq/v1/hash/OpBatchSlot = 7e95005b49edf8755a61f9476d33e33bd1936319643066c28c7896ad7768c99d
+ubq1/h/ChainSeed = 40329bcc3d348c9e42c85dd1e1674b73bc406d67a84b594e5d1754551a78e2a8
+ubq1/h/ChainHash = 053daf38ae2ba6e88cfa20107a82b5d67eaf71fd212aa2511035529fdf176b5c
+ubq1/h/PeerInit = 83904ecf88e982483d63ff0e16ed05fd658b0f3334d27c56e79fc85e76c2cb9a
+ubq1/h/LogSign = 7d8bd72bc65479233cc9431e70363ca94a0bbc1e3198ffffc6df2afe97625d61
+ubq1/h/LogOp = 6b73e695dad86f503021c2d872b2e10d3f311c1071ec0ec64164babcf6941798
+ubq1/h/LogUseKey = 986df49fd086a036aaa0f1cb8815295af14b216e5b6107d9da733900ef5bc3b0

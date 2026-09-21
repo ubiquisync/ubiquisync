@@ -1,13 +1,13 @@
+use std::borrow::Borrow;
+
 use thiserror::Error;
 
 use crate::{
-    bytes::{OpaqueBytes, PlaintextBytes},
-    crypto::{
-        CipherError, CipherInfo, CipherKeyResolveError, CipherKeyResolver, EntryCipher, Hash256,
-        SlotCipher,
-    },
+    bytes::{BytesWrapper, OpaqueBytes, PlaintextBytes},
+    crypto::{CipherError, CipherInfo, CipherKeyResolveError, CipherKeyResolver, EntryCipher},
+    hlc::Timestamp,
     log::{
-        ChainHash, ChainHashError, ChainSeed, LogValidationError, OpBatchHasher, OpaqueLogEntry,
+        ChainHash, ChainHashError, LogHashContext, LogValidationError, OpEntry, OpaqueLogEntry,
         PlaintextLogEntry,
     },
 };
@@ -20,18 +20,21 @@ pub enum SegmentCipherError {
     #[error("chain update error: {0}")]
     ChainHashError(#[from] ChainHashError),
 
-    #[error("log validation error: {0}")]
-    LogValidation(#[from] LogValidationError),
-
     #[error("key resolve error: {0}")]
     KeyResolve(#[from] CipherKeyResolveError),
+
+    #[error("invalid timestamp")]
+    InvalidTimestamp,
+
+    #[error("log validation failed: {0}")]
+    Validation(#[from] LogValidationError),
 }
 
 /// Head cipher is the cipher at the start of the segment.
 /// It is unnecessary to pass this if the segment starts with UseKey
 /// and doing so will result in unnecessarily resolving the head cipher key.
 pub async fn entries_to_opaque<'a: 'b, 'b>(
-    seed: &ChainSeed,
+    seed: &LogHashContext,
     head_cipher: &mut Option<CipherInfo>,
     head_chain: &ChainHash,
     key_resolver: &dyn CipherKeyResolver,
@@ -45,8 +48,8 @@ pub async fn entries_to_opaque<'a: 'b, 'b>(
     };
     let mut res = vec![];
     for e in entries {
-        let (e2, maybe_hash) = to_opaque(e, &entry_cipher, seed, &head_chain)?;
-        head_chain = head_chain.next(&e2, maybe_hash, seed, head_cipher)?;
+        let e2 = to_opaque(e, &entry_cipher, &head_chain)?;
+        head_chain = head_chain.next(&e2, seed, head_cipher)?;
         check_cipher_change(head_cipher, &mut entry_cipher, seed, key_resolver).await?;
         res.push((e2, head_chain));
     }
@@ -57,7 +60,7 @@ pub async fn entries_to_opaque<'a: 'b, 'b>(
 /// It is unnecessary to pass this if the segment starts with UseKey
 /// and doing so will result in unnecessarily resolving the head cipher key.
 pub async fn entries_to_plaintext<'a: 'b, 'b>(
-    seed: &ChainSeed,
+    seed: &LogHashContext,
     head_cipher: &mut Option<CipherInfo>,
     head_chain: &ChainHash,
     key_resolver: &dyn CipherKeyResolver,
@@ -71,112 +74,118 @@ pub async fn entries_to_plaintext<'a: 'b, 'b>(
     };
     let mut res = vec![];
     for e in entries {
-        let (e2, maybe_hash) = to_plaintext(e, &entry_cipher, seed, &head_chain)?;
-        head_chain = head_chain.next(e, maybe_hash, seed, head_cipher)?;
+        let e2 = to_plaintext(e, &entry_cipher, &head_chain)?;
+        head_chain = head_chain.next(e, seed, head_cipher)?;
         check_cipher_change(head_cipher, &mut entry_cipher, seed, key_resolver).await?;
         res.push((e2, head_chain));
     }
     Ok(res)
 }
 
-struct OpBatchHashState {
-    hasher: OpBatchHasher,
-    slot_cipher: SlotCipher,
-    last_hash: Hash256,
-}
-
 fn to_opaque<'a>(
     entry: &PlaintextLogEntry<'a>,
     cipher: &Option<EntryCipher>,
-    seed: &ChainSeed,
     prev_chain: &ChainHash,
-) -> Result<(OpaqueLogEntry<'a>, Option<Hash256>), CipherError> {
-    let entry_index = prev_chain.size;
+) -> Result<OpaqueLogEntry<'a>, CipherError> {
     if let Some(cipher) = cipher {
-        let (e2, maybe_hash_state) = entry.transform(
-            entry_index,
-            |entry_idx, op_batch| {
-                Ok(OpBatchHashState {
-                    last_hash: prev_chain.hash,
-                    hasher: OpBatchHasher::new(seed, entry_idx, op_batch.ops.len()),
-                    slot_cipher: cipher.slot_cipher(entry_idx),
+        entry.transform(
+            |OpEntry {
+                 timestamp,
+                 server_attested_user_id,
+                 op,
+             }| {
+                let mut slot_cipher = cipher.slot_cipher(prev_chain);
+                let timestamp = slot_cipher
+                    .encrypt_slot(&PlaintextBytes::from(&timestamp.raw().to_le_bytes()[..]));
+                slot_cipher.add_context(timestamp.borrow());
+                let server_attested_user_id = if !server_attested_user_id.is_empty() {
+                    slot_cipher.encrypt_slot(server_attested_user_id)
+                } else {
+                    Default::default()
+                };
+                slot_cipher.add_context(server_attested_user_id.borrow());
+                let op = slot_cipher.encrypt_slot(op);
+                Ok(OpEntry {
+                    timestamp,
+                    server_attested_user_id,
+                    op,
                 })
             },
-            |slot, st| {
-                let slot_cipher = st.slot_cipher.encrypt_slot(&st.last_hash, slot)?;
-                st.last_hash = st.hasher.hash_slot(&slot_cipher);
-                Ok(slot_cipher)
-            },
-            |expunge_hash, st| {
-                st.last_hash = *expunge_hash;
-                st.hasher.hash_expunge(expunge_hash);
-                st.slot_cipher.skip_slot();
-                Ok(())
-            },
-        )?;
-        Ok((e2, maybe_hash_state.map(|st| st.hasher.finalize())))
+        )
     } else {
-        let (e2, _) = entry.transform(
-            entry_index,
-            |_, _| Ok(()),
-            |s, _| Ok(OpaqueBytes(s.0.clone())),
-            |_, _| Ok(()),
-        )?;
-        Ok((e2, None))
+        Ok(entry.transform(
+            |OpEntry {
+                 timestamp,
+                 server_attested_user_id,
+                 op,
+             }| {
+                Ok(OpEntry {
+                    timestamp: timestamp.raw().to_le_bytes().to_vec().into(),
+                    server_attested_user_id: OpaqueBytes(server_attested_user_id.0.clone()),
+                    op: OpaqueBytes(op.0.clone()),
+                })
+            },
+        )?)
     }
 }
 
 fn to_plaintext<'a>(
     entry: &OpaqueLogEntry<'a>,
     cipher: &Option<EntryCipher>,
-    seed: &ChainSeed,
     prev_chain: &ChainHash,
-) -> Result<(PlaintextLogEntry<'a>, Option<Hash256>), SegmentCipherError> {
-    let entry_index = prev_chain.size;
-    if let Some(cipher) = cipher {
-        let (e2, maybe_hash_state) = entry
-            .transform(
-                entry_index,
-                |entry_idx, op_batch| {
-                    Ok(OpBatchHashState {
-                        last_hash: prev_chain.hash,
-                        hasher: OpBatchHasher::new(seed, entry_idx, op_batch.ops.len()),
-                        slot_cipher: cipher.slot_cipher(entry_idx),
-                    })
-                },
-                |slot_cipher, st| {
-                    let op = st.slot_cipher.decrypt_slot(&st.last_hash, slot_cipher)?;
-                    st.last_hash = st.hasher.hash_slot(slot_cipher);
-                    Ok(op)
-                },
-                |expunge_hash, st| {
-                    st.last_hash = *expunge_hash;
-                    st.hasher.hash_expunge(expunge_hash);
-                    st.slot_cipher.skip_slot();
-                    Ok(())
-                },
-            )
-            .map_err(SegmentCipherError::CipherError)?;
-        e2.validate()?;
-        Ok((e2, maybe_hash_state.map(|st| st.hasher.finalize())))
+) -> Result<PlaintextLogEntry<'a>, SegmentCipherError> {
+    let e: Result<PlaintextLogEntry<'a>, SegmentCipherError> = if let Some(cipher) = cipher {
+        entry.transform(|opaque| {
+            let mut slot_cipher = cipher.slot_cipher(prev_chain);
+            let timestamp: PlaintextBytes<'_> = slot_cipher.decrypt_slot(&opaque.timestamp);
+            let timestamp: u64 = u64::from_le_bytes(
+                Borrow::<[u8]>::borrow(&timestamp)
+                    .try_into()
+                    .map_err(|_| SegmentCipherError::InvalidTimestamp)?,
+            );
+            slot_cipher.add_context(opaque.timestamp.borrow());
+            let server_attested_user_id = if !opaque.server_attested_user_id.is_empty() {
+                slot_cipher.decrypt_slot(&opaque.server_attested_user_id)
+            } else {
+                PlaintextBytes::default()
+            };
+            slot_cipher.add_context(opaque.server_attested_user_id.borrow());
+            let op = slot_cipher.decrypt_slot(&opaque.op);
+            Ok(OpEntry {
+                timestamp: Timestamp::from_raw(timestamp),
+                server_attested_user_id,
+                op,
+            })
+        })
     } else {
-        let (e2, _) = entry
-            .transform(
-                entry_index,
-                |_, _| Ok(()),
-                |s, _| Ok(PlaintextBytes(s.0.clone())),
-                |_, _| Ok(()),
-            )
-            .map_err(SegmentCipherError::CipherError)?;
-        e2.validate()?;
-        Ok((e2, None))
-    }
+        entry.transform(
+            |OpEntry {
+                 timestamp,
+                 server_attested_user_id,
+                 op,
+             }| {
+                let timestamp = Timestamp::from_raw(u64::from_le_bytes(
+                    Borrow::<[u8]>::borrow(timestamp)
+                        .try_into()
+                        .map_err(|_| SegmentCipherError::InvalidTimestamp)?,
+                ));
+                Ok(OpEntry {
+                    timestamp,
+                    server_attested_user_id: PlaintextBytes(server_attested_user_id.0.clone()),
+                    op: PlaintextBytes(op.0.clone()),
+                })
+            },
+        )
+    };
+    let e = e?;
+    e.validate()?;
+    Ok(e)
 }
 
 async fn check_cipher_change(
     head_ci: &Option<CipherInfo>,
     cipher: &mut Option<EntryCipher>,
-    seed: &ChainSeed,
+    seed: &LogHashContext,
     key_resolver: &dyn CipherKeyResolver,
 ) -> Result<(), SegmentCipherError> {
     if let Some(ci) = head_ci {

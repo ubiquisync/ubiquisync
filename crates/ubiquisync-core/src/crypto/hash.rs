@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 use strum_macros::{EnumIter, IntoStaticStr};
 
 use crate::{
-    codec::{Reader, Writer},
+    codec::{MAX_VAR_U64_SIZE, Reader, Writer, encode_var_u64},
     crypto::CryptoDecodeError,
 };
 
@@ -17,19 +17,19 @@ pub enum Hash256Suite {
     Sha256 = 0,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Hasher(Sha256);
 
+/// A tagged hash domain that is 16 bytes or shorter.
 #[derive(IntoStaticStr, EnumIter, Debug, Clone, Copy, PartialEq, Eq)]
-#[strum(prefix = "ubq/v1/hash/")]
+#[strum(prefix = "ubq1/h/")]
 pub enum TaggedHashDomain {
     ChainSeed,
     ChainHash,
-    LogSignBytes,
-    PeerInitCommitment,
-    LogEntryOpBatch,
-    LogEntryUseKey,
-    OpBatchSlot,
+    PeerInit,
+    LogSign,
+    LogOp,
+    LogUseKey,
 }
 
 impl Hash256Suite {
@@ -60,23 +60,27 @@ pub fn new_tagged_hasher(domain: TaggedHashDomain) -> Hasher {
 }
 
 fn new_tagged_hasher_internal(domain: &str) -> Hasher {
-    let len: u8 = domain_len(domain);
+    assert!(domain.len() <= 16);
+    let mut buf = [0; 16];
+    buf[..domain.len()].copy_from_slice(domain.as_bytes());
     let mut hasher = Sha256::new();
-    hasher.update([len]);
-    hasher.update(domain);
+    hasher.update(buf);
     Hasher(hasher)
-}
-
-fn domain_len(domain: &str) -> u8 {
-    domain
-        .len()
-        .try_into()
-        .expect("domain string should have len <= 255")
 }
 
 impl Hasher {
     pub fn update(&mut self, data: &[u8]) {
         self.0.update(data)
+    }
+
+    pub fn update_varint(&mut self, value: u64) {
+        let mut buf = [0; MAX_VAR_U64_SIZE];
+        self.update(encode_var_u64(value, &mut buf));
+    }
+
+    pub fn update_len_prefixed(&mut self, data: &[u8]) {
+        self.update_varint(data.len() as u64);
+        self.update(data);
     }
 
     pub fn finalize(self) -> Hash256 {
@@ -126,7 +130,7 @@ pub(crate) mod tests {
     fn test_domain_lengths() {
         for domain in TaggedHashDomain::iter() {
             let s: &str = domain.into();
-            assert!(s.len() <= 255);
+            assert!(s.len() <= 16, "{}", s);
         }
     }
 
