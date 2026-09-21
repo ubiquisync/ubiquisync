@@ -3,7 +3,7 @@ use ubiquisync_core::{
     crypto::NullCipherKeyResolver,
     ids::LogId,
     log::{
-        ChainHash, ChainSeed, EntryBody, OpEntry, PlaintextLogEntry,
+        ChainHash, LogHashContext, EntryBody, OpEntry, PlaintextLogEntry,
         segment::encode_segment_plaintext,
     },
     uuid::Uuid,
@@ -52,9 +52,10 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
         .await
         .map_err(ExecError::Db)?;
 
-        let seed = ChainSeed::new(&log_id);
+        let seed = LogHashContext::new(&log_id);
 
         let (stream_id, chain_head, mut head_cipher, commit_err) = if stream_rows.is_empty() {
+            let empty_chain = ChainHash::empty(&seed);
             let res = insert_cols::<
                 (
                     streams::PeerId,
@@ -66,7 +67,7 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
                 (streams::Id,),
             >(
                 self.db.as_ref(),
-                (self.self_db_id, container_id.0, 0, *seed.hash(), 0),
+                (self.self_db_id, container_id.0, 0, empty_chain.hash, 0),
                 Query::insert().into_table(streams::Table),
             )
             .await?;

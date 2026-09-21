@@ -6,7 +6,7 @@ use crate::{
     bytes::{BytesWrapper, OpaqueBytes, PlaintextBytes},
     crypto::{CipherError, CipherInfo, CipherKeyResolveError, CipherKeyResolver, EntryCipher},
     hlc::Timestamp,
-    log::{ChainHash, ChainHashError, ChainSeed, OpEntry, OpaqueLogEntry, PlaintextLogEntry},
+    log::{ChainHash, ChainHashError, LogHashContext, OpEntry, OpaqueLogEntry, PlaintextLogEntry},
 };
 
 #[derive(Error, Debug)]
@@ -28,7 +28,7 @@ pub enum SegmentCipherError {
 /// It is unnecessary to pass this if the segment starts with UseKey
 /// and doing so will result in unnecessarily resolving the head cipher key.
 pub async fn entries_to_opaque<'a: 'b, 'b>(
-    seed: &ChainSeed,
+    seed: &LogHashContext,
     head_cipher: &mut Option<CipherInfo>,
     head_chain: &ChainHash,
     key_resolver: &dyn CipherKeyResolver,
@@ -54,7 +54,7 @@ pub async fn entries_to_opaque<'a: 'b, 'b>(
 /// It is unnecessary to pass this if the segment starts with UseKey
 /// and doing so will result in unnecessarily resolving the head cipher key.
 pub async fn entries_to_plaintext<'a: 'b, 'b>(
-    seed: &ChainSeed,
+    seed: &LogHashContext,
     head_cipher: &mut Option<CipherInfo>,
     head_chain: &ChainHash,
     key_resolver: &dyn CipherKeyResolver,
@@ -176,7 +176,7 @@ fn to_plaintext<'a>(
 async fn check_cipher_change(
     head_ci: &Option<CipherInfo>,
     cipher: &mut Option<EntryCipher>,
-    seed: &ChainSeed,
+    seed: &LogHashContext,
     key_resolver: &dyn CipherKeyResolver,
 ) -> Result<(), SegmentCipherError> {
     if let Some(ci) = head_ci {

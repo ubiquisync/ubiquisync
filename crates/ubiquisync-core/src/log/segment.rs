@@ -15,7 +15,7 @@ use crate::{
     hlc::Timestamp,
     ids::LogId,
     log::{
-        ChainHash, ChainSeed, DecodeTimestamp, LogDecodeError, LogEncodeError, LogEntry,
+        ChainHash, DecodeTimestamp, LogDecodeError, LogEncodeError, LogEntry, LogHashContext,
         LogValidationError, LogVerifyError, OpaqueLogEntry, PlaintextLogEntry, SegmentCipherError,
         TimestampRepr, entries_to_plaintext, verify_opaque, verify_plaintext,
     },
@@ -66,7 +66,7 @@ pub struct VerifiedSegment<'a> {
     pub decoded: DecodedSegment<'a>,
     pub head_chain: ChainHash,
     pub head_cipher: Option<CipherInfo>,
-    pub chain_seed: ChainSeed,
+    pub chain_seed: LogHashContext,
 }
 
 pub struct DecodedSegment<'a> {
@@ -540,7 +540,7 @@ impl<'a> DecodedSegment<'a> {
     ) -> Result<VerifiedSegment<'a>, SegmentVerifyError> {
         let header = &self.header;
         let mut cipher = header.start_cipher;
-        let seed = ChainSeed::new(&self.log_id);
+        let seed = LogHashContext::new(&self.log_id);
         let chain_hash = match self.entries {
             DecodedEntries::Opaque(ref entries) => {
                 // make sure we update the end cipher here too
@@ -583,7 +583,7 @@ impl<'a> DecodedSegment<'a> {
 impl<'a> DecodedEntries<'a> {
     pub async fn to_plaintext(
         self,
-        seed: &ChainSeed,
+        seed: &LogHashContext,
         head_cipher: &mut Option<CipherInfo>,
         head_chain: &ChainHash,
         key_resolver: &dyn CipherKeyResolver,
@@ -629,7 +629,7 @@ pub(crate) mod tests {
         },
     };
 
-    use crate::log::{ChainSeed, segment::SegmentReader};
+    use crate::log::{LogHashContext, segment::SegmentReader};
 
     #[derive(Debug, Arbitrary)]
     enum TestEntry {
@@ -660,7 +660,7 @@ pub(crate) mod tests {
         key_resolver: TestKeyResolver,
         signature: Signature,
         verifying_key: VerifyingKey,
-        seed: ChainSeed,
+        seed: LogHashContext,
     }
 
     type TestKeyResolver = HashMap<RootKey256Fingerprint, RootKey256>;
@@ -683,7 +683,7 @@ pub(crate) mod tests {
             };
             let start_cipher = self.start_key.map(|k| switch_key(k, &mut key_resolver));
             let mut head_cipher = start_cipher;
-            let seed = ChainSeed::new(&self.log_id);
+            let seed = LogHashContext::new(&self.log_id);
             for e in self.entries.iter() {
                 let e = match e {
                     TestEntry::Ops(op_batch) => {

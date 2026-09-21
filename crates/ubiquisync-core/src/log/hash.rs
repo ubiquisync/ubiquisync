@@ -26,17 +26,25 @@ pub enum ChainHashError {
 }
 
 #[derive(Debug, Clone)]
-pub struct ChainSeed {
+pub struct LogHashContext {
     log_id: LogId,
-    hash: Hash256,
-    // op_hasher: Hasher,
-    // sign_bytes_hasher: Hasher,
+    op_hasher: Hasher,
+    sign_bytes_hasher: Hasher,
+}
+
+// returns a hasher instance that should have pre-computed exactly 1 SHA256 block (64 bytes)
+// from tag (16 bytes) + peer_id (32 bytes) + container_id (16 bytes)
+fn log_id_hasher(tag: TaggedHashDomain, log_id: &LogId) -> Hasher {
+    let mut hasher = new_tagged_hasher(tag);
+    hasher.update(&log_id.peer_id.0);
+    hasher.update(&log_id.container_id.0);
+    hasher
 }
 
 impl ChainHash {
-    pub fn empty(seed: &ChainSeed) -> Self {
+    pub fn empty(seed: &LogHashContext) -> Self {
         Self {
-            hash: seed.hash,
+            hash: log_id_hasher(TaggedHashDomain::ChainSeed, &seed.log_id).finalize(),
             size: 0,
         }
     }
@@ -80,7 +88,7 @@ impl ChainHash {
     pub(crate) fn next(
         &self,
         entry: &OpaqueLogEntry,
-        seed: &ChainSeed,
+        seed: &LogHashContext,
         active_cipher: &mut Option<CipherInfo>,
     ) -> Result<Self, ChainHashError> {
         match entry {
@@ -94,7 +102,7 @@ impl ChainHash {
 
     pub async fn compute_next_plaintext<'a: 'b, 'b>(
         &self,
-        seed: &ChainSeed,
+        seed: &LogHashContext,
         head_cipher: &mut Option<CipherInfo>,
         key_resolver: &dyn CipherKeyResolver,
         entries: impl Iterator<Item = &'b PlaintextLogEntry<'a>>,
@@ -110,7 +118,7 @@ impl ChainHash {
 
     pub fn compute_next_opaque<'a: 'b, 'b>(
         &self,
-        seed: &ChainSeed,
+        seed: &LogHashContext,
         active_cipher: &mut Option<CipherInfo>,
         entries: impl Iterator<Item = &'a OpaqueLogEntry<'a>>,
     ) -> Result<Self, ChainHashError> {
@@ -121,9 +129,8 @@ impl ChainHash {
         Ok(h)
     }
 
-    pub fn sign_bytes(&self, seed: &ChainSeed) -> Hash256 {
-        let mut hasher = new_tagged_hasher(TaggedHashDomain::LogSign);
-        hasher.update(&seed.hash);
+    pub fn sign_bytes(&self, seed: &LogHashContext) -> Hash256 {
+        let mut hasher = seed.sign_bytes_hasher.clone();
         hasher.update(&self.size.to_le_bytes());
         hasher.update(&self.hash);
         hasher.finalize()
@@ -141,20 +148,15 @@ impl ChainHash {
     }
 }
 
-impl ChainSeed {
+impl LogHashContext {
     pub fn new(log_id: &LogId) -> Self {
-        let mut hasher = new_tagged_hasher(TaggedHashDomain::ChainSeed);
-        hasher.update(&log_id.peer_id.0);
-        hasher.update(&log_id.container_id.0);
-        let hash = hasher.finalize();
+        let op_hasher = log_id_hasher(TaggedHashDomain::LogOp, log_id);
+        let sign_bytes_hasher = log_id_hasher(TaggedHashDomain::LogSign, log_id);
         Self {
-            hash,
             log_id: *log_id,
+            op_hasher,
+            sign_bytes_hasher,
         }
-    }
-
-    pub fn hash(&self) -> &Hash256 {
-        &self.hash
     }
 
     pub fn log_id(&self) -> &LogId {
@@ -165,7 +167,7 @@ impl ChainSeed {
 impl<'a> EntryBody<OpaqueBytes<'a>, OpaqueBytes<'a>> {
     pub fn hash(
         &self,
-        seed: &ChainSeed,
+        seed: &LogHashContext,
         entry_index: u64,
         active_cipher: &mut Option<CipherInfo>,
     ) -> Hash256 {
@@ -181,9 +183,8 @@ impl<'a> EntryBody<OpaqueBytes<'a>, OpaqueBytes<'a>> {
 }
 
 impl<'a> OpEntry<OpaqueBytes<'a>, OpaqueBytes<'a>> {
-    pub fn hash(&self, seed: &ChainSeed, entry_idx: u64) -> Hash256 {
-        let mut hasher = new_tagged_hasher(TaggedHashDomain::LogOp);
-        hasher.update(&seed.hash);
+    pub fn hash(&self, seed: &LogHashContext, entry_idx: u64) -> Hash256 {
+        let mut hasher = seed.op_hasher.clone();
         hasher.update_varint(entry_idx);
         hasher.update_len_prefixed(&self.timestamp.0);
         hasher.update_len_prefixed(&self.server_attested_user_id.0);
@@ -192,9 +193,10 @@ impl<'a> OpEntry<OpaqueBytes<'a>, OpaqueBytes<'a>> {
     }
 }
 
-fn hash_use_key(seed: &ChainSeed, entry_index: u64, cipher_info: &CipherInfo) -> Hash256 {
-    let mut hasher = new_tagged_hasher(TaggedHashDomain::LogUseKey);
-    hasher.update(&seed.hash);
+fn hash_use_key(seed: &LogHashContext, entry_index: u64, cipher_info: &CipherInfo) -> Hash256 {
+    // we don't cache this hasher because it's expected to be much less frequent
+    // if we wanted to, we could use a LazyCell, but probably not needed
+    let mut hasher = log_id_hasher(TaggedHashDomain::LogUseKey, &seed.log_id);
     hasher.update_varint(entry_index);
     hasher.update(&[cipher_info.cipher_suite]);
     hasher.update(&cipher_info.fingerprint.0);

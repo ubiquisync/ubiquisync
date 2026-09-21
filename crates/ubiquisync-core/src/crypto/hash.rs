@@ -20,6 +20,7 @@ pub enum Hash256Suite {
 #[derive(Clone, Debug)]
 pub struct Hasher(Sha256);
 
+/// A tagged hash domain that is 16 bytes or shorter.
 #[derive(IntoStaticStr, EnumIter, Debug, Clone, Copy, PartialEq, Eq)]
 #[strum(prefix = "ubq1/h/")]
 pub enum TaggedHashDomain {
@@ -63,7 +64,7 @@ fn new_tagged_hasher_internal(domain: &str) -> Hasher {
     let mut buf = [0; 16];
     buf[..domain.len()].copy_from_slice(domain.as_bytes());
     let mut hasher = Sha256::new();
-    hasher.update(&buf);
+    hasher.update(buf);
     Hasher(hasher)
 }
 
