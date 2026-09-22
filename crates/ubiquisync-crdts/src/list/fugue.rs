@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use smallvec::{SmallVec, smallvec};
+use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Op<Id, T> {
@@ -35,6 +36,20 @@ pub struct List<Id, T> {
     // nodes who are missing their parent, keyed by the parent ID
     // and point to the list of unparented nodes
     pending_parent: HashMap<ElementId<Id>, Vec<NodeRef<Id>>>,
+}
+
+#[derive(Debug, Error)]
+pub enum EffectError {
+    #[error("node not found")]
+    NodeNotFound,
+}
+
+#[derive(Debug, Error)]
+pub enum PrepareError {
+    #[error("node not found")]
+    NodeNotFound,
+    #[error("invalid state")]
+    InvalidState,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -134,6 +149,8 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
                     + usize::from(pending_node.prepare_state == PrepareState::Inserted);
             }
         }
+        let effect_delta = node.effect_size + 1;
+        let prepare_delta = node.prepare_size + 1;
 
         // add node now that we're done mutating it
         // we can't do it with push_mut earlier, because we need a mutable ref self.node below for parent
@@ -162,8 +179,8 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
                 Side::Right => insert_child(&mut parent.right_children, node_ref),
             }
             self.visit_ancestors(parent_id, parent_index, |parent| {
-                parent.effect_size += 1;
-                parent.prepare_size += 1;
+                parent.effect_size += effect_delta;
+                parent.prepare_size += prepare_delta;
             });
 
             parent_index
@@ -171,119 +188,116 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
         self.nodes[index.0].parent_index = parent_index;
     }
 
-    fn delete(&mut self, id: ElementId<Id>) {
+    fn delete(&mut self, id: ElementId<Id>) -> Result<(), EffectError> {
         self.visit_node_and_ancestors(
             id,
             |node| {
                 if node.effect_deleted {
                     // already deleted!
-                    return false;
+                    return Ok(false);
                 }
                 node.effect_deleted = true;
-                true
+                Ok(true)
             },
             |parent| parent.effect_size = parent.effect_size.checked_sub(1).expect("non-zero size"),
-        );
+            EffectError::NodeNotFound,
+        )
     }
 
-    fn prepare_insert(&mut self, id: ElementId<Id>) {
-        // TODO we can reduce some code duplication here
-        if let Some(node_idx) = self.nodes_by_id.get(&id) {
-            let (parent_id, parent_index) = {
-                let node = &mut self.nodes[node_idx.0];
-                match node.prepare_state {
-                    PrepareState::UnInserted => {
-                        node.prepare_state = PrepareState::Inserted;
-                    }
-                    _ => unreachable!("should have an actual error here"),
+    fn prepare_insert(&mut self, id: ElementId<Id>) -> Result<(), PrepareError> {
+        self.visit_node_and_ancestors(
+            id,
+            |node| match node.prepare_state {
+                PrepareState::UnInserted => {
+                    node.prepare_state = PrepareState::Inserted;
+                    Ok(true)
                 }
-                (node.parent_id.clone(), node.parent_index)
-            };
-            self.visit_ancestors(parent_id.clone(), parent_index, |parent| {
-                parent.prepare_size += 1
-            });
-        } else {
-            unreachable!("this should be an invalid state and an error")
-        }
+                _ => Err(PrepareError::InvalidState),
+            },
+            |parent| parent.prepare_size += 1,
+            PrepareError::NodeNotFound,
+        )
     }
 
-    fn prepare_uninsert(&mut self, id: ElementId<Id>) {
-        // TODO we can reduce some code duplication here
-        if let Some(node_idx) = self.nodes_by_id.get(&id) {
-            let (parent_id, parent_index) = {
-                let node = &mut self.nodes[node_idx.0];
-                match node.prepare_state {
-                    PrepareState::Inserted => {
-                        node.prepare_state = PrepareState::UnInserted;
-                    }
-                    _ => unreachable!("should have an actual error here"),
+    fn prepare_uninsert(&mut self, id: ElementId<Id>) -> Result<(), PrepareError> {
+        self.visit_node_and_ancestors(
+            id,
+            |node| match node.prepare_state {
+                PrepareState::Inserted => {
+                    node.prepare_state = PrepareState::UnInserted;
+                    Ok(true)
                 }
-                (node.parent_id.clone(), node.parent_index)
-            };
-            self.visit_ancestors(parent_id.clone(), parent_index, |parent| {
-                parent.prepare_size -= 1
-            });
-        } else {
-            unreachable!("this should be an invalid state and an error")
-        }
+                _ => Err(PrepareError::InvalidState),
+            },
+            |parent| parent.prepare_size -= 1,
+            PrepareError::NodeNotFound,
+        )
     }
 
-    fn prepare_delete(&mut self, id: ElementId<Id>) {
+    fn prepare_delete(&mut self, id: ElementId<Id>) -> Result<(), PrepareError> {
         self.visit_node_and_ancestors(
             id,
             |node| {
                 let delete_count = match node.prepare_state {
                     PrepareState::Deleted(n) => n,
-                    _ => 0,
+                    PrepareState::Inserted => 0,
+                    PrepareState::UnInserted => return Err(PrepareError::InvalidState),
                 };
                 node.prepare_state = PrepareState::Deleted(delete_count + 1);
-                delete_count == 1 // only update parents when this is the first tracked delete
+                Ok(delete_count == 0) // only update parents when this is the first tracked delete
             },
             |parent| {
                 parent.prepare_size = parent.prepare_size.checked_sub(1).expect("non-zero size")
             },
+            PrepareError::NodeNotFound,
         )
     }
 
-    fn prepare_undelete(&mut self, id: ElementId<Id>) {
+    fn prepare_undelete(&mut self, id: ElementId<Id>) -> Result<(), PrepareError> {
         self.visit_node_and_ancestors(
             id,
             |node| {
                 let delete_count = match node.prepare_state {
                     PrepareState::Deleted(n) => n,
-                    _ => unreachable!("maybe we should have an actual error here, rather than panicking, but this shouldn't happen"),
+                    _ => return Err(PrepareError::InvalidState),
                 };
                 if delete_count == 1 {
                     node.prepare_state = PrepareState::Inserted;
-                    true
+                    Ok(true)
                 } else {
                     node.prepare_state = PrepareState::Deleted(delete_count - 1);
-                    false
+                    Ok(false)
                 }
             },
             |parent| parent.prepare_size += 1,
+            PrepareError::NodeNotFound,
         )
     }
 
-    fn visit_node_and_ancestors<F, G>(
+    fn visit_node_and_ancestors<F, G, Err>(
         &mut self,
         id: ElementId<Id>,
         visit_node: F,
         visit_ancestor: G,
-    ) where
-        F: Fn(&mut Node<Id, T>) -> bool,
+        not_found: Err,
+    ) -> Result<(), Err>
+    where
+        F: Fn(&mut Node<Id, T>) -> Result<bool, Err>,
         G: Fn(&mut Node<Id, T>),
     {
         if let Some(index) = self.nodes_by_id.get(&id) {
             let (parent_id, parent_index) = {
                 let node = &mut self.nodes[index.0];
-                if !visit_node(node) {
-                    return;
+                if !visit_node(node)? {
+                    return Ok(());
                 }
                 (node.parent_id.clone(), node.parent_index)
             };
 
             self.visit_ancestors(parent_id, parent_index, visit_ancestor);
+            Ok(())
+        } else {
+            Err(not_found)
         }
     }
 
@@ -303,7 +317,8 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
                     saw_root = true;
                     &mut self.root
                 }
-                _ => return,
+                // TODO should we have errors in this case, it shouldn't really happen i think
+                _ => unreachable!(),
             };
 
             f(parent);

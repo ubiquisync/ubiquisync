@@ -8,6 +8,7 @@ repository.workspace = true
 [dependencies]
 ubiquisync-core = {workspace = true}
 smallvec = {workspace = true}
+thiserror = {workspace = true}
 
 [lints]
 workspace = true

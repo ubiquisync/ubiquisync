@@ -1695,6 +1695,7 @@ name = "ubiquisync-crdts"
 version = "0.0.4"
 dependencies = [
  "smallvec",
+ "thiserror",
  "ubiquisync-core",
 ]
 
