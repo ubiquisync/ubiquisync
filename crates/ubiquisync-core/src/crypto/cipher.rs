@@ -118,7 +118,7 @@ impl CipherSuite {
 
 pub struct RootKey256 {
     fingerprint: RootKey256Fingerprint,
-    key: SecretBox<[u8; 32]>,
+    pub(crate) key: SecretBox<[u8; 32]>,
 }
 
 fn domain_len(domain: &str) -> u8 {

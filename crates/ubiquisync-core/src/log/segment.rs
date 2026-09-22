@@ -1,5 +1,7 @@
 mod join;
 
+pub use join::*;
+
 use std::io::Read;
 
 use num_enum::{IntoPrimitive, TryFromPrimitive};
@@ -642,31 +644,31 @@ pub(crate) mod tests {
     }
 
     #[derive(Debug, Arbitrary)]
-    struct TestCase {
-        start_key: Option<[u8; 32]>,
-        entries: Vec<TestEntry>,
-        signing_key: [u8; 32],
-        log_id: LogId,
-        prev_chain: ChainHash,
+    pub(crate) struct TestCase {
+        pub start_key: Option<[u8; 32]>,
+        pub entries: Vec<TestEntry>,
+        pub signing_key: [u8; 32],
+        pub log_id: LogId,
+        pub prev_chain: ChainHash,
     }
 
-    struct TestCaseData {
-        start_cipher: Option<CipherInfo>,
-        end_cipher: Option<CipherInfo>,
-        log_id: LogId,
-        prev_chain: ChainHash,
-        head_chain: ChainHash,
-        entries: Vec<PlaintextLogEntry<'static>>,
-        key_resolver: TestKeyResolver,
-        signature: Signature,
-        verifying_key: VerifyingKey,
-        seed: LogHashContext,
+    pub(crate) struct TestCaseData {
+        pub case: TestCase,
+        pub start_cipher: Option<CipherInfo>,
+        pub end_cipher: Option<CipherInfo>,
+        pub prev_chain: ChainHash,
+        pub head_chain: ChainHash,
+        pub entries: Vec<PlaintextLogEntry<'static>>,
+        pub key_resolver: TestKeyResolver,
+        pub signature: Signature,
+        pub verifying_key: VerifyingKey,
+        pub seed: LogHashContext,
     }
 
-    type TestKeyResolver = HashMap<RootKey256Fingerprint, RootKey256>;
+    pub(crate) type TestKeyResolver = HashMap<RootKey256Fingerprint, RootKey256>;
 
     impl TestCase {
-        async fn data(&self) -> TestCaseData {
+        pub(crate) async fn data(self) -> TestCaseData {
             let mut entries = vec![];
             let signing_key = Ed25519SigningKey::new(SecretBox::new(Box::new(self.signing_key)));
             let mut key_resolver = TestKeyResolver::new();
@@ -706,9 +708,9 @@ pub(crate) mod tests {
                 entries.push(e);
             }
             TestCaseData {
+                case: self,
                 start_cipher,
                 end_cipher: head_cipher,
-                log_id: self.log_id,
                 head_chain,
                 entries,
                 key_resolver,
@@ -738,7 +740,7 @@ pub(crate) mod tests {
             &data.signature,
             &data.prev_chain,
             &data.start_cipher,
-            &data.log_id,
+            &data.case.log_id,
             &data.key_resolver,
             &data.entries,
         )
@@ -775,7 +777,10 @@ pub(crate) mod tests {
 
     async fn check_decode(segment: &[u8], data: &TestCaseData) {
         let reader = SegmentReader::start(segment).unwrap();
-        let decoded = reader.read(&data.key_resolver, &data.log_id).await.unwrap();
+        let decoded = reader
+            .read(&data.key_resolver, &data.case.log_id)
+            .await
+            .unwrap();
         let verified = decoded
             .verify(&data.verifying_key, &data.key_resolver)
             .await
