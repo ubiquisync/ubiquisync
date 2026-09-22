@@ -50,7 +50,7 @@ struct NodeRef<Id> {
 
 struct Node<Id, T> {
     parent_id: Option<ElementId<Id>>,
-    // TODO we can optimize later and store parent Option<NodeIdx>
+    parent_index: Option<NodeIdx>,
     side: Side,
     left_children: Vec<NodeRef<Id>>,
     right_children: Vec<NodeRef<Id>>,
@@ -63,8 +63,9 @@ struct Node<Id, T> {
     prepare_size: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PrepareState {
-    NotInserted,
+    UnInserted,
     Inserted,
     Deleted(u32),
 }
@@ -74,13 +75,14 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> Default
         Self {
             root: Node {
                 parent_id: None,
+                parent_index: None,
                 left_children: vec![],
                 right_children: vec![],
                 content: None,
                 side: Side::Right,
                 effect_deleted: false,
                 effect_size: 0,
-                prepare_state: PrepareState::NotInserted,
+                prepare_state: PrepareState::Inserted,
                 prepare_size: 0,
             },
             nodes: vec![],
@@ -100,13 +102,14 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
     ) {
         let mut node = Node {
             parent_id: parent_id.clone(),
+            parent_index: None,
             side,
             left_children: vec![],
             right_children: vec![],
             content: Some(content),
             effect_deleted: false,
             effect_size: 0,
-            prepare_state: PrepareState::NotInserted,
+            prepare_state: PrepareState::Inserted,
             prepare_size: 0,
         };
 
@@ -120,69 +123,205 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
         if let Some(pending) = self.pending_parent.remove(&id) {
             for pending_id in pending {
                 let pending_node = &mut self.nodes[pending_id.index.0];
+                pending_node.parent_index = Some(index);
                 match pending_node.side {
                     Side::Left => insert_child(&mut node.left_children, pending_id),
                     Side::Right => insert_child(&mut node.right_children, pending_id),
                 }
-                if !pending_node.effect_deleted {
-                    node.effect_size += pending_node.effect_size + 1;
-                }
+                node.effect_size +=
+                    pending_node.effect_size + usize::from(!pending_node.effect_deleted);
+                node.prepare_size += pending_node.prepare_size
+                    + usize::from(pending_node.prepare_state == PrepareState::Inserted);
             }
         }
 
         // add node now that we're done mutating it
         // we can't do it with push_mut earlier, because we need a mutable ref self.node below for parent
         self.nodes.push(node);
-
-        let parent = match parent_id {
-            Some(parent_id) => {
-                // check if we can resolve this entry's parent
-                if let Some(parent_index) = self.nodes_by_id.get(&parent_id) {
-                    &mut self.nodes[parent_index.0]
-                } else {
-                    // add to pending id list
-                    self.pending_parent
-                        .entry(parent_id)
-                        .or_default()
-                        .push(node_ref);
-                    return;
-                }
-            }
-            None => &mut self.root,
-        };
-        match side {
-            Side::Left => insert_child(&mut parent.left_children, node_ref),
-            Side::Right => insert_child(&mut parent.right_children, node_ref),
-        }
-        parent.effect_size += 1;
-
         self.nodes_by_id.insert(id, index);
+
+        let parent_index = {
+            let (parent, parent_index) = match parent_id {
+                Some(ref parent_id) => {
+                    // check if we can resolve this entry's parent
+                    if let Some(parent_index) = self.nodes_by_id.get(parent_id) {
+                        (&mut self.nodes[parent_index.0], Some(*parent_index))
+                    } else {
+                        // add to pending id list
+                        self.pending_parent
+                            .entry(parent_id.clone())
+                            .or_default()
+                            .push(node_ref);
+                        return;
+                    }
+                }
+                None => (&mut self.root, None),
+            };
+            match side {
+                Side::Left => insert_child(&mut parent.left_children, node_ref),
+                Side::Right => insert_child(&mut parent.right_children, node_ref),
+            }
+            self.visit_ancestors(parent_id, parent_index, |parent| {
+                parent.effect_size += 1;
+                parent.prepare_size += 1;
+            });
+
+            parent_index
+        };
+        self.nodes[index.0].parent_index = parent_index;
     }
 
     fn delete(&mut self, id: ElementId<Id>) {
-        if let Some(index) = self.nodes_by_id.get(&id) {
-            let parent_id = {
-                let node = &mut self.nodes[index.0];
-                node.effect_deleted = true;
-                node.parent_id.clone()
-            };
-
-            let parent = if let Some(parent_id) = parent_id {
-                if let Some(parent_index) = self.nodes_by_id.get(&parent_id) {
-                    &mut self.nodes[parent_index.0]
-                } else {
-                    return;
+        self.visit_node_and_ancestors(
+            id,
+            |node| {
+                if node.effect_deleted {
+                    // already deleted!
+                    return false;
                 }
-            } else {
-                &mut self.root
-            };
+                node.effect_deleted = true;
+                true
+            },
+            |parent| parent.effect_size = parent.effect_size.checked_sub(1).expect("non-zero size"),
+        );
+    }
 
-            parent.effect_size.checked_sub(1).expect("non-zero size");
+    fn prepare_insert(&mut self, id: ElementId<Id>) {
+        // TODO we can reduce some code duplication here
+        if let Some(node_idx) = self.nodes_by_id.get(&id) {
+            let (parent_id, parent_index) = {
+                let node = &mut self.nodes[node_idx.0];
+                match node.prepare_state {
+                    PrepareState::UnInserted => {
+                        node.prepare_state = PrepareState::Inserted;
+                    }
+                    _ => unreachable!("should have an actual error here"),
+                }
+                (node.parent_id.clone(), node.parent_index)
+            };
+            self.visit_ancestors(parent_id.clone(), parent_index, |parent| {
+                parent.prepare_size += 1
+            });
+        } else {
+            unreachable!("this should be an invalid state and an error")
         }
     }
 
-    pub fn iter<F>(&self) -> impl Iterator<Item = &T> {
+    fn prepare_uninsert(&mut self, id: ElementId<Id>) {
+        // TODO we can reduce some code duplication here
+        if let Some(node_idx) = self.nodes_by_id.get(&id) {
+            let (parent_id, parent_index) = {
+                let node = &mut self.nodes[node_idx.0];
+                match node.prepare_state {
+                    PrepareState::Inserted => {
+                        node.prepare_state = PrepareState::UnInserted;
+                    }
+                    _ => unreachable!("should have an actual error here"),
+                }
+                (node.parent_id.clone(), node.parent_index)
+            };
+            self.visit_ancestors(parent_id.clone(), parent_index, |parent| {
+                parent.prepare_size -= 1
+            });
+        } else {
+            unreachable!("this should be an invalid state and an error")
+        }
+    }
+
+    fn prepare_delete(&mut self, id: ElementId<Id>) {
+        self.visit_node_and_ancestors(
+            id,
+            |node| {
+                let delete_count = match node.prepare_state {
+                    PrepareState::Deleted(n) => n,
+                    _ => 0,
+                };
+                node.prepare_state = PrepareState::Deleted(delete_count + 1);
+                delete_count == 1 // only update parents when this is the first tracked delete
+            },
+            |parent| {
+                parent.prepare_size = parent.prepare_size.checked_sub(1).expect("non-zero size")
+            },
+        )
+    }
+
+    fn prepare_undelete(&mut self, id: ElementId<Id>) {
+        self.visit_node_and_ancestors(
+            id,
+            |node| {
+                let delete_count = match node.prepare_state {
+                    PrepareState::Deleted(n) => n,
+                    _ => unreachable!("maybe we should have an actual error here, rather than panicking, but this shouldn't happen"),
+                };
+                if delete_count == 1 {
+                    node.prepare_state = PrepareState::Inserted;
+                    true
+                } else {
+                    node.prepare_state = PrepareState::Deleted(delete_count - 1);
+                    false
+                }
+            },
+            |parent| parent.prepare_size += 1,
+        )
+    }
+
+    fn visit_node_and_ancestors<F, G>(
+        &mut self,
+        id: ElementId<Id>,
+        visit_node: F,
+        visit_ancestor: G,
+    ) where
+        F: Fn(&mut Node<Id, T>) -> bool,
+        G: Fn(&mut Node<Id, T>),
+    {
+        if let Some(index) = self.nodes_by_id.get(&id) {
+            let (parent_id, parent_index) = {
+                let node = &mut self.nodes[index.0];
+                if !visit_node(node) {
+                    return;
+                }
+                (node.parent_id.clone(), node.parent_index)
+            };
+
+            self.visit_ancestors(parent_id, parent_index, visit_ancestor);
+        }
+    }
+
+    fn visit_ancestors<F>(
+        &mut self,
+        mut parent_id: Option<ElementId<Id>>,
+        mut parent_index: Option<NodeIdx>,
+        f: F,
+    ) where
+        F: Fn(&mut Node<Id, T>),
+    {
+        let mut saw_root = false;
+        loop {
+            let parent = match (parent_id, parent_index) {
+                (Some(_), Some(idx)) => &mut self.nodes[idx.0],
+                (None, _) => {
+                    saw_root = true;
+                    &mut self.root
+                }
+                _ => return,
+            };
+
+            f(parent);
+            if saw_root {
+                return;
+            }
+
+            parent_id = parent.parent_id.clone();
+            parent_index = parent.parent_index;
+        }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &T> {
         self.iter_impl(|n| !n.effect_deleted)
+    }
+
+    pub fn iter_prepare(&self) -> impl Iterator<Item = &T> {
+        self.iter_impl(|n| n.prepare_state == PrepareState::Inserted)
     }
 
     fn iter_impl<F>(&self, is_inserted: F) -> impl Iterator<Item = &T>
