@@ -138,9 +138,9 @@ mod tests {
 
     use crate::crypto::RootKey256;
     use crate::log::LogEntry;
-    use crate::log::segment::encode_segment_plaintext;
     use crate::log::segment::join::join_segments;
     use crate::log::segment::tests::TestKeyResolver;
+    use crate::log::segment::{DecodedEntries, SegmentReader, encode_segment_plaintext};
     use crate::log::segment::{encode_segment_opaque, tests::TestCaseData};
     use crate::log::{entries_to_opaque, segment::tests::TestCase};
 
@@ -150,6 +150,8 @@ mod tests {
         let mut key_resolver = TestKeyResolver::new();
         let mut bodies = vec![];
         let mut all_entries = vec![];
+        let mut start_chain = None;
+        let mut end_chain = None;
         for (mut case, opaque) in cases {
             if let Some(last_data) = last_data {
                 // in order to actually make our segments chain, we patch the generated
@@ -212,8 +214,35 @@ mod tests {
                 .unwrap()
             };
             bodies.push(body);
+            if start_chain.is_none() {
+                start_chain = Some(data.prev_chain);
+            }
+            end_chain = Some(data.head_chain);
             last_data = Some(data);
         }
-        let joined = join_segments(&key_resolver, &last_data.unwrap().seed, &bodies).await;
+        let last_data = last_data.unwrap();
+        let joined = join_segments(&key_resolver, &last_data.seed, &bodies)
+            .await
+            .unwrap();
+        assert_eq!(start_chain.unwrap(), joined.prev_chain);
+        assert_eq!(end_chain.unwrap(), joined.chain_hash);
+
+        let reader = SegmentReader::start(&joined.body).unwrap();
+        let decoded = reader
+            .read(&key_resolver, last_data.seed.log_id())
+            .await
+            .unwrap();
+        let verified = decoded
+            .verify(&last_data.verifying_key, &key_resolver)
+            .await
+            .unwrap();
+        match verified.decoded.entries {
+            DecodedEntries::Opaque(_) => unreachable!(),
+            DecodedEntries::Plaintext(items) => {
+                assert_eq!(items, all_entries);
+            }
+        }
+        assert_eq!(verified.head_chain, last_data.head_chain);
+        assert_eq!(verified.head_cipher, last_data.end_cipher);
     }
 }
