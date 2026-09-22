@@ -634,7 +634,7 @@ pub(crate) mod tests {
     use crate::log::{LogHashContext, segment::SegmentReader};
 
     #[derive(Debug, Arbitrary)]
-    enum TestEntry {
+    pub(crate) enum TestEntry {
         #[weight(5)]
         Ops(OpEntry<PlaintextBytes<'static>, Timestamp>),
         #[weight(2)]
