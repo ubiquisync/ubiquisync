@@ -128,10 +128,12 @@ fn domain_len(domain: &str) -> u8 {
         .expect("domain string should have len <= 255")
 }
 
-fn kdf(domain: &str, key: &SecretBox<[u8; 32]>, info: &[u8], output: &mut [u8; 32]) {
-    let len: u8 = domain_len(domain);
+fn kdf(domain: &str, key: &SecretBox<[u8; 32]>, info: &[&[u8]], output: &mut [u8; 32]) {
+    let len: [u8; 1] = [domain_len(domain)];
     let hk = Hkdf::<Sha256>::new(None, key.expose_secret());
-    hk.expand_multi_info(&[&[len], domain.as_bytes(), info], output)
+    let mut multi_info = vec![&len, domain.as_bytes()];
+    multi_info.extend_from_slice(info);
+    hk.expand_multi_info(&multi_info, output)
         .expect("valid lengths");
 }
 
@@ -147,7 +149,7 @@ impl RootKey256 {
 
     pub fn container_key(&self, container_id: &ContainerId) -> ContainerKey256 {
         let key = SecretBox::<[u8; 32]>::init_with_mut(|output| {
-            kdf(KDF_DOMAIN_CONTAINER, &self.key, &container_id.0, output)
+            kdf(KDF_DOMAIN_CONTAINER, &self.key, &[&container_id.0], output)
         });
         ContainerKey256(Arc::new(ContainerKey256Inner {
             root_fingerprint: self.fingerprint,
@@ -309,7 +311,7 @@ impl SegmentCipher {
         kdf(
             KDF_DOMAIN_LOG_SEGMENT,
             &key.0.key,
-            &peer_id.0,
+            &[&[suite.into()], &peer_id.0[..]],
             &mut segment_key,
         );
         let cipher = XChaCha20Poly1305::new((&*segment_key).into());
