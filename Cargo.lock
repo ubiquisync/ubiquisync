@@ -1691,6 +1691,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ubiquisync-crdts"
+version = "0.0.4"
+dependencies = [
+ "ubiquisync-core",
+]
+
+[[package]]
 name = "ubiquisync-postgres"
 version = "0.0.4"
 dependencies = [
