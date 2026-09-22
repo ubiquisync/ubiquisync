@@ -52,7 +52,6 @@ pub async fn join_segments<'a, B: AsRef<[u8]> + 'a>(
         } else {
             // this is the first segment so capture prev_chain and start_cipher
             prev_chain = Some(segment_header.prev_chain);
-            chain_hash = Some(segment_header.prev_chain);
             start_cipher = segment_header.start_cipher;
             // note that we DO NOT set the active cipher to segment_header.start_cipher every time
             // if we did this, we could silently accept whatever cipher the segment claims without
@@ -72,6 +71,7 @@ pub async fn join_segments<'a, B: AsRef<[u8]> + 'a>(
                     items.iter(),
                 )
                 .await?;
+                chain_hash = Some(entries.last().map(|e| e.1).unwrap_or(cur_hash));
                 entries.into_iter().map(|e| e.0).collect()
             }
             DecodedEntries::Plaintext(items) => {
