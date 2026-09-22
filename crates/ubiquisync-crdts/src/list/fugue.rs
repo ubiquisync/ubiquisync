@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use itertools::Itertools;
 use smallvec::{SmallVec, smallvec};
 use thiserror::Error;
 
@@ -85,6 +86,18 @@ enum PrepareState {
     Deleted(u32),
 }
 
+struct InsertPosition<Id> {
+    parent: Option<NodeRef<Id>>,
+    side: Side,
+    right_origin: Option<NodeRef<Id>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum View {
+    Effect,
+    Prepare,
+}
+
 impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> Default for List<Id, T> {
     fn default() -> Self {
         Self {
@@ -123,9 +136,9 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
             right_children: vec![],
             content: Some(content),
             effect_deleted: false,
-            effect_size: 0,
+            effect_size: 1,
             prepare_state: PrepareState::Inserted,
-            prepare_size: 0,
+            prepare_size: 1,
         };
 
         let index = NodeIdx(self.nodes.len());
@@ -143,14 +156,12 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
                     Side::Left => insert_child(&mut node.left_children, pending_id),
                     Side::Right => insert_child(&mut node.right_children, pending_id),
                 }
-                node.effect_size +=
-                    pending_node.effect_size + usize::from(!pending_node.effect_deleted);
-                node.prepare_size += pending_node.prepare_size
-                    + usize::from(pending_node.prepare_state == PrepareState::Inserted);
+                node.effect_size += pending_node.effect_size;
+                node.prepare_size += pending_node.prepare_size;
             }
         }
-        let effect_delta = node.effect_size + 1;
-        let prepare_delta = node.prepare_size + 1;
+        let effect_delta = node.effect_size;
+        let prepare_delta = node.prepare_size;
 
         // add node now that we're done mutating it
         // we can't do it with push_mut earlier, because we need a mutable ref self.node below for parent
@@ -197,9 +208,10 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
                     return Ok(false);
                 }
                 node.effect_deleted = true;
+                node.effect_size = node.effect_size.checked_sub(1).expect("non-zero");
                 Ok(true)
             },
-            |parent| parent.effect_size = parent.effect_size.checked_sub(1).expect("non-zero size"),
+            |parent| parent.effect_size = parent.effect_size.checked_sub(1).expect("non-zero"),
             EffectError::NodeNotFound,
         )
     }
@@ -210,6 +222,7 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
             |node| match node.prepare_state {
                 PrepareState::UnInserted => {
                     node.prepare_state = PrepareState::Inserted;
+                    node.prepare_size += 1;
                     Ok(true)
                 }
                 _ => Err(PrepareError::InvalidState),
@@ -225,6 +238,7 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
             |node| match node.prepare_state {
                 PrepareState::Inserted => {
                     node.prepare_state = PrepareState::UnInserted;
+                    node.prepare_size = node.prepare_size.checked_sub(1).expect("non-zero");
                     Ok(true)
                 }
                 _ => Err(PrepareError::InvalidState),
@@ -244,7 +258,13 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
                     PrepareState::UnInserted => return Err(PrepareError::InvalidState),
                 };
                 node.prepare_state = PrepareState::Deleted(delete_count + 1);
-                Ok(delete_count == 0) // only update parents when this is the first tracked delete
+                if delete_count == 0 {
+                    // only update parents when this is the first tracked delete
+                    node.prepare_size = node.prepare_size.checked_sub(1).expect("non-zero");
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
             },
             |parent| {
                 parent.prepare_size = parent.prepare_size.checked_sub(1).expect("non-zero size")
@@ -263,6 +283,7 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
                 };
                 if delete_count == 1 {
                     node.prepare_state = PrepareState::Inserted;
+                    node.prepare_size += 1;
                     Ok(true)
                 } else {
                     node.prepare_state = PrepareState::Deleted(delete_count - 1);
@@ -272,6 +293,147 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
             |parent| parent.prepare_size += 1,
             PrepareError::NodeNotFound,
         )
+    }
+
+    fn resolve(&self, n: &Option<NodeRef<Id>>) -> &Node<Id, T> {
+        match n {
+            Some(n) => &self.nodes[n.index.0],
+            None => &self.root,
+        }
+    }
+
+    fn find_insert_position(&self, view: View, offset: usize) -> InsertPosition<Id> {
+        let left_origin = self.find_before_offset(view, offset);
+        let right_origin = self.successor(view, &left_origin);
+        if self.resolve(&left_origin).right_children.is_empty() {
+            InsertPosition {
+                parent: left_origin,
+                side: Side::Right,
+                right_origin,
+            }
+        } else {
+            InsertPosition {
+                parent: right_origin,
+                side: Side::Left,
+                right_origin: None,
+            }
+        }
+    }
+
+    /// Finds the node right before the offset position, so for 0, it will return root,
+    /// and 1 will return the first element
+    fn find_before_offset(&self, view: View, offset: usize) -> Option<NodeRef<Id>> {
+        if offset > self.root.size(view) {
+            todo!("out of range")
+        }
+
+        if offset == 0 {
+            // root
+            return None;
+        }
+
+        let mut cur = None;
+        let mut cur_node = &self.root;
+        let mut remaining = offset - 1;
+        'outer: loop {
+            // TODO where to put unreachable's to ensure loop terminates
+            for c in cur_node.left_children.iter() {
+                let node = &self.nodes[c.index.0];
+                let n = node.size(view);
+                if remaining < n {
+                    cur = Some(c.clone());
+                    cur_node = node;
+                    continue 'outer;
+                }
+                remaining -= n;
+            }
+
+            if cur_node.content.is_some() && cur_node.inserted(view) {
+                if remaining == 0 {
+                    return cur;
+                }
+                remaining -= 1;
+            }
+
+            for c in cur_node.right_children.iter() {
+                let node = &self.nodes[c.index.0];
+                let n = node.size(view);
+                if remaining < n {
+                    cur = Some(c.clone());
+                    cur_node = node;
+                    continue 'outer;
+                }
+                remaining -= n;
+            }
+            unreachable!("looped without doing anything")
+        }
+    }
+
+    fn successor(&self, view: View, n: &Option<NodeRef<Id>>) -> Option<NodeRef<Id>> {
+        let Some(n) = n else {
+            return None;
+        };
+
+        let node = &self.nodes[n.index.0];
+        if let Some(right) = node.right_children.first() {
+            Some(self.leftmost(view, right.clone()))
+        } else {
+            self.parent_right_sibling(node, view, n)
+        }
+    }
+
+    fn leftmost(&self, view: View, mut n: NodeRef<Id>) -> NodeRef<Id> {
+        loop {
+            if let Some(child) = self.nodes[n.index.0]
+                .left_children
+                .iter()
+                .find(|c| self.nodes[c.index.0].not_uninserted(view))
+            {
+                n = child.clone();
+            } else {
+                return n.clone();
+            }
+        }
+    }
+
+    fn parent_right_sibling(
+        &self,
+        node: &Node<Id, T>,
+        view: View,
+        id: &NodeRef<Id>,
+    ) -> Option<NodeRef<Id>> {
+        if node.content.is_none() {
+            // already at root
+            return None;
+        }
+        let parent = match (&node.parent_id, node.parent_index) {
+            (Some(_), Some(idx)) => &self.nodes[idx.0],
+            (None, None) => &self.root,
+            (None, Some(_)) => unreachable!(),
+            (Some(_), None) => unreachable!(),
+        };
+        self.right_sibling(&parent.left_children, view, id)
+            .or(self.right_sibling(&parent.right_children, view, id))
+    }
+
+    fn right_sibling(
+        &self,
+        children: &[NodeRef<Id>],
+        view: View,
+        id: &NodeRef<Id>,
+    ) -> Option<NodeRef<Id>> {
+        children
+            .iter()
+            .filter(|c| self.nodes[c.index.0].not_uninserted(view))
+            .tuple_windows()
+            .filter_map(|(l, sib)| {
+                if l.id == id.id {
+                    Some(sib.clone())
+                } else {
+                    None
+                }
+            })
+            .next()
     }
 
     fn visit_node_and_ancestors<F, G, Err>(
@@ -313,12 +475,17 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
         loop {
             let parent = match (parent_id, parent_index) {
                 (Some(_), Some(idx)) => &mut self.nodes[idx.0],
-                (None, _) => {
+                (None, None) => {
                     saw_root = true;
                     &mut self.root
                 }
-                // TODO should we have errors in this case, it shouldn't really happen i think
-                _ => unreachable!(),
+                (Some(_), None) => {
+                    // this is okay, we just have hit a pending parent state which will be addressed when the parent is inserted
+                    return;
+                }
+                (None, Some(_)) => {
+                    unreachable!("there should never be an index set for an empty parent (root)")
+                }
             };
 
             f(parent);
@@ -388,12 +555,33 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
     }
 }
 
-impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> Node<Id, T> {}
-
 fn insert_child<Id: PartialEq + PartialOrd + Eq + Ord>(
     children: &mut Vec<NodeRef<Id>>,
     id: NodeRef<Id>,
 ) {
     children.push(id);
     children.sort_by(|a, b| a.id.cmp(&b.id));
+}
+
+impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> Node<Id, T> {
+    fn size(&self, view: View) -> usize {
+        match view {
+            View::Effect => self.effect_size,
+            View::Prepare => self.prepare_size,
+        }
+    }
+
+    fn inserted(&self, view: View) -> bool {
+        match view {
+            View::Effect => !self.effect_deleted,
+            View::Prepare => self.prepare_state == PrepareState::Inserted,
+        }
+    }
+
+    fn not_uninserted(&self, view: View) -> bool {
+        match view {
+            View::Effect => true,
+            View::Prepare => self.prepare_state != PrepareState::UnInserted,
+        }
+    }
 }

@@ -42,6 +42,7 @@ tokio = {version = "1.53.1", features = ["sync", "rt-multi-thread"]}
 backon = "1.6.0"
 tracing = "0.1.44"
 smallvec = "1.16.1"
+itertools = "0.15.0"
 
 # macros
 async-trait = "0.1.89"
