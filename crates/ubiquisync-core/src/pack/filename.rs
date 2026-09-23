@@ -3,7 +3,10 @@ use std::{
     fmt::Display,
     ops::Range,
     path::PathBuf,
+    str::FromStr,
 };
+
+use thiserror::Error;
 
 use crate::ids::PeerId;
 
@@ -15,18 +18,18 @@ use crate::{
 pub struct PackFileDescriptor {
     pub topic: PathBuf,
     pub peer_id: PeerId,
-    pub name: PackFileName,
+    pub name: PackFileId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
-pub struct PackFileName {
+pub struct PackFileId {
     pub seqs: Range<u64>,
     pub id: u64,
     pub generation: u64,
 }
 
-impl PackFileName {
+impl PackFileId {
     pub fn get_ref(&self) -> PackRef {
         PackRef {
             id: self.id,
@@ -54,7 +57,7 @@ impl PackFileName {
     }
 }
 
-impl Display for PackFileName {
+impl Display for PackFileId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -64,13 +67,42 @@ impl Display for PackFileName {
     }
 }
 
+#[derive(Debug, Error)]
+#[error("error parsing filename")]
+pub struct ParseFileNameError;
+
+impl FromStr for PackFileId {
+    type Err = ParseFileNameError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut parts = s.split("-");
+        let mut parse_part = || {
+            parts
+                .next()
+                .and_then(|p| u64::from_str_radix(p, 16).ok())
+                .ok_or(ParseFileNameError)
+        };
+
+        let start = parse_part()?;
+        let end = parse_part()?;
+        let id = parse_part()?;
+        let generation = parse_part()?;
+
+        Ok(Self {
+            seqs: start..end,
+            id,
+            generation,
+        })
+    }
+}
+
 /// Dedupes files and chooses the latest valid generation of a pack.
 /// NOTE: if a generation file is corrupted garbage we could inspect
 /// earlier generations at read time, but if this happens in a shared folder
 /// there are bigger problems (noting this here so that reviewers don't keep
 /// flagging a thread that doesn't match the threat model).
-pub fn dedupe_pack_files(files: &[PackFileName]) -> Vec<PackFileName> {
-    let mut files_by_ref = HashMap::<PackRef, PackFileName>::new();
+pub fn dedupe_pack_files(files: &[PackFileId]) -> Vec<PackFileId> {
+    let mut files_by_ref = HashMap::<PackRef, PackFileId>::new();
     for f in files.iter() {
         match files_by_ref.entry(f.get_ref()) {
             Entry::Occupied(mut e) => {
@@ -88,20 +120,27 @@ pub fn dedupe_pack_files(files: &[PackFileName]) -> Vec<PackFileName> {
 
 #[cfg(test)]
 mod tests {
-    use std::ops::Range;
+    use std::{ops::Range, str::FromStr};
 
     use test_case::test_case;
+    use test_strategy::proptest;
 
-    use crate::pack::PackFileName;
+    use crate::pack::PackFileId;
 
     #[test_case(0..1, 0xabcdef, 0 => "0000-0001-0000000000abcdef-00")]
     #[test_case(0xffff..0xa0000, 0x12345, 0x100 => "ffff-a0000-0000000000012345-100")]
-    fn pack_file_name_display(seqs: Range<u64>, id: u64, generation: u64) -> String {
-        PackFileName {
+    fn pack_file_id_display(seqs: Range<u64>, id: u64, generation: u64) -> String {
+        PackFileId {
             seqs,
             id,
             generation,
         }
         .to_string()
+    }
+
+    #[proptest]
+    fn pack_file_id_roundtrips(id: PackFileId) {
+        let parsed = PackFileId::from_str(&id.to_string()).unwrap();
+        assert_eq!(id, parsed);
     }
 }

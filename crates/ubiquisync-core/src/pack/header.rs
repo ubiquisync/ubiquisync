@@ -6,7 +6,7 @@ use crate::{
     ids::{ContainerId, PeerId},
 };
 
-use crate::pack::PackFileName;
+use crate::pack::PackFileId;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
@@ -44,7 +44,7 @@ pub struct PeerData {
     /// two packs into the PackRef we're targetting - we
     /// need to know _which_ actual file range/generation
     /// we're targetting.
-    pub supersedes: Vec<PackFileName>,
+    pub supersedes: Vec<PackFileId>,
     pub segments: Vec<SegmentDescriptor>,
 }
 
@@ -108,7 +108,7 @@ impl PeerData {
     pub fn decode(r: &mut Reader) -> Result<Self, ReadError> {
         let peer_id = PeerId(r.read_array()?);
         let segments = r.read_vec(|r| SegmentDescriptor::decode(r))?;
-        let supersedes = r.read_vec(|r| PackFileName::decode(r))?;
+        let supersedes = r.read_vec(|r| PackFileId::decode(r))?;
 
         Ok(Self {
             peer_id,
