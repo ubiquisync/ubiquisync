@@ -4,7 +4,7 @@ use thiserror::Error;
 
 use crate::{
     codec::{ReadError, Reader, WriteError, Writer},
-    crypto::{CryptoDecodeError, Hash256, Signature, SignatureVerifyError, VerifyingKey},
+    crypto::{CryptoDecodeError, Hash256, Signature, SignatureVerifyError},
     ids::{ContainerId, PeerId},
 };
 
@@ -86,18 +86,13 @@ const PACK_HEADER_VERSION: u8 = 0;
 
 impl PackHeader {
     pub fn encode(&self, w: &mut Writer) -> Result<(), WriteError> {
-        self.encode_sign_bytes(w)?;
-        self.signature.encode(w);
-        Ok(())
-    }
-
-    fn encode_sign_bytes(&self, w: &mut Writer) -> Result<(), WriteError> {
         w.write_byte(PACK_HEADER_VERSION); // version byte
         w.write_vec(&self.parents, |w, x| x.encode(w))?;
         w.write_vec(&self.self_supersedes, |w, x| x.encode(w))?;
         w.write_vec(&self.self_segments, |w, x| x.encode(w))?;
         w.write_vec(&self.peer_data, |w, x| x.encode(w))?;
         w.write_array(&self.body_sha256);
+        self.signature.encode(w);
         Ok(())
     }
 
@@ -129,14 +124,6 @@ impl PackHeader {
             body_sha256,
             signature,
         })
-    }
-
-    pub fn verify(&self, verifying_key: &VerifyingKey) -> Result<(), PackHeaderVerifyError> {
-        let mut w = Writer::new();
-        self.encode_sign_bytes(&mut w)?;
-        let msg = w.finalize();
-        verifying_key.verify_signature(&msg, &self.signature)?;
-        Ok(())
     }
 }
 
