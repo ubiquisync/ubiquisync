@@ -1,6 +1,9 @@
 use itertools::Itertools;
 
-use crate::list::fugue::{Insert, InsertPosition, List, Node, NodeRef, Op, Side, View};
+use crate::{
+    list::fugue::{Delete, Insert, InsertPosition, List, Node, NodeRef, Side},
+    walker::View,
+};
 
 impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id, T> {
     pub fn create_insert(&self, view: View, offset: usize, content: Vec<T>) -> Insert<Id, T> {
@@ -13,11 +16,11 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
         }
     }
 
-    pub fn create_deletes(&self, view: View, offset: usize, count: usize) -> Vec<Op<Id, T>> {
+    pub fn create_delete(&self, view: View, offset: usize, count: usize) -> Vec<Delete<Id>> {
         let mut deletes = vec![];
         for i in 0..count {
             if let Some(node_ref) = self.find_before_offset(view, offset + i + 1) {
-                deletes.push(Op::Delete {
+                deletes.push(Delete {
                     id: node_ref.id.clone(),
                     count: 1,
                 });

@@ -1,24 +1,23 @@
-use std::ops::AddAssign;
-
 use crate::list::fugue::{
-    EffectError, ElementId, Insert, List, Node, NodeIdx, NodeRef, Op, PrepareError, PrepareState,
-    Side,
+    Delete, EffectError, ElementId, Insert, List, Node, NodeIdx, NodeRef, Op, PrepareError,
+    PrepareOp, PrepareState, Side,
 };
 
 impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id, T> {
-    pub fn apply_op(&mut self, op: Op<Id, T>) -> Result<(), EffectError> {
+    pub fn apply_op(
+        &mut self,
+        mut id: ElementId<Id>,
+        op: Op<Id, T>,
+    ) -> Result<PrepareOp<Id>, EffectError> {
         match op {
-            Op::Insert {
-                mut id,
-                insert:
-                    Insert {
-                        mut parent_id,
-                        mut side,
-                        // TODO FugueMax
-                        right_origin: _,
-                        content,
-                    },
-            } => {
+            Op::Insert(Insert {
+                mut parent_id,
+                mut side,
+                // TODO FugueMax
+                right_origin: _,
+                content,
+            }) => {
+                let len = content.len();
                 for c in content {
                     self.insert(id.clone(), parent_id, side, c);
                     parent_id = Some(id.clone());
@@ -28,54 +27,62 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
                     };
                     side = Side::Right;
                 }
+                Ok(PrepareOp::Insert {
+                    id,
+                    count: len as u64,
+                })
             }
-            Op::Delete { mut id, count } => {
-                for _ in 0..count {
-                    self.delete(id.clone())?;
-                    id.index += 1;
+            Op::Delete(deletes) => {
+                for Delete { id, count } in deletes.iter() {
+                    let mut id = id.clone();
+                    for _ in 0..*count {
+                        self.delete(id.clone())?;
+                        id.index += 1;
+                    }
                 }
+                Ok(PrepareOp::Delete(deletes))
             }
         }
-        Ok(())
     }
 
-    pub fn prepare_advance(&mut self, op: Op<Id, T>) -> Result<(), PrepareError> {
+    pub fn prepare_advance(&mut self, op: &PrepareOp<Id>) -> Result<(), PrepareError> {
         match op {
-            Op::Insert {
-                mut id,
-                insert: Insert { content, .. },
-            } => {
-                for _ in content {
+            PrepareOp::Insert { id, count } => {
+                let mut id = id.clone();
+                for _ in 0..*count {
                     self.prepare_insert(id.clone())?;
                     id.index += 1;
                 }
             }
-            Op::Delete { mut id, count } => {
-                for _ in 0..count {
-                    self.prepare_delete(id.clone())?;
-                    id.index += 1;
+            PrepareOp::Delete(deletes) => {
+                for Delete { id, count } in deletes {
+                    let mut id = id.clone();
+                    for _ in 0..*count {
+                        self.prepare_delete(id.clone())?;
+                        id.index += 1;
+                    }
                 }
             }
         }
         Ok(())
     }
 
-    pub fn prepare_retract(&mut self, op: Op<Id, T>) -> Result<(), PrepareError> {
+    pub fn prepare_retract(&mut self, op: &PrepareOp<Id>) -> Result<(), PrepareError> {
         match op {
-            Op::Insert {
-                mut id,
-                insert: Insert { content, .. },
-                ..
-            } => {
-                for _ in content {
+            PrepareOp::Insert { id, count } => {
+                let mut id = id.clone();
+                for _ in 0..*count {
                     self.prepare_uninsert(id.clone())?;
                     id.index += 1;
                 }
             }
-            Op::Delete { mut id, count } => {
-                for _ in 0..count {
-                    self.prepare_undelete(id.clone())?;
-                    id.index += 1;
+            PrepareOp::Delete(deletes) => {
+                for Delete { id, count } in deletes {
+                    let mut id = id.clone();
+                    for _ in 0..*count {
+                        self.prepare_undelete(id.clone())?;
+                        id.index += 1;
+                    }
                 }
             }
         }

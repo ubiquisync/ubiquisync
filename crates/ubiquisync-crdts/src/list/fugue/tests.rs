@@ -4,6 +4,8 @@ use rand::{
     rngs::ChaCha20Rng,
 };
 
+use crate::walker::View;
+
 use super::*;
 
 #[test]
@@ -59,7 +61,7 @@ fn sim_list(mut rng: impl Rng) {
                 string.remove(offset);
             }
 
-            list.create_deletes(View::Effect, offset, count)
+            list.create_delete(View::Effect, offset, count)
         };
 
         for op in ops {

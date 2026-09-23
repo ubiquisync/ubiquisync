@@ -3,7 +3,7 @@ use ubiquisync_core::{
     crypto::NullCipherKeyResolver,
     ids::LogId,
     log::{
-        ChainHash, EntryBody, LogHashContext, OpEntry, PlaintextLogEntry,
+        ChainHash, EntryBody, EntryId, LogHashContext, OpEntry, PlaintextLogEntry,
         segment::encode_segment_plaintext,
     },
     uuid::Uuid,
@@ -144,6 +144,12 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
         )?;
 
         if commit_err.is_none() {
+            let origin = EntryId {
+                log: log_id,
+                head: next_chain_head,
+                parent: chain_head.hash,
+            };
+
             // TODO does prepare indicate stall conditions?
             // somewhere in here maybe prepare, for ctl ops
             // we need to enrich them with observe & key wrap ops when needed
@@ -151,7 +157,7 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
             // log from another peer
             let read_state = self
                 .reducer
-                .prepare(self.db.as_ref(), &op)
+                .prepare(self.db.as_ref(), &origin, &op)
                 .await
                 .map_err(|e| ExecError::Reducer(Box::new(e)))?;
 
@@ -175,7 +181,7 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
 
             let apply_state = self
                 .reducer
-                .apply(batch.as_mut(), timestamp, &op, read_state)
+                .apply(batch.as_mut(), timestamp, &origin, &op, read_state)
                 .map_err(|e| ExecError::Reducer(Box::new(e)))?;
 
             let batch_result = batch.commit().await?;

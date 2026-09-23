@@ -13,3 +13,13 @@ pub use error::*;
 pub use hash::*;
 pub use ops::*;
 pub use verify::*;
+
+use crate::{crypto::Hash256, ids::LogId};
+
+/// Precisely defines a log entry including the hash of its parent entry
+/// for precise placement into a graph of entries.
+pub struct EntryId {
+    pub log: LogId,
+    pub head: ChainHash,
+    pub parent: Hash256,
+}

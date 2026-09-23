@@ -8,24 +8,38 @@ use std::collections::{HashMap, HashSet};
 
 use thiserror::Error;
 
+use crate::walker::{View, Walkable};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LogicalOp<T> {
+    Insert { offset: u64, content: Vec<T> },
+    Delete { offset: u64, count: u64 },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Op<Id, T> {
-    Insert {
-        id: ElementId<Id>,
-        insert: Insert<Id, T>,
-    },
-    Delete {
-        id: ElementId<Id>,
-        count: u32,
-    },
+    Insert(Insert<Id, T>),
+    Delete(Vec<Delete<Id>>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Insert<Id, T> {
-    pub parent_id: Option<ElementId<Id>>,
-    pub side: Side,
-    pub right_origin: Option<ElementId<Id>>,
-    pub content: Vec<T>,
+    parent_id: Option<ElementId<Id>>,
+    side: Side,
+    right_origin: Option<ElementId<Id>>,
+    content: Vec<T>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Delete<Id> {
+    id: ElementId<Id>,
+    count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrepareOp<Id> {
+    Insert { id: ElementId<Id>, count: u64 },
+    Delete(Vec<Delete<Id>>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -105,12 +119,6 @@ struct InsertPosition<Id> {
     right_origin: Option<NodeRef<Id>>,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum View {
-    Effect,
-    Prepare,
-}
-
 impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> Default for List<Id, T> {
     fn default() -> Self {
         Self {
@@ -163,5 +171,54 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> Node<Id
             View::Effect => true,
             View::Prepare => self.prepare_state != PrepareState::UnInserted,
         }
+    }
+}
+
+impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> Walkable<ElementId<Id>>
+    for List<Id, T>
+{
+    type LogicalOp = LogicalOp<T>;
+
+    type PhysicalOp = Op<Id, T>;
+
+    type PrepareOp = PrepareOp<Id>;
+
+    type LogicalOpErr = ();
+
+    type EffectErr = EffectError;
+
+    type PrepareErr = PrepareError;
+
+    fn logical_to_physical(
+        &self,
+        view: View,
+        op: Self::LogicalOp,
+    ) -> Result<Self::PhysicalOp, Self::LogicalOpErr> {
+        Ok(match op {
+            LogicalOp::Insert { offset, content } => {
+                // TODO safely convert size, could come from wire
+                Op::Insert(self.create_insert(view, offset as usize, content))
+            }
+            LogicalOp::Delete { offset, count } => {
+                // TODO safely convert size, could come from wire
+                Op::Delete(self.create_delete(view, offset as usize, count as usize))
+            }
+        })
+    }
+
+    fn apply(
+        &mut self,
+        id: ElementId<Id>,
+        op: Self::PhysicalOp,
+    ) -> Result<Self::PrepareOp, Self::EffectErr> {
+        self.apply_op(id, op)
+    }
+
+    fn prepare_advance(&mut self, op: &Self::PrepareOp) -> Result<(), Self::PrepareErr> {
+        self.prepare_advance(op)
+    }
+
+    fn prepare_retract(&mut self, op: &Self::PrepareOp) -> Result<(), Self::PrepareErr> {
+        self.prepare_retract(op)
     }
 }
