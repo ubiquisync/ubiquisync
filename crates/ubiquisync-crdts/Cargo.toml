@@ -15,7 +15,7 @@ itertools = {workspace = true}
 proptest = { workspace = true }
 test-strategy = { workspace = true }
 test-case = { workspace = true }
-rand = { workspace = true }
+rand = { workspace = true, features=["chacha"] }
 
 [lints]
 workspace = true
