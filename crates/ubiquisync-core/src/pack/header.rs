@@ -1,5 +1,7 @@
 use std::ops::Range;
 
+use thiserror::Error;
+
 use crate::{
     codec::{ReadError, Reader, WriteError, Writer},
     crypto::Hash256,
@@ -58,8 +60,17 @@ pub struct SegmentDescriptor {
     pub body_loc: Range<u64>,
 }
 
+#[derive(Error, Debug)]
+pub enum PackHeaderDecodeError {
+    #[error("read error")]
+    Read(#[from] ReadError),
+    #[error("unknown version {0}")]
+    UnknownVersion(u8),
+}
+
 impl PackHeader {
     pub fn encode(&self, w: &mut Writer) -> Result<(), WriteError> {
+        w.write_byte(0); // version byte
         w.write_vec(&self.parents, |w, x| x.encode(w))?;
         w.write_vec(&self.self_supersedes, |w, x| x.encode(w))?;
         w.write_vec(&self.self_segments, |w, x| x.encode(w))?;
@@ -67,7 +78,11 @@ impl PackHeader {
         Ok(())
     }
 
-    pub fn decode(r: &mut Reader) -> Result<Self, ReadError> {
+    pub fn decode(r: &mut Reader) -> Result<Self, PackHeaderDecodeError> {
+        let version = r.read_byte()?;
+        if version != 0 {
+            return Err(PackHeaderDecodeError::UnknownVersion(version));
+        }
         let parents = r.read_vec(|r| PackRef::decode(r))?;
         let self_supersedes = r.read_vec(|r| PackRef::decode(r))?;
         let self_segments = r.read_vec(|r| SegmentDescriptor::decode(r))?;

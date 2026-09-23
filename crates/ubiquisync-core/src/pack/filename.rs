@@ -75,7 +75,7 @@ impl FromStr for PackFileId {
     type Err = ParseFileNameError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut parts = s.split("-");
+        let mut parts = s.split('-');
         let mut parse_part = || {
             parts
                 .next()
@@ -88,11 +88,24 @@ impl FromStr for PackFileId {
         let id = parse_part()?;
         let generation = parse_part()?;
 
-        Ok(Self {
+        // ensure no trailing chars and range is valid
+        if parts.next().is_some() || start >= end {
+            return Err(ParseFileNameError);
+        }
+
+        let id = Self {
             seqs: start..end,
             id,
             generation,
-        })
+        };
+
+        // ensure canonincal form
+        // this matters for roundtripping ID's to real file names for GC
+        if id.to_string() != s {
+            return Err(ParseFileNameError);
+        }
+
+        Ok(id)
     }
 }
 
