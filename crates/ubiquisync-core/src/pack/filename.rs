@@ -5,9 +5,12 @@ use std::{
     path::PathBuf,
 };
 
-use ubiquisync_core::ids::PeerId;
+use crate::ids::PeerId;
 
-use crate::pack::PackRef;
+use crate::{
+    codec::{ReadError, Reader, WriteError, Writer},
+    pack::PackRef,
+};
 
 pub struct PackFileDescriptor {
     pub topic: PathBuf,
@@ -16,6 +19,7 @@ pub struct PackFileDescriptor {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
 pub struct PackFileName {
     pub seqs: Range<u64>,
     pub id: u64,
@@ -28,6 +32,25 @@ impl PackFileName {
             id: self.id,
             end_seq: self.seqs.end,
         }
+    }
+
+    pub fn encode(&self, w: &mut Writer) -> Result<(), WriteError> {
+        w.write_range(&self.seqs)?;
+        // fixed length because id is random
+        w.write_le_u64(self.id);
+        w.write_var_u64(self.generation);
+        Ok(())
+    }
+
+    pub fn decode(r: &mut Reader) -> Result<Self, ReadError> {
+        let seqs = r.read_range()?;
+        let id = r.read_le_u64()?;
+        let generation = r.read_var_u64()?;
+        Ok(Self {
+            seqs,
+            id,
+            generation,
+        })
     }
 }
 

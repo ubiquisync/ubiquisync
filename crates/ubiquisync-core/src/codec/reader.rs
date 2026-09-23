@@ -104,6 +104,20 @@ impl<'a> Reader<'a> {
         }
     }
 
+    pub fn read_vec<T, F, E>(&mut self, mut decode: F) -> Result<Vec<T>, E>
+    where
+        F: FnMut(&mut Self) -> Result<T, E>,
+        E: From<ReadError>,
+    {
+        let n = self.read_var_usize()?;
+        // NOTE: DO NOT pre-allocate the vec, input could be untrusted and cause OOM
+        let mut res = vec![];
+        for _ in 0..n {
+            res.push(decode(self)?);
+        }
+        Ok(res)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.buf.is_empty()
     }

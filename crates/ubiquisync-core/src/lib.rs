@@ -26,4 +26,5 @@ pub mod hlc;
 pub mod ids;
 pub mod init;
 pub mod log;
+pub mod pack;
 pub mod uuid;
