@@ -22,7 +22,7 @@ use std::sync::Arc;
 use tokio::sync::{OwnedRwLockReadGuard, RwLock};
 use ubiquisync_core::event::{EventBusPublisher, Publisher};
 use ubiquisync_core::ids::ContainerId;
-use ubiquisync_core::log::EntryId;
+use ubiquisync_core::log::EntryOrigin;
 use ubiquisync_sql::{
     db::{Db, DbBatch, DbStatementResult, StmtId},
     op::OpCodec,
@@ -103,7 +103,7 @@ impl ubiquisync_sql::reducer::Reducer for Reducer {
     async fn prepare(
         &self,
         db: &dyn Db,
-        _: &EntryId,
+        _: &EntryOrigin,
         op: &Op,
     ) -> Result<Self::ReadState, Self::Error> {
         // Reject malformed ops before touching the schema or building any SQL.
@@ -124,7 +124,7 @@ impl ubiquisync_sql::reducer::Reducer for Reducer {
         &self,
         batch: &mut dyn DbBatch,
         timestamp: ubiquisync_core::hlc::Timestamp,
-        _: &EntryId,
+        _: &EntryOrigin,
         op: &Op,
         read_state: Self::ReadState,
     ) -> Result<ApplyState, Self::Error> {

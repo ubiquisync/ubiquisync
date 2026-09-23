@@ -3,7 +3,7 @@ use ubiquisync_core::{
     crypto::NullCipherKeyResolver,
     ids::LogId,
     log::{
-        ChainHash, EntryBody, EntryId, LogHashContext, OpEntry, PlaintextLogEntry,
+        ChainHash, EntryBody, EntryOrigin, LogHashContext, OpEntry, PlaintextLogEntry,
         segment::encode_segment_plaintext,
     },
     uuid::Uuid,
@@ -144,7 +144,7 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
         )?;
 
         if commit_err.is_none() {
-            let origin = EntryId {
+            let origin = EntryOrigin {
                 log: log_id,
                 head: next_chain_head,
                 parent: chain_head.hash,

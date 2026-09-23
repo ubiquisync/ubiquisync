@@ -1,7 +1,7 @@
 //! Op → SQL translation: the [`Reducer`] trait a data domain implements to turn
 //! each of its ops into the backend writes that materialize it.
 
-use ubiquisync_core::{hlc::Timestamp, log::EntryId};
+use ubiquisync_core::{hlc::Timestamp, log::EntryOrigin};
 
 use crate::{
     db::{Db, DbBatch, DbStatementResult},
@@ -43,7 +43,7 @@ pub trait Reducer: Send + Sync {
     async fn prepare(
         &self,
         db: &dyn Db,
-        origin: &EntryId,
+        origin: &EntryOrigin,
         op: &Self::Op,
     ) -> Result<Self::ReadState, Self::Error>;
 
@@ -55,7 +55,7 @@ pub trait Reducer: Send + Sync {
         &self,
         batch: &mut dyn DbBatch,
         timestamp: Timestamp,
-        origin: &EntryId,
+        origin: &EntryOrigin,
         op: &Self::Op,
         read: Self::ReadState,
     ) -> Result<Self::ApplyState, Self::Error>;
@@ -71,5 +71,5 @@ pub trait Reducer: Send + Sync {
 
     /// Notifies the reducer that some other entry (currently the only such entry is `UseKey`)
     /// occurred so that it can advance any internal entry tracking (used by in-memory CRDTs).
-    fn observe_other_entry(&self, _: &EntryId) {}
+    fn observe_other_entry(&self, _: &EntryOrigin) {}
 }

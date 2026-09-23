@@ -8,7 +8,10 @@ use std::collections::{HashMap, HashSet};
 
 use thiserror::Error;
 
-use crate::walker::{View, Walkable};
+use crate::{
+    id::ElementId,
+    walker::{CountableOp, View, Walkable},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LogicalOp<T> {
@@ -40,12 +43,6 @@ pub struct Delete<Id> {
 pub enum PrepareOp<Id> {
     Insert { id: ElementId<Id>, count: u64 },
     Delete(Vec<Delete<Id>>),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ElementId<Id> {
-    pub op_id: Id,
-    pub index: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,7 +171,7 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> Node<Id
     }
 }
 
-impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> Walkable<ElementId<Id>>
+impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> Walkable<Id>
     for List<Id, T>
 {
     type LogicalOp = LogicalOp<T>;
@@ -220,5 +217,23 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> Walkabl
 
     fn prepare_retract(&mut self, op: &Self::PrepareOp) -> Result<(), Self::PrepareErr> {
         self.prepare_retract(op)
+    }
+}
+
+impl<T> CountableOp for LogicalOp<T> {
+    fn num_elements(&self) -> u64 {
+        match self {
+            LogicalOp::Insert { content, .. } => content.len() as u64,
+            LogicalOp::Delete { .. } => 0,
+        }
+    }
+}
+
+impl<Id, T> CountableOp for Op<Id, T> {
+    fn num_elements(&self) -> u64 {
+        match self {
+            Op::Insert(Insert { content, .. }) => content.len() as u64,
+            Op::Delete(_) => 0,
+        }
     }
 }
