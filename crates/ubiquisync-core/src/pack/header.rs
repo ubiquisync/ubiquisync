@@ -2,13 +2,14 @@ use std::ops::Range;
 
 use thiserror::Error;
 
+use crate::crypto::{SignatureVerifyError, SigningError};
+use crate::pack::PackFileId;
 use crate::{
     codec::{ReadError, Reader, WriteError, Writer},
-    crypto::{CryptoDecodeError, Hash256, Signature},
+    crypto::{CryptoDecodeError, Hash256, Signature, VerifyingKey, new_tagged_hasher},
     ids::{ContainerId, PeerId},
+    pack::PackFileDescriptor,
 };
-
-use crate::pack::PackFileId;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
@@ -28,6 +29,10 @@ pub struct PackHeader {
     pub self_segments: Vec<SegmentDescriptor>,
     pub peer_data: Vec<PeerData>,
     pub body_sha256: Hash256,
+}
+
+pub struct SignedPackHeader {
+    pub header: PackHeader,
     pub signature: Signature,
 }
 
@@ -84,7 +89,6 @@ impl PackHeader {
         w.write_vec(&self.self_segments, |w, x| x.encode(w))?;
         w.write_vec(&self.peer_data, |w, x| x.encode(w))?;
         w.write_array(&self.body_sha256);
-        self.signature.encode(w);
         Ok(())
     }
 
@@ -99,12 +103,6 @@ impl PackHeader {
         let self_segments = r.read_vec(|r| SegmentDescriptor::decode(r))?;
         let peer_data = r.read_vec(|r| PeerData::decode(r))?;
         let body_sha256 = r.read_array()?;
-        let signature = Signature::decode(&mut r).map_err(|e| match e {
-            CryptoDecodeError::ReadError(e) => PackHeaderDecodeError::Read(e),
-            CryptoDecodeError::UnknownAlgorithm(b) => {
-                PackHeaderDecodeError::UnknownSignatureType(b)
-            }
-        })?;
         if !r.is_empty() {
             return Err(PackHeaderDecodeError::TrailingBytes);
         }
@@ -114,9 +112,80 @@ impl PackHeader {
             self_segments,
             peer_data,
             body_sha256,
+        })
+    }
+
+    pub fn sign_bytes(&self, file_desc: &PackFileDescriptor) -> Result<Hash256, WriteError> {
+        let mut hasher = new_tagged_hasher(crate::crypto::TaggedHashDomain::PackHeader);
+        file_desc.hash(&mut hasher)?;
+        let mut w = Writer::new();
+        self.encode(&mut w)?;
+        let header_bytes = w.finalize();
+        hasher.update_len_prefixed(&header_bytes);
+        Ok(hasher.finalize())
+    }
+
+    pub fn sign(
+        &self,
+        signing_key: &dyn crate::crypto::SigningKey,
+        file_desc: &PackFileDescriptor,
+    ) -> Result<SignedPackHeader, PackSignError> {
+        let sig_bytes = self.sign_bytes(file_desc)?;
+        let signature = signing_key.sign(&sig_bytes)?;
+        Ok(SignedPackHeader {
+            header: self.clone(),
             signature,
         })
     }
+}
+
+impl SignedPackHeader {
+    pub fn encode(&self, w: &mut Writer) -> Result<(), WriteError> {
+        self.header.encode(w)?;
+        self.signature.encode(w);
+        Ok(())
+    }
+
+    pub fn decode(buf: &[u8]) -> Result<Self, PackHeaderDecodeError> {
+        let mut r = Reader::new(buf);
+        let header = PackHeader::decode(buf)?;
+        let signature = Signature::decode(&mut r).map_err(|e| match e {
+            CryptoDecodeError::ReadError(e) => PackHeaderDecodeError::Read(e),
+            CryptoDecodeError::UnknownAlgorithm(b) => {
+                PackHeaderDecodeError::UnknownSignatureType(b)
+            }
+        })?;
+        if !r.is_empty() {
+            return Err(PackHeaderDecodeError::TrailingBytes);
+        }
+        Ok(Self { header, signature })
+    }
+
+    pub fn verify(
+        &self,
+        key: &VerifyingKey,
+        file_desc: &PackFileDescriptor,
+    ) -> Result<(), PackVerifyError> {
+        let sig_bytes = self.header.sign_bytes(file_desc)?;
+        key.verify_signature(&sig_bytes, &self.signature)?;
+        Ok(())
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum PackVerifyError {
+    #[error("error encoding header: {0}")]
+    Encode(#[from] WriteError),
+    #[error("signature verification failed: {0}")]
+    Signature(#[from] SignatureVerifyError),
+}
+
+#[derive(Error, Debug)]
+pub enum PackSignError {
+    #[error("error encoding header: {0}")]
+    Encode(#[from] WriteError),
+    #[error("error signing header: {0}")]
+    Sign(#[from] SigningError),
 }
 
 impl PackRef {

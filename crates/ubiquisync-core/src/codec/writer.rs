@@ -35,6 +35,10 @@ impl Writer {
         self.write_slice(bytes);
     }
 
+    pub fn write_str(&mut self, str: &str) {
+        self.write_len_prefixed(str.as_bytes());
+    }
+
     pub fn write_vec<T, F, Err>(&mut self, v: &[T], mut f: F) -> Result<(), Err>
     where
         F: FnMut(&mut Self, &T) -> Result<(), Err>,
@@ -95,6 +99,14 @@ impl Writer {
         } else {
             self.write_byte(0);
         }
+    }
+
+    pub fn len(&self) -> usize {
+        self.buf.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.buf.is_empty()
     }
 
     pub fn finalize(self) -> Vec<u8> {

@@ -30,6 +30,8 @@ pub enum TaggedHashDomain {
     LogSign,
     LogOp,
     LogUseKey,
+    PackBody,
+    PackHeader,
 }
 
 impl Hash256Suite {
