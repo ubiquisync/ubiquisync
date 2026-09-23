@@ -1,6 +1,8 @@
 mod iter;
 mod locate;
 mod ops;
+#[cfg(test)]
+mod tests;
 
 use std::collections::HashMap;
 
@@ -9,15 +11,21 @@ use thiserror::Error;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Op<Id, T> {
     Insert {
-        parent_id: Option<ElementId<Id>>,
-        side: Side,
-        right_origin: Option<ElementId<Id>>,
-        content: Vec<T>,
+        id: ElementId<Id>,
+        insert: Insert<Id, T>,
     },
     Delete {
         id: ElementId<Id>,
         count: u32,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Insert<Id, T> {
+    pub parent_id: Option<ElementId<Id>>,
+    pub side: Side,
+    pub right_origin: Option<ElementId<Id>>,
+    pub content: Vec<T>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -96,7 +104,7 @@ struct InsertPosition<Id> {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum View {
+pub enum View {
     Effect,
     Prepare,
 }

@@ -1,3 +1,7 @@
+use smallvec::{SmallVec, smallvec};
+
+use crate::list::fugue::{List, Node, NodeRef, PrepareState};
+
 impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id, T> {
     pub fn iter(&self) -> impl Iterator<Item = &T> {
         self.iter_impl(|n| !n.effect_deleted)

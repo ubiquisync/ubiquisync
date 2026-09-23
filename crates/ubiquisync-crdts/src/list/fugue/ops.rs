@@ -1,8 +1,85 @@
 use crate::list::fugue::{
-    EffectError, ElementId, List, Node, NodeIdx, NodeRef, PrepareError, PrepareState, Side,
+    EffectError, ElementId, Insert, List, Node, NodeIdx, NodeRef, Op, PrepareError, PrepareState,
+    Side,
 };
 
 impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id, T> {
+    pub fn apply_op(&mut self, op: Op<Id, T>) -> Result<(), EffectError> {
+        match op {
+            Op::Insert {
+                mut id,
+                insert:
+                    Insert {
+                        mut parent_id,
+                        mut side,
+                        // TODO FugueMax
+                        right_origin: _,
+                        content,
+                    },
+            } => {
+                for c in content {
+                    self.insert(id.clone(), parent_id, side, c);
+                    parent_id = Some(id.clone());
+                    id = ElementId {
+                        op_id: id.op_id,
+                        index: id.index + 1,
+                    };
+                    side = Side::Right;
+                }
+            }
+            Op::Delete { mut id, count } => {
+                for _ in 0..count {
+                    self.delete(id.clone())?;
+                    id.index += 1;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn prepare_advance(&mut self, op: Op<Id, T>) -> Result<(), PrepareError> {
+        match op {
+            Op::Insert {
+                mut id,
+                insert: Insert { content, .. },
+            } => {
+                for _ in content {
+                    self.prepare_insert(id.clone())?;
+                    id.index += 1;
+                }
+            }
+            Op::Delete { mut id, count } => {
+                for _ in 0..count {
+                    self.prepare_delete(id.clone())?;
+                    id.index += 1;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn prepare_retract(&mut self, op: Op<Id, T>) -> Result<(), PrepareError> {
+        match op {
+            Op::Insert {
+                mut id,
+                insert: Insert { content, .. },
+                ..
+            } => {
+                for _ in content {
+                    self.prepare_uninsert(id.clone())?;
+                    id.index += 1;
+                }
+            }
+            Op::Delete { mut id, count } => {
+                for _ in 0..count {
+                    self.prepare_undelete(id.clone())?;
+                    id.index += 1;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn insert(
         &mut self,
         id: ElementId<Id>,

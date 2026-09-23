@@ -11,5 +11,11 @@ smallvec = {workspace = true}
 thiserror = {workspace = true}
 itertools = {workspace = true}
 
+[dev-dependencies]
+proptest = { workspace = true }
+test-strategy = { workspace = true }
+test-case = { workspace = true }
+rand = { workspace = true }
+
 [lints]
 workspace = true

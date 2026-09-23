@@ -1,12 +1,30 @@
 use itertools::Itertools;
 
-use crate::list::fugue::{InsertPosition, List, Node, NodeRef, PrepareState, Side, View};
+use crate::list::fugue::{Insert, InsertPosition, List, Node, NodeRef, Op, Side, View};
 
 impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id, T> {
+    pub fn create_insert(&self, view: View, offset: usize, content: Vec<T>) -> Insert<Id, T> {
+        let pos = self.find_insert_position(view, offset);
+        Insert {
+            parent_id: pos.parent.map(|r| r.id),
+            side: pos.side,
+            right_origin: pos.right_origin.map(|r| r.id),
+            content,
+        }
+    }
+
+    pub fn create_deletes(&self, view: View, offset: usize, count: usize) -> Vec<Op<Id, T>> {
+        todo!()
+    }
+
     fn find_insert_position(&self, view: View, offset: usize) -> InsertPosition<Id> {
         let left_origin = self.find_before_offset(view, offset);
         let right_origin = self.successor(view, &left_origin);
-        if self.resolve(&left_origin).right_children.is_empty() {
+        if self
+            .not_uninserted_children(view, &self.resolve(&left_origin).right_children)
+            .next()
+            .is_none()
+        {
             InsertPosition {
                 parent: left_origin,
                 side: Side::Right,
@@ -139,7 +157,7 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
             // so we assume if there is a node to the right it is somwhere in the traversal where
             // the parent is on the left side of some other node)
             Side::Right => {
-                if let Some(sib) = self.next_sibling(&parent.left_children, view, id) {
+                if let Some(sib) = self.next_sibling(&parent.right_children, view, id) {
                     Some(self.leftmost(view, sib))
                 } else {
                     if let Some(ref parent_ref) = parent_ref {
