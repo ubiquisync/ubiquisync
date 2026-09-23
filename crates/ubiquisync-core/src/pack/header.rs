@@ -4,7 +4,7 @@ use thiserror::Error;
 
 use crate::{
     codec::{ReadError, Reader, WriteError, Writer},
-    crypto::Hash256,
+    crypto::{Hash256, Signature},
     ids::{ContainerId, PeerId},
 };
 
@@ -169,19 +169,27 @@ impl SegmentDescriptor {
 
 #[cfg(test)]
 mod tests {
+    use test_case::test_case;
     use test_strategy::proptest;
 
     #[cfg(test)]
-    use crate::codec::{Reader, Writer};
-    use crate::pack::PackHeader;
+    use crate::codec::Writer;
+    use crate::pack::{PackHeader, PackHeaderDecodeError};
 
     #[proptest]
     fn roundtrip_pack_header(header: PackHeader) {
         let mut w = Writer::new();
         header.encode(&mut w).unwrap();
         let encoded = w.finalize();
-        let mut r = Reader::new(&encoded);
-        let decoded = PackHeader::decode(&mut r).unwrap();
+        let decoded = PackHeader::decode(&encoded).unwrap();
         assert_eq!(header, decoded);
+    }
+
+    #[test_case(&[0, 0, 0, 0, 0] => matches Ok(_) ; "empty header")]
+    #[test_case(&[1, 0, 0, 0, 0] => matches Err(PackHeaderDecodeError::UnknownVersion(1)) ; "unknown version")]
+    #[test_case(&[0, 0, 0, 0, 0, 0] => matches Err(PackHeaderDecodeError::TrailingBytes) ; "trailing byte")]
+    #[test_case(&[0, 0, 0] => matches Err(PackHeaderDecodeError::Read(_)) ; "truncated")]
+    fn decode_pack_header(buf: &[u8]) -> Result<PackHeader, PackHeaderDecodeError> {
+        PackHeader::decode(buf)
     }
 }

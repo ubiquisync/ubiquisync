@@ -138,7 +138,7 @@ mod tests {
     use test_case::test_case;
     use test_strategy::proptest;
 
-    use crate::pack::PackFileId;
+    use crate::pack::{PackFileId, dedupe_pack_files};
 
     #[test_case(0..1, 0xabcdef, 0 => "0000-0001-0000000000abcdef-00")]
     #[test_case(0xffff..0xa0000, 0x12345, 0x100 => "ffff-a0000-0000000000012345-100")]
@@ -166,5 +166,29 @@ mod tests {
     #[test_case("+000-0001-0000000000abcdef-00" ; "leading plus")]
     fn pack_file_id_rejects(s: &str) {
         assert!(PackFileId::from_str(s).is_err());
+    }
+
+    #[test_case(&[] => Vec::<String>::new() ; "empty")]
+    #[test_case(&["0000-000a-0000000000000001-00"]
+        => vec!["0000-000a-0000000000000001-00"] ; "single")]
+    #[test_case(&["0000-000a-0000000000000001-00", "0000-000a-0000000000000001-02"]
+        => vec!["0000-000a-0000000000000001-02"] ; "higher gen wins")]
+    #[test_case(&["0000-000a-0000000000000001-02", "0000-000a-0000000000000001-00"]
+        => vec!["0000-000a-0000000000000001-02"] ; "higher gen wins regardless of order")]
+    #[test_case(&["0005-000a-0000000000000001-00", "0000-000a-0000000000000001-01"]
+        => vec!["0000-000a-0000000000000001-01"] ; "rewrite with wider range replaces")]
+    #[test_case(&["0000-000a-0000000000000001-00", "0000-0014-0000000000000001-00"]
+        => vec!["0000-000a-0000000000000001-00", "0000-0014-0000000000000001-00"] ; "same id different end kept")]
+    #[test_case(&["0000-000a-0000000000000001-00", "0000-000a-0000000000000002-00"]
+        => vec!["0000-000a-0000000000000001-00", "0000-000a-0000000000000002-00"] ; "different id same end kept")]
+    fn dedupe(names: &[&str]) -> Vec<String> {
+        let files: Vec<PackFileId> = names.iter().map(|s| s.parse().unwrap()).collect();
+        // dedupe_pack_files returns HashMap order, so sort for a stable comparison
+        let mut out: Vec<String> = dedupe_pack_files(&files)
+            .iter()
+            .map(|f| f.to_string())
+            .collect();
+        out.sort();
+        out
     }
 }
