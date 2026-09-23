@@ -1,3 +1,5 @@
+use std::ops::AddAssign;
+
 use crate::list::fugue::{
     EffectError, ElementId, Insert, List, Node, NodeIdx, NodeRef, Op, PrepareError, PrepareState,
     Side,
@@ -100,6 +102,13 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
             prepare_size: 1,
         };
 
+        if let Some(n) = self.pending_delete.remove(&id) {
+            node.effect_deleted = true;
+            node.effect_size = 0;
+            node.prepare_state = PrepareState::Deleted(n);
+            node.prepare_size = 0;
+        }
+
         let index = NodeIdx(self.nodes.len());
         let node_ref = NodeRef {
             id: id.clone(),
@@ -159,8 +168,8 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
     }
 
     fn delete(&mut self, id: ElementId<Id>) -> Result<(), EffectError> {
-        self.visit_node_and_ancestors(
-            id,
+        match self.visit_node_and_ancestors(
+            id.clone(),
             |node| {
                 if node.effect_deleted {
                     // already deleted!
@@ -171,8 +180,14 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
                 Ok(true)
             },
             |parent| parent.effect_size = parent.effect_size.checked_sub(1).expect("non-zero"),
-            EffectError::NodeNotFound,
-        )
+            || Err(EffectError::NodeNotFound),
+        ) {
+            Err(EffectError::NodeNotFound) => {
+                self.pending_delete.entry(id).or_default().add_assign(1);
+                Ok(())
+            }
+            res => res,
+        }
     }
 
     fn prepare_insert(&mut self, id: ElementId<Id>) -> Result<(), PrepareError> {
@@ -187,7 +202,7 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
                 _ => Err(PrepareError::InvalidState),
             },
             |parent| parent.prepare_size += 1,
-            PrepareError::NodeNotFound,
+            || Err(PrepareError::NodeNotFound),
         )
     }
 
@@ -203,7 +218,7 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
                 _ => Err(PrepareError::InvalidState),
             },
             |parent| parent.prepare_size -= 1,
-            PrepareError::NodeNotFound,
+            || Err(PrepareError::NodeNotFound),
         )
     }
 
@@ -228,7 +243,7 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
             |parent| {
                 parent.prepare_size = parent.prepare_size.checked_sub(1).expect("non-zero size")
             },
-            PrepareError::NodeNotFound,
+            || Err(PrepareError::NodeNotFound),
         )
     }
 
@@ -250,20 +265,21 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
                 }
             },
             |parent| parent.prepare_size += 1,
-            PrepareError::NodeNotFound,
+            || Err(PrepareError::NodeNotFound),
         )
     }
 
-    fn visit_node_and_ancestors<F, G, Err>(
+    fn visit_node_and_ancestors<F, G, H, Err>(
         &mut self,
         id: ElementId<Id>,
         visit_node: F,
         visit_ancestor: G,
-        not_found: Err,
+        not_found: H,
     ) -> Result<(), Err>
     where
         F: Fn(&mut Node<Id, T>) -> Result<bool, Err>,
         G: Fn(&mut Node<Id, T>),
+        H: Fn() -> Result<(), Err>,
     {
         if let Some(index) = self.nodes_by_id.get(&id) {
             let (parent_id, parent_index) = {
@@ -277,7 +293,7 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
             self.visit_ancestors(parent_id, parent_index, visit_ancestor);
             Ok(())
         } else {
-            Err(not_found)
+            not_found()
         }
     }
 

@@ -47,6 +47,8 @@ pub struct List<Id, T> {
     // nodes who are missing their parent, keyed by the parent ID
     // and point to the list of unparented nodes
     pending_parent: HashMap<ElementId<Id>, Vec<NodeRef<Id>>>,
+    // nodes that have been deleted before we've even seen them
+    pending_delete: HashMap<ElementId<Id>, usize>,
 }
 
 #[derive(Debug, Error)]
@@ -94,7 +96,7 @@ struct Node<Id, T> {
 enum PrepareState {
     UnInserted,
     Inserted,
-    Deleted(u32),
+    Deleted(usize),
 }
 
 struct InsertPosition<Id> {
@@ -127,6 +129,7 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> Default
             nodes: vec![],
             nodes_by_id: HashMap::new(),
             pending_parent: HashMap::new(),
+            pending_delete: HashMap::new(),
         }
     }
 }

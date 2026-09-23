@@ -14,7 +14,18 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
     }
 
     pub fn create_deletes(&self, view: View, offset: usize, count: usize) -> Vec<Op<Id, T>> {
-        todo!()
+        let mut deletes = vec![];
+        for i in 0..count {
+            if let Some(node_ref) = self.find_before_offset(view, offset + i + 1) {
+                deletes.push(Op::Delete {
+                    id: node_ref.id.clone(),
+                    count: 1,
+                });
+            } else {
+                // TODO error
+            }
+        }
+        deletes
     }
 
     fn find_insert_position(&self, view: View, offset: usize) -> InsertPosition<Id> {

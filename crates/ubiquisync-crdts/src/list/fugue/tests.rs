@@ -5,30 +5,6 @@ use rand::{
 
 use super::*;
 
-// #[test]
-// fn reference_test() {
-//     let mut list = List::<usize, usize>::default();
-//     let mut v = Vec::<usize>::default();
-//     (0..100).into_iter().for_each(|i| {
-//         v.push(i);
-//     });
-//     let mut ops = v.clone();
-//     let mut rng = rand::rng();
-//     ops.shuffle(&mut rng);
-//     for op in ops {
-//         let insert = list.create_insert(View::Effect, op, vec![op]);
-//         list.apply_op(Op::Insert {
-//             id: ElementId {
-//                 op_id: op,
-//                 index: 0,
-//             },
-//             insert,
-//         })
-//         .unwrap()
-//     }
-//     assert_eq!(v, list.iter().copied().collect::<Vec<_>>())
-// }
-
 #[test]
 fn sim_test() {
     let mut rng = rand::rng();
@@ -41,25 +17,39 @@ fn sim_test() {
         let peer = rng.random_range(0..NUM_PEERS);
         let list = &mut lists[peer];
         let size = list.size(View::Effect);
-        let offset = if size == 0 {
-            0
+
+        let ops = if rng.random::<bool>() || size == 0 {
+            // insert
+
+            let offset = if size == 0 {
+                0
+            } else {
+                rng.random_range(0..=size)
+            };
+            let content_size = rng.random_range(0..16);
+            let content = Alphanumeric.sample_string(&mut rng, content_size);
+            let insert = list.create_insert(View::Effect, offset, content.chars().collect());
+            let op_idx = oplog[peer].len();
+            let id = ElementId {
+                op_id: (peer, op_idx),
+                index: 0,
+            };
+            vec![Op::Insert { id, insert }]
         } else {
-            rng.random_range(0..size)
+            let offset = rng.random_range(0..size);
+            let count = if offset == size - 1 {
+                1
+            } else {
+                rng.random_range(1..size - offset)
+            };
+            list.create_deletes(View::Effect, offset, count)
         };
 
-        // TODO also do deletes
-        let content_size = rng.random_range(0..16);
-        let content = Alphanumeric.sample_string(&mut rng, content_size);
-        let insert = list.create_insert(View::Effect, offset, content.chars().collect());
-        let op_idx = oplog[peer].len();
-        let id = ElementId {
-            op_id: (peer, op_idx),
-            index: 0,
-        };
-        let op = Op::Insert { id, insert };
-        list.apply_op(op.clone()).unwrap();
-        oplog[peer].push(op);
-        frontiers[peer][peer] = op_idx + 1;
+        for op in ops {
+            list.apply_op(op.clone()).unwrap();
+            oplog[peer].push(op);
+        }
+        frontiers[peer][peer] = oplog[peer].len();
 
         // advance each peer's frontier by a random amount
         // to simulate inconsistent intermediate states
