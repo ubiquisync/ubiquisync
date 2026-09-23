@@ -17,16 +17,16 @@ fn sim_test() {
         let peer = rng.random_range(0..NUM_PEERS);
         let list = &mut lists[peer];
         let size = list.size(View::Effect);
+        let mut string: String = list.iter().collect();
 
         let ops = if rng.random::<bool>() || size == 0 {
             // insert
-
             let offset = if size == 0 {
                 0
             } else {
                 rng.random_range(0..=size)
             };
-            let content_size = rng.random_range(0..16);
+            let content_size = rng.random_range(1..=16);
             let content = Alphanumeric.sample_string(&mut rng, content_size);
             let insert = list.create_insert(View::Effect, offset, content.chars().collect());
             let op_idx = oplog[peer].len();
@@ -34,14 +34,25 @@ fn sim_test() {
                 op_id: (peer, op_idx),
                 index: 0,
             };
+
+            // perform the same op against a str to compare
+            string.insert_str(offset, &content);
+
             vec![Op::Insert { id, insert }]
         } else {
+            // delete
             let offset = rng.random_range(0..size);
             let count = if offset == size - 1 {
                 1
             } else {
-                rng.random_range(1..size - offset)
+                rng.random_range(1..=size - offset)
             };
+
+            // perform the same op against a str to compare
+            for _ in 0..count {
+                string.remove(offset);
+            }
+
             list.create_deletes(View::Effect, offset, count)
         };
 
@@ -50,6 +61,9 @@ fn sim_test() {
             oplog[peer].push(op);
         }
         frontiers[peer][peer] = oplog[peer].len();
+
+        // compare manipulating a string to the current state of the list
+        assert_eq!(string, list.iter().collect::<String>());
 
         // advance each peer's frontier by a random amount
         // to simulate inconsistent intermediate states
