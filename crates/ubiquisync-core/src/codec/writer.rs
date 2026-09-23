@@ -35,6 +35,17 @@ impl Writer {
         self.write_slice(bytes);
     }
 
+    pub fn write_vec<T, F, Err>(&mut self, v: &[T], mut f: F) -> Result<(), Err>
+    where
+        F: FnMut(&mut Self, &T) -> Result<(), Err>,
+    {
+        self.write_var_usize(v.len());
+        for x in v.iter() {
+            f(self, x)?;
+        }
+        Ok(())
+    }
+
     pub fn write_byte(&mut self, x: u8) {
         self.buf.push(x)
     }

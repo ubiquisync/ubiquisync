@@ -14,7 +14,7 @@ pub enum VerifyingKey {
 
 #[derive(Error, Debug)]
 pub enum SignatureVerifyError {
-    #[error("invalid key")]
+    #[error("invalid verifying key")]
     InvalidKey,
     #[error("invalid signature")]
     InvalidSignature,
