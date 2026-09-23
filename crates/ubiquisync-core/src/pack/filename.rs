@@ -99,7 +99,7 @@ impl FromStr for PackFileId {
             generation,
         };
 
-        // ensure canonincal form
+        // ensure canonical form
         // this matters for roundtripping ID's to real file names for GC
         if id.to_string() != s {
             return Err(ParseFileNameError);
@@ -155,5 +155,16 @@ mod tests {
     fn pack_file_id_roundtrips(id: PackFileId) {
         let parsed = PackFileId::from_str(&id.to_string()).unwrap();
         assert_eq!(id, parsed);
+    }
+
+    #[test_case("0000-0001-0000000000abcdef" ; "too few parts")]
+    #[test_case("0000-0001-0000000000abcdef-00-00" ; "trailing part")]
+    #[test_case("0005-0005-0000000000abcdef-00" ; "empty range")]
+    #[test_case("0009-0002-0000000000abcdef-00" ; "backwards range")]
+    #[test_case("0000-0001-0000000000ABCDEF-00" ; "uppercase")]
+    #[test_case("00000-0001-0000000000abcdef-00" ; "extra zero")]
+    #[test_case("+000-0001-0000000000abcdef-00" ; "leading plus")]
+    fn pack_file_id_rejects(s: &str) {
+        assert!(PackFileId::from_str(s).is_err());
     }
 }
