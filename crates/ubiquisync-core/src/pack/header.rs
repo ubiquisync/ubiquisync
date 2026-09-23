@@ -4,7 +4,7 @@ use thiserror::Error;
 
 use crate::{
     codec::{ReadError, Reader, WriteError, Writer},
-    crypto::{Hash256, Signature},
+    crypto::{CryptoDecodeError, Hash256, Signature, SignatureVerifyError, VerifyingKey},
     ids::{ContainerId, PeerId},
 };
 
@@ -27,6 +27,8 @@ pub struct PackHeader {
     pub self_supersedes: Vec<PackRef>,
     pub self_segments: Vec<SegmentDescriptor>,
     pub peer_data: Vec<PeerData>,
+    pub body_sha256: Hash256,
+    pub signature: Signature,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -66,19 +68,36 @@ pub enum PackHeaderDecodeError {
     Read(#[from] ReadError),
     #[error("unknown version {0}")]
     UnknownVersion(u8),
+    #[error("unknown signature algorithm {0}")]
+    UnknownSignatureType(u8),
     #[error("trailing bytes")]
     TrailingBytes,
+}
+
+#[derive(Error, Debug)]
+pub enum PackHeaderVerifyError {
+    #[error("error writing sign bytes: {0}")]
+    SignBytes(#[from] WriteError),
+    #[error("signature verify error: {0}")]
+    Signature(#[from] SignatureVerifyError),
 }
 
 const PACK_HEADER_VERSION: u8 = 0;
 
 impl PackHeader {
     pub fn encode(&self, w: &mut Writer) -> Result<(), WriteError> {
+        self.encode_sign_bytes(w)?;
+        self.signature.encode(w);
+        Ok(())
+    }
+
+    fn encode_sign_bytes(&self, w: &mut Writer) -> Result<(), WriteError> {
         w.write_byte(PACK_HEADER_VERSION); // version byte
         w.write_vec(&self.parents, |w, x| x.encode(w))?;
         w.write_vec(&self.self_supersedes, |w, x| x.encode(w))?;
         w.write_vec(&self.self_segments, |w, x| x.encode(w))?;
         w.write_vec(&self.peer_data, |w, x| x.encode(w))?;
+        w.write_array(&self.body_sha256);
         Ok(())
     }
 
@@ -92,6 +111,13 @@ impl PackHeader {
         let self_supersedes = r.read_vec(|r| PackRef::decode(r))?;
         let self_segments = r.read_vec(|r| SegmentDescriptor::decode(r))?;
         let peer_data = r.read_vec(|r| PeerData::decode(r))?;
+        let body_sha256 = r.read_array()?;
+        let signature = Signature::decode(&mut r).map_err(|e| match e {
+            CryptoDecodeError::ReadError(e) => PackHeaderDecodeError::Read(e),
+            CryptoDecodeError::UnknownAlgorithm(b) => {
+                PackHeaderDecodeError::UnknownSignatureType(b)
+            }
+        })?;
         if !r.is_empty() {
             return Err(PackHeaderDecodeError::TrailingBytes);
         }
@@ -100,7 +126,17 @@ impl PackHeader {
             self_supersedes,
             self_segments,
             peer_data,
+            body_sha256,
+            signature,
         })
+    }
+
+    pub fn verify(&self, verifying_key: &VerifyingKey) -> Result<(), PackHeaderVerifyError> {
+        let mut w = Writer::new();
+        self.encode_sign_bytes(&mut w)?;
+        let msg = w.finalize();
+        verifying_key.verify_signature(&msg, &self.signature)?;
+        Ok(())
     }
 }
 
