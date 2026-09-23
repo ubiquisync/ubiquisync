@@ -6,7 +6,7 @@ use crate::{
     ids::{ContainerId, PeerId},
 };
 
-use crate::{log::ChainHash, pack::PackFileName};
+use crate::pack::PackFileName;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
