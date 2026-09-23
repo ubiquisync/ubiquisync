@@ -117,21 +117,23 @@ fn sim_list(mut rng: impl Rng) {
     }
 }
 
-enum EgWalkerOp<T> {
-    Observe { frontiers: Vec<(usize, usize)> },
-    Insert { offset: usize, content: Vec<T> },
-    Delete { offset: usize, count: usize },
-}
-
 type OpId = (usize, usize);
 
 // fn sim_eg_walker(mut rng: impl Rng) {
 //     const NUM_PEERS: usize = 5;
 //     const ROUNDS: usize = 500;
+
+//     enum EgWalkerOp<T> {
+//         Observe { frontiers: [usize; NUM_PEERS] },
+//         Insert { offset: usize, content: Vec<T> },
+//         Delete { offset: usize, count: usize },
+//     }
+
 //     let mut lists: [List<OpId, char>; NUM_PEERS] = Default::default();
 //     let mut oplog: [Vec<EgWalkerOp<char>>; NUM_PEERS] = Default::default();
 //     let mut frontiers: [[usize; NUM_PEERS]; NUM_PEERS] = Default::default();
-//     let mut peer_frontiers: [[usize; NUM_PEERS]; NUM_PEERS] = Default::default();
+//     let mut peer_observed: [[Vec<(usize, usize)>; NUM_PEERS]; NUM_PEERS] = Default::default();
+//     let mut prepare_state: [Vec<(usize, usize)>; NUM_PEERS] = Default::default();
 //     for _ in 0..ROUNDS {
 //         let peer = rng.random_range(0..NUM_PEERS);
 //         let list = &mut lists[peer];
@@ -195,7 +197,6 @@ type OpId = (usize, usize);
 //         // advance each peer's frontier by a random amount
 //         // to simulate inconsistent intermediate states
 //         for i in 0..NUM_PEERS {
-//             let mut observed = vec![];
 //             for j in 0..NUM_PEERS {
 //                 if i == j {
 //                     // skip trying to echo self
@@ -209,14 +210,17 @@ type OpId = (usize, usize);
 //                 }
 //                 let new_read_size = rng.random_range(cur_read_size..=available_size);
 //                 let list = &mut lists[i];
+//                 // update prepare state
+//                 let this_peers_frontiers = peer_observed[i][j];
+//                 for i in 0..NUM_PEERS {}
+
 //                 for op in oplog[j][cur_read_size..new_read_size].iter() {
 //                     // TODO
 //                 }
 //                 frontiers[i][j] = new_read_size;
-//                 observed.push((j, new_read_size));
 //             }
 //             oplog[i].push(EgWalkerOp::Observe {
-//                 frontiers: observed,
+//                 frontiers: frontiers[i],
 //             });
 //         }
 //     }

@@ -98,15 +98,13 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
             content: Some(content),
             effect_deleted: false,
             effect_size: 1,
-            prepare_state: PrepareState::Inserted,
-            prepare_size: 1,
+            prepare_state: PrepareState::UnInserted,
+            prepare_size: 0,
         };
 
-        if let Some(n) = self.pending_delete.remove(&id) {
+        if self.pending_delete.remove(&id) {
             node.effect_deleted = true;
             node.effect_size = 0;
-            node.prepare_state = PrepareState::Deleted(n);
-            node.prepare_size = 0;
         }
 
         let index = NodeIdx(self.nodes.len());
@@ -125,11 +123,9 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
                     Side::Right => insert_child(&mut node.right_children, pending_id),
                 }
                 node.effect_size += pending_node.effect_size;
-                node.prepare_size += pending_node.prepare_size;
             }
         }
         let effect_delta = node.effect_size;
-        let prepare_delta = node.prepare_size;
 
         // add node now that we're done mutating it
         // we can't do it with push_mut earlier, because we need a mutable ref self.node below for parent
@@ -159,7 +155,6 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
             }
             self.visit_ancestors(parent_id, parent_index, |parent| {
                 parent.effect_size += effect_delta;
-                parent.prepare_size += prepare_delta;
             });
 
             parent_index
@@ -183,7 +178,7 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
             || Err(EffectError::NodeNotFound),
         ) {
             Err(EffectError::NodeNotFound) => {
-                self.pending_delete.entry(id).or_default().add_assign(1);
+                self.pending_delete.insert(id);
                 Ok(())
             }
             res => res,

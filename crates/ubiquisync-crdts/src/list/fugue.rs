@@ -4,7 +4,7 @@ mod ops;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use thiserror::Error;
 
@@ -48,7 +48,7 @@ pub struct List<Id, T> {
     // and point to the list of unparented nodes
     pending_parent: HashMap<ElementId<Id>, Vec<NodeRef<Id>>>,
     // nodes that have been deleted before we've even seen them
-    pending_delete: HashMap<ElementId<Id>, usize>,
+    pending_delete: HashSet<ElementId<Id>>,
 }
 
 #[derive(Debug, Error)]
@@ -129,7 +129,7 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> Default
             nodes: vec![],
             nodes_by_id: HashMap::new(),
             pending_parent: HashMap::new(),
-            pending_delete: HashMap::new(),
+            pending_delete: HashSet::new(),
         }
     }
 }
