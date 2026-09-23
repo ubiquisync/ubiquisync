@@ -4,7 +4,7 @@ use thiserror::Error;
 
 use crate::{
     codec::{ReadError, Reader, WriteError, Writer},
-    crypto::{CryptoDecodeError, Hash256, Signature, SignatureVerifyError},
+    crypto::{CryptoDecodeError, Hash256, Signature},
     ids::{ContainerId, PeerId},
 };
 
@@ -72,14 +72,6 @@ pub enum PackHeaderDecodeError {
     UnknownSignatureType(u8),
     #[error("trailing bytes")]
     TrailingBytes,
-}
-
-#[derive(Error, Debug)]
-pub enum PackHeaderVerifyError {
-    #[error("error writing sign bytes: {0}")]
-    SignBytes(#[from] WriteError),
-    #[error("signature verify error: {0}")]
-    Signature(#[from] SignatureVerifyError),
 }
 
 const PACK_HEADER_VERSION: u8 = 0;
@@ -197,6 +189,7 @@ mod tests {
 
     #[cfg(test)]
     use crate::codec::Writer;
+    use crate::crypto::SIG_ALGO_ED25519;
     use crate::pack::{PackHeader, PackHeaderDecodeError};
 
     #[proptest]
@@ -208,11 +201,21 @@ mod tests {
         assert_eq!(header, decoded);
     }
 
-    #[test_case(&[0, 0, 0, 0, 0] => matches Ok(_) ; "empty header")]
-    #[test_case(&[1, 0, 0, 0, 0] => matches Err(PackHeaderDecodeError::UnknownVersion(1)) ; "unknown version")]
-    #[test_case(&[0, 0, 0, 0, 0, 0] => matches Err(PackHeaderDecodeError::TrailingBytes) ; "trailing byte")]
-    #[test_case(&[0, 0, 0] => matches Err(PackHeaderDecodeError::Read(_)) ; "truncated")]
-    fn decode_pack_header(buf: &[u8]) -> Result<PackHeader, PackHeaderDecodeError> {
-        PackHeader::decode(buf)
+    fn empty_header_bytes() -> Vec<u8> {
+        let mut b = vec![0u8; 5 + 32]; // version, 4 empty vecs, body hash
+        b.push(SIG_ALGO_ED25519);
+        b.extend([0u8; 64]);
+        b
+    }
+
+    #[test_case(|_| {} => matches Ok(_) ; "empty header")]
+    #[test_case(|b| b[0] = 1 => matches Err(PackHeaderDecodeError::UnknownVersion(1)) ; "unknown version")]
+    #[test_case(|b| b.push(0) => matches Err(PackHeaderDecodeError::TrailingBytes) ; "trailing byte")]
+    #[test_case(|b| b.truncate(3) => matches Err(PackHeaderDecodeError::Read(_)) ; "truncated")]
+    #[test_case(|b| b[37] = 0xff => matches Err(PackHeaderDecodeError::UnknownSignatureType(0xff)) ; "unknown sig algo")]
+    fn decode_pack_header(patch: fn(&mut Vec<u8>)) -> Result<PackHeader, PackHeaderDecodeError> {
+        let mut b = empty_header_bytes();
+        patch(&mut b);
+        PackHeader::decode(&b)
     }
 }
