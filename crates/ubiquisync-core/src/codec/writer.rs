@@ -35,10 +35,6 @@ impl Writer {
         self.write_slice(bytes);
     }
 
-    pub fn write_str(&mut self, str: &str) {
-        self.write_len_prefixed(str.as_bytes());
-    }
-
     pub fn write_vec<T, F, Err>(&mut self, v: &[T], mut f: F) -> Result<(), Err>
     where
         F: FnMut(&mut Self, &T) -> Result<(), Err>,
