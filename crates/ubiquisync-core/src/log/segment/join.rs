@@ -16,7 +16,7 @@ use crate::{
 pub enum JoinSegmentsError {
     #[error("segment decode error {0}")]
     Decode(#[from] SegmentDecodeError),
-    #[error("segment decode error {0}")]
+    #[error("segment encode error {0}")]
     Encode(#[from] SegmentEncodeError),
     #[error("segment cipher error {0}")]
     Cipher(#[from] SegmentCipherError),
@@ -39,8 +39,6 @@ pub async fn join_segments<'a, B: AsRef<[u8]> + 'a>(
     let mut active_cipher = None;
     let mut all_entries = vec![];
     let mut sig = None;
-    //     let seed = ChainSeed::new(&log_id);
-    // let entry_cipher = if let Some(head)
     for body in bodies {
         let reader = SegmentReader::start(body.as_ref())?;
         let segment_header = reader.header().clone();
