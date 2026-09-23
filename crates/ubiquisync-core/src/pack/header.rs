@@ -62,15 +62,19 @@ pub struct SegmentDescriptor {
 
 #[derive(Error, Debug)]
 pub enum PackHeaderDecodeError {
-    #[error("read error")]
+    #[error("read error: {0}")]
     Read(#[from] ReadError),
     #[error("unknown version {0}")]
     UnknownVersion(u8),
+    #[error("trailing bytes")]
+    TrailingBytes,
 }
+
+const PACK_HEADER_VERSION: u8 = 0;
 
 impl PackHeader {
     pub fn encode(&self, w: &mut Writer) -> Result<(), WriteError> {
-        w.write_byte(0); // version byte
+        w.write_byte(PACK_HEADER_VERSION); // version byte
         w.write_vec(&self.parents, |w, x| x.encode(w))?;
         w.write_vec(&self.self_supersedes, |w, x| x.encode(w))?;
         w.write_vec(&self.self_segments, |w, x| x.encode(w))?;
@@ -78,15 +82,19 @@ impl PackHeader {
         Ok(())
     }
 
-    pub fn decode(r: &mut Reader) -> Result<Self, PackHeaderDecodeError> {
+    pub fn decode(buf: &[u8]) -> Result<Self, PackHeaderDecodeError> {
+        let mut r = Reader::new(buf);
         let version = r.read_byte()?;
-        if version != 0 {
+        if version != PACK_HEADER_VERSION {
             return Err(PackHeaderDecodeError::UnknownVersion(version));
         }
         let parents = r.read_vec(|r| PackRef::decode(r))?;
         let self_supersedes = r.read_vec(|r| PackRef::decode(r))?;
         let self_segments = r.read_vec(|r| SegmentDescriptor::decode(r))?;
         let peer_data = r.read_vec(|r| PeerData::decode(r))?;
+        if !r.is_empty() {
+            return Err(PackHeaderDecodeError::TrailingBytes);
+        }
         Ok(Self {
             parents,
             self_supersedes,
