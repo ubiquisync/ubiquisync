@@ -131,6 +131,15 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> Default
     }
 }
 
+impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id, T> {
+    pub fn size(&self, view: View) -> usize {
+        match view {
+            View::Effect => self.root.effect_size,
+            View::Prepare => self.root.prepare_size,
+        }
+    }
+}
+
 impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> Node<Id, T> {
     fn size(&self, view: View) -> usize {
         match view {
