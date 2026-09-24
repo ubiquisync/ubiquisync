@@ -16,12 +16,12 @@ use crate::{
 };
 
 pub struct PackBuilder {
-    peer_id: PeerId,
     parents: Vec<PackRef>,
     self_supersedes: Vec<PackRef>,
     self_segments: Vec<SegmentDescriptor>,
     peer_data: BTreeMap<PeerId, PeerData>,
     body_writer: Writer,
+    descriptor: PackFileDescriptor,
 }
 
 #[derive(Debug, Error)]
@@ -33,9 +33,9 @@ pub enum PackBuildError {
 }
 
 impl PackBuilder {
-    pub fn new(peer_id: PeerId, parents: Vec<PackRef>) -> Self {
+    pub fn new(descriptor: PackFileDescriptor, parents: Vec<PackRef>) -> Self {
         Self {
-            peer_id,
+            descriptor,
             parents,
             self_supersedes: vec![],
             self_segments: vec![],
@@ -52,7 +52,14 @@ impl PackBuilder {
     ) -> Result<(), PackBuildError> {
         // TODO we can skip joining segments when there's only one segment
         let body_start = self.body_writer.len() as u64;
-        let joined = join_segments(key_resolver, hash_ctx, segments, &mut self.body_writer).await?;
+        let joined =
+            match join_segments(key_resolver, hash_ctx, segments, &mut self.body_writer).await {
+                Ok(joined) => joined,
+                Err(e) => {
+                    self.body_writer.truncate(body_start as usize);
+                    return Err(e.into());
+                }
+            };
         let body_end = self.body_writer.len() as u64;
         let idx_range = joined.prev_chain.size..joined.chain_hash.size;
         if idx_range.is_empty() {
@@ -66,7 +73,7 @@ impl PackBuilder {
             body_loc: body_start..body_end,
         };
         let peer_id = hash_ctx.log_id().peer_id;
-        if peer_id == self.peer_id {
+        if peer_id == self.descriptor.peer_id {
             self.self_segments.push(desc);
         } else {
             self.peer_data
@@ -82,11 +89,7 @@ impl PackBuilder {
         Ok(())
     }
 
-    pub fn build(
-        self,
-        signing_key: &dyn SigningKey,
-        file_desc: PackFileDescriptor,
-    ) -> Result<PackData, PackSignError> {
+    pub fn build(self, signing_key: &dyn SigningKey) -> Result<PackData, PackSignError> {
         let body = self.body_writer.finalize();
         let body_sha256 = tagged_hash(TaggedHashDomain::PackBody, &body);
         let header = PackHeader {
@@ -96,12 +99,17 @@ impl PackBuilder {
             peer_data: self.peer_data.into_values().collect(),
             body_sha256,
         };
-        let header = header.sign(signing_key, &file_desc)?;
-        Ok(PackData { header, body })
+        let header = header.sign(signing_key, &self.descriptor)?;
+        Ok(PackData {
+            descriptor: self.descriptor,
+            header,
+            body,
+        })
     }
 }
 
 pub struct PackData {
+    pub descriptor: PackFileDescriptor,
     pub header: SignedPackHeader,
     pub body: Vec<u8>,
 }

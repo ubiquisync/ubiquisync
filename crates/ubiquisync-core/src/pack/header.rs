@@ -92,8 +92,7 @@ impl PackHeader {
         Ok(())
     }
 
-    pub fn decode(buf: &[u8]) -> Result<Self, PackHeaderDecodeError> {
-        let mut r = Reader::new(buf);
+    pub fn decode(r: &mut Reader) -> Result<Self, PackHeaderDecodeError> {
         let version = r.read_byte()?;
         if version != PACK_HEADER_VERSION {
             return Err(PackHeaderDecodeError::UnknownVersion(version));
@@ -103,9 +102,6 @@ impl PackHeader {
         let self_segments = r.read_vec(|r| SegmentDescriptor::decode(r))?;
         let peer_data = r.read_vec(|r| PeerData::decode(r))?;
         let body_sha256 = r.read_array()?;
-        if !r.is_empty() {
-            return Err(PackHeaderDecodeError::TrailingBytes);
-        }
         Ok(Self {
             parents,
             self_supersedes,
@@ -148,7 +144,7 @@ impl SignedPackHeader {
 
     pub fn decode(buf: &[u8]) -> Result<Self, PackHeaderDecodeError> {
         let mut r = Reader::new(buf);
-        let header = PackHeader::decode(buf)?;
+        let header = PackHeader::decode(&mut r)?;
         let signature = Signature::decode(&mut r).map_err(|e| match e {
             CryptoDecodeError::ReadError(e) => PackHeaderDecodeError::Read(e),
             CryptoDecodeError::UnknownAlgorithm(b) => {
@@ -257,7 +253,7 @@ mod tests {
     use test_strategy::proptest;
 
     #[cfg(test)]
-    use crate::codec::Writer;
+    use crate::codec::{Reader, Writer};
     use crate::crypto::SIG_ALGO_ED25519;
     use crate::pack::{PackHeader, PackHeaderDecodeError};
 
@@ -266,7 +262,8 @@ mod tests {
         let mut w = Writer::new();
         header.encode(&mut w).unwrap();
         let encoded = w.finalize();
-        let decoded = PackHeader::decode(&encoded).unwrap();
+        let mut r = Reader::new(&encoded);
+        let decoded = PackHeader::decode(&mut r).unwrap();
         assert_eq!(header, decoded);
     }
 
@@ -285,6 +282,7 @@ mod tests {
     fn decode_pack_header(patch: fn(&mut Vec<u8>)) -> Result<PackHeader, PackHeaderDecodeError> {
         let mut b = empty_header_bytes();
         patch(&mut b);
-        PackHeader::decode(&b)
+        let mut r = Reader::new(&b);
+        PackHeader::decode(&mut r)
     }
 }
