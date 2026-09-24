@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use thiserror::Error;
 
 use crate::crypto::{TaggedHashDomain, tagged_hash};
+use crate::hlc::wall_ms;
 use crate::pack::{PackFileDescriptor, PackSignError, SignedPackHeader};
 use crate::{
     codec::Writer,
@@ -87,6 +88,7 @@ impl PackBuilder {
         let body = self.body_writer.finalize();
         let body_sha256 = tagged_hash(TaggedHashDomain::PackBody, &body);
         let header = PackHeader {
+            timestamp: wall_ms(),
             parents: self.parents,
             self_supersedes: self.self_supersedes,
             self_segments: self.self_segments,

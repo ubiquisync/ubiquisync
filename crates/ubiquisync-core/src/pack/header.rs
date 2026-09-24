@@ -14,6 +14,7 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
 pub struct PackHeader {
+    pub timestamp: u64,
     pub parents: Vec<PackRef>,
     /// The list of packs this pack file supersedes directly.
     /// This is used by GC to know when it is safe to delete a pack
@@ -84,6 +85,7 @@ const PACK_HEADER_VERSION: u8 = 0;
 impl PackHeader {
     pub fn encode(&self, w: &mut Writer) -> Result<(), WriteError> {
         w.write_byte(PACK_HEADER_VERSION); // version byte
+        w.write_var_u64(self.timestamp);
         w.write_vec(&self.parents, |w, x| x.encode(w))?;
         w.write_vec(&self.self_supersedes, |w, x| x.encode(w))?;
         w.write_vec(&self.self_segments, |w, x| x.encode(w))?;
@@ -97,12 +99,14 @@ impl PackHeader {
         if version != PACK_HEADER_VERSION {
             return Err(PackHeaderDecodeError::UnknownVersion(version));
         }
+        let timestamp = r.read_var_u64()?;
         let parents = r.read_vec(|r| PackRef::decode(r))?;
         let self_supersedes = r.read_vec(|r| PackRef::decode(r))?;
         let self_segments = r.read_vec(|r| SegmentDescriptor::decode(r))?;
         let peer_data = r.read_vec(|r| PeerData::decode(r))?;
         let body_sha256 = r.read_array()?;
         Ok(Self {
+            timestamp,
             parents,
             self_supersedes,
             self_segments,
@@ -249,21 +253,17 @@ impl SegmentDescriptor {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(test)]
     use secrecy::SecretBox;
     use test_case::test_case;
     use test_strategy::proptest;
 
     use crate::crypto::{SIG_ALGO_ED25519, SigningKey};
-    #[cfg(test)]
     use crate::pack::PackFileId;
     use crate::pack::{PackHeader, PackHeaderDecodeError, SignedPackHeader};
-    #[cfg(test)]
     use crate::{
         codec::{Reader, Writer},
         crypto::ed25519::Ed25519SigningKey,
     };
-    #[cfg(test)]
     use crate::{
         ids::PeerId,
         pack::{PackFileDescriptor, Topic},
@@ -286,7 +286,6 @@ mod tests {
         id: PackFileId,
         key: [u8; 32],
     ) {
-        // prop_assume!(!id.seqs.is_empty());
         let signing_key = Ed25519SigningKey::new(SecretBox::new(Box::new(key)));
         let mut desc = PackFileDescriptor {
             topic: Topic::new(&["test"]).unwrap(),
@@ -307,7 +306,7 @@ mod tests {
     }
 
     fn empty_header_bytes() -> Vec<u8> {
-        vec![0u8; 5 + 32] // version, 4 empty vecs, body hash
+        vec![0u8; 6 + 32] // version, empty timestamp, 4 empty vecs, body hash
     }
 
     #[test_case(|_| {} => matches Ok(_) ; "empty header")]
@@ -328,7 +327,7 @@ mod tests {
 
     #[test_case(|_| {} => matches Ok(()) ; "empty header")]
     #[test_case(|b| b.push(0) => matches Err(PackHeaderDecodeError::TrailingBytes) ; "trailing byte")]
-    #[test_case(|b| b[37] = 0xff => matches Err(PackHeaderDecodeError::UnknownSignatureType(0xff)) ; "unknown sig algo")]
+    #[test_case(|b| b[38] = 0xff => matches Err(PackHeaderDecodeError::UnknownSignatureType(0xff)) ; "unknown sig algo")]
     #[test_case(|b| b.truncate(50) => matches Err(PackHeaderDecodeError::Read(_)) ; "truncated signature")]
     fn decode_signed_pack_header(patch: fn(&mut Vec<u8>)) -> Result<(), PackHeaderDecodeError> {
         let mut b = empty_signed_header_bytes();

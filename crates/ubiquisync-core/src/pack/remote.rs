@@ -6,6 +6,8 @@ use std::{
 
 use thiserror::Error;
 
+use crate::hlc::wall_ms;
+
 #[async_trait::async_trait]
 pub trait FileRemote: Send + Sync {
     async fn list(&self, dir: &str) -> Result<Vec<DirEntry>, FileRemoteError>;
@@ -98,7 +100,7 @@ impl FileRemote for StdFsRemote {
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir)?;
         }
-        let temp_name = path.with_added_extension("temp");
+        let temp_name = path.with_added_extension(format!("temp-{:x}", wall_ms()));
         {
             let mut f = fs::File::create(&temp_name)?;
             f.write_all(data)?;
