@@ -11,51 +11,79 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
         self.iter_impl(|n| n.prepare_state == PrepareState::Inserted)
     }
 
-    fn iter_impl<F>(&self, is_inserted: F) -> impl Iterator<Item = &T>
+    fn iter_impl<'a, F>(&'a self, is_inserted: F) -> impl Iterator<Item = &'a T> + 'a
     where
-        F: Fn(&Node<Id, T>) -> bool,
+        F: Fn(&Node<Id, T>) -> bool + 'a,
     {
-        // we make a few optimizations here to limit memory use:
-        // - push the next tree walk operation onto the stack rather than iterating through everything at once
-        // - use a smallvec to avoid heap allocation for shallow trees
-        enum Todo<'b, Id, T> {
-            Traverse(&'b Node<Id, T>),
-            TraverseSiblings(&'b [NodeRef<Id>], usize),
-            Yield(&'b Node<Id, T>),
-        }
-        let mut stack: SmallVec<[Todo<'_, Id, T>; 16]> = smallvec![Todo::Traverse(&self.root)];
-        std::iter::from_fn(move || {
-            loop {
-                let top = stack.pop()?;
-                match top {
-                    Todo::Traverse(node) => {
-                        stack.push(Todo::Yield(node));
-                        if !node.left_children.is_empty() {
-                            stack.push(Todo::TraverseSiblings(&node.left_children, 0));
-                        }
-                    }
-                    Todo::TraverseSiblings(element_ids, idx) => {
-                        let n = element_ids.len();
-                        if idx < n {
-                            if idx + 1 < n {
-                                stack.push(Todo::TraverseSiblings(element_ids, idx + 1));
-                            }
+        let iter = Iter {
+            list: self,
+            stack: smallvec![IterStep {
+                node: &self.root,
+                sibling_idx: None
+            }],
+        };
+        iter.filter(move |n| is_inserted(*n))
+            .filter_map(|n| n.content.as_ref())
+    }
+}
 
-                            stack.push(Todo::Traverse(&self.nodes[element_ids[idx].index.0]));
+struct Iter<'a, Id, T> {
+    list: &'a List<Id, T>,
+    stack: SmallVec<[IterStep<'a, Id, T>; 16]>,
+}
+
+struct IterStep<'a, Id, T> {
+    node: &'a Node<Id, T>,
+    // none only for root
+    sibling_idx: Option<usize>,
+}
+
+impl<'a, Id, T> Iterator for Iter<'a, Id, T> {
+    type Item = &'a Node<Id, T>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(cur) = self.stack.pop() {
+                if let Some(parent) = self.stack.last().map(|n| n.node) {
+                    if let Some(sibling_idx) = cur.sibling_idx {
+                        let mut push_next_sibling = |children: &[NodeRef<Id>]| {
+                            let next_sibling_idx = sibling_idx + 1;
+                            if next_sibling_idx < children.len() {
+                                let next_sibling =
+                                    &self.list.nodes[children[next_sibling_idx].index.0];
+                                self.stack.push(IterStep {
+                                    node: next_sibling,
+                                    sibling_idx: Some(next_sibling_idx),
+                                });
+                            }
+                        };
+                        match cur.node.side {
+                            super::Side::Left => push_next_sibling(&parent.left_children),
+                            super::Side::Right => push_next_sibling(&parent.right_children),
                         }
+                    } else {
+                        unreachable!("parented node should have sibling index")
                     }
-                    Todo::Yield(node) => {
-                        if !node.right_children.is_empty() {
-                            stack.push(Todo::TraverseSiblings(&node.right_children, 0));
-                        }
-                        if let Some(ref content) = node.content
-                            && is_inserted(node)
-                        {
-                            return Some(content);
+                }
+
+                if let Some(right_id) = cur.node.right_children.first() {
+                    let mut cur = &self.list.nodes[right_id.index.0];
+                    loop {
+                        self.stack.push(IterStep {
+                            node: cur,
+                            sibling_idx: Some(0),
+                        });
+                        if let Some(left_id) = cur.left_children.first() {
+                            cur = &self.list.nodes[left_id.index.0]
+                        } else {
+                            break;
                         }
                     }
                 }
+                return Some(cur.node);
+            } else {
+                return None;
             }
-        })
+        }
     }
 }

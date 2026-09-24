@@ -1,6 +1,6 @@
 use crate::list::fugue::{
-    Delete, EffectError, ElementId, Insert, List, Node, NodeIdx, NodeRef, Op, PrepareError,
-    PrepareOp, PrepareState, Side,
+    Delete, EffectError, ElementId, Insert, List, Node, NodeBase, NodeIdx, NodeRef, Op,
+    PrepareError, PrepareOp, PrepareState, Side,
 };
 
 impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id, T> {
@@ -97,21 +97,25 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
         content: T,
     ) {
         let mut node = Node {
+            id,
             parent_id: parent_id.clone(),
             parent_index: None,
+            next_sibling: None,
             side,
-            left_children: vec![],
-            right_children: vec![],
-            content: Some(content),
+            content,
             effect_deleted: false,
-            effect_size: 1,
             prepare_state: PrepareState::UnInserted,
-            prepare_size: 0,
+            base: NodeBase {
+                first_left_child: None,
+                first_right_child: None,
+                effect_size: 1,
+                prepare_size: 0,
+            },
         };
 
         if self.pending_delete.remove(&id) {
             node.effect_deleted = true;
-            node.effect_size = 0;
+            node.base.effect_size = 0;
         }
 
         let index = NodeIdx(self.nodes.len());
@@ -126,13 +130,13 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
                 let pending_node = &mut self.nodes[pending_id.index.0];
                 pending_node.parent_index = Some(index);
                 match pending_node.side {
-                    Side::Left => insert_child(&mut node.left_children, pending_id),
-                    Side::Right => insert_child(&mut node.right_children, pending_id),
+                    Side::Left => node.base.first_left_child = self.insert_child(node.base.first_left_child, pending_id),
+                    Side::Right => node.base.first_right_child= self.insert_child(node.base.first_right_child, pending_id),
                 }
-                node.effect_size += pending_node.effect_size;
+                node.base.effect_size += pending_node.base.effect_size;
             }
         }
-        let effect_delta = node.effect_size;
+        let effect_delta = node.base.effect_size;
 
         // add node now that we're done mutating it
         // we can't do it with push_mut earlier, because we need a mutable ref self.node below for parent
@@ -157,8 +161,8 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
                 None => (&mut self.root, None),
             };
             match side {
-                Side::Left => insert_child(&mut parent.left_children, node_ref),
-                Side::Right => insert_child(&mut parent.right_children, node_ref),
+                Side::Left => self.insert_child(&mut parent.left_children, node_ref),
+                Side::Right => self.insert_child(&mut parent.right_children, node_ref),
             }
             self.visit_ancestors(parent_id, parent_index, |parent| {
                 parent.effect_size += effect_delta;
@@ -178,7 +182,7 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
                     return Ok(false);
                 }
                 node.effect_deleted = true;
-                node.effect_size = node.effect_size.checked_sub(1).expect("non-zero");
+                node.base.effect_size = node.base.effect_size.checked_sub(1).expect("non-zero");
                 Ok(true)
             },
             |parent| parent.effect_size = parent.effect_size.checked_sub(1).expect("non-zero"),
@@ -198,7 +202,7 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
             |node| match node.prepare_state {
                 PrepareState::UnInserted => {
                     node.prepare_state = PrepareState::Inserted;
-                    node.prepare_size += 1;
+                    node.base.prepare_size += 1;
                     Ok(true)
                 }
                 _ => Err(PrepareError::InvalidState),
@@ -214,7 +218,8 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
             |node| match node.prepare_state {
                 PrepareState::Inserted => {
                     node.prepare_state = PrepareState::UnInserted;
-                    node.prepare_size = node.prepare_size.checked_sub(1).expect("non-zero");
+                    node.base.prepare_size =
+                        node.base.prepare_size.checked_sub(1).expect("non-zero");
                     Ok(true)
                 }
                 _ => Err(PrepareError::InvalidState),
@@ -236,7 +241,8 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
                 node.prepare_state = PrepareState::Deleted(delete_count + 1);
                 if delete_count == 0 {
                     // only update parents when this is the first tracked delete
-                    node.prepare_size = node.prepare_size.checked_sub(1).expect("non-zero");
+                    node.base.prepare_size =
+                        node.base.prepare_size.checked_sub(1).expect("non-zero");
                     Ok(true)
                 } else {
                     Ok(false)
@@ -259,7 +265,7 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
                 };
                 if delete_count == 1 {
                     node.prepare_state = PrepareState::Inserted;
-                    node.prepare_size += 1;
+                    node.base.prepare_size += 1;
                     Ok(true)
                 } else {
                     node.prepare_state = PrepareState::Deleted(delete_count - 1);
@@ -280,7 +286,7 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
     ) -> Result<(), Err>
     where
         F: Fn(&mut Node<Id, T>) -> Result<bool, Err>,
-        G: Fn(&mut Node<Id, T>),
+        G: Fn(&mut NodeBase),
         H: Fn() -> Result<(), Err>,
     {
         if let Some(index) = self.nodes_by_id.get(&id) {
@@ -305,15 +311,14 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
         mut parent_index: Option<NodeIdx>,
         f: F,
     ) where
-        F: Fn(&mut Node<Id, T>),
+        F: Fn(&mut NodeBase),
     {
-        let mut saw_root = false;
         loop {
             let parent = match (parent_id, parent_index) {
                 (Some(_), Some(idx)) => &mut self.nodes[idx.0],
                 (None, None) => {
-                    saw_root = true;
-                    &mut self.root
+                    f(&mut self.root);
+                    return;
                 }
                 (Some(_), None) => {
                     // this is okay, we just have hit a pending parent state which will be addressed when the parent is inserted
@@ -324,21 +329,18 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
                 }
             };
 
-            f(parent);
-            if saw_root {
-                return;
-            }
-
+            f(&mut parent.base);
             parent_id = parent.parent_id.clone();
             parent_index = parent.parent_index;
         }
     }
-}
 
-fn insert_child<Id: PartialEq + PartialOrd + Eq + Ord>(
-    children: &mut Vec<NodeRef<Id>>,
-    id: NodeRef<Id>,
-) {
-    children.push(id);
-    children.sort_by(|a, b| a.id.cmp(&b.id));
+    fn insert_child(
+        &mut self,
+        mut first_child: Option<NodeIdx>,
+        id: NodeRef<Id>,
+    ) -> Option<NodeIdx> {
+        todo!()
+        first_child
+    }
 }

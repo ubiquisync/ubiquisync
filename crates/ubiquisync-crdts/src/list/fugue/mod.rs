@@ -52,7 +52,7 @@ pub enum Side {
 }
 
 pub struct List<Id, T> {
-    root: Node<Id, T>,
+    root: NodeBase,
     nodes: Vec<Node<Id, T>>,
     nodes_by_id: HashMap<ElementId<Id>, NodeIdx>,
     // nodes who are missing their parent, keyed by the parent ID
@@ -88,18 +88,22 @@ struct NodeRef<Id> {
 }
 
 struct Node<Id, T> {
+    id: ElementId<Id>,
     parent_id: Option<ElementId<Id>>,
     parent_index: Option<NodeIdx>,
+    next_sibling: Option<NodeIdx>,
     side: Side,
-    left_children: Vec<NodeRef<Id>>,
-    right_children: Vec<NodeRef<Id>>,
-    // content is None only if this is the root pseudo-node
-    content: Option<T>,
-
+    content: T,
+    base: NodeBase,
     effect_deleted: bool,
-    effect_size: usize,
-
     prepare_state: PrepareState,
+}
+
+struct NodeBase {
+    first_left_child: Option<NodeIdx>,
+    first_right_child: Option<NodeIdx>,
+
+    effect_size: usize,
     prepare_size: usize,
 }
 
@@ -119,16 +123,10 @@ struct InsertPosition<Id> {
 impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> Default for List<Id, T> {
     fn default() -> Self {
         Self {
-            root: Node {
-                parent_id: None,
-                parent_index: None,
-                left_children: vec![],
-                right_children: vec![],
-                content: None,
-                side: Side::Right,
-                effect_deleted: false,
+            root: NodeBase {
+                first_left_child: None,
+                first_right_child: None,
                 effect_size: 0,
-                prepare_state: PrepareState::Inserted,
                 prepare_size: 0,
             },
             nodes: vec![],
@@ -148,28 +146,28 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
     }
 }
 
-impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> Node<Id, T> {
-    fn size(&self, view: View) -> usize {
-        match view {
-            View::Effect => self.effect_size,
-            View::Prepare => self.prepare_size,
-        }
-    }
+// impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> Node<Id, T> {
+//     fn size(&self, view: View) -> usize {
+//         match view {
+//             View::Effect => self.effect_size,
+//             View::Prepare => self.prepare_size,
+//         }
+//     }
 
-    fn inserted(&self, view: View) -> bool {
-        match view {
-            View::Effect => !self.effect_deleted,
-            View::Prepare => self.prepare_state == PrepareState::Inserted,
-        }
-    }
+//     fn inserted(&self, view: View) -> bool {
+//         match view {
+//             View::Effect => !self.effect_deleted,
+//             View::Prepare => self.prepare_state == PrepareState::Inserted,
+//         }
+//     }
 
-    fn not_uninserted(&self, view: View) -> bool {
-        match view {
-            View::Effect => true,
-            View::Prepare => self.prepare_state != PrepareState::UnInserted,
-        }
-    }
-}
+//     fn not_uninserted(&self, view: View) -> bool {
+//         match view {
+//             View::Effect => true,
+//             View::Prepare => self.prepare_state != PrepareState::UnInserted,
+//         }
+//     }
+// }
 
 impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> Walkable<Id>
     for List<Id, T>
