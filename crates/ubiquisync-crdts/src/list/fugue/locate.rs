@@ -58,7 +58,7 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
         offset: usize,
     ) -> Result<InsertPosition, LogicalOpError> {
         let left_origin = self.find_before_offset(view, offset)?;
-        let right_origin = self.node_iter(left_origin).next().map(|n| n.node_ref.index);
+        let right_origin = self.node_iter(left_origin).nth(1).map(|n| n.node_ref.index);
 
         let left_base = if let Some(left_origin) = left_origin {
             &self.node(left_origin).base

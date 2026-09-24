@@ -19,7 +19,8 @@ fn sim_list(mut rng: impl Rng) {
     const NUM_PEERS: usize = 5;
     const ROUNDS: usize = 500;
     let mut lists: [List<OpId, char>; NUM_PEERS] = Default::default();
-    let mut oplog: [Vec<Op<OpId, char>>; NUM_PEERS] = Default::default();
+    type OpLog = [Vec<(ElementId<(usize, usize)>, Op<(usize, usize), char>)>; NUM_PEERS];
+    let mut oplog: OpLog = Default::default();
     let mut frontiers: [[usize; NUM_PEERS]; NUM_PEERS] = Default::default();
     for _ in 0..ROUNDS {
         let peer = rng.random_range(0..NUM_PEERS);
@@ -27,7 +28,7 @@ fn sim_list(mut rng: impl Rng) {
         let size = list.size(View::Effect);
         let mut string: String = list.iter().collect();
 
-        let ops = if rng.random::<bool>() || size == 0 {
+        let op = if rng.random::<bool>() || size == 0 {
             // insert
             let offset = if size == 0 {
                 0
@@ -36,17 +37,17 @@ fn sim_list(mut rng: impl Rng) {
             };
             let content_size = rng.random_range(1..=16);
             let content = Alphanumeric.sample_string(&mut rng, content_size);
-            let insert = list.create_insert(View::Effect, offset, content.chars().collect());
-            let op_idx = oplog[peer].len();
-            let id = ElementId {
-                op_id: (peer, op_idx),
-                index: 0,
-            };
-
             // perform the same op against a str to compare
             string.insert_str(offset, &content);
 
-            vec![Op::Insert { id, insert }]
+            list.logical_to_physical(
+                View::Effect,
+                LogicalOp::Insert {
+                    offset: offset as u64,
+                    content: content.chars().collect(),
+                },
+            )
+            .unwrap()
         } else {
             // delete
             let offset = rng.random_range(0..size);
@@ -61,13 +62,24 @@ fn sim_list(mut rng: impl Rng) {
                 string.remove(offset);
             }
 
-            list.create_delete(View::Effect, offset, count)
+            list.logical_to_physical(
+                View::Effect,
+                LogicalOp::Delete {
+                    offset: offset as u64,
+                    count: count as u64,
+                },
+            )
+            .unwrap()
         };
 
-        for op in ops {
-            list.apply_op(op.clone()).unwrap();
-            oplog[peer].push(op);
-        }
+        let op_idx = oplog[peer].len();
+        let id = ElementId {
+            op_id: (peer, op_idx),
+            index: 0,
+        };
+
+        list.apply(id.clone(), op.clone()).unwrap();
+        oplog[peer].push((id, op));
         frontiers[peer][peer] = oplog[peer].len();
 
         // compare manipulating a string to the current state of the list
@@ -89,8 +101,8 @@ fn sim_list(mut rng: impl Rng) {
                 }
                 let new_read_size = rng.random_range(cur_read_size..=available_size);
                 let list = &mut lists[i];
-                for op in oplog[j][cur_read_size..new_read_size].iter() {
-                    list.apply_op(op.clone()).unwrap();
+                for (id, op) in oplog[j][cur_read_size..new_read_size].iter() {
+                    list.apply(id.clone(), op.clone()).unwrap();
                 }
                 frontiers[i][j] = new_read_size;
             }
@@ -106,8 +118,8 @@ fn sim_list(mut rng: impl Rng) {
             }
 
             let cur_read_size = frontiers[i][j];
-            for op in oplog[j][cur_read_size..].iter() {
-                lists[i].apply_op(op.clone()).unwrap();
+            for (id, op) in oplog[j][cur_read_size..].iter() {
+                lists[i].apply(id.clone(), op.clone()).unwrap();
             }
         }
     }
@@ -126,7 +138,7 @@ type OpId = (usize, usize);
 //     const ROUNDS: usize = 500;
 
 //     enum EgWalkerOp<T> {
-//         Observe { frontiers: [usize; NUM_PEERS] },
+//         Observe { frontiers: [usizeop.clone(); NUM_PEERS] },
 //         Insert { offset: usize, content: Vec<T> },
 //         Delete { offset: usize, count: usize },
 //     }

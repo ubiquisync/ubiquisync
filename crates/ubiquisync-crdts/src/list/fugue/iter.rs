@@ -1,6 +1,6 @@
-use crate::list::fugue::{List, Node, NodeBase, NodeIdx, PrepareState};
+use crate::list::fugue::{List, Node, NodeIdx, PrepareState};
 
-impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id, T> {
+impl<Id: Clone, T> List<Id, T> {
     pub fn iter(&self) -> impl Iterator<Item = &T> {
         self.iter_impl(|n| !n.effect_deleted)
     }
@@ -18,34 +18,37 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
             .map(|n| &n.content)
     }
 
-    pub fn node_iter<'a>(&'a self, start: Option<NodeIdx>) -> Iter<'a, Id, T> {
+    pub(crate) fn node_iter<'a>(&'a self, start: Option<NodeIdx>) -> Iter<'a, Id, T> {
         Iter {
             list: self,
             next: start
                 .map(|idx| &self.nodes[idx.0])
-                .or(self.root.first_right_child.map(|idx| &self.nodes[idx.0])),
+                .or(self.root.first_right_child.map(|i| self.leftmost(i))),
+        }
+    }
+
+    fn leftmost(&self, idx: NodeIdx) -> &Node<Id, T> {
+        let mut node = &self.nodes[idx.0];
+        loop {
+            if let Some(left_id) = node.first_left_child {
+                node = &self.nodes[left_id.0];
+            } else {
+                return node;
+            }
         }
     }
 }
 
-struct Iter<'a, Id, T> {
+pub(crate) struct Iter<'a, Id, T> {
     list: &'a List<Id, T>,
     next: Option<&'a Node<Id, T>>,
 }
+
 impl<'a, Id: Clone, T> Iterator for Iter<'a, Id, T> {
     type Item = &'a Node<Id, T>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let leftmost = |next_id: NodeIdx| {
-            let mut next = &self.list.nodes[next_id.0];
-            loop {
-                if let Some(left_id) = next.first_left_child {
-                    next = &self.list.nodes[left_id.0];
-                } else {
-                    return Some(next);
-                }
-            }
-        };
+        let leftmost = |next_id: NodeIdx| Some(self.list.leftmost(next_id));
 
         let cur = self.next?;
         if let Some(right_idx) = cur.base.first_right_child {
@@ -80,6 +83,7 @@ impl<'a, Id: Clone, T> Iterator for Iter<'a, Id, T> {
                                             // so we need to go to its parent
                                             super::Parent::Root => {
                                                 self.next = None;
+                                                break;
                                             }
                                             super::Parent::Node { side, .. } => {
                                                 if let Some(parent_parent_idx) = parent.parent_index
@@ -101,6 +105,7 @@ impl<'a, Id: Clone, T> Iterator for Iter<'a, Id, T> {
                                                     }
                                                 } else {
                                                     self.next = None;
+                                                    break;
                                                 }
                                             }
                                         }

@@ -83,7 +83,7 @@ pub enum PrepareError {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct NodeIdx(usize);
+pub(crate) struct NodeIdx(usize);
 
 #[derive(Debug, Clone)]
 struct NodeRef<Id> {
@@ -93,7 +93,7 @@ struct NodeRef<Id> {
     index: NodeIdx,
 }
 
-struct Node<Id, T> {
+pub(crate) struct Node<Id, T> {
     node_ref: NodeRef<Id>,
     parent: Parent<Id>,
     parent_index: Option<NodeIdx>,

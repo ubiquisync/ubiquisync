@@ -335,6 +335,9 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
                         f(&mut parent_node.base);
                         parent = parent_node.parent.clone();
                         parent_index = parent_node.parent_index;
+                    } else {
+                        // parent is pending
+                        return;
                     }
                 }
             }
