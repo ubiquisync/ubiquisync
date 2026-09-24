@@ -27,8 +27,7 @@ pub enum Op<Id, T> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Insert<Id, T> {
-    parent_id: Option<ElementId<Id>>,
-    side: Side,
+    parent: Parent<Id>,
     right_origin: Option<ElementId<Id>>,
     content: Vec<T>,
 }
@@ -49,6 +48,12 @@ pub enum PrepareOp<Id> {
 pub enum Side {
     Left,
     Right,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Parent<Id> {
+    Root,
+    Node { id: ElementId<Id>, side: Side },
 }
 
 pub struct List<Id, T> {
@@ -89,18 +94,17 @@ struct NodeRef<Id> {
 
 struct Node<Id, T> {
     id: ElementId<Id>,
-    parent_id: Option<ElementId<Id>>,
+    parent: Parent<Id>,
     parent_index: Option<NodeIdx>,
     next_sibling: Option<NodeIdx>,
-    side: Side,
     content: T,
     base: NodeBase,
     effect_deleted: bool,
     prepare_state: PrepareState,
+    first_left_child: Option<NodeIdx>,
 }
 
 struct NodeBase {
-    first_left_child: Option<NodeIdx>,
     first_right_child: Option<NodeIdx>,
 
     effect_size: usize,
@@ -124,7 +128,6 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> Default
     fn default() -> Self {
         Self {
             root: NodeBase {
-                first_left_child: None,
                 first_right_child: None,
                 effect_size: 0,
                 prepare_size: 0,
@@ -146,28 +149,30 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
     }
 }
 
-// impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> Node<Id, T> {
-//     fn size(&self, view: View) -> usize {
-//         match view {
-//             View::Effect => self.effect_size,
-//             View::Prepare => self.prepare_size,
-//         }
-//     }
+impl NodeBase {
+    fn size(&self, view: View) -> usize {
+        match view {
+            View::Effect => self.effect_size,
+            View::Prepare => self.prepare_size,
+        }
+    }
+}
 
-//     fn inserted(&self, view: View) -> bool {
-//         match view {
-//             View::Effect => !self.effect_deleted,
-//             View::Prepare => self.prepare_state == PrepareState::Inserted,
-//         }
-//     }
+impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> Node<Id, T> {
+    fn inserted(&self, view: View) -> bool {
+        match view {
+            View::Effect => !self.effect_deleted,
+            View::Prepare => self.prepare_state == PrepareState::Inserted,
+        }
+    }
 
-//     fn not_uninserted(&self, view: View) -> bool {
-//         match view {
-//             View::Effect => true,
-//             View::Prepare => self.prepare_state != PrepareState::UnInserted,
-//         }
-//     }
-// }
+    fn not_uninserted(&self, view: View) -> bool {
+        match view {
+            View::Effect => true,
+            View::Prepare => self.prepare_state != PrepareState::UnInserted,
+        }
+    }
+}
 
 impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> Walkable<Id>
     for List<Id, T>

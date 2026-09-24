@@ -1,6 +1,4 @@
-use smallvec::{SmallVec, smallvec};
-
-use crate::list::fugue::{List, Node, NodeRef, PrepareState};
+use crate::list::fugue::{List, Node, NodeIdx, PrepareState};
 
 impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id, T> {
     pub fn iter(&self) -> impl Iterator<Item = &T> {
@@ -15,75 +13,92 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
     where
         F: Fn(&Node<Id, T>) -> bool + 'a,
     {
-        let iter = Iter {
+        self.node_iter(None)
+            .filter(move |n| is_inserted(*n))
+            .map(|n| &n.content)
+    }
+
+    fn node_iter<'a>(&'a self, start: Option<&'a Node<Id, T>>) -> Iter<'a, Id, T> {
+        Iter {
             list: self,
-            stack: smallvec![IterStep {
-                node: &self.root,
-                sibling_idx: None
-            }],
-        };
-        iter.filter(move |n| is_inserted(*n))
-            .filter_map(|n| n.content.as_ref())
+            next: start.or(self.root.first_right_child.map(|idx| &self.nodes[idx.0])),
+        }
     }
 }
 
 struct Iter<'a, Id, T> {
     list: &'a List<Id, T>,
-    stack: SmallVec<[IterStep<'a, Id, T>; 16]>,
+    next: Option<&'a Node<Id, T>>,
 }
-
-struct IterStep<'a, Id, T> {
-    node: &'a Node<Id, T>,
-    // none only for root
-    sibling_idx: Option<usize>,
-}
-
 impl<'a, Id, T> Iterator for Iter<'a, Id, T> {
     type Item = &'a Node<Id, T>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            if let Some(cur) = self.stack.pop() {
-                if let Some(parent) = self.stack.last().map(|n| n.node) {
-                    if let Some(sibling_idx) = cur.sibling_idx {
-                        let mut push_next_sibling = |children: &[NodeRef<Id>]| {
-                            let next_sibling_idx = sibling_idx + 1;
-                            if next_sibling_idx < children.len() {
-                                let next_sibling =
-                                    &self.list.nodes[children[next_sibling_idx].index.0];
-                                self.stack.push(IterStep {
-                                    node: next_sibling,
-                                    sibling_idx: Some(next_sibling_idx),
-                                });
-                            }
-                        };
-                        match cur.node.side {
-                            super::Side::Left => push_next_sibling(&parent.left_children),
-                            super::Side::Right => push_next_sibling(&parent.right_children),
-                        }
-                    } else {
-                        unreachable!("parented node should have sibling index")
-                    }
+        let leftmost = |next_id: NodeIdx| {
+            let mut next = &self.list.nodes[next_id.0];
+            loop {
+                if let Some(left_id) = next.base.first_left_child {
+                    next = &self.list.nodes[left_id.0];
+                } else {
+                    return Some(next);
                 }
+            }
+        };
 
-                if let Some(right_id) = cur.node.right_children.first() {
-                    let mut cur = &self.list.nodes[right_id.index.0];
-                    loop {
-                        self.stack.push(IterStep {
-                            node: cur,
-                            sibling_idx: Some(0),
-                        });
-                        if let Some(left_id) = cur.left_children.first() {
-                            cur = &self.list.nodes[left_id.index.0]
-                        } else {
-                            break;
+        let cur = self.next?;
+        if let Some(right_idx) = cur.base.first_right_child {
+            // first we traverse to our left-most right child, if there is one
+            self.next = leftmost(right_idx);
+        } else if let Some(sib_idx) = cur.next_sibling {
+            // otherwise we traverse our next sibling, if there is one
+            self.next = leftmost(sib_idx);
+        } else {
+            // otherwise, we go up to our parent
+            if let Some(parent_idx) = cur.parent_index {
+                let mut parent = &self.list.nodes[parent_idx.0];
+                match cur.side {
+                    // if we were on the left side of the parent then the parent is next
+                    super::Side::Left => self.next = Some(parent),
+                    // if we were on the right side of the parent, then we go its siblings or parents
+                    super::Side::Right => {
+                        // here we need to loop until we find something
+                        loop {
+                            if let Some(sib_idx) = parent.next_sibling {
+                                // parent had a sibling, so we take its left-most child
+                                self.next = leftmost(sib_idx);
+                                break;
+                            } else {
+                                // parent doesn't have a sibling, and we were the last right child,
+                                // so we need to go to its parent
+                                if let Some(parent_parent_idx) = parent.parent_index {
+                                    let parent_parent = &self.list.nodes[parent_parent_idx.0];
+                                    match parent.side {
+                                        super::Side::Left => {
+                                            // if we were on the left of parent's parent, then it's next
+                                            self.next = Some(parent_parent);
+                                            break;
+                                        }
+                                        super::Side::Right => {
+                                            // we were the last right child of this parent, so we need
+                                            // to continue traversing up the tree
+                                            parent = parent_parent;
+                                            continue;
+                                        }
+                                    }
+                                } else {
+                                    // at the end of traversal (we reached the root)
+                                    self.next = None;
+                                    break;
+                                }
+                            }
                         }
                     }
                 }
-                return Some(cur.node);
             } else {
-                return None;
+                // at the end of traversal (we reached the root)
+                self.next = None;
             }
         }
+        Some(cur)
     }
 }

@@ -62,7 +62,7 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
 
     /// Finds the node right before the offset position, so for 0, it will return root,
     /// and 1 will return the first element
-    fn find_before_offset(&self, view: View, offset: usize) -> Option<NodeRef<Id>> {
+    fn find_before_offset(&self, view: View, offset: usize) -> Option<NodeIdx> {
         if offset > self.root.size(view) {
             todo!("out of range")
         }
@@ -110,120 +110,120 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
         }
     }
 
-    /// Finds the first node inserted or deleted node to the right of n.
-    /// Basically we want to traverse logically to the right for the left-most node
-    /// that is to the right of this node (if any)
-    fn successor(&self, view: View, n: &Option<NodeRef<Id>>) -> Option<NodeRef<Id>> {
-        let node = &self.resolve(n);
-        if let Some(right) = node
-            .right_children
-            .iter()
-            .find(|c| self.nodes[c.index.0].not_uninserted(view))
-        {
-            Some(self.leftmost(view, right.clone()))
-        } else {
-            if let Some(n) = n {
-                // try ascending to the parent and then this node's next sibling's left most
-                self.parent_next_sibling(node, view, n)
-            } else {
-                // we are at the root and the root is empty
-                None
-            }
-        }
-    }
+    // /// Finds the first node inserted or deleted node to the right of n.
+    // /// Basically we want to traverse logically to the right for the left-most node
+    // /// that is to the right of this node (if any)
+    // fn successor(&self, view: View, n: &Option<NodeRef<Id>>) -> Option<NodeRef<Id>> {
+    //     let node = &self.resolve(n);
+    //     if let Some(right) = node
+    //         .right_children
+    //         .iter()
+    //         .find(|c| self.nodes[c.index.0].not_uninserted(view))
+    //     {
+    //         Some(self.leftmost(view, right.clone()))
+    //     } else {
+    //         if let Some(n) = n {
+    //             // try ascending to the parent and then this node's next sibling's left most
+    //             self.parent_next_sibling(node, view, n)
+    //         } else {
+    //             // we are at the root and the root is empty
+    //             None
+    //         }
+    //     }
+    // }
 
-    fn parent_next_sibling(
-        &self,
-        node: &Node<Id, T>,
-        view: View,
-        id: &NodeRef<Id>,
-    ) -> Option<NodeRef<Id>> {
-        // check if alrady at root, if we are return None because we can't ascend any further
-        node.content.as_ref()?;
+    // fn parent_next_sibling(
+    //     &self,
+    //     node: &Node<Id, T>,
+    //     view: View,
+    //     id: &NodeRef<Id>,
+    // ) -> Option<NodeRef<Id>> {
+    //     // check if alrady at root, if we are return None because we can't ascend any further
+    //     node.content.as_ref()?;
 
-        // find this node's parent and that parents ref
-        let (parent, parent_ref) = match (&node.parent_id, node.parent_index) {
-            (Some(id), Some(index)) => (
-                &self.nodes[index.0],
-                Some(NodeRef {
-                    id: id.clone(),
-                    index,
-                }),
-            ),
-            (None, None) => (&self.root, None),
-            _ => unreachable!(),
-        };
+    //     // find this node's parent and that parents ref
+    //     let (parent, parent_ref) = match (&node.parent_id, node.parent_index) {
+    //         (Some(id), Some(index)) => (
+    //             &self.nodes[index.0],
+    //             Some(NodeRef {
+    //                 id: id.clone(),
+    //                 index,
+    //             }),
+    //         ),
+    //         (None, None) => (&self.root, None),
+    //         _ => unreachable!(),
+    //     };
 
-        match node.side {
-            // if this node is on the left side of the parent,
-            // find it's next sibling and then return that next sibling's leftmost node
-            // or return the parent itself
-            Side::Left => {
-                if let Some(sib) = self.next_sibling(&parent.left_children, view, id) {
-                    Some(self.leftmost(view, sib))
-                } else {
-                    parent_ref
-                }
-            }
-            // if this node is on the right side of the parent
-            // find it's next sibling and then return that next sibling's leftmost node
-            // or return the parent's next sibling (there is nothing to the right under this parent
-            // so we assume if there is a node to the right it is somwhere in the traversal where
-            // the parent is on the left side of some other node)
-            Side::Right => {
-                if let Some(sib) = self.next_sibling(&parent.right_children, view, id) {
-                    Some(self.leftmost(view, sib))
-                } else {
-                    if let Some(ref parent_ref) = parent_ref {
-                        self.parent_next_sibling(parent, view, parent_ref)
-                    } else {
-                        // we are already at the root so we can't go any higher
-                        None
-                    }
-                }
-            }
-        }
-    }
+    //     match node.side {
+    //         // if this node is on the left side of the parent,
+    //         // find it's next sibling and then return that next sibling's leftmost node
+    //         // or return the parent itself
+    //         Side::Left => {
+    //             if let Some(sib) = self.next_sibling(&parent.left_children, view, id) {
+    //                 Some(self.leftmost(view, sib))
+    //             } else {
+    //                 parent_ref
+    //             }
+    //         }
+    //         // if this node is on the right side of the parent
+    //         // find it's next sibling and then return that next sibling's leftmost node
+    //         // or return the parent's next sibling (there is nothing to the right under this parent
+    //         // so we assume if there is a node to the right it is somwhere in the traversal where
+    //         // the parent is on the left side of some other node)
+    //         Side::Right => {
+    //             if let Some(sib) = self.next_sibling(&parent.right_children, view, id) {
+    //                 Some(self.leftmost(view, sib))
+    //             } else {
+    //                 if let Some(ref parent_ref) = parent_ref {
+    //                     self.parent_next_sibling(parent, view, parent_ref)
+    //                 } else {
+    //                     // we are already at the root so we can't go any higher
+    //                     None
+    //                 }
+    //             }
+    //         }
+    //     }
+    // }
 
-    /// Finds the left most inserted or deleted child of n or n
-    fn leftmost(&self, view: View, mut n: NodeRef<Id>) -> NodeRef<Id> {
-        loop {
-            if let Some(child) = self
-                .not_uninserted_children(view, &self.nodes[n.index.0].left_children)
-                .next()
-            {
-                n = child.clone();
-            } else {
-                return n.clone();
-            }
-        }
-    }
+    // /// Finds the left most inserted or deleted child of n or n
+    // fn leftmost(&self, view: View, mut n: NodeRef<Id>) -> NodeRef<Id> {
+    //     loop {
+    //         if let Some(child) = self
+    //             .not_uninserted_children(view, &self.nodes[n.index.0].left_children)
+    //             .next()
+    //         {
+    //             n = child.clone();
+    //         } else {
+    //             return n.clone();
+    //         }
+    //     }
+    // }
 
-    fn not_uninserted_children<'a>(
-        &self,
-        view: View,
-        children: &'a [NodeRef<Id>],
-    ) -> impl Iterator<Item = &'a NodeRef<Id>> {
-        children
-            .iter()
-            .filter(move |c| self.nodes[c.index.0].not_uninserted(view))
-    }
+    // fn not_uninserted_children<'a>(
+    //     &self,
+    //     view: View,
+    //     children: &'a [NodeRef<Id>],
+    // ) -> impl Iterator<Item = &'a NodeRef<Id>> {
+    //     children
+    //         .iter()
+    //         .filter(move |c| self.nodes[c.index.0].not_uninserted(view))
+    // }
 
-    fn next_sibling(
-        &self,
-        children: &[NodeRef<Id>],
-        view: View,
-        id: &NodeRef<Id>,
-    ) -> Option<NodeRef<Id>> {
-        self.not_uninserted_children(view, children)
-            .tuple_windows()
-            .filter_map(|(l, sib)| {
-                if l.id == id.id {
-                    Some(sib.clone())
-                } else {
-                    None
-                }
-            })
-            .next()
-    }
+    // fn next_sibling(
+    //     &self,
+    //     children: &[NodeRef<Id>],
+    //     view: View,
+    //     id: &NodeRef<Id>,
+    // ) -> Option<NodeRef<Id>> {
+    //     self.not_uninserted_children(view, children)
+    //         .tuple_windows()
+    //         .filter_map(|(l, sib)| {
+    //             if l.id == id.id {
+    //                 Some(sib.clone())
+    //             } else {
+    //                 None
+    //             }
+    //         })
+    //         .next()
+    // }
 }

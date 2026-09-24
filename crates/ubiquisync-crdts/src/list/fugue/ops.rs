@@ -1,6 +1,5 @@
 use crate::list::fugue::{
-    Delete, EffectError, ElementId, Insert, List, Node, NodeBase, NodeIdx, NodeRef, Op,
-    PrepareError, PrepareOp, PrepareState, Side,
+    Delete, EffectError, ElementId, Insert, List, Node, NodeBase, NodeIdx, NodeRef, Op, Parent, PrepareError, PrepareOp, PrepareState, Side
 };
 
 impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id, T> {
@@ -11,21 +10,20 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
     ) -> Result<PrepareOp<Id>, EffectError> {
         match op {
             Op::Insert(Insert {
-                mut parent_id,
-                mut side,
+                mut parent,
                 // TODO FugueMax
                 right_origin: _,
                 content,
             }) => {
                 let len = content.len();
                 for c in content {
-                    self.insert(id.clone(), parent_id, side, c);
-                    parent_id = Some(id.clone());
-                    id = ElementId {
-                        op_id: id.op_id,
+                    self.insert(id.clone(), parent, c);
+                    let next_id  = ElementId {
+                        op_id: id.op_id.clone(),
                         index: id.index + 1,
                     };
-                    side = Side::Right;
+                    parent = Parent::Node { id, side: Side::Right };
+                    id = next_id;
                 }
                 Ok(PrepareOp::Insert {
                     id,
@@ -92,21 +90,19 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
     fn insert(
         &mut self,
         id: ElementId<Id>,
-        parent_id: Option<ElementId<Id>>,
-        side: Side,
+        parent: Parent<Id>,
         content: T,
     ) {
         let mut node = Node {
-            id,
-            parent_id: parent_id.clone(),
+            id: id.clone(),
+            parent: parent.clone(),
             parent_index: None,
             next_sibling: None,
-            side,
             content,
             effect_deleted: false,
             prepare_state: PrepareState::UnInserted,
+            first_left_child: None,
             base: NodeBase {
-                first_left_child: None,
                 first_right_child: None,
                 effect_size: 1,
                 prepare_size: 0,
@@ -127,50 +123,53 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
         // first see if any pending entries were waiting for this one
         if let Some(pending) = self.pending_parent.remove(&id) {
             for pending_id in pending {
-                let pending_node = &mut self.nodes[pending_id.index.0];
-                pending_node.parent_index = Some(index);
-                match pending_node.side {
-                    Side::Left => node.base.first_left_child = self.insert_child(node.base.first_left_child, pending_id),
-                    Side::Right => node.base.first_right_child= self.insert_child(node.base.first_right_child, pending_id),
+                let pidx = pending_id.index;
+                self.node_mut(pidx).parent_index = Some(index);
+                let pending_node_parent = &self.node(pidx).parent;
+                match pending_node_parent {
+                    Parent::Root => unreachable!(),
+                    Parent::Node {  side, .. } => match side {
+                        Side::Left => node.first_left_child = self.insert_child(node.first_left_child, pending_id),
+                        Side::Right => node.base.first_right_child= self.insert_child(node.base.first_right_child, pending_id),
+                    },
                 }
-                node.base.effect_size += pending_node.base.effect_size;
+                node.base.effect_size += self.node(pidx).base.effect_size;
             }
         }
         let effect_delta = node.base.effect_size;
 
-        // add node now that we're done mutating it
+        // add node now that we're mostly done mutating it
         // we can't do it with push_mut earlier, because we need a mutable ref self.node below for parent
         self.nodes.push(node);
         self.nodes_by_id.insert(id, index);
 
-        let parent_index = {
-            let (parent, parent_index) = match parent_id {
-                Some(ref parent_id) => {
-                    // check if we can resolve this entry's parent
-                    if let Some(parent_index) = self.nodes_by_id.get(parent_id) {
-                        (&mut self.nodes[parent_index.0], Some(*parent_index))
-                    } else {
-                        // add to pending id list
-                        self.pending_parent
-                            .entry(parent_id.clone())
-                            .or_default()
-                            .push(node_ref);
-                        return;
+        let parent_index = match &parent {
+            Parent::Root => {
+                self.root.first_right_child = self.insert_child(self.root.first_right_child, node_ref);
+                None
+            },
+            Parent::Node { id, side } => {
+                if let Some(parent_index) = self.nodes_by_id.get(&id).cloned() {
+                    self.nodes[index.0].parent_index = Some(parent_index);
+                    let parent_node = &self.nodes[parent_index.0];
+                    match side {
+                        Side::Left => self.node_mut(parent_index).first_left_child = self.insert_child(parent_node.first_left_child, node_ref),
+                        Side::Right => self.node_mut(parent_index).base.first_right_child = self.insert_child(parent_node.base.first_right_child, node_ref),
                     }
+                    Some(parent_index)
+                } else {
+                    // add to pending id list
+                    self.pending_parent
+                        .entry(id.clone())
+                        .or_default()
+                        .push(node_ref);
+                    return;
                 }
-                None => (&mut self.root, None),
-            };
-            match side {
-                Side::Left => self.insert_child(&mut parent.left_children, node_ref),
-                Side::Right => self.insert_child(&mut parent.right_children, node_ref),
-            }
-            self.visit_ancestors(parent_id, parent_index, |parent| {
-                parent.effect_size += effect_delta;
-            });
-
-            parent_index
+            },
         };
-        self.nodes[index.0].parent_index = parent_index;
+        self.visit_ancestors(parent.clone(), parent_index, |parent| {
+            parent.effect_size += effect_delta;
+        });
     }
 
     fn delete(&mut self, id: ElementId<Id>) -> Result<(), EffectError> {
@@ -290,15 +289,14 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
         H: Fn() -> Result<(), Err>,
     {
         if let Some(index) = self.nodes_by_id.get(&id) {
-            let (parent_id, parent_index) = {
-                let node = &mut self.nodes[index.0];
-                if !visit_node(node)? {
-                    return Ok(());
-                }
-                (node.parent_id.clone(), node.parent_index)
-            };
+            let node = &mut self.nodes[index.0];
+            if !visit_node(node)? {
+                return Ok(());
+            }
+            // need to stop borrowing mutably
+            let node = &self.nodes[index.0];
 
-            self.visit_ancestors(parent_id, parent_index, visit_ancestor);
+            self.visit_ancestors(node.parent.clone(), node.parent_index, visit_ancestor);
             Ok(())
         } else {
             not_found()
@@ -307,40 +305,44 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
 
     fn visit_ancestors<F>(
         &mut self,
-        mut parent_id: Option<ElementId<Id>>,
+        mut parent: Parent<Id>,
         mut parent_index: Option<NodeIdx>,
         f: F,
     ) where
         F: Fn(&mut NodeBase),
     {
         loop {
-            let parent = match (parent_id, parent_index) {
-                (Some(_), Some(idx)) => &mut self.nodes[idx.0],
-                (None, None) => {
+            match parent {
+                Parent::Root => {
                     f(&mut self.root);
                     return;
-                }
-                (Some(_), None) => {
-                    // this is okay, we just have hit a pending parent state which will be addressed when the parent is inserted
-                    return;
-                }
-                (None, Some(_)) => {
-                    unreachable!("there should never be an index set for an empty parent (root)")
-                }
-            };
-
-            f(&mut parent.base);
-            parent_id = parent.parent_id.clone();
-            parent_index = parent.parent_index;
+                },
+                Parent::Node { .. } => if let Some(idx) = parent_index {
+                    let parent_node = &mut self.nodes[idx.0];
+                    f(&mut parent_node.base);
+                    parent = parent_node.parent.clone();
+                    parent_index = parent_node.parent_index;
+                },
+            }
         }
     }
 
     fn insert_child(
         &mut self,
-        mut first_child: Option<NodeIdx>,
+        first_child: Option<NodeIdx>,
         id: NodeRef<Id>,
     ) -> Option<NodeIdx> {
-        todo!()
-        first_child
+        let cur = if let Some(first_child_idx) = first_child {
+        } else {
+            Some(id.index)
+        }
+    }
+
+    fn node(&self, idx: NodeIdx) -> &Node<Id, T> {
+        &self.nodes[idx.0]
+    }
+
+    fn node_mut(&self, idx: NodeIdx) -> &mut Node<Id, T> {
+        &mut self.nodes[idx.0]
     }
 }
