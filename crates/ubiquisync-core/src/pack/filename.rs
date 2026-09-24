@@ -8,7 +8,7 @@ use std::{
 
 use thiserror::Error;
 
-use crate::ids::PeerId;
+use crate::{crypto::Hasher, ids::PeerId};
 
 use crate::{
     codec::{ReadError, Reader, WriteError, Writer},
@@ -16,9 +16,43 @@ use crate::{
 };
 
 pub struct PackFileDescriptor {
-    pub topic: PathBuf,
+    pub topic: Topic,
     pub peer_id: PeerId,
-    pub name: PackFileId,
+    pub id: PackFileId,
+}
+
+/// A topic if composed of one or more lowercase ASCII alphanumeric segments.
+pub struct Topic(Vec<String>);
+
+#[derive(Debug, Error)]
+#[error("invalid characters in topic")]
+pub struct TopicError;
+
+impl Topic {
+    pub fn new<S: AsRef<str>>(parts: &[S]) -> Result<Self, TopicError> {
+        let res = Self(parts.iter().map(|s| s.as_ref().to_string()).collect());
+        res.validate()?;
+        Ok(res)
+    }
+
+    pub fn validate(&self) -> Result<(), TopicError> {
+        for part in self.0.iter() {
+            if part.is_empty()
+                || !part
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || c.is_ascii_lowercase())
+            {
+                return Err(TopicError);
+            }
+        }
+        Ok(())
+    }
+}
+
+impl From<Topic> for PathBuf {
+    fn from(value: Topic) -> Self {
+        value.0.iter().collect()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -106,6 +140,21 @@ impl FromStr for PackFileId {
         }
 
         Ok(id)
+    }
+}
+
+impl PackFileDescriptor {
+    pub(crate) fn hash(&self, hasher: &mut Hasher) -> Result<(), WriteError> {
+        let mut w = Writer::new();
+        self.id.encode(&mut w)?;
+        let id_bytes = w.finalize();
+        hasher.update(&id_bytes);
+        hasher.update(&self.peer_id.0);
+        hasher.update_varint(self.topic.0.len() as u64);
+        for p in self.topic.0.iter() {
+            hasher.update_len_prefixed(p.as_bytes());
+        }
+        Ok(())
     }
 }
 

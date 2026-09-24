@@ -97,6 +97,14 @@ impl Writer {
         }
     }
 
+    pub fn len(&self) -> usize {
+        self.buf.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.buf.is_empty()
+    }
+
     pub fn finalize(self) -> Vec<u8> {
         self.buf
     }

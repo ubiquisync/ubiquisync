@@ -165,11 +165,22 @@ pub fn encode_segment_opaque<'a: 'b, 'b>(
     entries: impl Iterator<Item = &'b OpaqueLogEntry<'a>>,
 ) -> Result<Vec<u8>, SegmentEncodeError> {
     let mut w = Writer::new();
+    encode_segment_opaque_writer(signature, prev_chain, start_cipher, entries, &mut w)?;
+    Ok(w.finalize())
+}
+
+pub fn encode_segment_opaque_writer<'a: 'b, 'b>(
+    signature: &Signature,
+    prev_chain: &ChainHash,
+    start_cipher: &Option<CipherInfo>,
+    entries: impl Iterator<Item = &'b OpaqueLogEntry<'a>>,
+    w: &mut Writer,
+) -> Result<(), SegmentEncodeError> {
     let mut entries = entries.peekable();
     let header = SegmentHeader::init_opaque(*signature, *prev_chain, *start_cipher, entries.peek());
-    header.encode(&mut w)?;
-    encode_entries(entries, &mut w)?;
-    Ok(w.finalize())
+    header.encode(w)?;
+    encode_entries(entries, w)?;
+    Ok(())
 }
 
 pub async fn encode_segment_plaintext<'a: 'b, 'b>(
@@ -181,6 +192,28 @@ pub async fn encode_segment_plaintext<'a: 'b, 'b>(
     entries: &'b [PlaintextLogEntry<'a>],
 ) -> Result<Vec<u8>, SegmentEncodeError> {
     let mut w = Writer::new();
+    encode_segment_plaintext_writer(
+        signature,
+        prev_chain,
+        start_cipher,
+        log_id,
+        key_resolver,
+        entries,
+        &mut w,
+    )
+    .await?;
+    Ok(w.finalize())
+}
+
+pub async fn encode_segment_plaintext_writer<'a: 'b, 'b>(
+    signature: &Signature,
+    prev_chain: &ChainHash,
+    start_cipher: &Option<CipherInfo>,
+    log_id: &LogId,
+    key_resolver: &dyn CipherKeyResolver,
+    entries: &'b [PlaintextLogEntry<'a>],
+    w: &mut Writer,
+) -> Result<(), SegmentEncodeError> {
     let (header, cipher) = SegmentHeader::init_plaintext(
         *signature,
         *prev_chain,
@@ -190,14 +223,14 @@ pub async fn encode_segment_plaintext<'a: 'b, 'b>(
         entries,
     )
     .await?;
-    header.encode(&mut w)?;
+    header.encode(w)?;
     let buf = if let Some((cipher, nonce)) = cipher {
         encode_compress_encrypt_entries(&cipher, prev_chain, &nonce, entries.iter())
     } else {
         encode_compress_entries(entries.iter())
     }?;
     w.write_slice(buf.as_slice());
-    Ok(w.finalize())
+    Ok(())
 }
 
 pub fn decode_entries<'a, B, T>(

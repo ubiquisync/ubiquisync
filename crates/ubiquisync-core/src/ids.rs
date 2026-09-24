@@ -9,7 +9,7 @@ pub struct LogId {
     pub container_id: ContainerId,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
 pub struct PeerId(pub [u8; 32]);
 

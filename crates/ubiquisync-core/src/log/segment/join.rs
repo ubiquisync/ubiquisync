@@ -1,13 +1,14 @@
 use thiserror::Error;
 
 use crate::{
+    codec::Writer,
     crypto::CipherKeyResolver,
     log::{
         ChainHash, ChainHashError, LogEntry, LogHashContext, SegmentCipherError,
         entries_to_plaintext,
         segment::{
             DecodedEntries, SegmentDecodeError, SegmentEncodeError, SegmentReader,
-            encode_segment_plaintext,
+            encode_segment_plaintext_writer,
         },
     },
 };
@@ -32,6 +33,7 @@ pub async fn join_segments<'a, B: AsRef<[u8]> + 'a>(
     key_resolver: &dyn CipherKeyResolver,
     hash_ctx: &LogHashContext,
     bodies: &'a [B],
+    writer: &mut Writer,
 ) -> Result<JoinedSegmentData, JoinSegmentsError> {
     let mut prev_chain = None;
     let mut chain_hash = None;
@@ -102,19 +104,19 @@ pub async fn join_segments<'a, B: AsRef<[u8]> + 'a>(
         && let Some(chain_hash) = chain_hash
         && let Some(sig) = sig
     {
-        let body = encode_segment_plaintext(
+        encode_segment_plaintext_writer(
             &sig,
             &prev_chain,
             &start_cipher,
             hash_ctx.log_id(),
             key_resolver,
             &all_entries,
+            writer,
         )
         .await?;
         Ok(JoinedSegmentData {
             prev_chain,
             chain_hash,
-            body,
         })
     } else {
         Err(JoinSegmentsError::Empty)
@@ -124,7 +126,6 @@ pub async fn join_segments<'a, B: AsRef<[u8]> + 'a>(
 pub struct JoinedSegmentData {
     pub prev_chain: ChainHash,
     pub chain_hash: ChainHash,
-    pub body: Vec<u8>,
 }
 
 #[cfg(test)]
@@ -134,6 +135,8 @@ mod tests {
     use secrecy::{ExposeSecret, SecretBox};
     use test_strategy::proptest;
 
+    #[cfg(test)]
+    use crate::codec::Writer;
     use crate::crypto::RootKey256;
     use crate::log::LogEntry;
     use crate::log::segment::join::join_segments;
@@ -219,13 +222,15 @@ mod tests {
             last_data = Some(data);
         }
         let last_data = last_data.unwrap();
-        let joined = join_segments(&key_resolver, &last_data.seed, &bodies)
+        let mut w = Writer::new();
+        let joined = join_segments(&key_resolver, &last_data.seed, &bodies, &mut w)
             .await
             .unwrap();
+        let body = w.finalize();
         assert_eq!(start_chain.unwrap(), joined.prev_chain);
         assert_eq!(end_chain.unwrap(), joined.chain_hash);
 
-        let reader = SegmentReader::start(&joined.body).unwrap();
+        let reader = SegmentReader::start(&body).unwrap();
         let decoded = reader
             .read(&key_resolver, last_data.seed.log_id())
             .await
