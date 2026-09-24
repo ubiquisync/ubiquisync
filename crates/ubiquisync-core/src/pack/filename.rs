@@ -49,9 +49,9 @@ impl Topic {
     }
 }
 
-impl Into<PathBuf> for Topic {
-    fn into(self) -> PathBuf {
-        self.0.iter().collect()
+impl From<Topic> for PathBuf {
+    fn from(value: Topic) -> Self {
+        value.0.iter().collect()
     }
 }
 

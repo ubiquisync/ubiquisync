@@ -249,13 +249,25 @@ impl SegmentDescriptor {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(test)]
+    use secrecy::SecretBox;
     use test_case::test_case;
     use test_strategy::proptest;
 
+    use crate::crypto::{SIG_ALGO_ED25519, SigningKey};
     #[cfg(test)]
-    use crate::codec::{Reader, Writer};
-    use crate::crypto::SIG_ALGO_ED25519;
-    use crate::pack::{PackHeader, PackHeaderDecodeError};
+    use crate::pack::PackFileId;
+    use crate::pack::{PackHeader, PackHeaderDecodeError, SignedPackHeader};
+    #[cfg(test)]
+    use crate::{
+        codec::{Reader, Writer},
+        crypto::ed25519::Ed25519SigningKey,
+    };
+    #[cfg(test)]
+    use crate::{
+        ids::PeerId,
+        pack::{PackFileDescriptor, Topic},
+    };
 
     #[proptest]
     fn roundtrip_pack_header(header: PackHeader) {
@@ -267,20 +279,61 @@ mod tests {
         assert_eq!(header, decoded);
     }
 
+    #[proptest]
+    fn roundtrip_signed_pack_header(
+        header: PackHeader,
+        peer_id: PeerId,
+        id: PackFileId,
+        key: [u8; 32],
+    ) {
+        // prop_assume!(!id.seqs.is_empty());
+        let signing_key = Ed25519SigningKey::new(SecretBox::new(Box::new(key)));
+        let mut desc = PackFileDescriptor {
+            topic: Topic::new(&["test"]).unwrap(),
+            peer_id,
+            id,
+        };
+
+        let signed = header.sign(&signing_key, &desc).unwrap();
+        let mut w = Writer::new();
+        signed.encode(&mut w).unwrap();
+        let decoded = SignedPackHeader::decode(&w.finalize()).unwrap();
+        assert_eq!(decoded.header, header);
+        decoded.verify(&signing_key.verifying_key(), &desc).unwrap();
+
+        // message with one field changed, say generation breaks the signature
+        desc.id.generation += 1;
+        assert!(decoded.verify(&signing_key.verifying_key(), &desc).is_err());
+    }
+
     fn empty_header_bytes() -> Vec<u8> {
-        let mut b = vec![0u8; 5 + 32]; // version, 4 empty vecs, body hash
-        b
+        vec![0u8; 5 + 32] // version, 4 empty vecs, body hash
     }
 
     #[test_case(|_| {} => matches Ok(_) ; "empty header")]
     #[test_case(|b| b[0] = 1 => matches Err(PackHeaderDecodeError::UnknownVersion(1)) ; "unknown version")]
-    #[test_case(|b| b.push(0) => matches Err(PackHeaderDecodeError::TrailingBytes) ; "trailing byte")]
     #[test_case(|b| b.truncate(3) => matches Err(PackHeaderDecodeError::Read(_)) ; "truncated")]
-    #[test_case(|b| b[37] = 0xff => matches Err(PackHeaderDecodeError::UnknownSignatureType(0xff)) ; "unknown sig algo")]
     fn decode_pack_header(patch: fn(&mut Vec<u8>)) -> Result<PackHeader, PackHeaderDecodeError> {
         let mut b = empty_header_bytes();
         patch(&mut b);
-        let mut r = Reader::new(&b);
-        PackHeader::decode(&mut r)
+        PackHeader::decode(&mut Reader::new(&b))
+    }
+
+    fn empty_signed_header_bytes() -> Vec<u8> {
+        let mut b = empty_header_bytes();
+        b.push(SIG_ALGO_ED25519);
+        b.extend([0u8; 64]);
+        b
+    }
+
+    #[test_case(|_| {} => matches Ok(()) ; "empty header")]
+    #[test_case(|b| b.push(0) => matches Err(PackHeaderDecodeError::TrailingBytes) ; "trailing byte")]
+    #[test_case(|b| b[37] = 0xff => matches Err(PackHeaderDecodeError::UnknownSignatureType(0xff)) ; "unknown sig algo")]
+    #[test_case(|b| b.truncate(50) => matches Err(PackHeaderDecodeError::Read(_)) ; "truncated signature")]
+    fn decode_signed_pack_header(patch: fn(&mut Vec<u8>)) -> Result<(), PackHeaderDecodeError> {
+        let mut b = empty_signed_header_bytes();
+        patch(&mut b);
+        // map to () since SignedPackHeader doesn't derive Debug
+        SignedPackHeader::decode(&b).map(|_| ())
     }
 }
