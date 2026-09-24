@@ -92,8 +92,14 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
     }
 
     fn insert(&mut self, id: ElementId<Id>, parent: Parent<Id>, content: T) {
-        let mut node = Node {
+        let index = NodeIdx(self.nodes.len());
+        let node_ref = NodeRef {
             id: id.clone(),
+            index,
+        };
+
+        let mut node = Node {
+            node_ref: node_ref.clone(),
             parent: parent.clone(),
             parent_index: None,
             next_sibling: None,
@@ -112,12 +118,6 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
             node.effect_deleted = true;
             node.base.effect_size = 0;
         }
-
-        let index = NodeIdx(self.nodes.len());
-        let node_ref = NodeRef {
-            id: id.clone(),
-            index,
-        };
 
         // first see if any pending entries were waiting for this one
         if let Some(pending) = self.pending_parent.remove(&id) {
@@ -348,7 +348,7 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
             let mut prev = None;
             let mut next = first;
             loop {
-                if new_id < self.node(next).id {
+                if new_id < self.node(next).node_ref.id {
                     self.node_mut(new_idx).next_sibling = Some(next);
                     if let Some(prev) = prev {
                         self.node_mut(prev).next_sibling = Some(new_idx);

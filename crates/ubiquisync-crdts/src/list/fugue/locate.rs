@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 use crate::{
-    list::fugue::{Delete, Insert, InsertPosition, List, Node, NodeBase, NodeIdx, NodeRef, Side},
+    list::fugue::{Delete, Insert, InsertPosition, List, Node, NodeBase, NodeIdx, Parent, Side},
     walker::View,
 };
 
@@ -19,11 +19,17 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
         content: Vec<T>,
     ) -> Result<Insert<Id, T>, LogicalOpError> {
         let pos = self.find_insert_position(view, offset)?;
-        Insert {
-            parent: pos.parent,
-            right_origin: pos.right_origin.map(|r| r.id),
+        Ok(Insert {
+            parent: pos
+                .parent
+                .map(|p| Parent::Node {
+                    id: self.node(p).node_ref.id.clone(),
+                    side: pos.side,
+                })
+                .unwrap_or(Parent::Root),
+            right_origin: pos.right_origin.map(|r| self.node(r).node_ref.id.clone()),
             content,
-        }
+        })
     }
 
     pub fn create_delete(
@@ -36,7 +42,7 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
         for i in 0..count {
             if let Some(idx) = self.find_before_offset(view, offset + i + 1)? {
                 deletes.push(Delete {
-                    id: self.node(idx).id.clone(),
+                    id: self.node(idx).node_ref.id.clone(),
                     count: 1,
                 });
             } else {
@@ -50,27 +56,36 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
         &self,
         view: View,
         offset: usize,
-    ) -> Result<Insert<Id, T>, LogicalOpError> {
+    ) -> Result<InsertPosition, LogicalOpError> {
         let left_origin = self.find_before_offset(view, offset)?;
-        let right_origin = self.node_iter(left_origin).next();
+        let right_origin = self.node_iter(left_origin).next().map(|n| n.node_ref.index);
 
-        if self
-            .not_uninserted_children(view, &self.resolve(&left_origin).right_children)
-            .next()
-            .is_none()
-        {
-            InsertPosition {
-                parent: left_origin,
-                side: Side::Right,
-                right_origin,
-            }
+        let left_base = if let Some(left_origin) = left_origin {
+            &self.node(left_origin).base
         } else {
-            InsertPosition {
-                parent: right_origin,
-                side: Side::Left,
-                right_origin: None,
-            }
-        }
+            &self.root
+        };
+
+        Ok(
+            if left_base
+                .right_children(self)
+                .filter(|n| n.not_uninserted(view))
+                .next()
+                .is_none()
+            {
+                InsertPosition {
+                    parent: left_origin,
+                    side: Side::Right,
+                    right_origin,
+                }
+            } else {
+                InsertPosition {
+                    parent: right_origin,
+                    side: Side::Left,
+                    right_origin: None,
+                }
+            },
+        )
     }
 
     // fn resolve(&self, n: &Option<NodeRef<Id>>) -> &Node<Id, T> {
@@ -252,16 +267,16 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
         FindNodeResult::NotFound
     }
 
-    fn search_in_children(
-        &self,
+    fn search_in_children<'a>(
+        &'a self,
         view: View,
-        children: impl Iterator<Item = NodeIdx>,
+        children: impl Iterator<Item = &'a Node<Id, T>>,
         target: &mut usize,
     ) -> Option<NodeIdx> {
-        for idx in children {
-            let n = self.node(idx).size(view);
+        for node in children {
+            let n = node.size(view);
             if *target < n {
-                return Some(idx);
+                return Some(node.node_ref.index);
             } else {
                 *target -= n;
             }
@@ -280,13 +295,13 @@ impl NodeBase {
     pub(crate) fn right_children<'a, Id, T>(
         &'a self,
         list: &'a List<Id, T>,
-    ) -> impl Iterator<Item = NodeIdx> {
+    ) -> impl Iterator<Item = &'a Node<Id, T>> {
         let mut right = self.first_right_child;
         std::iter::from_fn(move || {
             if let Some(idx) = right {
                 let node = list.node(idx);
                 right = node.next_sibling;
-                Some(idx)
+                Some(node)
             } else {
                 None
             }
@@ -298,13 +313,13 @@ impl<Id, T> Node<Id, T> {
     pub(crate) fn left_children<'a>(
         &'a self,
         list: &'a List<Id, T>,
-    ) -> impl Iterator<Item = NodeIdx> + 'a {
+    ) -> impl Iterator<Item = &'a Node<Id, T>> + 'a {
         let mut left = self.first_left_child;
         std::iter::from_fn(move || {
             if let Some(idx) = left {
                 let node = list.node(idx);
                 left = node.next_sibling;
-                Some(idx)
+                Some(node)
             } else {
                 None
             }

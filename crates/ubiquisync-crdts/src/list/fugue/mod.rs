@@ -10,6 +10,7 @@ use thiserror::Error;
 
 use crate::{
     id::ElementId,
+    list::fugue::locate::LogicalOpError,
     walker::{CountableOp, View, Walkable},
 };
 
@@ -93,7 +94,7 @@ struct NodeRef<Id> {
 }
 
 struct Node<Id, T> {
-    id: ElementId<Id>,
+    node_ref: NodeRef<Id>,
     parent: Parent<Id>,
     parent_index: Option<NodeIdx>,
     next_sibling: Option<NodeIdx>,
@@ -118,9 +119,10 @@ enum PrepareState {
     Deleted(usize),
 }
 
-struct InsertPosition<Id> {
-    parent: Parent<Id>,
-    right_origin: Option<NodeRef<Id>>,
+struct InsertPosition {
+    parent: Option<NodeIdx>,
+    side: Side,
+    right_origin: Option<NodeIdx>,
 }
 
 impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> Default for List<Id, T> {
@@ -186,7 +188,7 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> Walkabl
 
     type PrepareOp = PrepareOp<Id>;
 
-    type LogicalOpErr = ();
+    type LogicalOpErr = LogicalOpError;
 
     type EffectErr = EffectError;
 
@@ -200,11 +202,11 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> Walkabl
         Ok(match op {
             LogicalOp::Insert { offset, content } => {
                 // TODO safely convert size, could come from wire
-                Op::Insert(self.create_insert(view, offset as usize, content))
+                Op::Insert(self.create_insert(view, offset as usize, content)?)
             }
             LogicalOp::Delete { offset, count } => {
                 // TODO safely convert size, could come from wire
-                Op::Delete(self.create_delete(view, offset as usize, count as usize))
+                Op::Delete(self.create_delete(view, offset as usize, count as usize)?)
             }
         })
     }

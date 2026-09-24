@@ -18,7 +18,7 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
             .map(|n| &n.content)
     }
 
-    pub(crate) fn node_iter<'a>(&'a self, start: Option<NodeIdx>) -> Iter<'a, Id, T> {
+    pub fn node_iter<'a>(&'a self, start: Option<NodeIdx>) -> Iter<'a, Id, T> {
         Iter {
             list: self,
             next: start
