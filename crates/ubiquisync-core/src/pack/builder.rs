@@ -52,14 +52,8 @@ impl PackBuilder {
     ) -> Result<(), PackBuildError> {
         // TODO we can skip joining segments when there's only one segment
         let body_start = self.body_writer.len() as u64;
-        let joined =
-            match join_segments(key_resolver, hash_ctx, segments, &mut self.body_writer).await {
-                Ok(joined) => joined,
-                Err(e) => {
-                    self.body_writer.truncate(body_start as usize);
-                    return Err(e.into());
-                }
-            };
+        // note that a failure here may leave some body bytes written, but this is mostly harmless and in most cases any error will cause the caller to abandon building the pack anyway
+        let joined = join_segments(key_resolver, hash_ctx, segments, &mut self.body_writer).await?;
         let body_end = self.body_writer.len() as u64;
         let idx_range = joined.prev_chain.size..joined.chain_hash.size;
         if idx_range.is_empty() {

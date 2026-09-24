@@ -97,10 +97,6 @@ impl Writer {
         }
     }
 
-    pub fn truncate(&mut self, new_len: usize) {
-        self.buf.truncate(new_len);
-    }
-
     pub fn len(&self) -> usize {
         self.buf.len()
     }

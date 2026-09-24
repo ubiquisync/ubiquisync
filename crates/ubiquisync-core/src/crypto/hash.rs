@@ -22,7 +22,7 @@ pub struct Hasher(Sha256);
 
 /// A tagged hash domain that is 16 bytes or shorter.
 #[derive(IntoStaticStr, EnumIter, Debug, Clone, Copy, PartialEq, Eq)]
-#[strum(prefix = "ubq1/h/")]
+#[strum(prefix = "ubq1h/")]
 pub enum TaggedHashDomain {
     ChainSeed,
     ChainHash,

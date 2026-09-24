@@ -269,8 +269,6 @@ mod tests {
 
     fn empty_header_bytes() -> Vec<u8> {
         let mut b = vec![0u8; 5 + 32]; // version, 4 empty vecs, body hash
-        b.push(SIG_ALGO_ED25519);
-        b.extend([0u8; 64]);
         b
     }
 

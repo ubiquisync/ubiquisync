@@ -21,6 +21,7 @@ pub struct PackFileDescriptor {
     pub id: PackFileId,
 }
 
+/// A topic if composed of one or more lowercase ASCII alphanumeric segments.
 pub struct Topic(Vec<String>);
 
 #[derive(Debug, Error)]
@@ -30,12 +31,17 @@ pub struct TopicError;
 impl Topic {
     pub fn new<S: AsRef<str>>(parts: &[S]) -> Result<Self, TopicError> {
         let res = Self(parts.iter().map(|s| s.as_ref().to_string()).collect());
+        res.validate()?;
         Ok(res)
     }
 
     pub fn validate(&self) -> Result<(), TopicError> {
         for part in self.0.iter() {
-            if part.is_empty() || !part.chars().all(|c| c.is_ascii_alphanumeric()) {
+            if part.is_empty()
+                || !part
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || c.is_ascii_lowercase())
+            {
                 return Err(TopicError);
             }
         }

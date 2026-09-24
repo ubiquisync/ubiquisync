@@ -1,4 +1,8 @@
-use std::{fs, io::ErrorKind, path::PathBuf};
+use std::{
+    fs,
+    io::{ErrorKind, Write},
+    path::PathBuf,
+};
 
 use thiserror::Error;
 
@@ -16,13 +20,13 @@ type BoxError = Box<dyn core::error::Error + Send + Sync>;
 pub enum FileRemoteError {
     #[error("fatal error: {0}")]
     Fatal(BoxError),
-    #[error("transient error: {0}")]
-    Transient(BoxError),
+    #[error("other error, possibly transient: {0}")]
+    Other(BoxError),
 }
 
 impl From<std::io::Error> for FileRemoteError {
     fn from(e: std::io::Error) -> Self {
-        Self::Transient(Box::new(e))
+        Self::Other(Box::new(e))
     }
 }
 
@@ -44,7 +48,17 @@ pub enum FileType {
 impl FileRemote for StdFsRemote {
     async fn list(&self, dir: &str) -> Result<Vec<DirEntry>, FileRemoteError> {
         let mut res = vec![];
-        for e in fs::read_dir(self.root.join(dir))? {
+        let dir_res = match fs::read_dir(self.root.join(dir)) {
+            Ok(res) => res,
+            Err(e) => {
+                if e.kind() == ErrorKind::NotFound {
+                    return Ok(vec![]);
+                } else {
+                    return Err(e.into());
+                }
+            }
+        };
+        for e in dir_res {
             let e = e?;
             let file_type = e.file_type()?;
             let file_type = if file_type.is_file() {
@@ -80,12 +94,18 @@ impl FileRemote for StdFsRemote {
     }
 
     async fn write(&self, path: &str, data: &[u8]) -> Result<(), FileRemoteError> {
-        // TODO do we need to do any sort of fsync or writing to a tempfile and renaming first?
         let path = self.root.join(path);
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir)?;
         }
-        fs::write(path, data)?;
+        let temp_name = path.with_added_extension("temp");
+        {
+            let mut f = fs::File::create(&temp_name)?;
+            f.write_all(data)?;
+            f.sync_all()?;
+        }
+        fs::rename(temp_name, path)?;
+
         Ok(())
     }
 
