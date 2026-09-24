@@ -1,4 +1,4 @@
-use crate::list::fugue::{List, Node, NodeIdx, PrepareState};
+use crate::list::fugue::{List, Node, NodeBase, NodeIdx, PrepareState};
 
 impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id, T> {
     pub fn iter(&self) -> impl Iterator<Item = &T> {
@@ -18,10 +18,12 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
             .map(|n| &n.content)
     }
 
-    fn node_iter<'a>(&'a self, start: Option<&'a Node<Id, T>>) -> Iter<'a, Id, T> {
+    pub(crate) fn node_iter<'a>(&'a self, start: Option<NodeIdx>) -> Iter<'a, Id, T> {
         Iter {
             list: self,
-            next: start.or(self.root.first_right_child.map(|idx| &self.nodes[idx.0])),
+            next: start
+                .map(|idx| &self.nodes[idx.0])
+                .or(self.root.first_right_child.map(|idx| &self.nodes[idx.0])),
         }
     }
 }
@@ -30,14 +32,14 @@ struct Iter<'a, Id, T> {
     list: &'a List<Id, T>,
     next: Option<&'a Node<Id, T>>,
 }
-impl<'a, Id, T> Iterator for Iter<'a, Id, T> {
+impl<'a, Id: Clone, T> Iterator for Iter<'a, Id, T> {
     type Item = &'a Node<Id, T>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let leftmost = |next_id: NodeIdx| {
             let mut next = &self.list.nodes[next_id.0];
             loop {
-                if let Some(left_id) = next.base.first_left_child {
+                if let Some(left_id) = next.first_left_child {
                     next = &self.list.nodes[left_id.0];
                 } else {
                     return Some(next);
@@ -54,49 +56,62 @@ impl<'a, Id, T> Iterator for Iter<'a, Id, T> {
             self.next = leftmost(sib_idx);
         } else {
             // otherwise, we go up to our parent
-            if let Some(parent_idx) = cur.parent_index {
-                let mut parent = &self.list.nodes[parent_idx.0];
-                match cur.side {
-                    // if we were on the left side of the parent then the parent is next
-                    super::Side::Left => self.next = Some(parent),
-                    // if we were on the right side of the parent, then we go its siblings or parents
-                    super::Side::Right => {
-                        // here we need to loop until we find something
-                        loop {
-                            if let Some(sib_idx) = parent.next_sibling {
-                                // parent had a sibling, so we take its left-most child
-                                self.next = leftmost(sib_idx);
-                                break;
-                            } else {
-                                // parent doesn't have a sibling, and we were the last right child,
-                                // so we need to go to its parent
-                                if let Some(parent_parent_idx) = parent.parent_index {
-                                    let parent_parent = &self.list.nodes[parent_parent_idx.0];
-                                    match parent.side {
-                                        super::Side::Left => {
-                                            // if we were on the left of parent's parent, then it's next
-                                            self.next = Some(parent_parent);
-                                            break;
-                                        }
-                                        super::Side::Right => {
-                                            // we were the last right child of this parent, so we need
-                                            // to continue traversing up the tree
-                                            parent = parent_parent;
-                                            continue;
+            match cur.parent {
+                super::Parent::Root => {
+                    self.next = None;
+                }
+                super::Parent::Node { side, .. } => {
+                    if let Some(parent_idx) = cur.parent_index {
+                        let mut parent = self.list.node(parent_idx);
+                        match side {
+                            // if we were on the left side of the parent then the parent is next
+                            super::Side::Left => self.next = Some(parent),
+                            // if we were on the right side of the parent, then we go its siblings or parents
+                            super::Side::Right => {
+                                // here we need to loop until we find something
+                                loop {
+                                    if let Some(sib_idx) = parent.next_sibling {
+                                        // parent had a sibling, so we take its left-most child
+                                        self.next = leftmost(sib_idx);
+                                        break;
+                                    } else {
+                                        match parent.parent {
+                                            // parent doesn't have a sibling, and we were the last right child,
+                                            // so we need to go to its parent
+                                            super::Parent::Root => {
+                                                self.next = None;
+                                            }
+                                            super::Parent::Node { side, .. } => {
+                                                if let Some(parent_parent_idx) = parent.parent_index
+                                                {
+                                                    let parent_parent =
+                                                        self.list.node(parent_parent_idx);
+                                                    match side {
+                                                        super::Side::Left => {
+                                                            // if we were on the left of parent's parent, then it's next
+                                                            self.next = Some(parent_parent);
+                                                            break;
+                                                        }
+                                                        super::Side::Right => {
+                                                            // we were the last right child of this parent, so we need
+                                                            // to continue traversing up the tree
+                                                            parent = parent_parent;
+                                                            continue;
+                                                        }
+                                                    }
+                                                } else {
+                                                    self.next = None;
+                                                }
+                                            }
                                         }
                                     }
-                                } else {
-                                    // at the end of traversal (we reached the root)
-                                    self.next = None;
-                                    break;
                                 }
                             }
                         }
+                    } else {
+                        self.next = None;
                     }
                 }
-            } else {
-                // at the end of traversal (we reached the root)
-                self.next = None;
             }
         }
         Some(cur)

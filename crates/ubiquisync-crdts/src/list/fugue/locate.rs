@@ -1,39 +1,59 @@
-use itertools::Itertools;
+use thiserror::Error;
 
 use crate::{
-    list::fugue::{Delete, Insert, InsertPosition, List, Node, NodeRef, Side},
+    list::fugue::{Delete, Insert, InsertPosition, List, Node, NodeBase, NodeIdx, NodeRef, Side},
     walker::View,
 };
 
+#[derive(Error, Debug)]
+pub enum LogicalOpError {
+    #[error("out of range")]
+    OutOfRange,
+}
+
 impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id, T> {
-    pub fn create_insert(&self, view: View, offset: usize, content: Vec<T>) -> Insert<Id, T> {
-        let pos = self.find_insert_position(view, offset);
+    pub fn create_insert(
+        &self,
+        view: View,
+        offset: usize,
+        content: Vec<T>,
+    ) -> Result<Insert<Id, T>, LogicalOpError> {
+        let pos = self.find_insert_position(view, offset)?;
         Insert {
-            parent_id: pos.parent.map(|r| r.id),
-            side: pos.side,
+            parent: pos.parent,
             right_origin: pos.right_origin.map(|r| r.id),
             content,
         }
     }
 
-    pub fn create_delete(&self, view: View, offset: usize, count: usize) -> Vec<Delete<Id>> {
+    pub fn create_delete(
+        &self,
+        view: View,
+        offset: usize,
+        count: usize,
+    ) -> Result<Vec<Delete<Id>>, LogicalOpError> {
         let mut deletes = vec![];
         for i in 0..count {
-            if let Some(node_ref) = self.find_before_offset(view, offset + i + 1) {
+            if let Some(idx) = self.find_before_offset(view, offset + i + 1)? {
                 deletes.push(Delete {
-                    id: node_ref.id.clone(),
+                    id: self.node(idx).id.clone(),
                     count: 1,
                 });
             } else {
-                // TODO error
+                return Err(LogicalOpError::OutOfRange);
             }
         }
-        deletes
+        Ok(deletes)
     }
 
-    fn find_insert_position(&self, view: View, offset: usize) -> InsertPosition<Id> {
-        let left_origin = self.find_before_offset(view, offset);
-        let right_origin = self.successor(view, &left_origin);
+    fn find_insert_position(
+        &self,
+        view: View,
+        offset: usize,
+    ) -> Result<Insert<Id, T>, LogicalOpError> {
+        let left_origin = self.find_before_offset(view, offset)?;
+        let right_origin = self.node_iter(left_origin).next();
+
         if self
             .not_uninserted_children(view, &self.resolve(&left_origin).right_children)
             .next()
@@ -53,60 +73,43 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
         }
     }
 
-    fn resolve(&self, n: &Option<NodeRef<Id>>) -> &Node<Id, T> {
-        match n {
-            Some(n) => &self.nodes[n.index.0],
-            None => &self.root,
-        }
-    }
+    // fn resolve(&self, n: &Option<NodeRef<Id>>) -> &Node<Id, T> {
+    //     match n {
+    //         Some(n) => &self.nodes[n.index.0],
+    //         None => &self.root,
+    //     }
+    // }
 
     /// Finds the node right before the offset position, so for 0, it will return root,
     /// and 1 will return the first element
-    fn find_before_offset(&self, view: View, offset: usize) -> Option<NodeIdx> {
+    fn find_before_offset(
+        &self,
+        view: View,
+        offset: usize,
+    ) -> Result<Option<NodeIdx>, LogicalOpError> {
         if offset > self.root.size(view) {
-            todo!("out of range")
+            return Err(LogicalOpError::OutOfRange);
         }
 
         if offset == 0 {
             // root
-            // TODO: question: if we are inserting into the start of a non-empty document, is root still left origin?
-            return None;
+            return Ok(None);
         }
 
-        let mut cur = None;
-        let mut cur_node = &self.root;
-        let mut remaining = offset - 1;
-        'outer: loop {
-            // TODO where to put unreachable's to ensure loop terminates
-            for c in cur_node.left_children.iter() {
-                let node = &self.nodes[c.index.0];
-                let n = node.size(view);
-                if remaining < n {
-                    cur = Some(c.clone());
-                    cur_node = node;
-                    continue 'outer;
-                }
-                remaining -= n;
-            }
+        let mut target = offset - 1;
 
-            if cur_node.content.is_some() && cur_node.inserted(view) {
-                if remaining == 0 {
-                    return cur;
-                }
-                remaining -= 1;
-            }
+        let Some(mut idx) =
+            self.search_in_children(view, self.root.right_children(self), &mut target)
+        else {
+            unreachable!("offset should have been out of range")
+        };
 
-            for c in cur_node.right_children.iter() {
-                let node = &self.nodes[c.index.0];
-                let n = node.size(view);
-                if remaining < n {
-                    cur = Some(c.clone());
-                    cur_node = node;
-                    continue 'outer;
-                }
-                remaining -= n;
+        loop {
+            match self.search_in_node(view, idx, &mut target) {
+                FindNodeResult::Found(found) => return Ok(Some(found)),
+                FindNodeResult::SubTree(subtree) => idx = subtree,
+                FindNodeResult::NotFound => unreachable!("loop not making progress"),
             }
-            unreachable!("looped without doing anything")
         }
     }
 
@@ -226,4 +229,85 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
     //         })
     //         .next()
     // }
+
+    fn search_in_node<'a>(
+        &'a self,
+        view: View,
+        idx: NodeIdx,
+        target: &mut usize,
+    ) -> FindNodeResult {
+        let node = self.node(idx);
+        if let Some(cidx) = self.search_in_children(view, node.left_children(self), target) {
+            return FindNodeResult::SubTree(cidx);
+        }
+        if node.inserted(view) {
+            if *target == 0 {
+                return FindNodeResult::Found(idx);
+            }
+            *target -= 1;
+        }
+        if let Some(cidx) = self.search_in_children(view, node.base.right_children(self), target) {
+            return FindNodeResult::SubTree(cidx);
+        }
+        FindNodeResult::NotFound
+    }
+
+    fn search_in_children(
+        &self,
+        view: View,
+        children: impl Iterator<Item = NodeIdx>,
+        target: &mut usize,
+    ) -> Option<NodeIdx> {
+        for idx in children {
+            let n = self.node(idx).size(view);
+            if *target < n {
+                return Some(idx);
+            } else {
+                *target -= n;
+            }
+        }
+        None
+    }
+}
+
+enum FindNodeResult {
+    Found(NodeIdx),
+    SubTree(NodeIdx),
+    NotFound,
+}
+
+impl NodeBase {
+    pub(crate) fn right_children<'a, Id, T>(
+        &'a self,
+        list: &'a List<Id, T>,
+    ) -> impl Iterator<Item = NodeIdx> {
+        let mut right = self.first_right_child;
+        std::iter::from_fn(move || {
+            if let Some(idx) = right {
+                let node = list.node(idx);
+                right = node.next_sibling;
+                Some(idx)
+            } else {
+                None
+            }
+        })
+    }
+}
+
+impl<Id, T> Node<Id, T> {
+    pub(crate) fn left_children<'a>(
+        &'a self,
+        list: &'a List<Id, T>,
+    ) -> impl Iterator<Item = NodeIdx> + 'a {
+        let mut left = self.first_left_child;
+        std::iter::from_fn(move || {
+            if let Some(idx) = left {
+                let node = list.node(idx);
+                left = node.next_sibling;
+                Some(idx)
+            } else {
+                None
+            }
+        })
+    }
 }

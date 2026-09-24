@@ -119,8 +119,7 @@ enum PrepareState {
 }
 
 struct InsertPosition<Id> {
-    parent: Option<NodeRef<Id>>,
-    side: Side,
+    parent: Parent<Id>,
     right_origin: Option<NodeRef<Id>>,
 }
 
@@ -150,7 +149,7 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
 }
 
 impl NodeBase {
-    fn size(&self, view: View) -> usize {
+    pub(crate) fn size(&self, view: View) -> usize {
         match view {
             View::Effect => self.effect_size,
             View::Prepare => self.prepare_size,
@@ -159,6 +158,10 @@ impl NodeBase {
 }
 
 impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> Node<Id, T> {
+    pub(crate) fn size(&self, view: View) -> usize {
+        self.base.size(view)
+    }
+
     fn inserted(&self, view: View) -> bool {
         match view {
             View::Effect => !self.effect_deleted,
