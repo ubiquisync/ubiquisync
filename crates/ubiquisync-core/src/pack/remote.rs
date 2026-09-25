@@ -41,6 +41,7 @@ pub struct DirEntry {
     pub file_type: FileType,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileType {
     File,
     Dir,
