@@ -23,4 +23,8 @@ impl<V: Ord> LwwRegister<V> {
             Ordering::Greater => {}
         }
     }
+
+    pub fn get(&self) -> &V {
+        &self.value
+    }
 }
