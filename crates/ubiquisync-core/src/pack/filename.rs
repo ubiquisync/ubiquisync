@@ -49,9 +49,28 @@ impl Topic {
     }
 }
 
-impl From<Topic> for PathBuf {
-    fn from(value: Topic) -> Self {
-        value.0.iter().collect()
+impl PackFileDescriptor {
+    pub fn header_filename(&self) -> PathBuf {
+        self.to_path("uqp.meta")
+    }
+
+    pub fn pack_filename(&self) -> PathBuf {
+        self.to_path("uqp")
+    }
+
+    fn to_path(&self, ext: &str) -> PathBuf {
+        let mut path = PathBuf::new();
+        if self.topic.0.is_empty() {
+            path.push("_");
+        } else {
+            for part in self.topic.0.iter() {
+                path.push(format!("_{part}"));
+            }
+        }
+        path.push(hex::encode(self.peer_id.0));
+        path.push(self.id.to_string());
+        path.add_extension(ext);
+        path
     }
 }
 
