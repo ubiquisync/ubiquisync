@@ -30,16 +30,11 @@ pub enum PackStoreError {
 
 const PEERS_DIR: &str = "peers";
 
-fn parse_peer_id(name: &str) -> Option<PeerId> {
-    if name.len() != 64 || name.bytes().any(|b| b.is_ascii_uppercase()) {
-        return None;
-    }
-    let mut id = [0u8; 32];
-    hex::decode_to_slice(name, &mut id).ok()?;
-    Some(PeerId(id))
-}
-
 impl PackStore {
+    pub fn new(self_id: PeerId, remote: Arc<dyn FileRemote>) -> Self {
+        Self { self_id, remote }
+    }
+
     pub async fn list_peer_inits(&self) -> Result<Vec<PeerId>, PackStoreError> {
         Ok(self
             .remote
@@ -47,7 +42,7 @@ impl PackStore {
             .await?
             .into_iter()
             .filter(|f| f.file_type == FileType::File)
-            .filter_map(|f| parse_peer_id(&f.file_name))
+            .filter_map(|f| f.file_name.parse().ok())
             .collect())
     }
 
@@ -78,7 +73,7 @@ impl PackStore {
             .await?
             .into_iter()
             .filter(|f| f.file_type == FileType::Dir)
-            .filter_map(|f| parse_peer_id(&f.file_name))
+            .filter_map(|f| f.file_name.parse().ok())
             .collect())
     }
 

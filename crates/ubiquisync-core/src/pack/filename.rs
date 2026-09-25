@@ -2,7 +2,6 @@ use std::{
     collections::{HashMap, hash_map::Entry},
     fmt::Display,
     ops::Range,
-    path::PathBuf,
     str::FromStr,
 };
 
@@ -69,7 +68,7 @@ impl Topic {
     }
 
     pub fn peer_dir(&self, peer: &PeerId) -> String {
-        format!("{}/{}", self.dir(), hex::encode(peer.0))
+        format!("{}/{peer}", self.dir())
     }
 
     pub fn is_default(&self) -> bool {
@@ -165,8 +164,8 @@ impl FromStr for PackFileId {
     }
 }
 
-pub(crate) const HEADER_EXT: &str = ".upq.meta";
-pub(crate) const BODY_EXT: &str = ".upq";
+pub(crate) const HEADER_EXT: &str = ".uqp.meta";
+pub(crate) const BODY_EXT: &str = ".uqp";
 
 impl PackFileDescriptor {
     pub(crate) fn hash(&self, hasher: &mut Hasher) -> Result<(), WriteError> {
