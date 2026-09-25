@@ -58,19 +58,20 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
         offset: usize,
     ) -> Result<InsertPosition, LogicalOpError> {
         let left_origin = self.find_before_offset(view, offset)?;
-        let right_origin = self.node_iter(left_origin).nth(1).map(|n| n.node_ref.index);
-
-        let left_base = if let Some(left_origin) = left_origin {
-            &self.node(left_origin).base
-        } else {
-            &self.root
-        };
+        let mut iter = self.node_iter(left_origin);
+        if left_origin.is_some() {
+            // skip left origin, if None we already skipped the root
+            iter.next();
+        }
+        let right_origin = iter
+            .find(|n| n.not_uninserted(view))
+            .map(|n| n.node_ref.index);
 
         Ok(
-            if left_base
+            if self
+                .node_base(left_origin)
                 .right_children(self)
-                .filter(|n| n.not_uninserted(view))
-                .next()
+                .find(|n| n.not_uninserted(view))
                 .is_none()
             {
                 InsertPosition {
@@ -86,6 +87,10 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
                 }
             },
         )
+    }
+
+    fn node_base(&self, idx: Option<NodeIdx>) -> &NodeBase {
+        idx.map(|i| &self.node(i).base).unwrap_or(&self.root)
     }
 
     // fn resolve(&self, n: &Option<NodeRef<Id>>) -> &Node<Id, T> {
@@ -245,12 +250,7 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
     //         .next()
     // }
 
-    fn search_in_node<'a>(
-        &'a self,
-        view: View,
-        idx: NodeIdx,
-        target: &mut usize,
-    ) -> FindNodeResult {
+    fn search_in_node(&self, view: View, idx: NodeIdx, target: &mut usize) -> FindNodeResult {
         let node = self.node(idx);
         if let Some(cidx) = self.search_in_children(view, node.left_children(self), target) {
             return FindNodeResult::SubTree(cidx);
