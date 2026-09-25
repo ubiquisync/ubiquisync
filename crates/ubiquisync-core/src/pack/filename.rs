@@ -69,7 +69,11 @@ impl Topic {
     }
 
     pub fn peer_dir(&self, peer: &PeerId) -> String {
-        format!("{}/{}", self.dir(), hex::encode(&peer.0))
+        format!("{}/{}", self.dir(), hex::encode(peer.0))
+    }
+
+    pub fn is_default(&self) -> bool {
+        self.0.is_empty()
     }
 }
 
@@ -162,7 +166,7 @@ impl FromStr for PackFileId {
 }
 
 pub(crate) const HEADER_EXT: &str = ".upq.meta";
-pub(crate) const BODY_EXT: &str = ".upq.meta";
+pub(crate) const BODY_EXT: &str = ".upq";
 
 impl PackFileDescriptor {
     pub(crate) fn hash(&self, hasher: &mut Hasher) -> Result<(), WriteError> {
@@ -187,11 +191,7 @@ impl PackFileDescriptor {
     }
 
     fn file_name(&self, ext: &str) -> String {
-        format!(
-            "{}/{}{ext}",
-            self.topic.peer_dir(&self.peer_id),
-            self.id.to_string()
-        )
+        format!("{}/{}{ext}", self.topic.peer_dir(&self.peer_id), self.id)
     }
 }
 

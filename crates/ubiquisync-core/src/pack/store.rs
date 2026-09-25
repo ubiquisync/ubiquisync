@@ -52,9 +52,14 @@ impl PackStore {
     }
 
     pub async fn list_sub_topics(&self, topic: &Topic) -> Result<Vec<Topic>, PackStoreError> {
+        let dir = if topic.is_default() {
+            "".into()
+        } else {
+            topic.dir()
+        };
         Ok(self
             .remote
-            .list(&topic.dir())
+            .list(&dir)
             .await?
             .into_iter()
             .filter(|f| f.file_type == FileType::Dir)
