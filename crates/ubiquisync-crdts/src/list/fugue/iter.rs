@@ -13,18 +13,23 @@ impl<Id: Clone, T> List<Id, T> {
     where
         F: Fn(&Node<Id, T>) -> bool + 'a,
     {
-        self.node_iter(None)
+        self.nodes_after(None)
             .filter(move |n| is_inserted(*n))
             .map(|n| &n.content)
     }
 
-    pub(crate) fn node_iter<'a>(&'a self, start: Option<NodeIdx>) -> Iter<'a, Id, T> {
-        Iter {
+    pub(crate) fn nodes_after<'a>(&'a self, start: Option<NodeIdx>) -> Iter<'a, Id, T> {
+        let mut iter = Iter {
             list: self,
             next: start
                 .map(|idx| &self.nodes[idx.0])
                 .or(self.root.first_right_child.map(|i| self.leftmost(i))),
+        };
+        if start.is_some() {
+            // take the start value since contract is to return nodes after this node (or after the root if None)
+            iter.next();
         }
+        iter
     }
 
     fn leftmost(&self, idx: NodeIdx) -> &Node<Id, T> {

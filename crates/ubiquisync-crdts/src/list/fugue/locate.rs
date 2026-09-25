@@ -58,12 +58,8 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> List<Id
         offset: usize,
     ) -> Result<InsertPosition, LogicalOpError> {
         let left_origin = self.find_before_offset(view, offset)?;
-        let mut iter = self.node_iter(left_origin);
-        if left_origin.is_some() {
-            // skip left origin, if None we already skipped the root
-            iter.next();
-        }
-        let right_origin = iter
+        let right_origin = self
+            .nodes_after(left_origin)
             .find(|n| n.not_uninserted(view))
             .map(|n| n.node_ref.index);
 
