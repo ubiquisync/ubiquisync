@@ -48,30 +48,28 @@ impl Topic {
         }
         Ok(())
     }
-}
 
-impl PackFileDescriptor {
-    pub fn header_filename(&self) -> PathBuf {
-        self.to_path("uqp.meta")
-    }
-
-    pub fn pack_filename(&self) -> PathBuf {
-        self.to_path("uqp")
-    }
-
-    fn to_path(&self, ext: &str) -> PathBuf {
-        let mut path = PathBuf::new();
-        if self.topic.0.is_empty() {
-            path.push("_");
+    pub fn dir(&self) -> String {
+        if self.0.is_empty() {
+            "_".into()
         } else {
-            for part in self.topic.0.iter() {
-                path.push(format!("_{part}"));
-            }
+            self.0
+                .iter()
+                .map(|p| format!("_{p}"))
+                .collect::<Vec<_>>()
+                .join("/")
         }
-        path.push(hex::encode(self.peer_id.0));
-        path.push(self.id.to_string());
-        path.add_extension(ext);
-        path
+    }
+
+    pub fn sub_topic(&self, part: &str) -> Result<Topic, TopicError> {
+        let mut sub = self.clone();
+        sub.0.push(part.into());
+        sub.validate()?;
+        Ok(sub)
+    }
+
+    pub fn peer_dir(&self, peer: &PeerId) -> String {
+        format!("{}/{}", self.dir(), hex::encode(&peer.0))
     }
 }
 
@@ -163,6 +161,9 @@ impl FromStr for PackFileId {
     }
 }
 
+pub(crate) const HEADER_EXT: &str = ".upq.meta";
+pub(crate) const BODY_EXT: &str = ".upq.meta";
+
 impl PackFileDescriptor {
     pub(crate) fn hash(&self, hasher: &mut Hasher) -> Result<(), WriteError> {
         let mut w = Writer::new();
@@ -175,6 +176,22 @@ impl PackFileDescriptor {
             hasher.update_len_prefixed(p.as_bytes());
         }
         Ok(())
+    }
+
+    pub(crate) fn header_path(&self) -> String {
+        self.file_name(HEADER_EXT)
+    }
+
+    pub(crate) fn body_path(&self) -> String {
+        self.file_name(BODY_EXT)
+    }
+
+    fn file_name(&self, ext: &str) -> String {
+        format!(
+            "{}/{}{ext}",
+            self.topic.peer_dir(&self.peer_id),
+            self.id.to_string()
+        )
     }
 }
 
