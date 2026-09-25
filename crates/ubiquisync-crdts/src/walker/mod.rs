@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use ubiquisync_core::{ids::PeerId, log::EntryOrigin};
+use ubiquisync_core::{hlc::Timestamp, ids::PeerId, log::EntryOrigin};
 
 use crate::id::{ElementId, EntryId, PeerAlias};
 
@@ -26,6 +26,7 @@ pub trait Walkable<Id> {
 
     fn apply(
         &mut self,
+        timestamp: Timestamp,
         id: ElementId<Id>,
         op: Self::PhysicalOp,
     ) -> Result<Self::PrepareOp, Self::EffectErr>;

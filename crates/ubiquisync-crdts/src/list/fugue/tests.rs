@@ -3,6 +3,7 @@ use rand::{
     distr::{Alphanumeric, SampleString},
     rngs::ChaCha20Rng,
 };
+use ubiquisync_core::hlc::wall_ms;
 
 use crate::walker::View;
 
@@ -78,7 +79,8 @@ fn sim_list(mut rng: impl Rng) {
             index: 0,
         };
 
-        list.apply(id.clone(), op.clone()).unwrap();
+        list.apply(wall_ms().into(), id.clone(), op.clone())
+            .unwrap();
         oplog[peer].push((id, op));
         frontiers[peer][peer] = oplog[peer].len();
 
@@ -102,7 +104,8 @@ fn sim_list(mut rng: impl Rng) {
                 let new_read_size = rng.random_range(cur_read_size..=available_size);
                 let list = &mut lists[i];
                 for (id, op) in oplog[j][cur_read_size..new_read_size].iter() {
-                    list.apply(id.clone(), op.clone()).unwrap();
+                    list.apply(wall_ms().into(), id.clone(), op.clone())
+                        .unwrap();
                 }
                 frontiers[i][j] = new_read_size;
             }

@@ -7,6 +7,7 @@ mod tests;
 use std::collections::{HashMap, HashSet};
 
 use thiserror::Error;
+use ubiquisync_core::hlc::Timestamp;
 
 use crate::{
     id::ElementId,
@@ -213,6 +214,7 @@ impl<Id: Clone + std::hash::Hash + PartialEq + PartialOrd + Eq + Ord, T> Walkabl
 
     fn apply(
         &mut self,
+        _: Timestamp,
         id: ElementId<Id>,
         op: Self::PhysicalOp,
     ) -> Result<Self::PrepareOp, Self::EffectErr> {
