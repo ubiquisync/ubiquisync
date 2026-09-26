@@ -50,6 +50,7 @@ pub trait Reducer: Send + Sync {
         &self,
         batch: &mut dyn DbBatch,
         timestamp: Timestamp,
+        // TODO server_attested_user_id: Option<Uuid>,
         op: &Self::Op,
         read: Self::ReadState,
     ) -> Result<Self::ApplyState, Self::Error>;

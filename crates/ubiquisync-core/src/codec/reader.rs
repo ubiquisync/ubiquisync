@@ -92,6 +92,19 @@ impl<'a> Reader<'a> {
         Ok(Range { start, end })
     }
 
+    pub fn read_usize_range(&mut self) -> Result<Range<usize>, ReadError> {
+        let range = self.read_range()?;
+        let start = range
+            .start
+            .try_into()
+            .map_err(|_| ReadError::USizeOverflow(range.start))?;
+        let end = range
+            .end
+            .try_into()
+            .map_err(|_| ReadError::USizeOverflow(range.end))?;
+        Ok(start..end)
+    }
+
     pub fn read_option<T, F, E>(&mut self, mut on_some: F) -> Result<Option<T>, E>
     where
         F: FnMut(&mut Self) -> Result<T, E>,

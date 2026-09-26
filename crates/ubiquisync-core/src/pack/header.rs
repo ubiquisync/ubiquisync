@@ -65,7 +65,7 @@ pub struct SegmentDescriptor {
     pub idx_range: Range<u64>,
     pub prev_chain: Hash256,
     pub end_chain: Hash256,
-    pub body_loc: Range<u64>,
+    pub body_loc: Range<usize>,
 }
 
 #[derive(Error, Debug)]
@@ -231,7 +231,7 @@ impl SegmentDescriptor {
         w.write_range(&self.idx_range)?;
         w.write_array(&self.prev_chain);
         w.write_array(&self.end_chain);
-        w.write_range(&self.body_loc)?;
+        w.write_usize_range(&self.body_loc)?;
         Ok(())
     }
 
@@ -240,7 +240,7 @@ impl SegmentDescriptor {
         let idx_range = r.read_range()?;
         let prev_chain = r.read_array()?;
         let end_chain = r.read_array()?;
-        let body_loc = r.read_range()?;
+        let body_loc = r.read_usize_range()?;
         Ok(Self {
             container_id,
             prev_chain,

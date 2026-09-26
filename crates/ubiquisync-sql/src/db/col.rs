@@ -1,10 +1,11 @@
-use sea_query::{DynIden, Iden};
+use sea_query::{ColumnRef, DynIden, Iden};
 use ubiquisync_core::uuid::Uuid;
 
 use crate::db::{CreateColDef, DbError, DbRow, DbType, DbValue};
 
 pub trait Col: Iden + Copy + Default {
     type Type: ColType;
+    type Table: Iden + Default;
 
     fn create_col_def() -> CreateColDef;
 }
@@ -23,6 +24,7 @@ pub trait Cols {
     fn encode(row: Self::Params) -> Result<Vec<DbValue>, DbError>;
     fn decode<'a>(row: &'a DbRow) -> Result<Self::Row<'a>, DbError>;
     fn idens() -> Vec<DynIden>;
+    fn column_refs() -> Vec<ColumnRef>;
 }
 
 impl ColType for u64 {
@@ -266,6 +268,12 @@ macro_rules! impl_col_tuples {
             fn idens() -> Vec<sea_query::types::DynIden> {
                 vec![$(<$param as sea_query::types::IntoIden>::into_iden($param::default()),)+]
             }
+
+            fn column_refs() -> Vec<sea_query::types::ColumnRef> {
+                vec![$(sea_query::types::ColumnRef::Column(sea_query::types::ColumnName(
+                    Some(sea_query::types::TableName(None, <$param::Table as sea_query::types::IntoIden>::into_iden($param::Table::default()))),
+                    <$param as sea_query::types::IntoIden>::into_iden($param::default()))),)+]
+            }
         }
 
     }
@@ -294,6 +302,10 @@ impl Cols for () {
     }
 
     fn idens() -> Vec<DynIden> {
+        vec![]
+    }
+
+    fn column_refs() -> Vec<ColumnRef> {
         vec![]
     }
 }

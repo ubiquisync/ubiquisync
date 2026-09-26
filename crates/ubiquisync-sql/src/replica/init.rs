@@ -25,7 +25,7 @@ use crate::{
 
 impl<R: Reducer> Replica<R> {
     pub async fn new(
-        app_magic: AppId,
+        app_id: AppId,
         db: Box<dyn Db>,
         reducer: R,
         credentials: Box<dyn Credentials>,
@@ -56,7 +56,7 @@ impl<R: Reducer> Replica<R> {
                 signature,
                 outer_endorsement: None,
             };
-            init_entry.verify(&app_magic)?;
+            init_entry.verify(&app_id)?;
             let commit_data = init_entry.commitment_data()?;
             if commit_data.sig_verify_key != credentials.signing_key().verifying_key() {
                 return Err(InitError::Internal(
@@ -82,7 +82,7 @@ impl<R: Reducer> Replica<R> {
                 workspace_join: None,
                 endorsement: vec![],
             };
-            let init_entry = InitEntry::create(commitment, &app_magic, credentials.signing_key())?;
+            let init_entry = InitEntry::create(commitment, &app_id, credentials.signing_key())?;
 
             let (self_db_id,) = insert_cols::<
                 (peers::PeerId, peers::CommitmentBytes, peers::Signature),
@@ -110,6 +110,7 @@ impl<R: Reducer> Replica<R> {
         };
 
         Ok(Self {
+            app_id,
             self_id,
             self_db_id: SELF_DB_ID,
             credentials,

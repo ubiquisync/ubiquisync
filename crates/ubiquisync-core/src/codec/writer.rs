@@ -85,6 +85,10 @@ impl Writer {
         Ok(())
     }
 
+    pub fn write_usize_range(&mut self, range: &Range<usize>) -> Result<(), WriteError> {
+        self.write_range(&(range.start as u64..range.end as u64))
+    }
+
     pub fn write_option<T, F>(&mut self, t: &Option<T>, mut f: F)
     where
         F: FnMut(&mut Self, &T),
