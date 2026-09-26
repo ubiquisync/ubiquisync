@@ -2,7 +2,6 @@ use std::{
     collections::{HashMap, hash_map::Entry},
     fmt::Display,
     ops::Range,
-    path::PathBuf,
     str::FromStr,
 };
 
@@ -22,6 +21,7 @@ pub struct PackFileDescriptor {
 }
 
 /// A topic if composed of one or more lowercase ASCII alphanumeric segments.
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
 pub struct Topic(Vec<String>);
 
 #[derive(Debug, Error)]
@@ -47,11 +47,32 @@ impl Topic {
         }
         Ok(())
     }
-}
 
-impl From<Topic> for PathBuf {
-    fn from(value: Topic) -> Self {
-        value.0.iter().collect()
+    pub fn dir(&self) -> String {
+        if self.0.is_empty() {
+            "_".into()
+        } else {
+            self.0
+                .iter()
+                .map(|p| format!("_{p}"))
+                .collect::<Vec<_>>()
+                .join("/")
+        }
+    }
+
+    pub fn sub_topic(&self, part: &str) -> Result<Topic, TopicError> {
+        let mut sub = self.clone();
+        sub.0.push(part.into());
+        sub.validate()?;
+        Ok(sub)
+    }
+
+    pub fn peer_dir(&self, peer: &PeerId) -> String {
+        format!("{}/{peer}", self.dir())
+    }
+
+    pub fn is_default(&self) -> bool {
+        self.0.is_empty()
     }
 }
 
@@ -143,6 +164,9 @@ impl FromStr for PackFileId {
     }
 }
 
+pub(crate) const HEADER_EXT: &str = ".uqp.meta";
+pub(crate) const BODY_EXT: &str = ".uqp";
+
 impl PackFileDescriptor {
     pub(crate) fn hash(&self, hasher: &mut Hasher) -> Result<(), WriteError> {
         let mut w = Writer::new();
@@ -155,6 +179,18 @@ impl PackFileDescriptor {
             hasher.update_len_prefixed(p.as_bytes());
         }
         Ok(())
+    }
+
+    pub(crate) fn header_path(&self) -> String {
+        self.file_name(HEADER_EXT)
+    }
+
+    pub(crate) fn body_path(&self) -> String {
+        self.file_name(BODY_EXT)
+    }
+
+    fn file_name(&self, ext: &str) -> String {
+        format!("{}/{}{ext}", self.topic.peer_dir(&self.peer_id), self.id)
     }
 }
 
