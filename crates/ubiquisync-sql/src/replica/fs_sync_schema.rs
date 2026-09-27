@@ -56,7 +56,7 @@ pub struct BlockedPackInfo {
     pub file: PackFileId,
     pub parents: HashSet<PackRef>,
     pub read_timestamps: Range<u64>,
-    pub retries: u64,
+    pub attempts: u64,
 }
 
 impl PackReadState {

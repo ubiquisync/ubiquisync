@@ -42,13 +42,40 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
-pub struct PackReadPlan {
+pub(crate) struct PackReadPlan {
     pub new_state: PackReadState,
 
     /// The files we need to inspect. We only retain this
     /// transiently between directory listings and add files
     /// to the consumed state as we inspect them.
-    pub to_read: Vec<PackFileId>,
+    pub to_read: Vec<PackReadTodo>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PackReadTodo {
+    file: PackFileId,
+    attempts: u64,
+    first_last_timestamps: Range<u64>,
+}
+
+impl PackReadTodo {
+    fn new(file: &PackFileId) -> Self {
+        PackReadTodo {
+            file: file.clone(),
+            attempts: 0,
+            first_last_timestamps: 0..0,
+        }
+    }
+}
+
+impl BlockedPackInfo {
+    fn todo(&self, file: &PackFileId, ts: u64) -> PackReadTodo {
+        PackReadTodo {
+            file: file.clone(),
+            attempts: self.attempts + 1,
+            first_last_timestamps: self.read_timestamps.start..ts,
+        }
+    }
 }
 
 impl PackReadState {
@@ -69,23 +96,23 @@ impl PackReadState {
                 // we retry if a blocked pack's generation is bumped
                 if f.generation > blocked_info.file.generation
                     // or if it's retry timetstamp is up
-                    || blocked_info.next_retry_ts() >= ts
+                    || blocked_info.next_retry_ts() <= ts
                     // or if all of its parents are consumed
                     // TODO: this is a bit overly conservative because the parents could be scheduled to read in this
                     // round, but we don't have a full dependency tree yet, so for now we'll wait until the next
                     // round to unblock for these cases
                     || blocked_info.parents.iter().all(|p| self.consumed.contains(p))
                 {
-                    to_read.push(f.clone());
+                    to_read.push(blocked_info.todo(f, ts));
                 } else {
                     blocked.insert(r, blocked_info.clone());
                 }
             } else {
-                to_read.push(f.clone());
+                to_read.push(PackReadTodo::new(f));
             }
         }
         // order pack files so that we read older ones first
-        to_read.sort_by_key(|v| v.seqs.end);
+        to_read.sort_by_key(|v| v.file.seqs.end);
         PackReadPlan {
             new_state: PackReadState { consumed, blocked },
             to_read,
@@ -95,9 +122,9 @@ impl PackReadState {
 
 impl BlockedPackInfo {
     fn next_retry_duration(&self) -> u64 {
-        const MAX_RETRY_INTERVAL: u128 = Duration::from_hours(6).as_millis();
         const RETRY_BASE: u128 = Duration::from_secs(10).as_millis();
-        min(MAX_RETRY_INTERVAL, RETRY_BASE * 2.pow(self.retries))
+        // this caps are retry interval at about 4.5 hours
+        (RETRY_BASE * 2u128.pow(min(self.attempts, 15) as u32)) as u64
     }
 
     fn next_retry_ts(&self) -> u64 {
