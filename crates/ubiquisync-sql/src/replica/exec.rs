@@ -25,17 +25,18 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
     /// Apply a local write, minting a fresh log entry for it.
     #[tracing::instrument(skip_all)]
     async fn exec(&self, server_user_id: Option<Uuid>, op: R::Op) -> Result<(), ExecError> {
-        let (container_id, op_bytes) = self.reducer.codec().encode(&op)?;
+        let inner = self.inner.as_ref();
+        let (container_id, op_bytes) = inner.reducer.codec().encode(&op)?;
         // per-stream mutex guard to prevent ensures only one thread touches a single stream
-        let stream_guard = self
+        let stream_guard = inner
             .stream_locks
-            .lock(&StreamLog::new(self.self_db_id, container_id))
+            .lock(&StreamLog::new(inner.self_db_id, container_id))
             .await;
 
-        let stream_rows = self.resolve_streams(&stream_guard).await?;
+        let stream_rows = inner.resolve_streams(&stream_guard).await?;
 
         let log_id = LogId {
-            peer_id: self.self_id,
+            peer_id: inner.self_id,
             container_id,
         };
         let seed = LogHashContext::new(&log_id);
@@ -52,8 +53,8 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
                 ),
                 (streams::Id,),
             >(
-                self.db.as_ref(),
-                (self.self_db_id, container_id.0, 0, empty_chain.hash, 0),
+                inner.db.as_ref(),
+                (inner.self_db_id, container_id.0, 0, empty_chain.hash, 0),
                 Query::insert().into_table(streams::Table),
             )
             .await?;
@@ -83,8 +84,8 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
             )
         };
 
-        let mut batch = self.db.new_batch();
-        let timestamp = self.hlc.now(batch.as_mut())?;
+        let mut batch = inner.db.new_batch();
+        let timestamp = inner.hlc.now(batch.as_mut())?;
 
         let entry = PlaintextLogEntry::IndexedEntry(EntryBody::Op(OpEntry::new(
             timestamp,
@@ -106,7 +107,7 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
 
         let sign_bytes = next_chain_head.sign_bytes(&seed);
 
-        let signature = self.credentials.signing_key().sign(&sign_bytes)?;
+        let signature = inner.credentials.signing_key().sign(&sign_bytes)?;
 
         let segment = encode_segment_plaintext(
             &signature,
@@ -135,9 +136,9 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
             // we need to enrich them with observe & key wrap ops when needed
             // and also return a stall condition if waiting on another ctl
             // log from another peer
-            let read_state = self
+            let read_state = inner
                 .reducer
-                .prepare(self.db.as_ref(), &op)
+                .prepare(inner.db.as_ref(), &op)
                 .await
                 .map_err(|e| ExecError::Reducer(Box::new(e)))?;
 
@@ -159,14 +160,15 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
                     .and_where(Expr::column(streams::Id).eq(stream_id)),
             )?;
 
-            let apply_state = self
+            let apply_state = inner
                 .reducer
                 .apply(batch.as_mut(), timestamp, &op, read_state)
                 .map_err(|e| ExecError::Reducer(Box::new(e)))?;
 
             let batch_result = batch.commit().await?;
 
-            self.reducer
+            inner
+                .reducer
                 .post_apply(apply_state, &batch_result)
                 .map_err(|e| ExecError::Reducer(Box::new(e)))?;
         } else {

@@ -14,10 +14,10 @@ pub struct InitEntry {
     pub commitment_bytes: Vec<u8>,
     pub peer_id: PeerId,
     pub signature: Signature,
-    /// Opaque (usually server) endorsement to be used when server mode is supported.
-    /// This is outside the signed payload and signed by the endorser because the
-    /// endorser must know the PeerId first.
-    pub outer_endorsement: Option<Vec<u8>>,
+    // NOTE: we do want a place for init entries to be accompanied by signed endorsements
+    // outside the init entry (meaning they sign over peer ID so they can't go inside).
+    // These shouldn't go in the init entry body because then anyone can pack anything there.
+    // These outer endorsements deserve another delivery mechanism
 }
 
 #[derive(Clone, Debug)]
@@ -88,7 +88,6 @@ impl InitEntry {
             commitment_bytes,
             peer_id,
             signature,
-            outer_endorsement: None,
         };
         entry.verify(app_magic)?;
         Ok(entry)

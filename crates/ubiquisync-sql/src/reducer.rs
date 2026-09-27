@@ -22,7 +22,7 @@ use crate::{
 /// 3. [`post_apply`](Reducer::post_apply) runs *after* the batch commits, when
 ///    `RETURNING` rows finally exist.
 #[async_trait::async_trait]
-pub trait Reducer: Send + Sync {
+pub trait Reducer: Send + Sync + 'static {
     /// The op vocabulary this reducer materializes (e.g. the table op enum).
     type Op: Send + Sync;
     type ReadState: Send + Sync;

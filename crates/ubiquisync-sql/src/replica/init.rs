@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use sea_query::{Expr, ExprTrait, Query};
 use thiserror::Error;
 use ubiquisync_core::{
@@ -17,7 +19,7 @@ use crate::{
     hlc_storage::SqlHlcStorage,
     reducer::Reducer,
     replica::{
-        Replica,
+        Replica, ReplicaInner,
         schema::{create_tables, peers},
         stream_lock::KeyedLock,
     },
@@ -54,7 +56,6 @@ impl<R: Reducer> Replica<R> {
                 commitment_bytes: commitment_bytes.into(),
                 peer_id: self_id,
                 signature,
-                outer_endorsement: None,
             };
             init_entry.verify(&app_id)?;
             let commit_data = init_entry.commitment_data()?;
@@ -110,14 +111,19 @@ impl<R: Reducer> Replica<R> {
         };
 
         Ok(Self {
-            app_id,
-            self_id,
-            self_db_id: SELF_DB_ID,
-            credentials,
-            db,
-            reducer,
-            hlc,
-            stream_locks: KeyedLock::new(),
+            inner: Arc::new(ReplicaInner {
+                app_id,
+                self_id,
+                self_db_id: SELF_DB_ID,
+                credentials,
+                db,
+                reducer,
+                hlc,
+                stream_locks: KeyedLock::new(),
+                pack_remotes: Default::default(),
+            }),
+            tasks: Default::default(),
+            cancel: Default::default(),
         })
     }
 }

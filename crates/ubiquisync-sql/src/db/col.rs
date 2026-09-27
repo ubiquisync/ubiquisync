@@ -197,7 +197,7 @@ macro_rules! codeable_col_repr {
 #[macro_export]
 macro_rules! enum_col_repr {
     ($typ:ty) => {
-        try_from_into_col_repr!($typ, i64);
+        $crate::try_from_into_col_repr!($typ, i64);
     };
 }
 

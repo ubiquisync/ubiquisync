@@ -25,7 +25,7 @@ use crate::{
     op::OpDecodeError,
     reducer::Reducer,
     replica::{
-        Replica,
+        Replica, ReplicaInner,
         peers::{PeerInfo, PeerResolveError},
         schema::{CommitErr, segments, streams},
         stream_lock::KeyedLockGuard,
@@ -95,7 +95,7 @@ pub enum ProcessPackError {
     Segment(#[from] SegmentProcessError),
 }
 
-impl<R: Reducer> Replica<R> {
+impl<R: Reducer> ReplicaInner<R> {
     async fn process_pack(&self, state: &mut PackProcessState) -> Result<(), ProcessPackError> {
         // TODO maybe we want this to be a stateful consumption of segments to resume after shutdown
         let header = state.header.clone();

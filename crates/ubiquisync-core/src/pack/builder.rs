@@ -1,9 +1,10 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use thiserror::Error;
 
 use crate::crypto::{TaggedHashDomain, tagged_hash};
 use crate::hlc::wall_ms;
+use crate::ids::LogId;
 use crate::pack::{PackFileDescriptor, PackSignError, SignedPackHeader};
 use crate::{
     codec::Writer,
@@ -23,6 +24,7 @@ pub struct PackBuilder {
     peer_data: BTreeMap<PeerId, PeerData>,
     body_writer: Writer,
     descriptor: PackFileDescriptor,
+    logs_in_pack: HashSet<LogId>,
 }
 
 #[derive(Debug, Error)]
@@ -31,6 +33,8 @@ pub enum PackBuildError {
     Join(#[from] JoinSegmentsError),
     #[error("empty segment range")]
     EmptySegmentRange,
+    #[error("duplicate log id in pack")]
+    DuplicateLogId,
 }
 
 impl PackBuilder {
@@ -42,6 +46,7 @@ impl PackBuilder {
             self_segments: vec![],
             peer_data: BTreeMap::new(),
             body_writer: Writer::new(),
+            logs_in_pack: HashSet::new(),
         }
     }
 
@@ -51,6 +56,11 @@ impl PackBuilder {
         hash_ctx: &LogHashContext,
         segments: &'a [B],
     ) -> Result<(), PackBuildError> {
+        if self.logs_in_pack.contains(hash_ctx.log_id()) {
+            return Err(PackBuildError::DuplicateLogId);
+        }
+        self.logs_in_pack.insert(*hash_ctx.log_id());
+
         // TODO we can skip joining segments when there's only one segment
         let body_start = self.body_writer.len();
         // note that a failure here may leave some body bytes written, but this is mostly harmless and in most cases any error will cause the caller to abandon building the pack anyway

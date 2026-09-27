@@ -1,14 +1,10 @@
 use sea_query::{Expr, ExprTrait, Query, value::prelude::Uuid};
-use ubiquisync_core::{
-    crypto::CipherInfo,
-    ids::{ContainerId, LogId},
-    log::ChainHash,
-};
+use ubiquisync_core::{crypto::CipherInfo, ids::ContainerId, log::ChainHash};
 
 use crate::{
     db::{DbError, sea_query::select_cols},
     replica::{
-        Replica,
+        Replica, ReplicaInner,
         schema::{CommitErr, HeadErr, streams},
         stream_lock::KeyedLockGuard,
     },
@@ -39,7 +35,7 @@ pub(crate) struct StreamInfo {
     pub commit_err: Option<CommitErr>,
 }
 
-impl<R> Replica<R> {
+impl<R> ReplicaInner<R> {
     pub(crate) async fn resolve_streams(
         &self,
         guard: &KeyedLockGuard<StreamLog>,
@@ -58,20 +54,14 @@ impl<R> Replica<R> {
             Query::select()
                 .from(streams::Table)
                 .and_where(Expr::column(streams::PeerId).eq(key.peer_db_id))
-                .and_where(Expr::column(streams::ContainerId).eq(Uuid::from_bytes(key.container_id.0))),
+                .and_where(
+                    Expr::column(streams::ContainerId).eq(Uuid::from_bytes(key.container_id.0)),
+                ),
         )
         .await?;
         let mut res = vec![];
         for r in rows.iter() {
-            let (
-                id,
-                head_size,
-                head_hash,
-                head_cipher,
-                head_err,
-                commit_size,
-                commit_err,
-            ) = r?;
+            let (id, head_size, head_hash, head_cipher, head_err, commit_size, commit_err) = r?;
             let info = StreamInfo {
                 id,
                 head_chain: ChainHash {

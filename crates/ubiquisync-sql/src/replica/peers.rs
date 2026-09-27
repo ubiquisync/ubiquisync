@@ -7,7 +7,7 @@ use ubiquisync_core::{
 
 use crate::{
     db::{DbError, sea_query::select_cols},
-    replica::{Replica, schema::peers},
+    replica::{Replica, ReplicaInner, schema::peers},
 };
 
 #[derive(Error, Debug)]
@@ -28,7 +28,7 @@ pub(crate) struct PeerInfo {
     pub commitment: InitCommitment,
 }
 
-impl<R> Replica<R> {
+impl<R> ReplicaInner<R> {
     // TODO we could cache this if it ever became a hot path because of signature verification
     pub(crate) async fn resolve_peer(&self, peer: &PeerId) -> Result<PeerInfo, PeerResolveError> {
         if let Some((id, commitment_bytes, signature)) =
@@ -45,7 +45,6 @@ impl<R> Replica<R> {
                 commitment_bytes: commitment_bytes.into(),
                 peer_id: *peer,
                 signature,
-                outer_endorsement: None,
             };
             init_entry.verify(&self.app_id)?;
             let commitment = init_entry.commitment_data()?;

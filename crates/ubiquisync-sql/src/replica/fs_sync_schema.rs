@@ -1,4 +1,6 @@
-use crate::{def_table, def_table_with_auto_id};
+use num_enum::{IntoPrimitive, TryFromPrimitive};
+
+use crate::{def_table, def_table_with_auto_id, enum_col_repr};
 
 def_table_with_auto_id!(remotes as __replica_remotes (id) => {});
 def_table_with_auto_id!(topics as __pack_topics (id) => {
@@ -16,21 +18,35 @@ def_table!(published as __pack_published (
     published_size: u64 // TODO default 0
 });
 
-def_table!(packs_cursors as __pack_cursors (
+def_table!(pack_read_state as __pack_read_state (
     remote_id: i64, // TODO ref remotes
     topic_id: i64, // TODO ref topics
-    peer_id: [u8;32]
+    peer_id: i64, // TODO ref peers
+    pack_id: Vec<u8>,
+    end_seq: u64,
+) => {
+    // status: super::PackReadStatus,
+    generation: i64,
+    parents: Vec<u8>,
+    first_seen: i64,
+    retries: i64,
+    next_retry: i64,
+});
+
+def_table!(pack_write_state as __pack_write_state (
+    remote_id: i64, // TODO ref remotes
+    topic_id: i64, // TODO ref topics
 ) => {
     dir_snapshot: Vec<u8>,
     tips: Vec<u8>,
     pending: Vec<u8>,
 });
 
-def_table!(writer_state as __pack_writer_state (
-    remote_id: i64, // TODO ref remotes
-    topic_id: i64, // TODO ref topics
-) => {
-    dir_snapshot: Vec<u8>,
-    tips: Vec<u8>,
-    pending: Vec<u8>,
-});
+#[derive(Debug, Clone, Copy, IntoPrimitive, TryFromPrimitive)]
+#[repr(i64)]
+pub enum PackReadStatus {
+    Blocked = 0,
+    Consumed = 1,
+}
+
+enum_col_repr!(PackReadStatus);
