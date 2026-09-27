@@ -55,7 +55,7 @@ impl<R: Reducer> ReplicaInner<R> {
         &self,
         remote_id: u64,
         store: &PackStore,
-    ) -> Result<(), ProcessPackRemoteError> {
+    ) -> Result<(), PackRemoteProcessError> {
         // for MVP we only subscribe to the default topic
         self.process_topic(remote_id, store, &Topic::default())
             .await
@@ -66,7 +66,7 @@ impl<R: Reducer> ReplicaInner<R> {
         remote_id: u64,
         store: &PackStore,
         topic: &Topic,
-    ) -> Result<(), ProcessPackRemoteError> {
+    ) -> Result<(), PackRemoteProcessError> {
         let topic_id = self.resolve_topic_id(topic).await?;
         for peer in store.list_topic_peers(topic).await? {
             let peer_info = self.resolve_or_init_peer(&peer, store).await?;
@@ -84,6 +84,7 @@ impl<R: Reducer> ReplicaInner<R> {
             .unwrap_or_default();
 
             let read_plan = read_state.prepare_read(wall_ms(), &packs);
+            for todo in read_plan.to_read.iter() {}
         }
         Ok(())
     }
@@ -104,7 +105,7 @@ impl<R: Reducer> ReplicaInner<R> {
 }
 
 #[derive(Error, Debug)]
-pub enum ProcessPackRemoteError {
+pub enum PackRemoteProcessError {
     #[error("pack store error: {0}")]
     Store(#[from] PackStoreError),
     #[error("peer resolve error: {0}")]

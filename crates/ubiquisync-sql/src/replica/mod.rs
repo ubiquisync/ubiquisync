@@ -17,7 +17,7 @@ pub use init::InitError;
 use tokio::task;
 use tokio_util::sync::CancellationToken;
 use ubiquisync_core::{
-    crypto::credentials::Credentials,
+    crypto::{CipherKeyResolver, credentials::Credentials},
     hlc::HlcService,
     ids::{AppId, PeerId},
     pack::PackStore,
@@ -46,4 +46,5 @@ pub(crate) struct ReplicaInner<R> {
     pub(crate) hlc: HlcService<SqlHlcStorage>,
     pub(crate) stream_locks: KeyedLock<StreamLog>,
     pub(crate) pack_remotes: HashMap<u64, PackStore>,
+    pub(crate) key_resolver: Arc<dyn CipherKeyResolver>,
 }

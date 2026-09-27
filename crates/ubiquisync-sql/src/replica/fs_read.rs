@@ -20,7 +20,10 @@ use ubiquisync_core::{
             SegmentReader, SegmentVerifyError, VerifiedSegment,
         },
     },
-    pack::{PackFileId, PackHeader, PackRef, SegmentDescriptor, dedupe_pack_files},
+    pack::{
+        PackFileDescriptor, PackFileId, PackHeader, PackRef, PackStore, PackStoreError,
+        SegmentDescriptor, dedupe_pack_files,
+    },
 };
 
 use crate::{
@@ -33,6 +36,7 @@ use crate::{
     reducer::Reducer,
     replica::{
         Replica, ReplicaInner,
+        fs::PackRemoteProcessError,
         fs_sync_schema::{BlockedPackInfo, PackReadState},
         peers::{PeerInfo, PeerResolveError},
         schema::{CommitErr, segments, streams},
@@ -133,28 +137,56 @@ impl BlockedPackInfo {
 }
 
 #[derive(Error, Debug)]
-pub enum ProcessPackError {
+pub enum PackProcessError {
+    #[error("pack store error: {0}")]
+    Store(#[from] PackStoreError),
+    #[error("peer resolve error: {0}")]
+    Peer(#[from] PeerResolveError),
     #[error("db error: {0}")]
     Db(#[from] DbError),
-    #[error("peer not initialized: {0:?}")]
-    PeerResolve(#[from] PeerResolveError),
-    #[error("process segment error: {0:?}")]
-    Segment(#[from] SegmentProcessError),
+    #[error("cipher error: {0}")]
+    Cipher(#[from] SegmentCipherError),
+    #[error("segment decode error: {0}")]
+    Decode(#[from] SegmentDecodeError),
+    #[error("segment verify error: {0}")]
+    Verify(#[from] SegmentVerifyError),
+    #[error("log validation error: {0}")]
+    LogValidation(#[from] LogValidationError),
+    #[error("op decode error: {0}")]
+    OpDecode(#[from] OpDecodeError),
+    #[error("reducer error: {0}")]
+    Reducer(BoxError),
+    #[error("pending")]
+    Pending,
 }
 
 impl<R: Reducer> ReplicaInner<R> {
-    async fn process_pack(&self, state: &mut PackProcessState) -> Result<(), ProcessPackError> {
-        // TODO maybe we want this to be a stateful consumption of segments to resume after shutdown
-        let header = state.header.clone();
+    async fn process_pack(
+        &self,
+        peer_info: &PeerInfo,
+        desc: &PackFileDescriptor,
+        store: &PackStore,
+        plan: &mut PackReadPlan,
+    ) -> Result<(), PackRemoteProcessError> {
+        let Some(header) = store.read_header(desc).await? else {
+            // if by the time we go to read he pack it is gone,
+            // then it has probably been replaced by a newer generation,
+            // we'll get back to it later
+            return Ok(());
+        };
+
+        let mut body: Option<Vec<u8>> = None;
+
         for segment in header.self_segments.iter() {
-            self.process_pack_segment(state, None, segment).await?;
+            self.process_pack_segment(desc, segment, peer_info, store, &mut body)
+                .await?;
         }
 
         // TODO peer segments
         for peer_data in header.peer_data.iter() {
             let peer_info = self.resolve_peer(&peer_data.peer_id).await?;
             for segment in peer_data.segments.iter() {
-                self.process_pack_segment(state, Some(&peer_info), segment)
+                self.process_pack_segment(desc, segment, peer_info, store, &mut body)
                     .await?;
             }
         }
@@ -167,22 +199,21 @@ impl<R: Reducer> ReplicaInner<R> {
     // - Ok - we did everything we could with this segment for better or worse
     // - TransientError - some db state error occurred that may resolve later
     // probably all other errors we want to collapse into these or track in the streams table
-    async fn process_pack_segment(
+    async fn process_pack_segment<'a>(
         &self,
-        state: &mut PackProcessState,
-        peer_info: Option<&PeerInfo>,
-        segment: &SegmentDescriptor,
-    ) -> Result<(), SegmentProcessError> {
+        pack_desc: &PackFileDescriptor,
+        segment_desc: &SegmentDescriptor,
+        peer_info: &PeerInfo,
+        store: &PackStore,
+        body: &'a mut Option<Vec<u8>>,
+    ) -> Result<(), PackProcessError> {
         // first aquire the lock for this log
         let stream_guard = self
             .stream_locks
-            .lock(&StreamLog::new(
-                peer_info.unwrap_or(&state.peer_info).db_id,
-                segment.container_id,
-            ))
+            .lock(&StreamLog::new(peer_info.db_id, segment_desc.container_id))
             .await;
 
-        let Range { start, end } = segment.idx_range;
+        let Range { start, end } = segment_desc.idx_range;
         // first check if we can immediately place this segment or likely already have it
         let streams = self.resolve_streams(&stream_guard).await?;
         if streams.is_empty() {
@@ -216,10 +247,18 @@ impl<R: Reducer> ReplicaInner<R> {
                     probably_have_segment = true;
                     break;
                 } else if size == start {
-                    if s.head_chain.hash == segment.prev_chain {
+                    if s.head_chain.hash == segment_desc.prev_chain {
                         // this is the happy path where we can place the segment immediately
                         return self
-                            .place_pack_segment_direct(&stream_guard, state, segment, &s)
+                            .place_pack_segment_direct(
+                                &stream_guard,
+                                pack_desc,
+                                segment_desc,
+                                s,
+                                peer_info,
+                                store,
+                                body,
+                            )
                             .await;
                     } else {
                         // this is a sad path this segment does not go on this stream, just keep going
@@ -238,7 +277,7 @@ impl<R: Reducer> ReplicaInner<R> {
             }
             if candidate_streams.is_empty() {
                 // mark this pack as pending since we can't place this segment yet
-                return Err(SegmentProcessError::Pending);
+                return Err(PackProcessError::Pending);
             }
 
             // TODO check the candidate streams to see if we can place this segment
@@ -257,19 +296,27 @@ impl<R: Reducer> ReplicaInner<R> {
         Ok(())
     }
 
-    async fn place_pack_segment_direct(
+    async fn place_pack_segment_direct<'a>(
         &self,
         _guard: &KeyedLockGuard<StreamLog>,
-        pack_state: &mut PackProcessState,
+        pack_desc: &PackFileDescriptor,
         segment_desc: &SegmentDescriptor,
         stream: &StreamInfo,
-    ) -> Result<(), SegmentProcessError> {
+        peer_info: &PeerInfo,
+        store: &PackStore,
+        body: &'a mut Option<Vec<u8>>,
+    ) -> Result<(), PackProcessError> {
         debug_assert_eq!(segment_desc.idx_range.start, stream.head_chain.size);
         debug_assert_eq!(segment_desc.prev_chain, stream.head_chain.hash);
         debug_assert!(stream.head_err.is_none());
         debug_assert!(stream.head_cipher.is_none());
 
-        let segment = pack_state.resolve_segment(segment_desc).await?;
+        let Some(segment) = self
+            .resolve_segment(pack_desc, segment_desc, peer_info, store, body)
+            .await?
+        else {
+            todo!("pack disappeared")
+        };
         let chain_hash = segment.verified.head_chain;
 
         // we always commit in 2 phases:
@@ -354,12 +401,12 @@ impl<R: Reducer> ReplicaInner<R> {
                                 .reducer
                                 .prepare(self.db.as_ref(), &op)
                                 .await
-                                .map_err(|e| SegmentProcessError::Reducer(Box::new(e)))?;
+                                .map_err(|e| PackProcessError::Reducer(Box::new(e)))?;
 
                             let apply_state = self
                                 .reducer
                                 .apply(batch.as_mut(), ts, &op, read_state)
-                                .map_err(|e| SegmentProcessError::Reducer(Box::new(e)))?;
+                                .map_err(|e| PackProcessError::Reducer(Box::new(e)))?;
                             Some(apply_state)
                         }
                         ubiquisync_core::log::EntryBody::UseKey(cipher_info) => {
@@ -400,7 +447,7 @@ impl<R: Reducer> ReplicaInner<R> {
                     if let Some(apply_state) = apply_state {
                         self.reducer
                             .post_apply(apply_state, &batch_result)
-                            .map_err(|e| SegmentProcessError::Reducer(Box::new(e)))?;
+                            .map_err(|e| PackProcessError::Reducer(Box::new(e)))?;
                     }
                 }
                 LogEntry::Signature(_) => {} // do nothing
@@ -409,44 +456,27 @@ impl<R: Reducer> ReplicaInner<R> {
 
         Ok(())
     }
-}
-
-#[derive(Error, Debug)]
-enum SegmentProcessError {
-    #[error("pending other data")]
-    Pending,
-    #[error("db error: {0}")]
-    Db(#[from] DbError),
-    #[error("resolve error: {0}")]
-    Resolve(#[from] SegmentResolveError),
-    #[error("cipher error: {0}")]
-    Cipher(#[from] SegmentCipherError),
-    #[error("log validation error: {0}")]
-    LogValidation(#[from] LogValidationError),
-    #[error("op decode error: {0}")]
-    OpDecode(#[from] OpDecodeError),
-    #[error("reducer error: {0}")]
-    Reducer(BoxError),
-}
-
-struct PackProcessState {
-    peer_info: PeerInfo,
-    file: PackFileId,
-    header: PackHeader,
-    body: Option<Vec<u8>>,
-    key_resolver: Arc<dyn CipherKeyResolver>,
-}
-
-impl PackProcessState {
-    fn resolve_body<'a>(&mut self) -> Result<&'a [u8], PackBodyResolveError> {
-        todo!()
-    }
 
     async fn resolve_segment<'a>(
-        &'a mut self,
+        &self,
+        pack_desc: &PackFileDescriptor,
         segment_desc: &SegmentDescriptor,
-    ) -> Result<ResolvedSegment<'a>, SegmentResolveError> {
-        let body = self.resolve_body()?;
+        peer_info: &PeerInfo,
+        store: &PackStore,
+        body: &'a mut Option<Vec<u8>>,
+    ) -> Result<Option<ResolvedSegment<'a>>, PackProcessError> {
+        let body = if let Some(body) = body {
+            body.as_slice()
+        } else {
+            if let Some(b) = store.read_body(pack_desc).await? {
+                let bref = b.as_slice();
+                *body = Some(b);
+                bref
+            } else {
+                // pack no longer exists
+                return Ok(None);
+            }
+        };
         let segment_bytes = &body[segment_desc.body_loc.clone()];
         let reader = SegmentReader::start(segment_bytes)?;
         let segment_header = reader.header();
@@ -458,21 +488,47 @@ impl PackProcessState {
             todo!("encryption not supported yet!");
         }
         let log_id = LogId {
-            peer_id: self.peer_info.peer,
+            peer_id: peer_info.peer,
             container_id: segment_desc.container_id,
         };
         let segment = reader.read(self.key_resolver.as_ref(), &log_id).await?;
         let verified = segment
             .verify(
-                &self.peer_info.commitment.sig_verify_key,
+                &peer_info.commitment.sig_verify_key,
                 self.key_resolver.as_ref(),
             )
             .await?;
-        Ok(ResolvedSegment {
+        Ok(Some(ResolvedSegment {
             bytes: segment_bytes,
             verified,
-        })
+        }))
     }
+}
+
+// #[derive(Error, Debug)]
+// enum SegmentProcessError {
+//     #[error("pending other data")]
+//     Pending,
+//     #[error("db error: {0}")]
+//     Db(#[from] DbError),
+//     #[error("resolve error: {0}")]
+//     Resolve(#[from] SegmentResolveError),
+//     #[error("cipher error: {0}")]
+//     Cipher(#[from] SegmentCipherError),
+//     #[error("log validation error: {0}")]
+//     LogValidation(#[from] LogValidationError),
+//     #[error("op decode error: {0}")]
+//     OpDecode(#[from] OpDecodeError),
+//     #[error("reducer error: {0}")]
+//     Reducer(BoxError),
+// }
+
+struct PackProcessState {
+    peer_info: PeerInfo,
+    file: PackFileId,
+    header: PackHeader,
+    body: Option<Vec<u8>>,
+    key_resolver: Arc<dyn CipherKeyResolver>,
 }
 
 struct ResolvedSegment<'a> {
@@ -480,16 +536,16 @@ struct ResolvedSegment<'a> {
     pub verified: VerifiedSegment<'a>,
 }
 
-#[derive(Error, Debug)]
-#[error("error resolving pack body")]
-struct PackBodyResolveError;
+// #[derive(Error, Debug)]
+// #[error("error resolving pack body")]
+// struct PackBodyResolveError;
 
-#[derive(Error, Debug)]
-enum SegmentResolveError {
-    #[error("resolving pack body: {0}")]
-    BodyResolve(#[from] PackBodyResolveError),
-    #[error("segment decode: {0}")]
-    SegmentDecode(#[from] SegmentDecodeError),
-    #[error("verify error: {0}")]
-    Verify(#[from] SegmentVerifyError),
-}
+// #[derive(Error, Debug)]
+// enum SegmentResolveError {
+//     #[error("resolving pack body: {0}")]
+//     BodyResolve(#[from] PackBodyResolveError),
+//     #[error("segment decode: {0}")]
+//     SegmentDecode(#[from] SegmentDecodeError),
+//     #[error("verify error: {0}")]
+//     Verify(#[from] SegmentVerifyError),
+// }
