@@ -1,6 +1,14 @@
-use num_enum::{IntoPrimitive, TryFromPrimitive};
+use std::{
+    collections::{HashMap, HashSet},
+    range::Range,
+};
 
-use crate::{def_table, def_table_with_auto_id, enum_col_repr};
+use ubiquisync_core::{
+    codec::{ReadError, Reader, WriteError, Writer},
+    pack::{PackFileId, PackRef},
+};
+
+use crate::{codeable_col_repr, def_table, def_table_with_auto_id};
 
 def_table_with_auto_id!(remotes as __replica_remotes (id) => {});
 def_table_with_auto_id!(topics as __pack_topics (id) => {
@@ -22,15 +30,8 @@ def_table!(pack_read_state as __pack_read_state (
     remote_id: i64, // TODO ref remotes
     topic_id: i64, // TODO ref topics
     peer_id: i64, // TODO ref peers
-    pack_id: Vec<u8>,
-    end_seq: u64,
 ) => {
-    // status: super::PackReadStatus,
-    generation: i64,
-    parents: Vec<u8>,
-    first_seen: i64,
-    retries: i64,
-    next_retry: i64,
+    state: super::PackReadState,
 });
 
 def_table!(pack_write_state as __pack_write_state (
@@ -42,11 +43,28 @@ def_table!(pack_write_state as __pack_write_state (
     pending: Vec<u8>,
 });
 
-#[derive(Debug, Clone, Copy, IntoPrimitive, TryFromPrimitive)]
-#[repr(i64)]
-pub enum PackReadStatus {
-    Blocked = 0,
-    Consumed = 1,
+codeable_col_repr!(PackReadState);
+
+#[derive(Debug, Clone, Default)]
+pub struct PackReadState {
+    pub consumed: HashSet<PackRef>,
+    pub blocked: HashMap<PackRef, BlockedPackInfo>,
 }
 
-enum_col_repr!(PackReadStatus);
+#[derive(Debug, Clone)]
+pub struct BlockedPackInfo {
+    pub file: PackFileId,
+    pub parents: HashSet<PackRef>,
+    pub read_timestamps: Range<u64>,
+    pub retries: u64,
+}
+
+impl PackReadState {
+    pub fn encode(&self, writer: &mut Writer) -> Result<(), WriteError> {
+        todo!()
+    }
+
+    pub fn decode<'a>(reader: &mut Reader<'a>) -> Result<Self, ReadError> {
+        todo!()
+    }
+}

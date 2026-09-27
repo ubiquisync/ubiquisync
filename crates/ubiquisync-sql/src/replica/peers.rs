@@ -1,36 +1,79 @@
-use sea_query::{Expr, ExprTrait, Query};
+use sea_query::{Expr, ExprTrait, OnConflict, Query, Returning};
 use thiserror::Error;
 use ubiquisync_core::{
     ids::PeerId,
     init::{InitCommitment, InitDecodeError, InitEntry, InitVerifyError},
+    pack::{PackStore, PackStoreError},
 };
 
 use crate::{
-    db::{DbError, sea_query::select_cols},
+    db::{
+        DbError,
+        sea_query::{insert_cols, select_cols},
+    },
     replica::{Replica, ReplicaInner, schema::peers},
 };
 
 #[derive(Error, Debug)]
 pub enum PeerResolveError {
-    #[error("peer not initialized: {0:?}")]
-    NotInitialized(PeerId),
     #[error("db error: {0}")]
     Db(#[from] DbError),
     #[error("error verifying peer init entry: {0}")]
     InitVerify(#[from] InitVerifyError),
     #[error("error decoding peer init data: {0}")]
     InitDecode(#[from] InitDecodeError),
+    #[error("error decoding peer init data: {0}")]
+    PackStore(#[from] PackStoreError),
 }
 
 pub(crate) struct PeerInfo {
     pub peer: PeerId,
-    pub peer_db_id: i64,
+    pub db_id: i64,
     pub commitment: InitCommitment,
 }
 
 impl<R> ReplicaInner<R> {
+    pub(crate) async fn resolve_or_init_peer(
+        &self,
+        peer: &PeerId,
+        store: &PackStore,
+    ) -> Result<PeerInfo, PeerResolveError> {
+        if let Some(info) = self.resolve_peer(peer).await? {
+            Ok(info)
+        } else {
+            let init_entry = store.read_peer_init(peer).await?;
+            init_entry.verify(&self.app_id)?;
+            let commitment = init_entry.commitment_data()?;
+            let (id,) = insert_cols::<
+                (peers::PeerId, peers::CommitmentBytes, peers::Signature),
+                (peers::Id,),
+            >(
+                self.db.as_ref(),
+                (
+                    init_entry.peer_id.0,
+                    init_entry.commitment_bytes,
+                    init_entry.signature,
+                ),
+                Query::insert()
+                    .into_table(peers::Table)
+                    .on_conflict(OnConflict::column(peers::PeerId).do_nothing().to_owned())
+                    .returning(Query::returning().column(peers::Id)),
+            )
+            .await?
+            .exactly_one()?;
+            Ok(PeerInfo {
+                peer: *peer,
+                db_id: id,
+                commitment,
+            })
+        }
+    }
+
     // TODO we could cache this if it ever became a hot path because of signature verification
-    pub(crate) async fn resolve_peer(&self, peer: &PeerId) -> Result<PeerInfo, PeerResolveError> {
+    pub(crate) async fn resolve_peer(
+        &self,
+        peer: &PeerId,
+    ) -> Result<Option<PeerInfo>, PeerResolveError> {
         if let Some((id, commitment_bytes, signature)) =
             select_cols::<(peers::Id, peers::CommitmentBytes, peers::Signature)>(
                 self.db.as_ref(),
@@ -48,13 +91,13 @@ impl<R> ReplicaInner<R> {
             };
             init_entry.verify(&self.app_id)?;
             let commitment = init_entry.commitment_data()?;
-            Ok(PeerInfo {
+            Ok(Some(PeerInfo {
                 peer: *peer,
-                peer_db_id: id,
+                db_id: id,
                 commitment,
-            })
+            }))
         } else {
-            Err(PeerResolveError::NotInitialized(*peer))
+            Ok(None)
         }
     }
 }

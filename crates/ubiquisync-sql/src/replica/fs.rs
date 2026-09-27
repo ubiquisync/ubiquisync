@@ -1,12 +1,22 @@
-use sea_query::{Expr, ExprTrait, Query};
+use sea_query::{Expr, ExprTrait, OnConflict, Query};
 use thiserror::Error;
 use tokio::time;
-use ubiquisync_core::pack::{PackStore, PackStoreError, Topic};
+use ubiquisync_core::{
+    hlc::wall_ms,
+    pack::{PackStore, PackStoreError, Topic},
+};
 
 use crate::{
-    db::{DbError, sea_query::select_cols},
+    db::{
+        DbError,
+        sea_query::{insert_cols, select_cols},
+    },
     reducer::Reducer,
-    replica::{Replica, ReplicaInner, fs_sync_schema::pack_read_state},
+    replica::{
+        Replica, ReplicaInner,
+        fs_sync_schema::{pack_read_state, topics},
+        peers::PeerResolveError,
+    },
 };
 
 impl<R: Reducer> Replica<R> {
@@ -57,27 +67,39 @@ impl<R: Reducer> ReplicaInner<R> {
         store: &PackStore,
         topic: &Topic,
     ) -> Result<(), ProcessPackRemoteError> {
+        let topic_id = self.resolve_topic_id(topic).await?;
         for peer in store.list_topic_peers(topic).await? {
+            let peer_info = self.resolve_or_init_peer(&peer, store).await?;
             let packs = store.list_packs(topic, &peer).await?;
-            let read_state = select_cols::<(
-                pack_read_state::PackId,
-                pack_read_state::EndSeq,
-                pack_read_state::Generation,
-                pack_read_state::Parents,
-                pack_read_state::FirstSeen,
-                pack_read_state::Retries,
-                pack_read_state::NextRetry,
-            )>(
+            let (read_state,) = select_cols::<(pack_read_state::State,)>(
                 self.db.as_ref(),
                 Query::select()
                     .from(pack_read_state::Table)
                     .and_where(Expr::column(pack_read_state::RemoteId).eq(remote_id))
-                    .and_where(Expr::column(pack_read_state::TopicId).eq(todo!()))
-                    .and_where(Expr::column(pack_read_state::PeerId).eq(todo!())),
+                    .and_where(Expr::column(pack_read_state::TopicId).eq(topic_id))
+                    .and_where(Expr::column(pack_read_state::PeerId).eq(peer_info.db_id)),
             )
-            .await?;
+            .await?
+            .one()?
+            .unwrap_or_default();
+
+            let read_plan = read_state.prepare_read(wall_ms(), &packs);
         }
         Ok(())
+    }
+
+    async fn resolve_topic_id(&self, topic: &Topic) -> Result<i64, DbError> {
+        let (id,) = insert_cols::<(topics::Topic,), (topics::Id,)>(
+            self.db.as_ref(),
+            (topic.dir(),),
+            Query::insert()
+                .into_table(topics::Table)
+                .on_conflict(OnConflict::column(topics::Topic).do_nothing().to_owned())
+                .returning(Query::returning().column(topics::Id)),
+        )
+        .await?
+        .exactly_one()?;
+        Ok(id)
     }
 }
 
@@ -85,6 +107,8 @@ impl<R: Reducer> ReplicaInner<R> {
 pub enum ProcessPackRemoteError {
     #[error("pack store error: {0}")]
     Store(#[from] PackStoreError),
+    #[error("peer resolve error: {0}")]
+    Peer(#[from] PeerResolveError),
     #[error("db error: {0}")]
     Db(#[from] DbError),
 }

@@ -21,7 +21,7 @@ pub struct PackFileDescriptor {
 }
 
 /// A topic if composed of one or more lowercase ASCII alphanumeric segments.
-#[derive(Default, Debug, Clone, PartialEq, Eq)]
+#[derive(Default, Debug, Clone, PartialEq, Hash)]
 pub struct Topic(Vec<String>);
 
 #[derive(Debug, Error)]
@@ -76,7 +76,7 @@ impl Topic {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
 pub struct PackFileId {
     pub seqs: Range<u64>,

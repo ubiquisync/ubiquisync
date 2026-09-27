@@ -1,4 +1,11 @@
-use std::{borrow::Borrow, collections::HashSet, ops::Range, sync::Arc};
+use std::{
+    borrow::Borrow,
+    cmp::min,
+    collections::{HashMap, HashSet},
+    ops::Range,
+    sync::Arc,
+    time::Duration,
+};
 
 use sea_query::{Expr, ExprTrait, Query};
 use thiserror::Error;
@@ -13,7 +20,7 @@ use ubiquisync_core::{
             SegmentReader, SegmentVerifyError, VerifiedSegment,
         },
     },
-    pack::{PackFileId, PackHeader, PackRef, SegmentDescriptor},
+    pack::{PackFileId, PackHeader, PackRef, SegmentDescriptor, dedupe_pack_files},
 };
 
 use crate::{
@@ -26,6 +33,7 @@ use crate::{
     reducer::Reducer,
     replica::{
         Replica, ReplicaInner,
+        fs_sync_schema::{BlockedPackInfo, PackReadState},
         peers::{PeerInfo, PeerResolveError},
         schema::{CommitErr, segments, streams},
         stream_lock::KeyedLockGuard,
@@ -34,17 +42,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
-pub struct PackReadState {
-    /// The packs we have already inspected either
-    /// directly or in a prior generation.
-    /// These get saved in state.
-    pub consumed: HashSet<PackRef>,
-
-    pub blocked: Vec<BlockedPackRef>,
-}
-
-#[derive(Debug, Clone)]
-pub struct PackReadResult {
+pub struct PackReadPlan {
     pub new_state: PackReadState,
 
     /// The files we need to inspect. We only retain this
@@ -53,35 +51,57 @@ pub struct PackReadResult {
     pub to_read: Vec<PackFileId>,
 }
 
-#[derive(Debug, Clone)]
-pub struct BlockedPackRef {
-    pub file: PackFileId,
-    pub parents: HashSet<PackRef>,
-    pub read_timestamps: Range<u64>,
-    pub retries: u64,
-}
-
 impl PackReadState {
-    pub fn update(&self, ts: u64, cur_files: &[PackFileId]) -> PackReadResult {
+    pub fn prepare_read(self, ts: u64, cur_files: &[PackFileId]) -> PackReadPlan {
+        let cur_files = dedupe_pack_files(cur_files);
         let mut to_read = vec![];
-        let mut new_consumed = HashSet::new();
+        let mut consumed = HashSet::new();
+        let mut blocked = HashMap::new();
+        // we only insert entries for the current set of files in our
+        // to_read, consumed and blocked buckets because if a file
+        // no longer exists, we don't care to maintain any state about it
         for f in cur_files.iter() {
             let r = f.get_ref();
+            // if we already consumed this pack then we mark it as consumed again
             if self.consumed.contains(&r) {
-                new_consumed.insert(r);
+                consumed.insert(r);
+            } else if let Some(blocked_info) = self.blocked.get(&r) {
+                // we retry if a blocked pack's generation is bumped
+                if f.generation > blocked_info.file.generation
+                    // or if it's retry timetstamp is up
+                    || blocked_info.next_retry_ts() >= ts
+                    // or if all of its parents are consumed
+                    // TODO: this is a bit overly conservative because the parents could be scheduled to read in this
+                    // round, but we don't have a full dependency tree yet, so for now we'll wait until the next
+                    // round to unblock for these cases
+                    || blocked_info.parents.iter().all(|p| self.consumed.contains(p))
+                {
+                    to_read.push(f.clone());
+                } else {
+                    blocked.insert(r, blocked_info.clone());
+                }
             } else {
                 to_read.push(f.clone());
             }
         }
+        // order pack files so that we read older ones first
         to_read.sort_by_key(|v| v.seqs.end);
-        // TODO handled blocked packs
-        PackReadResult {
-            new_state: PackReadState {
-                consumed: new_consumed,
-                blocked: self.blocked.clone(),
-            },
+        PackReadPlan {
+            new_state: PackReadState { consumed, blocked },
             to_read,
         }
+    }
+}
+
+impl BlockedPackInfo {
+    fn next_retry_duration(&self) -> u64 {
+        const MAX_RETRY_INTERVAL: u128 = Duration::from_hours(6).as_millis();
+        const RETRY_BASE: u128 = Duration::from_secs(10).as_millis();
+        min(MAX_RETRY_INTERVAL, RETRY_BASE * 2.pow(self.retries))
+    }
+
+    fn next_retry_ts(&self) -> u64 {
+        self.read_timestamps.end + self.next_retry_duration()
     }
 }
 
@@ -130,7 +150,7 @@ impl<R: Reducer> ReplicaInner<R> {
         let stream_guard = self
             .stream_locks
             .lock(&StreamLog::new(
-                peer_info.unwrap_or(&state.peer_info).peer_db_id,
+                peer_info.unwrap_or(&state.peer_info).db_id,
                 segment.container_id,
             ))
             .await;

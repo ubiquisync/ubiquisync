@@ -173,7 +173,7 @@ impl<T: ColRepr> ColType for T {
 #[macro_export]
 macro_rules! codeable_col_repr {
     ($typ:ty) => {
-        impl ColRepr for $typ {
+        impl $crate::db::ColRepr for $typ {
             type Repr = Vec<u8>;
             fn to_repr(self) -> Self::Repr {
                 let mut w = ubiquisync_core::codec::Writer::new();
