@@ -66,7 +66,7 @@ pub fn prep_insert_cols<Inserting: Cols, Returning: Cols>(
         for i in returning_idens {
             col_refs.push(ColumnRef::Column(ColumnName(None, i)))
         }
-        stmt.returning(sea_query::ReturningClause::Columns(Returning::column_refs()));
+        stmt.returning(sea_query::Query::returning().columns(Returning::column_refs()));
     }
 
     build_sql(stmt, dialect)

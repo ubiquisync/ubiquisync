@@ -1,10 +1,17 @@
 use sea_query::{Expr, ExprTrait, Query, value::prelude::Uuid};
-use ubiquisync_core::{crypto::CipherInfo, ids::ContainerId, log::ChainHash};
+use ubiquisync_core::{
+    crypto::CipherInfo,
+    ids::ContainerId,
+    log::{ChainHash, LogHashContext},
+};
 
 use crate::{
-    db::{DbError, sea_query::select_cols},
+    db::{
+        DbError,
+        sea_query::{insert_cols, select_cols},
+    },
     replica::{
-        Replica, ReplicaInner,
+        ReplicaInner,
         schema::{CommitErr, HeadErr, streams},
         stream_lock::KeyedLockGuard,
     },
@@ -76,5 +83,43 @@ impl<R> ReplicaInner<R> {
             res.push(info);
         }
         Ok(res)
+    }
+
+    pub(crate) async fn create_stream(
+        &self,
+        guard: &KeyedLockGuard<StreamLog>,
+        hash_ctx: &LogHashContext,
+    ) -> Result<StreamInfo, DbError> {
+        let head_chain = ChainHash::empty(hash_ctx);
+        let (id,) = insert_cols::<
+            (
+                streams::PeerId,
+                streams::ContainerId,
+                streams::HeadSize,
+                streams::HeadHash,
+                streams::CommitSize,
+            ),
+            (streams::Id,),
+        >(
+            self.db.as_ref(),
+            (
+                guard.key().peer_db_id,
+                hash_ctx.log_id().container_id.0,
+                0,
+                head_chain.hash,
+                0,
+            ),
+            Query::insert().into_table(streams::Table),
+        )
+        .await?
+        .exactly_one()?;
+        Ok(StreamInfo {
+            id,
+            head_chain,
+            head_cipher: None,
+            head_err: None,
+            commit_size: 0,
+            commit_err: None,
+        })
     }
 }

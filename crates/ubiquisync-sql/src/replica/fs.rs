@@ -95,8 +95,7 @@ impl<R: Reducer> ReplicaInner<R> {
             (topic.dir(),),
             Query::insert()
                 .into_table(topics::Table)
-                .on_conflict(OnConflict::column(topics::Topic).do_nothing().to_owned())
-                .returning(Query::returning().column(topics::Id)),
+                .on_conflict(OnConflict::column(topics::Topic).do_nothing().to_owned()),
         )
         .await?
         .exactly_one()?;

@@ -14,7 +14,7 @@ use ubiquisync_core::{
     hlc::{HlcError, wall_ms},
     ids::LogId,
     log::{
-        LogEntry, LogValidationError, SegmentCipherError,
+        LogEntry, LogHashContext, LogValidationError, SegmentCipherError,
         segment::{
             DecodedEntries, PlaintextSegmentEncoding, SegmentDecodeError, SegmentEncoding,
             SegmentReader, SegmentVerifyError, VerifiedSegment,
@@ -168,7 +168,7 @@ impl<R: Reducer> ReplicaInner<R> {
         store: &PackStore,
         plan: &mut PackReadPlan,
     ) -> Result<(), PackRemoteProcessError> {
-        let Some(header) = store.read_header(desc).await? else {
+        let Some(signed_header) = store.read_header(desc).await? else {
             // if by the time we go to read he pack it is gone,
             // then it has probably been replaced by a newer generation,
             // we'll get back to it later
@@ -177,13 +177,13 @@ impl<R: Reducer> ReplicaInner<R> {
 
         let mut body: Option<Vec<u8>> = None;
 
-        for segment in header.self_segments.iter() {
+        for segment in signed_header.header.self_segments.iter() {
             self.process_pack_segment(desc, segment, peer_info, store, &mut body)
                 .await?;
         }
 
         // TODO peer segments
-        for peer_data in header.peer_data.iter() {
+        for peer_data in signed_header.header.peer_data.iter() {
             let peer_info = self.resolve_peer(&peer_data.peer_id).await?;
             for segment in peer_data.segments.iter() {
                 self.process_pack_segment(desc, segment, peer_info, store, &mut body)
@@ -206,39 +206,65 @@ impl<R: Reducer> ReplicaInner<R> {
         peer_info: &PeerInfo,
         store: &PackStore,
         body: &'a mut Option<Vec<u8>>,
-    ) -> Result<(), PackProcessError> {
+    ) -> Result<(), SegmentProcessError> {
         // first aquire the lock for this log
         let stream_guard = self
             .stream_locks
             .lock(&StreamLog::new(peer_info.db_id, segment_desc.container_id))
             .await;
 
-        let Range { start, end } = segment_desc.idx_range;
+        let Range {
+            start,
+            end: segment_end,
+        } = segment_desc.idx_range;
         // first check if we can immediately place this segment or likely already have it
         let streams = self.resolve_streams(&stream_guard).await?;
         if streams.is_empty() {
             // we don't have anything yet so check if this segment starts at 0
-            if start != 0 {
-                // TODO mark this pack as pending since we can't place this segment yet
-            } else {
-                // TODO we can immediately place this segment
+            if start == 0 {
+                // we can place this segment immediately
                 // TODO in the future do an authz check for this log
+                let hash_ctx = LogHashContext::new(&LogId {
+                    peer_id: peer_info.peer,
+                    container_id: segment_desc.container_id,
+                });
+                let stream = self.create_stream(&stream_guard, &hash_ctx).await?;
+                return self
+                    .place_pack_segment_direct(
+                        &stream_guard,
+                        pack_desc,
+                        segment_desc,
+                        &stream,
+                        peer_info,
+                        &hash_ctx,
+                        store,
+                        body,
+                    )
+                    .await;
+            } else {
+                // mark this pack as pending since we can't place this segment yet
+                return Err(SegmentProcessError::Pending);
             }
         } else {
             let mut candidate_streams = vec![];
             let mut probably_have_segment = false;
-            for s in streams.iter() {
-                if s.head_err.is_some() {
+            for stream in streams.iter() {
+                if stream.head_err.is_some() {
                     // TODO in the future we can check the err and see if
                     // we can maybe place some of this segment but we avoid
                     // that complexity for now
                     continue;
                 }
 
-                let size = s.head_chain.size;
-                if size == end {
-                    // TODO we can check directly if we have this segment already by hash
-                } else if size > end {
+                let stream_size = stream.head_chain.size;
+                if stream_size == segment_end {
+                    if stream.head_chain.hash == segment_desc.end_chain {
+                        // we already have this segment and can just mark it as done
+                        return Ok(());
+                    } else {
+                        todo!("insert fork")
+                    }
+                } else if stream_size > segment_end {
                     // we don't have bloom filters on chain hashes yet,
                     // so we just skip this segment and assume we already have it
                     // at the cost of not detecting forks eagerly
@@ -246,27 +272,33 @@ impl<R: Reducer> ReplicaInner<R> {
                     // with cheap bloom filters
                     probably_have_segment = true;
                     break;
-                } else if size == start {
-                    if s.head_chain.hash == segment_desc.prev_chain {
+                } else if stream_size == start {
+                    if stream.head_chain.hash == segment_desc.prev_chain {
                         // this is the happy path where we can place the segment immediately
                         return self
                             .place_pack_segment_direct(
                                 &stream_guard,
                                 pack_desc,
                                 segment_desc,
-                                s,
+                                stream,
                                 peer_info,
+                                &LogHashContext::new(&LogId {
+                                    peer_id: peer_info.peer,
+                                    container_id: segment_desc.container_id,
+                                }),
                                 store,
                                 body,
                             )
                             .await;
                     } else {
                         // this is a sad path this segment does not go on this stream, just keep going
+                        // maybe there's a different stream it goes on
+                        continue;
                     }
-                } else if size > start {
+                } else if stream_size > start {
                     // in this case we may be able to place this segment on this stream
                     // so we mark it as a candidate
-                    candidate_streams.push(s);
+                    candidate_streams.push(stream);
                 } else {
                     // this is a sad path where the segment is ahead of this stream, just keep going
                 }
@@ -277,7 +309,7 @@ impl<R: Reducer> ReplicaInner<R> {
             }
             if candidate_streams.is_empty() {
                 // mark this pack as pending since we can't place this segment yet
-                return Err(PackProcessError::Pending);
+                return Err(SegmentProcessError::Pending);
             }
 
             // TODO check the candidate streams to see if we can place this segment
@@ -303,9 +335,10 @@ impl<R: Reducer> ReplicaInner<R> {
         segment_desc: &SegmentDescriptor,
         stream: &StreamInfo,
         peer_info: &PeerInfo,
+        hash_ctx: &LogHashContext,
         store: &PackStore,
         body: &'a mut Option<Vec<u8>>,
-    ) -> Result<(), PackProcessError> {
+    ) -> Result<(), SegmentProcessError> {
         debug_assert_eq!(segment_desc.idx_range.start, stream.head_chain.size);
         debug_assert_eq!(segment_desc.prev_chain, stream.head_chain.hash);
         debug_assert!(stream.head_err.is_none());
@@ -464,7 +497,7 @@ impl<R: Reducer> ReplicaInner<R> {
         peer_info: &PeerInfo,
         store: &PackStore,
         body: &'a mut Option<Vec<u8>>,
-    ) -> Result<Option<ResolvedSegment<'a>>, PackProcessError> {
+    ) -> Result<Option<ResolvedSegment<'a>>, SegmentProcessError> {
         let body = if let Some(body) = body {
             body.as_slice()
         } else {
@@ -505,23 +538,23 @@ impl<R: Reducer> ReplicaInner<R> {
     }
 }
 
-// #[derive(Error, Debug)]
-// enum SegmentProcessError {
-//     #[error("pending other data")]
-//     Pending,
-//     #[error("db error: {0}")]
-//     Db(#[from] DbError),
-//     #[error("resolve error: {0}")]
-//     Resolve(#[from] SegmentResolveError),
-//     #[error("cipher error: {0}")]
-//     Cipher(#[from] SegmentCipherError),
-//     #[error("log validation error: {0}")]
-//     LogValidation(#[from] LogValidationError),
-//     #[error("op decode error: {0}")]
-//     OpDecode(#[from] OpDecodeError),
-//     #[error("reducer error: {0}")]
-//     Reducer(BoxError),
-// }
+#[derive(Error, Debug)]
+enum SegmentProcessError {
+    #[error("pending other data")]
+    Pending,
+    #[error("db error: {0}")]
+    Db(#[from] DbError),
+    #[error("resolve error: {0}")]
+    Resolve(#[from] SegmentResolveError),
+    #[error("cipher error: {0}")]
+    Cipher(#[from] SegmentCipherError),
+    #[error("log validation error: {0}")]
+    LogValidation(#[from] LogValidationError),
+    #[error("op decode error: {0}")]
+    OpDecode(#[from] OpDecodeError),
+    #[error("reducer error: {0}")]
+    Reducer(BoxError),
+}
 
 struct PackProcessState {
     peer_info: PeerInfo,
