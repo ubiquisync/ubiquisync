@@ -30,7 +30,7 @@ use crate::{
     BoxError,
     db::{
         DbError,
-        sea_query::{insert_cols_batch, update_cols_batch},
+        sea_query::{insert_cols_batch, select_cols, update_cols_batch},
     },
     op::OpDecodeError,
     reducer::Reducer,
@@ -262,6 +262,18 @@ impl<R: Reducer> ReplicaInner<R> {
                         // we already have this segment and can just mark it as done
                         return Ok(());
                     } else {
+                        // this is definitely a fork, let's see if we can place it
+                        let (segment,) = select_cols::<(segments::Body,)>(
+                            self.db.as_ref(),
+                            Query::select()
+                                .from(segments::Table)
+                                .and_where(Expr::column(segments::StartIdx).eq(stream.id))
+                                .and_where(Expr::column(segments::StartIdx).lte(segment_end - 1))
+                                .and_where(Expr::column(segments::EndSize).gte(segment_end)),
+                        )
+                        .await?
+                        .exactly_one()?;
+
                         todo!("insert fork")
                     }
                 } else if stream_size > segment_end {
