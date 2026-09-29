@@ -1,13 +1,14 @@
+mod commit;
 mod exec;
 mod fork;
 mod fs;
 mod fs_read;
 mod fs_sync_schema;
 mod fs_write;
+mod ingest;
 mod init;
 mod peers;
 mod query;
-mod read;
 mod schema;
 mod stream_lock;
 mod streams;

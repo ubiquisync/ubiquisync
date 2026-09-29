@@ -6,7 +6,7 @@ use ubiquisync_core::{
     hlc::{HlcError, wall_ms},
     ids::LogId,
     log::{
-        LogEntry, LogHashContext, LogValidationError, SegmentCipherError,
+        ChainHash, LogEntry, LogHashContext, LogValidationError, SegmentCipherError,
         segment::{
             DecodedEntries, SegmentDecodeError, SegmentReader, SegmentVerifyError, VerifiedSegment,
         },
@@ -403,8 +403,10 @@ where {
     async fn fetch_segment<'a>(
         &self,
         peer_info: &PeerInfo,
+        // TODO we don't actually need LogHashContext here because segment.verify constructs one anyway
         hash_ctx: &LogHashContext,
         segment_resolver: &'a mut dyn SegmentBytesResolver,
+        prev_chain: &ChainHash,
     ) -> Result<Option<ResolvedSegment<'a>>, SegmentProcessError> {
         let Some(segment_bytes) = segment_resolver.fetch_segment_bytes().await? else {
             // pack no longer exists
@@ -419,6 +421,7 @@ where {
             .verify(
                 &peer_info.commitment.sig_verify_key,
                 self.key_resolver.as_ref(),
+                prev_chain,
             )
             .await?;
         Ok(Some(ResolvedSegment {

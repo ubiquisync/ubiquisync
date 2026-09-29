@@ -572,8 +572,15 @@ impl<'a> DecodedSegment<'a> {
         self,
         verifying_key: &VerifyingKey,
         key_resolver: &dyn CipherKeyResolver,
+        expected_prev_chain: &ChainHash,
     ) -> Result<VerifiedSegment<'a>, SegmentVerifyError> {
         let header = &self.header;
+        if expected_prev_chain.size < header.prev_chain.size {
+            // segment starts after our expected prev_chain - caller error
+            return Err(SegmentVerifyError::Verify(
+                LogVerifyError::PrevChainMismatch,
+            ));
+        }
         let mut cipher = header.start_cipher;
         let seed = LogHashContext::new(&self.log_id);
         let chain_hash = match self.entries {
@@ -585,6 +592,7 @@ impl<'a> DecodedSegment<'a> {
                     &header.prev_chain,
                     &mut cipher,
                     entries.iter(),
+                    expected_prev_chain,
                 )?;
                 for e in entries.iter() {
                     if let LogEntry::IndexedEntry(EntryBody::UseKey(ci)) = e {
@@ -601,11 +609,18 @@ impl<'a> DecodedSegment<'a> {
                     &header.prev_chain,
                     key_resolver,
                     entries.iter(),
+                    expected_prev_chain,
                 )
                 .await?
             }
         };
         verifying_key.verify_signature(&chain_hash.sign_bytes(&seed), &header.signature)?;
+        if expected_prev_chain.size >= chain_hash.size {
+            // if we hit this case, we had fewer entries than we expected
+            return Err(SegmentVerifyError::Verify(
+                LogVerifyError::PrevChainMismatch,
+            ));
+        }
         Ok(VerifiedSegment {
             decoded: self,
             head_chain: chain_hash,
