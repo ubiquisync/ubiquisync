@@ -1,29 +1,17 @@
-use std::{
-    borrow::Borrow,
-    cmp::min,
-    collections::{HashMap, HashSet},
-    ops::Range,
-    sync::Arc,
-    time::Duration,
-};
+use std::{borrow::Borrow, ops::Range};
 
 use sea_query::{Expr, ExprTrait, Query};
 use thiserror::Error;
 use ubiquisync_core::{
-    crypto::{CipherKeyResolver, NullCipherKeyResolver},
     hlc::{HlcError, wall_ms},
     ids::LogId,
     log::{
         LogEntry, LogHashContext, LogValidationError, SegmentCipherError,
         segment::{
-            DecodedEntries, PlaintextSegmentEncoding, SegmentDecodeError, SegmentEncoding,
-            SegmentReader, SegmentVerifyError, VerifiedSegment,
+            DecodedEntries, SegmentDecodeError, SegmentReader, SegmentVerifyError, VerifiedSegment,
         },
     },
-    pack::{
-        PackFileDescriptor, PackFileId, PackHeader, PackRef, PackStore, PackStoreError,
-        SegmentDescriptor, dedupe_pack_files,
-    },
+    pack::SegmentDescriptor,
 };
 
 use crate::{
@@ -35,178 +23,48 @@ use crate::{
     op::OpDecodeError,
     reducer::Reducer,
     replica::{
-        Replica, ReplicaInner,
-        fs::PackRemoteProcessError,
-        fs_sync_schema::{BlockedPackInfo, PackReadState},
-        peers::{PeerInfo, PeerResolveError},
+        ReplicaInner,
+        peers::PeerInfo,
         schema::{CommitErr, segments, streams},
         stream_lock::KeyedLockGuard,
         streams::{StreamInfo, StreamLog},
     },
 };
 
-#[derive(Debug, Clone)]
-pub(crate) struct PackReadPlan {
-    pub new_state: PackReadState,
-
-    /// The files we need to inspect. We only retain this
-    /// transiently between directory listings and add files
-    /// to the consumed state as we inspect them.
-    pub to_read: Vec<PackReadTodo>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct PackReadTodo {
-    file: PackFileId,
-    attempts: u64,
-    first_last_timestamps: Range<u64>,
-}
-
-impl PackReadTodo {
-    fn new(file: &PackFileId) -> Self {
-        PackReadTodo {
-            file: file.clone(),
-            attempts: 0,
-            first_last_timestamps: 0..0,
-        }
-    }
-}
-
-impl BlockedPackInfo {
-    fn todo(&self, file: &PackFileId, ts: u64) -> PackReadTodo {
-        PackReadTodo {
-            file: file.clone(),
-            attempts: self.attempts + 1,
-            first_last_timestamps: self.read_timestamps.start..ts,
-        }
-    }
-}
-
-impl PackReadState {
-    pub fn prepare_read(self, ts: u64, cur_files: &[PackFileId]) -> PackReadPlan {
-        let cur_files = dedupe_pack_files(cur_files);
-        let mut to_read = vec![];
-        let mut consumed = HashSet::new();
-        let mut blocked = HashMap::new();
-        // we only insert entries for the current set of files in our
-        // to_read, consumed and blocked buckets because if a file
-        // no longer exists, we don't care to maintain any state about it
-        for f in cur_files.iter() {
-            let r = f.get_ref();
-            // if we already consumed this pack then we mark it as consumed again
-            if self.consumed.contains(&r) {
-                consumed.insert(r);
-            } else if let Some(blocked_info) = self.blocked.get(&r) {
-                // we retry if a blocked pack's generation is bumped
-                if f.generation > blocked_info.file.generation
-                    // or if it's retry timetstamp is up
-                    || blocked_info.next_retry_ts() <= ts
-                    // or if all of its parents are consumed
-                    // TODO: this is a bit overly conservative because the parents could be scheduled to read in this
-                    // round, but we don't have a full dependency tree yet, so for now we'll wait until the next
-                    // round to unblock for these cases
-                    || blocked_info.parents.iter().all(|p| self.consumed.contains(p))
-                {
-                    to_read.push(blocked_info.todo(f, ts));
-                } else {
-                    blocked.insert(r, blocked_info.clone());
-                }
-            } else {
-                to_read.push(PackReadTodo::new(f));
-            }
-        }
-        // order pack files so that we read older ones first
-        to_read.sort_by_key(|v| v.file.seqs.end);
-        PackReadPlan {
-            new_state: PackReadState { consumed, blocked },
-            to_read,
-        }
-    }
-}
-
-impl BlockedPackInfo {
-    fn next_retry_duration(&self) -> u64 {
-        const RETRY_BASE: u128 = Duration::from_secs(10).as_millis();
-        // this caps are retry interval at about 4.5 hours
-        (RETRY_BASE * 2u128.pow(min(self.attempts, 15) as u32)) as u64
-    }
-
-    fn next_retry_ts(&self) -> u64 {
-        self.read_timestamps.end + self.next_retry_duration()
-    }
-}
-
 #[derive(Error, Debug)]
-pub enum PackProcessError {
-    #[error("pack store error: {0}")]
-    Store(#[from] PackStoreError),
-    #[error("peer resolve error: {0}")]
-    Peer(#[from] PeerResolveError),
+pub(crate) enum SegmentProcessError {
+    #[error("pending other data")]
+    Pending,
     #[error("db error: {0}")]
     Db(#[from] DbError),
-    #[error("cipher error: {0}")]
-    Cipher(#[from] SegmentCipherError),
     #[error("segment decode error: {0}")]
     Decode(#[from] SegmentDecodeError),
     #[error("segment verify error: {0}")]
     Verify(#[from] SegmentVerifyError),
+    #[error("cipher error: {0}")]
+    Cipher(#[from] SegmentCipherError),
     #[error("log validation error: {0}")]
     LogValidation(#[from] LogValidationError),
     #[error("op decode error: {0}")]
     OpDecode(#[from] OpDecodeError),
     #[error("reducer error: {0}")]
     Reducer(BoxError),
-    #[error("pending")]
-    Pending,
+}
+
+#[async_trait::async_trait]
+pub(crate) trait SegmentBytesResolver {
+    async fn fetch_segment_bytes<'a>(&'a mut self)
+    -> Result<Option<&'a [u8]>, SegmentProcessError>;
 }
 
 impl<R: Reducer> ReplicaInner<R> {
-    async fn process_pack(
+    async fn try_ingest_segment(
         &self,
-        peer_info: &PeerInfo,
-        desc: &PackFileDescriptor,
-        store: &PackStore,
-        plan: &mut PackReadPlan,
-    ) -> Result<(), PackRemoteProcessError> {
-        let Some(signed_header) = store.read_header(desc).await? else {
-            // if by the time we go to read he pack it is gone,
-            // then it has probably been replaced by a newer generation,
-            // we'll get back to it later
-            return Ok(());
-        };
-
-        let mut body: Option<Vec<u8>> = None;
-
-        for segment in signed_header.header.self_segments.iter() {
-            self.process_pack_segment(desc, segment, peer_info, store, &mut body)
-                .await?;
-        }
-
-        // TODO peer segments
-        for peer_data in signed_header.header.peer_data.iter() {
-            let peer_info = self.resolve_peer(&peer_data.peer_id).await?;
-            for segment in peer_data.segments.iter() {
-                self.process_pack_segment(desc, segment, peer_info, store, &mut body)
-                    .await?;
-            }
-        }
-
-        Ok(())
-    }
-
-    // TODO: i think we only want these results from this fn:
-    // - Pending - mark whole pack as pending so we come back to trying to place this segment later
-    // - Ok - we did everything we could with this segment for better or worse
-    // - TransientError - some db state error occurred that may resolve later
-    // probably all other errors we want to collapse into these or track in the streams table
-    async fn process_pack_segment<'a>(
-        &self,
-        pack_desc: &PackFileDescriptor,
         segment_desc: &SegmentDescriptor,
         peer_info: &PeerInfo,
-        store: &PackStore,
-        body: &'a mut Option<Vec<u8>>,
-    ) -> Result<(), SegmentProcessError> {
+        segment_resolver: &mut dyn SegmentBytesResolver,
+    ) -> Result<(), SegmentProcessError>
+where {
         // first aquire the lock for this log
         let stream_guard = self
             .stream_locks
@@ -214,14 +72,14 @@ impl<R: Reducer> ReplicaInner<R> {
             .await;
 
         let Range {
-            start,
+            start: segment_start,
             end: segment_end,
         } = segment_desc.idx_range;
         // first check if we can immediately place this segment or likely already have it
         let streams = self.resolve_streams(&stream_guard).await?;
         if streams.is_empty() {
             // we don't have anything yet so check if this segment starts at 0
-            if start == 0 {
+            if segment_start == 0 {
                 // we can place this segment immediately
                 // TODO in the future do an authz check for this log
                 let hash_ctx = LogHashContext::new(&LogId {
@@ -230,15 +88,12 @@ impl<R: Reducer> ReplicaInner<R> {
                 });
                 let stream = self.create_stream(&stream_guard, &hash_ctx).await?;
                 return self
-                    .place_pack_segment_direct(
+                    .place_segment(
                         &stream_guard,
-                        pack_desc,
-                        segment_desc,
                         &stream,
                         peer_info,
                         &hash_ctx,
-                        store,
-                        body,
+                        segment_resolver,
                     )
                     .await;
             } else {
@@ -285,22 +140,19 @@ impl<R: Reducer> ReplicaInner<R> {
                     // with cheap bloom filters
                     probably_have_segment = true;
                     break;
-                } else if stream_size == start {
+                } else if stream_size == segment_start {
                     if stream.head_chain.hash == segment_desc.prev_chain {
                         // this is the happy path where we can place the segment immediately
                         return self
-                            .place_pack_segment_direct(
+                            .place_segment(
                                 &stream_guard,
-                                pack_desc,
-                                segment_desc,
                                 stream,
                                 peer_info,
                                 &LogHashContext::new(&LogId {
                                     peer_id: peer_info.peer,
                                     container_id: segment_desc.container_id,
                                 }),
-                                store,
-                                body,
+                                segment_resolver,
                             )
                             .await;
                     } else {
@@ -308,7 +160,7 @@ impl<R: Reducer> ReplicaInner<R> {
                         // maybe there's a different stream it goes on
                         continue;
                     }
-                } else if stream_size > start {
+                } else if stream_size > segment_start {
                     // in this case we may be able to place this segment on this stream
                     // so we mark it as a candidate
                     candidate_streams.push(stream);
@@ -341,28 +193,58 @@ impl<R: Reducer> ReplicaInner<R> {
         Ok(())
     }
 
-    async fn place_pack_segment_direct<'a>(
+    //     pub(crate) async fn try_place_segment(
+    //         &self,
+    //         stream: &StreamInfo,
+    //         segment_desc: &SegmentDescriptor,
+    //     ) -> Result<bool, SegmentProcessError> {
+    //         if stream.head_err.is_some() {
+    //             // TODO in the future we can check the err and see if
+    //             // we can maybe place some of this segment but we avoid
+    //             // that complexity for now
+    //             todo!(
+    //                 "this check should actually be placed where after we know whether we _could_ place the segment"
+    //             )
+    //         }
+
+    //         let segment_start = segment_desc.idx_range.start;
+    //         let segment_end = segment_desc.idx_range.end;
+    //         let stream_size = stream.head_chain.size;
+    //         if stream_size == segment_end && stream.head_chain.hash == segment_desc.end_chain {
+    //             // we already have this segment and can just mark it as done
+    //             return Ok(true);
+    //         }
+
+    //         let (segment,) = select_cols::<(segments::Body,)>(
+    //             self.db.as_ref(),
+    //             Query::select()
+    //                 .from(segments::Table)
+    //                 .and_where(Expr::column(segments::StartIdx).eq(stream.id))
+    //                 .and_where(Expr::column(segments::StartIdx).lt(segment_start))
+    //                 .and_where(Expr::column(segments::EndSize).gte(segment_start)),
+    //         )
+    //         .await?
+    //         .exactly_one()?;
+    //     }
+
+    async fn place_segment(
         &self,
         _guard: &KeyedLockGuard<StreamLog>,
-        pack_desc: &PackFileDescriptor,
-        segment_desc: &SegmentDescriptor,
         stream: &StreamInfo,
         peer_info: &PeerInfo,
         hash_ctx: &LogHashContext,
-        store: &PackStore,
-        body: &'a mut Option<Vec<u8>>,
+        segment_resolver: &mut dyn SegmentBytesResolver,
     ) -> Result<(), SegmentProcessError> {
-        debug_assert_eq!(segment_desc.idx_range.start, stream.head_chain.size);
-        debug_assert_eq!(segment_desc.prev_chain, stream.head_chain.hash);
         debug_assert!(stream.head_err.is_none());
         debug_assert!(stream.head_cipher.is_none());
 
         let Some(segment) = self
-            .resolve_segment(pack_desc, segment_desc, peer_info, store, body)
+            .fetch_segment(peer_info, hash_ctx, segment_resolver)
             .await?
         else {
             todo!("pack disappeared")
         };
+        let header = &segment.verified.decoded.header;
         let chain_hash = segment.verified.head_chain;
 
         // we always commit in 2 phases:
@@ -370,23 +252,36 @@ impl<R: Reducer> ReplicaInner<R> {
         // 2. iterate over each entry we CAN decode and commit
 
         // 1. save the segment
+
         let mut batch = self.db.new_batch();
-        // TODO should we use original bytes from the pack or re-encode?
-        insert_cols_batch::<(
-            segments::StreamId,
-            segments::StartIdx,
-            segments::EndSize,
-            segments::Body,
-        )>(
-            batch.as_mut(),
-            (
-                stream.id,
-                segment_desc.idx_range.start,
-                chain_hash.size,
-                segment.bytes.to_vec(),
-            ),
-            Query::insert().into_table(segments::Table),
-        )?;
+        if header.prev_chain.size < stream.head_chain.size {
+            // we need to drop a prefix from the segment because it starts
+            // before our existing head
+            todo!()
+        } else {
+            // the segment places directly on top of our existing stream
+
+            // first check that actual hashes line up
+            if header.prev_chain.hash != stream.head_chain.hash {
+                todo!("hash error")
+            }
+
+            insert_cols_batch::<(
+                segments::StreamId,
+                segments::StartIdx,
+                segments::EndSize,
+                segments::Body,
+            )>(
+                batch.as_mut(),
+                (
+                    stream.id,
+                    header.prev_chain.size,
+                    chain_hash.size,
+                    segment.bytes.to_vec(),
+                ),
+                Query::insert().into_table(segments::Table),
+            )?;
+        }
 
         update_cols_batch::<(streams::HeadSize, streams::HeadHash)>(
             batch.as_mut(),
@@ -398,8 +293,9 @@ impl<R: Reducer> ReplicaInner<R> {
 
         batch.commit().await?;
 
-        // TODO at this point we can mark this segment as done within any durable PackProcessState
-        // commit will auto-resume later via other periodic processes
+        // at this point we could mark this segment as done within any durable pack process state
+        // to auto-resume later via other periodic processes, but for now packs succeed or fail completely
+        // TODO: we still do need a auto-resume process setup
 
         // 2. attempt to commit the segment
 
@@ -438,7 +334,7 @@ impl<R: Reducer> ReplicaInner<R> {
                             let op = self
                                 .reducer
                                 .codec()
-                                .decode(&segment_desc.container_id, op_entry.op.borrow())?;
+                                .decode(&hash_ctx.log_id().container_id, op_entry.op.borrow())?;
                             // TODO decode errors are either:
                             // - incompatible software version
                             // - frozen stall
@@ -447,15 +343,16 @@ impl<R: Reducer> ReplicaInner<R> {
                                 .reducer
                                 .prepare(self.db.as_ref(), &op)
                                 .await
-                                .map_err(|e| PackProcessError::Reducer(Box::new(e)))?;
+                                .map_err(|e| SegmentProcessError::Reducer(Box::new(e)))?;
 
                             let apply_state = self
                                 .reducer
                                 .apply(batch.as_mut(), ts, &op, read_state)
-                                .map_err(|e| PackProcessError::Reducer(Box::new(e)))?;
+                                .map_err(|e| SegmentProcessError::Reducer(Box::new(e)))?;
                             Some(apply_state)
                         }
                         ubiquisync_core::log::EntryBody::UseKey(cipher_info) => {
+                            todo!("try to resolve the key!");
                             update_cols_batch::<(streams::CommitSize, streams::CommitErr)>(
                                 batch.as_mut(),
                                 (
@@ -493,7 +390,7 @@ impl<R: Reducer> ReplicaInner<R> {
                     if let Some(apply_state) = apply_state {
                         self.reducer
                             .post_apply(apply_state, &batch_result)
-                            .map_err(|e| PackProcessError::Reducer(Box::new(e)))?;
+                            .map_err(|e| SegmentProcessError::Reducer(Box::new(e)))?;
                     }
                 }
                 LogEntry::Signature(_) => {} // do nothing
@@ -503,41 +400,21 @@ impl<R: Reducer> ReplicaInner<R> {
         Ok(())
     }
 
-    async fn resolve_segment<'a>(
+    async fn fetch_segment<'a>(
         &self,
-        pack_desc: &PackFileDescriptor,
-        segment_desc: &SegmentDescriptor,
         peer_info: &PeerInfo,
-        store: &PackStore,
-        body: &'a mut Option<Vec<u8>>,
+        hash_ctx: &LogHashContext,
+        segment_resolver: &'a mut dyn SegmentBytesResolver,
     ) -> Result<Option<ResolvedSegment<'a>>, SegmentProcessError> {
-        let body = if let Some(body) = body {
-            body.as_slice()
-        } else {
-            if let Some(b) = store.read_body(pack_desc).await? {
-                let bref = b.as_slice();
-                *body = Some(b);
-                bref
-            } else {
-                // pack no longer exists
-                return Ok(None);
-            }
+        let Some(segment_bytes) = segment_resolver.fetch_segment_bytes().await? else {
+            // pack no longer exists
+            return Ok(None);
         };
-        let segment_bytes = &body[segment_desc.body_loc.clone()];
+
         let reader = SegmentReader::start(segment_bytes)?;
-        let segment_header = reader.header();
-        if let SegmentEncoding::Plaintext(PlaintextSegmentEncoding {
-            outer_encryption: Some(_),
-            ..
-        }) = &segment_header.encoding
-        {
-            todo!("encryption not supported yet!");
-        }
-        let log_id = LogId {
-            peer_id: peer_info.peer,
-            container_id: segment_desc.container_id,
-        };
-        let segment = reader.read(self.key_resolver.as_ref(), &log_id).await?;
+        let segment = reader
+            .read(self.key_resolver.as_ref(), hash_ctx.log_id())
+            .await?;
         let verified = segment
             .verify(
                 &peer_info.commitment.sig_verify_key,
@@ -551,29 +428,7 @@ impl<R: Reducer> ReplicaInner<R> {
     }
 }
 
-struct PackProcessState {
-    peer_info: PeerInfo,
-    file: PackFileId,
-    header: PackHeader,
-    body: Option<Vec<u8>>,
-    key_resolver: Arc<dyn CipherKeyResolver>,
-}
-
 struct ResolvedSegment<'a> {
     pub bytes: &'a [u8],
     pub verified: VerifiedSegment<'a>,
 }
-
-// #[derive(Error, Debug)]
-// #[error("error resolving pack body")]
-// struct PackBodyResolveError;
-
-// #[derive(Error, Debug)]
-// enum SegmentResolveError {
-//     #[error("resolving pack body: {0}")]
-//     BodyResolve(#[from] PackBodyResolveError),
-//     #[error("segment decode: {0}")]
-//     SegmentDecode(#[from] SegmentDecodeError),
-//     #[error("verify error: {0}")]
-//     Verify(#[from] SegmentVerifyError),
-// }

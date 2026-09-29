@@ -27,6 +27,7 @@ def_table_with_auto_id!(containers as __replica_containers (id) => {
     topic_id: i64,
 });
 
+// TODO should we rename streams to something like branches or logs?
 def_table_with_auto_id!(streams as __replica_streams (id) => {
    peer_id: i64, // TODO ref peers
    container_id: [u8; 16], // TODO should we ref containers.id or not here?
@@ -103,6 +104,7 @@ pub enum CommitErr {
     NeedKey(RootKey256Fingerprint),
     HLCForwardSkew(Timestamp),
     NeedPeerCommit {
+        // TODO: if we're waiting for multiple peers we need a Vec
         peer_id: PeerId,
         // None if same container
         container_id: Option<ContainerId>,

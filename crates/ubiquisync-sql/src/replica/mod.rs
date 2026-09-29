@@ -7,6 +7,7 @@ mod fs_write;
 mod init;
 mod peers;
 mod query;
+mod read;
 mod schema;
 mod stream_lock;
 mod streams;
