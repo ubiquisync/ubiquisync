@@ -98,20 +98,29 @@ pub enum HeadErr {
     NeedUseKey(RootKey256Fingerprint),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub enum CommitErr {
     NeedKey(RootKey256Fingerprint),
     HLCForwardSkew(Timestamp),
-    NeedPeerCommit {
-        // TODO: if we're waiting for multiple peers we need a Vec
-        peer_id: PeerId,
-        // None if same container
-        container_id: Option<ContainerId>,
-        head: ChainHash,
-    },
+    NeedPeerCommits(Vec<PeerDeps>),
     IncompatibleSoftware(UnknownSoftwareVersion),
     Frozen,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(test, derive(test_strategy::Arbitrary))]
+pub struct PeerDeps {
+    pub container: Option<ContainerId>,
+    pub deps: Vec<PeerDep>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(test, derive(test_strategy::Arbitrary))]
+pub struct PeerDep {
+    pub peer_db_id: u64,
+    pub size: u64,
+    pub hash_prefix: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -15,7 +15,7 @@ use crate::{
         DbError,
         sea_query::{update_cols, update_cols_batch},
     },
-    reducer::Reducer,
+    reducer::{RebuildScope, Reducer},
     replica::{
         ReplicaInner,
         ingest::SegmentProcessError,
@@ -30,6 +30,10 @@ use super::schema::UnknownSoftwareVersion;
 enum TryCommitError {
     #[error("db error: {0}")]
     Db(#[from] DbError),
+    #[error("needs rebuild: {0:?}")]
+    NeedsRebuild(RebuildScope),
+    #[error("internal error: {0}")]
+    Internal(String),
     #[error("commit stall: {0:?}")]
     Stall(CommitErr),
 }
