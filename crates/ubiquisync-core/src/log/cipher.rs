@@ -39,21 +39,31 @@ pub async fn entries_to_opaque<'a: 'b, 'b>(
     head_chain: &ChainHash,
     key_resolver: &dyn CipherKeyResolver,
     entries: impl Iterator<Item = &'b PlaintextLogEntry<'a>>,
-) -> Result<Vec<(OpaqueLogEntry<'a>, ChainHash)>, SegmentCipherError> {
+) -> Vec<Result<(OpaqueLogEntry<'a>, ChainHash), SegmentCipherError>> {
     let mut head_chain = *head_chain;
     let mut entry_cipher = if let Some(ci) = head_cipher {
-        Some(EntryCipher::resolve(ci, seed.log_id(), key_resolver).await?)
+        Some(
+            match EntryCipher::resolve(ci, seed.log_id(), key_resolver).await {
+                Ok(c) => c,
+                Err(e) => return vec![Err(e.into())],
+            },
+        )
     } else {
         None
     };
     let mut res = vec![];
-    for e in entries {
+    let mut next = async |e| {
         let e2 = to_opaque(e, &entry_cipher, &head_chain)?;
         head_chain = head_chain.next(&e2, seed, head_cipher)?;
         check_cipher_change(head_cipher, &mut entry_cipher, seed, key_resolver).await?;
-        res.push((e2, head_chain));
+        Ok((e2, head_chain))
+    };
+    for e in entries {
+        if res.push_mut(next(e).await).is_err() {
+            break;
+        }
     }
-    Ok(res)
+    res
 }
 
 /// Head cipher is the cipher at the start of the segment.
@@ -65,21 +75,31 @@ pub async fn entries_to_plaintext<'a: 'b, 'b>(
     head_chain: &ChainHash,
     key_resolver: &dyn CipherKeyResolver,
     entries: impl Iterator<Item = &'b OpaqueLogEntry<'a>>,
-) -> Result<Vec<(PlaintextLogEntry<'a>, ChainHash)>, SegmentCipherError> {
+) -> Vec<Result<(PlaintextLogEntry<'a>, ChainHash), SegmentCipherError>> {
     let mut head_chain = *head_chain;
     let mut entry_cipher = if let Some(ci) = head_cipher {
-        Some(EntryCipher::resolve(ci, seed.log_id(), key_resolver).await?)
+        Some(
+            match EntryCipher::resolve(ci, seed.log_id(), key_resolver).await {
+                Ok(c) => c,
+                Err(e) => return vec![Err(e.into())],
+            },
+        )
     } else {
         None
     };
     let mut res = vec![];
-    for e in entries {
+    let mut next = async |e| {
         let e2 = to_plaintext(e, &entry_cipher, &head_chain)?;
         head_chain = head_chain.next(e, seed, head_cipher)?;
         check_cipher_change(head_cipher, &mut entry_cipher, seed, key_resolver).await?;
-        res.push((e2, head_chain));
+        Ok((e2, head_chain))
+    };
+    for e in entries {
+        if res.push_mut(next(e).await).is_err() {
+            break;
+        }
     }
-    Ok(res)
+    res
 }
 
 fn to_opaque<'a>(

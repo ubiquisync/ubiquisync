@@ -3,12 +3,9 @@ use thiserror::Error;
 use crate::{
     bytes::OpaqueBytes,
     codec::{ReadError, Reader, Writer},
-    crypto::{CipherInfo, CipherKeyResolver, Hash256, Hasher, TaggedHashDomain, new_tagged_hasher},
+    crypto::{CipherInfo, Hash256, Hasher, TaggedHashDomain, new_tagged_hasher},
     ids::LogId,
-    log::{
-        EntryBody, LogEntry, OpEntry, OpaqueLogEntry, PlaintextLogEntry, SegmentCipherError,
-        entries_to_opaque,
-    },
+    log::{EntryBody, LogEntry, OpEntry, OpaqueLogEntry},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,35 +95,6 @@ impl ChainHash {
             }
             LogEntry::Signature(_) => Ok(*self),
         }
-    }
-
-    pub async fn compute_next_plaintext<'a: 'b, 'b>(
-        &self,
-        seed: &LogHashContext,
-        head_cipher: &mut Option<CipherInfo>,
-        key_resolver: &dyn CipherKeyResolver,
-        entries: impl Iterator<Item = &'b PlaintextLogEntry<'a>>,
-    ) -> Result<Self, SegmentCipherError> {
-        let opaque = entries_to_opaque(seed, head_cipher, self, key_resolver, entries).await?;
-        if opaque.is_empty() {
-            // TODO: maybe this should be a hard error, but if there are no entries we can validly just clone self
-            return Ok(*self);
-        }
-        // we take the last chain hash in the segment
-        Ok(opaque.last().expect("non-empty entries").1)
-    }
-
-    pub fn compute_next_opaque<'a: 'b, 'b>(
-        &self,
-        seed: &LogHashContext,
-        active_cipher: &mut Option<CipherInfo>,
-        entries: impl Iterator<Item = &'a OpaqueLogEntry<'a>>,
-    ) -> Result<Self, ChainHashError> {
-        let mut h: ChainHash = *self;
-        for e in entries {
-            h = h.next(e, seed, active_cipher)?;
-        }
-        Ok(h)
     }
 
     pub fn sign_bytes(&self, seed: &LogHashContext) -> Hash256 {

@@ -5,10 +5,8 @@ use crate::{
     crypto::CipherKeyResolver,
     log::{
         ChainHash, ChainHashError, LogEntry, LogHashContext, SegmentCipherError,
-        entries_to_plaintext,
         segment::{
-            DecodedEntries, SegmentDecodeError, SegmentEncodeError, SegmentReader,
-            encode_segment_plaintext_writer,
+            SegmentDecodeError, SegmentEncodeError, SegmentReader, encode_segment_plaintext_writer,
         },
     },
 };
@@ -38,17 +36,15 @@ pub async fn join_segments<'a, B: AsRef<[u8]> + 'a>(
     let mut prev_chain = None;
     let mut chain_hash = None;
     let mut start_cipher = None;
-    let mut active_cipher = None;
     let mut all_entries = vec![];
     let mut sig = None;
     for body in bodies {
         let reader = SegmentReader::start(body.as_ref())?;
         let segment_header = reader.header().clone();
-        let cur_hash = if let Some(chain_hash) = chain_hash {
+        if let Some(chain_hash) = chain_hash {
             if chain_hash != segment_header.prev_chain {
                 return Err(JoinSegmentsError::OutOfOrder);
             }
-            chain_hash
         } else {
             // this is the first segment so capture prev_chain and start_cipher
             prev_chain = Some(segment_header.prev_chain);
@@ -57,37 +53,14 @@ pub async fn join_segments<'a, B: AsRef<[u8]> + 'a>(
             // if we did this, we could silently accept whatever cipher the segment claims without
             // a UseKey entry. in reality, this should never occur because replicas should check
             // start_cipher validity at ommission time and thus this is really a decode-time optimization
-            active_cipher = start_cipher;
-            segment_header.prev_chain
         };
-        let decoded = reader.read(key_resolver, hash_ctx.log_id()).await?;
-        let entries = match decoded.entries {
-            DecodedEntries::Opaque(items) => {
-                let entries = entries_to_plaintext(
-                    hash_ctx,
-                    &mut active_cipher,
-                    &cur_hash,
-                    key_resolver,
-                    items.iter(),
-                )
-                .await?;
-                chain_hash = Some(entries.last().map(|e| e.1).unwrap_or(cur_hash));
-                entries.into_iter().map(|e| e.0).collect()
-            }
-            DecodedEntries::Plaintext(items) => {
-                chain_hash = Some(
-                    cur_hash
-                        .compute_next_plaintext(
-                            hash_ctx,
-                            &mut active_cipher,
-                            key_resolver,
-                            items.iter(),
-                        )
-                        .await?,
-                );
-                items
-            }
-        };
+        let decoded = reader.read(key_resolver, hash_ctx).await?;
+        let mut entries = vec![];
+        for res in decoded.to_plaintext(key_resolver).await {
+            let (e, h) = res?;
+            entries.push(e);
+            chain_hash = Some(h);
+        }
         sig = Some(segment_header.signature);
 
         for e in entries {
@@ -193,15 +166,13 @@ mod tests {
                     &data.key_resolver,
                     data.entries.iter(),
                 )
-                .await
-                .unwrap();
+                .await;
                 encode_segment_opaque(
                     &data.signature,
                     &data.prev_chain,
                     &data.start_cipher,
                     opaque.iter().map(|(e, _)| e),
                 )
-                .unwrap()
             } else {
                 encode_segment_plaintext(
                     &data.signature,

@@ -50,7 +50,8 @@ pub async fn verify_plaintext<'a: 'b, 'b>(
     entries: impl Iterator<Item = &'b PlaintextLogEntry<'a>>,
 ) -> Result<Vec<ChainHash>, LogVerifyError> {
     let mut chain_hashes = vec![];
-    for (e, h) in entries_to_opaque(seed, head_cipher, head_chain, key_resolver, entries).await? {
+    for res in entries_to_opaque(seed, head_cipher, head_chain, key_resolver, entries).await {
+        let (e, h) = res?;
         match e {
             LogEntry::Signature(signature) => {
                 verifying_key.verify_signature(&h.sign_bytes(seed), &signature)?

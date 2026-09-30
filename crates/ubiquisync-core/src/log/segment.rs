@@ -19,7 +19,7 @@ use crate::{
     log::{
         ChainHash, DecodeTimestamp, LogDecodeError, LogEncodeError, LogEntry, LogHashContext,
         LogValidationError, LogVerifyError, OpaqueLogEntry, PlaintextLogEntry, SegmentCipherError,
-        TimestampRepr, entries_to_plaintext, verify_opaque, verify_plaintext,
+        TimestampRepr, entries_to_opaque, entries_to_plaintext, verify_opaque, verify_plaintext,
     },
 };
 
@@ -68,14 +68,13 @@ pub struct VerifiedSegment<'a> {
     pub decoded: DecodedSegment<'a>,
     pub head_chain: ChainHash,
     pub head_cipher: Option<CipherInfo>,
-    pub chain_seed: LogHashContext,
     pub chain_hashes: Vec<ChainHash>,
 }
 
 pub struct DecodedSegment<'a> {
     pub header: SegmentHeader,
+    pub chain_seed: LogHashContext,
     pub entries: DecodedEntries<'a>,
-    pub log_id: LogId,
 }
 
 pub enum DecodedEntries<'a> {
@@ -102,10 +101,11 @@ impl<'a> SegmentReader<'a> {
     pub async fn read(
         self,
         key_resolver: &dyn CipherKeyResolver,
-        log_id: &LogId,
+        hash_ctx: &LogHashContext,
     ) -> Result<DecodedSegment<'a>, SegmentDecodeError> {
         let buf = self.reader.into_remaining();
         let header = self.header;
+        let log_id = hash_ctx.log_id();
         let entries = match &header.encoding {
             SegmentEncoding::Opaque => {
                 let mut res = vec![];
@@ -142,7 +142,7 @@ impl<'a> SegmentReader<'a> {
         Ok(DecodedSegment {
             header,
             entries,
-            log_id: *log_id,
+            chain_seed: hash_ctx.clone(),
         })
     }
 }
@@ -548,31 +548,6 @@ impl SegmentDecodeError {
 const SEGMENT_ENCODING_OPAQUE: u8 = 0;
 const SEGMENT_ENCODING_PLAINTEXT: u8 = 1;
 
-impl<'a> VerifiedSegment<'a> {
-    pub async fn to_plaintext(
-        self,
-        key_resolver: &dyn CipherKeyResolver,
-    ) -> Result<(Vec<PlaintextLogEntry<'a>>, Option<CipherInfo>), SegmentCipherError> {
-        let VerifiedSegment {
-            chain_seed,
-            decoded,
-            ..
-        } = self;
-        let header = decoded.header;
-        let mut head_cipher = header.start_cipher;
-        let res = decoded
-            .entries
-            .to_plaintext(
-                &chain_seed,
-                &mut head_cipher,
-                &header.prev_chain,
-                key_resolver,
-            )
-            .await?;
-        Ok((res, head_cipher))
-    }
-}
-
 impl<'a> DecodedSegment<'a> {
     pub async fn verify(
         self,
@@ -581,11 +556,10 @@ impl<'a> DecodedSegment<'a> {
     ) -> Result<VerifiedSegment<'a>, SegmentVerifyError> {
         let header = &self.header;
         let mut cipher = header.start_cipher;
-        let seed = LogHashContext::new(&self.log_id);
         let chain_hashes = match self.entries {
             DecodedEntries::Opaque(ref entries) => verify_opaque(
                 verifying_key,
-                &seed,
+                &self.chain_seed,
                 &header.prev_chain,
                 &mut cipher,
                 entries.iter(),
@@ -593,7 +567,7 @@ impl<'a> DecodedSegment<'a> {
             DecodedEntries::Plaintext(ref entries) => {
                 verify_plaintext(
                     verifying_key,
-                    &seed,
+                    &self.chain_seed,
                     &mut cipher,
                     &header.prev_chain,
                     key_resolver,
@@ -605,40 +579,52 @@ impl<'a> DecodedSegment<'a> {
         let Some(chain_hash) = chain_hashes.last() else {
             return Err(SegmentVerifyError::EmptySegment);
         };
-        verifying_key.verify_signature(&chain_hash.sign_bytes(&seed), &header.signature)?;
+        verifying_key
+            .verify_signature(&chain_hash.sign_bytes(&self.chain_seed), &header.signature)?;
         Ok(VerifiedSegment {
             decoded: self,
             head_chain: *chain_hash,
             head_cipher: cipher,
-            chain_seed: seed,
             chain_hashes,
         })
     }
 }
 
-impl<'a> DecodedEntries<'a> {
+impl<'a> DecodedSegment<'a> {
     pub async fn to_plaintext(
         self,
-        seed: &LogHashContext,
-        head_cipher: &mut Option<CipherInfo>,
-        head_chain: &ChainHash,
         key_resolver: &dyn CipherKeyResolver,
-    ) -> Result<Vec<PlaintextLogEntry<'a>>, SegmentCipherError> {
-        match self {
+    ) -> Vec<Result<(PlaintextLogEntry<'a>, ChainHash), SegmentCipherError>> {
+        let header = self.header;
+        let mut head_cipher = header.start_cipher;
+        match self.entries {
             DecodedEntries::Opaque(items) => {
-                let e =
-                    entries_to_plaintext(seed, head_cipher, head_chain, key_resolver, items.iter())
-                        .await?;
-                Ok(e.into_iter().map(|e| e.0).collect())
+                entries_to_plaintext(
+                    &self.chain_seed,
+                    &mut head_cipher,
+                    &header.prev_chain,
+                    key_resolver,
+                    items.iter(),
+                )
+                .await
             }
             DecodedEntries::Plaintext(items) => {
-                // capture key rotation state
-                for e in items.iter() {
-                    if let LogEntry::IndexedEntry(EntryBody::UseKey(ci)) = e {
-                        *head_cipher = Some(*ci);
-                    }
-                }
-                Ok(items)
+                let opaque = entries_to_opaque(
+                    &self.chain_seed,
+                    &mut head_cipher,
+                    &header.prev_chain,
+                    key_resolver,
+                    items.iter(),
+                )
+                .await;
+                opaque
+                    .into_iter()
+                    .zip(items.into_iter())
+                    .map(|(res, e)| match res {
+                        Ok((_, h)) => Ok((e, h)),
+                        Err(e) => Err(e),
+                    })
+                    .collect::<Vec<_>>()
             }
         }
     }

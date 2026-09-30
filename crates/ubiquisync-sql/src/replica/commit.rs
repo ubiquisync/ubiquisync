@@ -5,7 +5,7 @@ use thiserror::Error;
 use ubiquisync_core::{
     hlc::{HlcError, wall_ms},
     log::{
-        LogEntry, LogHashContext,
+        LogEntry, LogHashContext, SegmentCipherError,
         segment::{DecodedEntries, DecodedSegment},
     },
 };
@@ -51,9 +51,8 @@ impl<R: Reducer> ReplicaInner<R> {
         &self,
         stream: &StreamInfo,
         segment: &DecodedSegment<'_>,
-        hash_ctx: &LogHashContext,
     ) -> Result<(), CommitError> {
-        match self.do_try_commit(stream, segment, hash_ctx).await {
+        match self.do_try_commit(stream, segment).await {
             Ok(_) => Ok(()),
             Err(TryCommitError::Stall(e)) => Ok(self.set_commit_err(stream, e).await?),
             Err(TryCommitError::NeedsRebuild(_)) => todo!("rebuild state"),
@@ -66,7 +65,6 @@ impl<R: Reducer> ReplicaInner<R> {
         &self,
         stream: &StreamInfo,
         segment: &DecodedSegment<'_>,
-        hash_ctx: &LogHashContext,
     ) -> Result<(), TryCommitError> {
         if stream.commit_err.is_some() {
             // TODO should we do anything here? we may be retrying this stream
@@ -78,13 +76,26 @@ impl<R: Reducer> ReplicaInner<R> {
             todo!("internal error, stream sizes don't match expected based on no err")
         }
 
-        let decoded = match &segment.entries {
-            DecodedEntries::Opaque(items) => todo!(),
-            DecodedEntries::Plaintext(items) => items,
-        };
+        for res in segment.to_plaintext(self.key_resolver.as_ref()).await {
+            let (entry, hash) = match res {
+                Ok((entry, hash)) => (entry, hash),
+                Err(e) => match e {
+                    SegmentCipherError::CipherError(cipher_error) => todo!(),
+                    SegmentCipherError::ChainHashError(chain_hash_error) => todo!(),
+                    SegmentCipherError::KeyResolve(cipher_key_resolve_error) => todo!(),
+                    SegmentCipherError::InvalidTimestamp => todo!(),
+                    SegmentCipherError::Validation(log_validation_error) => todo!(),
+                },
+            };
 
-        let local_ts = wall_ms();
-        for entry in decoded {
+            if hash.size <= commit_size {
+                // we've already committed this entry
+                continue;
+            }
+
+            // TODO add UPDATE clause to clear stream deps waiting on this entry
+
+            let local_ts = wall_ms();
             match entry {
                 LogEntry::IndexedEntry(entry) => {
                     commit_size += 1;
@@ -104,11 +115,10 @@ impl<R: Reducer> ReplicaInner<R> {
                                 }
                             }
 
-                            let op = match self
-                                .reducer
-                                .codec()
-                                .decode(&hash_ctx.log_id().container_id, op_entry.op.borrow())
-                            {
+                            let op = match self.reducer.codec().decode(
+                                &segment.chain_seed.log_id().container_id,
+                                op_entry.op.borrow(),
+                            ) {
                                 Ok(op) => op,
                                 // decode errors are either:
                                 // - incompatible software version
