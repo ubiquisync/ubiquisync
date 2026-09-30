@@ -114,6 +114,10 @@ impl<R: Reducer> ReplicaInner<R> {
             if hash.size <= stream.commit_size {
                 // we've already committed this entry
                 continue;
+            } else if hash.size != stream.commit_size + 1 {
+                return Err(TryCommitError::Internal(
+                    "caller error: segment starts after commit size".into(),
+                ));
             }
 
             // TODO add UPDATE clause to clear stream deps waiting on this entry
@@ -200,18 +204,18 @@ impl<R: Reducer> ReplicaInner<R> {
                         }
                     };
 
-                    stream.commit_size += 1;
-                    stream.commit_err = None;
-
                     update_cols_batch::<(streams::CommitSize, streams::CommitErr)>(
                         batch.as_mut(),
-                        (stream.commit_size, None),
+                        (stream.commit_size + 1, None),
                         Query::update()
                             .table(streams::Table)
                             .and_where(Expr::column(streams::Id).eq(stream.id)),
                     )?;
 
                     let batch_result = batch.commit().await?;
+
+                    stream.commit_size += 1;
+                    stream.commit_err = None;
 
                     if let Some(apply_state) = apply_state {
                         self.reducer.post_apply(apply_state, &batch_result)
@@ -223,19 +227,20 @@ impl<R: Reducer> ReplicaInner<R> {
         Ok(())
     }
 
-    async fn set_commit_err(&self, stream: &StreamInfo, err: CommitErr) -> Result<(), DbError> {
+    async fn set_commit_err(&self, stream: &mut StreamInfo, err: CommitErr) -> Result<(), DbError> {
         update_cols::<(streams::CommitErr,)>(
             self.db.as_ref(),
-            (Some(err),),
+            (Some(err.clone()),),
             Query::update()
                 .table(streams::Table)
                 .and_where(Expr::column(streams::Id).eq(stream.id)),
         )
         .await?;
+        stream.commit_err = Some(err);
         Ok(())
     }
 
-    async fn set_internal_commit_err(&self, stream: &StreamInfo) -> Result<(), DbError> {
+    async fn set_internal_commit_err(&self, stream: &mut StreamInfo) -> Result<(), DbError> {
         let ts = wall_ms();
         let err = if let Some(CommitErr::Internal {
             retry_time_span,
