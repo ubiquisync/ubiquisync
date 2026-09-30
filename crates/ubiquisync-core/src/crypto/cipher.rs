@@ -92,7 +92,7 @@ pub trait CipherKeyResolver: Send + Sync {
     ) -> Option<ContainerKey256>;
 }
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone)]
 pub enum CipherKeyResolveError {
     #[error("key {0:?} not found")]
     NotFound(RootKey256Fingerprint),
@@ -104,7 +104,7 @@ pub enum CipherKeyResolveError {
 #[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
 pub struct RootKey256Fingerprint(pub [u8; 32]);
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone)]
 #[error("cipher error")]
 pub struct CipherError;
 

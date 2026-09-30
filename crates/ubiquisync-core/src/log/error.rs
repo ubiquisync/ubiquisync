@@ -25,7 +25,7 @@ pub enum LogDecodeError {
     UndecodableEntryType(u8),
 }
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone)]
 pub enum LogValidationError {
     #[error("invalid server attested user id")]
     InvalidServerAttestedUserId,

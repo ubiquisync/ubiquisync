@@ -12,7 +12,7 @@ use crate::{
     },
 };
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone)]
 pub enum SegmentCipherError {
     #[error("cipher error {0}")]
     CipherError(#[from] CipherError),

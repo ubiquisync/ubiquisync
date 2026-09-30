@@ -160,8 +160,6 @@ pub enum SegmentVerifyError {
     Signature(#[from] SignatureVerifyError),
     #[error("signature: {0}")]
     Verify(#[from] LogVerifyError),
-    #[error("empty or signature-only segment")]
-    EmptySegment,
 }
 
 pub fn encode_segment_opaque<'a: 'b, 'b>(
@@ -576,14 +574,12 @@ impl<'a> DecodedSegment<'a> {
                 .await?
             }
         };
-        let Some(chain_hash) = chain_hashes.last() else {
-            return Err(SegmentVerifyError::EmptySegment);
-        };
+        let chain_hash = chain_hashes.last().cloned().unwrap_or(header.prev_chain);
         verifying_key
             .verify_signature(&chain_hash.sign_bytes(&self.chain_seed), &header.signature)?;
         Ok(VerifiedSegment {
             decoded: self,
-            head_chain: *chain_hash,
+            head_chain: chain_hash,
             head_cipher: cipher,
             chain_hashes,
         })
@@ -619,7 +615,7 @@ impl<'a> DecodedSegment<'a> {
                 .await;
                 opaque
                     .into_iter()
-                    .zip(items.into_iter())
+                    .zip(items)
                     .map(|(res, e)| match res {
                         Ok((_, h)) => Ok((e, h)),
                         Err(e) => Err(e),
@@ -716,15 +712,20 @@ pub(crate) mod tests {
                         signing_key.sign(&head_chain.sign_bytes(&seed)).unwrap(),
                     ),
                 };
-                head_chain = head_chain
-                    .compute_next_plaintext(
-                        &seed,
-                        &mut head_cipher,
-                        &key_resolver,
-                        [e.clone()].iter(),
-                    )
-                    .await
-                    .unwrap();
+                let last_hash = entries_to_opaque(
+                    &seed,
+                    &mut head_cipher,
+                    &head_chain,
+                    &key_resolver,
+                    [e.clone()].iter(),
+                )
+                .await
+                .last()
+                .unwrap()
+                .clone()
+                .unwrap()
+                .1;
+                head_chain = last_hash;
                 entries.push(e);
             }
             TestCaseData {
@@ -769,7 +770,7 @@ pub(crate) mod tests {
         check_decode(&plaintext_segment, &data).await;
 
         let mut head_cipher = data.start_cipher;
-        let opaque = entries_to_opaque(
+        let opaque: Result<Vec<_>, _> = entries_to_opaque(
             &data.seed,
             &mut head_cipher,
             &data.prev_chain,
@@ -777,7 +778,9 @@ pub(crate) mod tests {
             data.entries.iter(),
         )
         .await
-        .unwrap();
+        .into_iter()
+        .collect();
+        let opaque = opaque.unwrap();
         assert_eq!(data.end_cipher, head_cipher);
         // this assertion is weirdly tolerant of empty segments which we maybe should reject, but currently they're sort of benign
         assert_eq!(
@@ -797,10 +800,7 @@ pub(crate) mod tests {
 
     async fn check_decode(segment: &[u8], data: &TestCaseData) {
         let reader = SegmentReader::start(segment).unwrap();
-        let decoded = reader
-            .read(&data.key_resolver, &data.case.log_id)
-            .await
-            .unwrap();
+        let decoded = reader.read(&data.key_resolver, &data.seed).await.unwrap();
         let verified = decoded
             .verify(&data.verifying_key, &data.key_resolver)
             .await
@@ -808,9 +808,18 @@ pub(crate) mod tests {
         assert_eq!(data.prev_chain, verified.decoded.header.prev_chain);
         assert_eq!(data.head_chain, verified.head_chain);
         assert_eq!(data.end_cipher, verified.head_cipher);
-        let (decoded_plaintext, end_cipher) =
-            verified.to_plaintext(&data.key_resolver).await.unwrap();
+        let decoded_plaintext: Result<Vec<_>, _> = verified
+            .decoded
+            .to_plaintext(&data.key_resolver)
+            .await
+            .into_iter()
+            .collect();
+        let decoded_plaintext: Vec<_> = decoded_plaintext
+            .unwrap()
+            .into_iter()
+            .map(|(e, _)| e)
+            .collect();
+
         assert_eq!(data.entries, decoded_plaintext);
-        assert_eq!(data.end_cipher, end_cipher);
     }
 }

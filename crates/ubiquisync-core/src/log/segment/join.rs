@@ -108,7 +108,6 @@ mod tests {
     use secrecy::{ExposeSecret, SecretBox};
     use test_strategy::proptest;
 
-    #[cfg(test)]
     use crate::codec::Writer;
     use crate::crypto::RootKey256;
     use crate::log::LogEntry;
@@ -159,20 +158,23 @@ mod tests {
 
             let body = if opaque {
                 let mut head_cipher = data.start_cipher;
-                let opaque = entries_to_opaque(
+                let opaque: Result<Vec<_>, _> = entries_to_opaque(
                     &data.seed,
                     &mut head_cipher,
                     &data.prev_chain,
                     &data.key_resolver,
                     data.entries.iter(),
                 )
-                .await;
+                .await
+                .into_iter()
+                .collect();
                 encode_segment_opaque(
                     &data.signature,
                     &data.prev_chain,
                     &data.start_cipher,
-                    opaque.iter().map(|(e, _)| e),
+                    opaque.unwrap().iter().map(|(e, _)| e),
                 )
+                .unwrap()
             } else {
                 encode_segment_plaintext(
                     &data.signature,
@@ -202,10 +204,7 @@ mod tests {
         assert_eq!(end_chain.unwrap(), joined.chain_hash);
 
         let reader = SegmentReader::start(&body).unwrap();
-        let decoded = reader
-            .read(&key_resolver, last_data.seed.log_id())
-            .await
-            .unwrap();
+        let decoded = reader.read(&key_resolver, &last_data.seed).await.unwrap();
         let verified = decoded
             .verify(&last_data.verifying_key, &key_resolver)
             .await
