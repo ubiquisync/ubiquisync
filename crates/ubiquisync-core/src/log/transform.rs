@@ -1,6 +1,6 @@
 use crate::{
     bytes::{BytesWrapper, ToStatic},
-    hlc::Timestamp,
+    hlc::HlcTimestamp,
     log::{EntryBody, LogEntry, OpEntry, TimestampRepr},
 };
 
@@ -22,7 +22,7 @@ impl<B: BytesWrapper, T: TimestampRepr> LogEntry<B, T> {
     }
 }
 
-impl ToStatic for Timestamp {
+impl ToStatic for HlcTimestamp {
     type Static = Self;
 
     fn to_static(self) -> Self::Static {

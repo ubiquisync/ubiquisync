@@ -117,7 +117,7 @@ impl ubiquisync_sql::reducer::Reducer for Reducer {
     fn apply(
         &self,
         batch: &mut dyn DbBatch,
-        timestamp: ubiquisync_core::hlc::Timestamp,
+        timestamp: ubiquisync_core::hlc::HlcTimestamp,
         op: &Op,
         read_state: Self::ReadState,
     ) -> Result<ApplyState, Self::Error> {

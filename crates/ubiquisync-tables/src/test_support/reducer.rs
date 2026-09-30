@@ -14,7 +14,7 @@ use crate::reducer::Reducer;
 use crate::schema::{ColumnSchema, TableSchema};
 use crate::watch::{ChangeEvent, DeleteEvent, UpsertEvent};
 use ubiquisync_core::event::event_bus;
-use ubiquisync_core::hlc::Timestamp;
+use ubiquisync_core::hlc::HlcTimestamp;
 use ubiquisync_core::ids::ContainerId;
 use ubiquisync_sql::db::{Db, DbValue};
 // The reducer's three-phase contract is a trait; bring its methods into scope
@@ -756,7 +756,7 @@ async fn view_row(db: &dyn Db, view: &str, cols: &[&str], k: i64) -> Option<Vec<
 /// Run one op end to end: `prepare` (schema reconcile, outside the batch),
 /// `apply` (emit statements), `commit`, then `post_apply` (build the event).
 async fn apply(reducer: &mut Reducer, db: &dyn Db, raw_ts: u64, op: &Op) -> Option<ChangeEvent> {
-    let ts = Timestamp::from_raw(raw_ts);
+    let ts = HlcTimestamp::from_raw(raw_ts);
     let read_state = reducer.prepare(db, op).await.expect("prepare");
     let mut batch = db.new_batch();
     let state = reducer

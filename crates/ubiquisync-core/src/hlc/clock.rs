@@ -143,16 +143,6 @@ impl Hlc {
     }
 }
 
-/// Current wall clock as Unix epoch milliseconds — the wall component fed
-/// into the HLC. Saturates to 0 if the system clock reads before the epoch.
-pub fn wall_ms() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
-
 /// Error returned by [`Hlc::observe`] when a remote timestamp's wall-clock
 /// component is more than [`MAX_SKEW_MS`] ahead of the local wall clock.
 /// One of the two clocks is wrong — the remote ahead or the local behind;

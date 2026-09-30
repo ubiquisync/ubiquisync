@@ -10,7 +10,7 @@
 
 use std::sync::Mutex;
 
-use super::{Hlc, SkewError, Timestamp, wall_ms};
+use super::{Hlc, HlcTimestamp, SkewError, wall_ms};
 
 /// Durable storage for the clock state: a single packed-`u64` register.
 ///
@@ -95,13 +95,15 @@ impl<S: HlcStorage> HlcService<S> {
     /// operation. This beats `unwrap()`, which would let one subsystem's
     /// panic crash every subsystem sharing the clock.
     fn lock(&self) -> std::sync::MutexGuard<'_, Hlc> {
-        self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Generate a fresh timestamp for a local write and enqueue the new state
     /// into `sink`. Always advances; always writes — the state must reach the
     /// committing batch, or a crash could reissue it.
-    pub fn now(&self, sink: &mut S::Sink) -> Result<Timestamp, S::Error> {
+    pub fn now(&self, sink: &mut S::Sink) -> Result<HlcTimestamp, S::Error> {
         let mut hlc = self.lock();
         let ts = hlc.tick(wall_ms());
         self.storage.save(sink, hlc.state().raw())?;
@@ -124,7 +126,7 @@ impl<S: HlcStorage> HlcService<S> {
     /// would admit) — never unsound, since it can't widen the window.
     pub fn observe(
         &self,
-        received: Timestamp,
+        received: HlcTimestamp,
         local_wall_ms: u64,
         sink: &mut S::Sink,
     ) -> Result<(), HlcError<S::Error>> {
@@ -134,22 +136,24 @@ impl<S: HlcStorage> HlcService<S> {
             .map_err(HlcError::Skew)?;
         let after = hlc.state();
         if after != before {
-            self.storage.save(sink, after.raw()).map_err(HlcError::Storage)?;
+            self.storage
+                .save(sink, after.raw())
+                .map_err(HlcError::Storage)?;
         }
         Ok(())
     }
 
     /// Current clock state without advancing it. Cheap snapshot for callers
     /// that only need to peek (e.g. tests, diagnostics).
-    pub fn state(&self) -> Timestamp {
+    pub fn state(&self) -> HlcTimestamp {
         self.lock().state()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::{MAX_SKEW_MS, wall_ms};
+    use super::*;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
     /// In-memory register standing in for a backend metadata row.
@@ -222,12 +226,13 @@ mod tests {
         let mem = MemStorage::default();
         let svc = HlcService::open(&mem).unwrap();
         let local = wall_ms();
-        let ahead = Timestamp::from_parts(local + MAX_SKEW_MS, 7);
+        let ahead = HlcTimestamp::from_parts(local + MAX_SKEW_MS, 7);
         svc.observe(ahead, local, &mut ()).unwrap();
         let saves_after_advance = mem.saves.load(Ordering::SeqCst);
         assert_eq!(saves_after_advance, 1, "advancing observe persists");
         // When: observing something older. Then: no new save.
-        svc.observe(Timestamp::from_parts(local, 0), local, &mut ()).unwrap();
+        svc.observe(HlcTimestamp::from_parts(local, 0), local, &mut ())
+            .unwrap();
         assert_eq!(mem.saves.load(Ordering::SeqCst), saves_after_advance);
         assert_eq!(svc.state(), ahead);
     }
@@ -240,11 +245,11 @@ mod tests {
         let mem = MemStorage::default();
         let svc = HlcService::open(&mem).unwrap();
         let local = wall_ms();
-        let too_far = Timestamp::from_parts(local + MAX_SKEW_MS + 1, 0);
+        let too_far = HlcTimestamp::from_parts(local + MAX_SKEW_MS + 1, 0);
         // When: observing it. Then: HlcError::Skew, state still 0, no save.
         let err = svc.observe(too_far, local, &mut ()).unwrap_err();
         assert!(matches!(err, HlcError::Skew(_)));
-        assert_eq!(svc.state(), Timestamp::from_raw(0));
+        assert_eq!(svc.state(), HlcTimestamp::from_raw(0));
         assert_eq!(mem.saves.load(Ordering::SeqCst), 0);
     }
 
@@ -279,7 +284,7 @@ mod tests {
         // Skew — the timestamp was within the window; only the save failed.
         let svc = HlcService::open(FailingStorage).unwrap();
         let local = wall_ms();
-        let ahead = Timestamp::from_parts(local + MAX_SKEW_MS, 1);
+        let ahead = HlcTimestamp::from_parts(local + MAX_SKEW_MS, 1);
         assert!(matches!(
             svc.observe(ahead, local, &mut ()),
             Err(HlcError::Storage(_))
@@ -288,7 +293,7 @@ mod tests {
 
     #[test]
     fn lock_recovers_from_a_poisoned_clock() {
-        use std::panic::{catch_unwind, AssertUnwindSafe};
+        use std::panic::{AssertUnwindSafe, catch_unwind};
         // Goal: a panic that poisons the clock mutex (as a panicking
         // `storage.save` would) does not brick the clock for everyone else.
         let mem = MemStorage::default();
@@ -311,9 +316,15 @@ mod tests {
         // issued timestamp is unique (hence strictly ordered), none reused.
         let mem = MemStorage::default();
         let svc = HlcService::open(&mem).unwrap();
-        let mut all: Vec<Timestamp> = std::thread::scope(|s| {
+        let mut all: Vec<HlcTimestamp> = std::thread::scope(|s| {
             let handles: Vec<_> = (0..8)
-                .map(|_| s.spawn(|| (0..100).map(|_| svc.now(&mut ()).unwrap()).collect::<Vec<_>>()))
+                .map(|_| {
+                    s.spawn(|| {
+                        (0..100)
+                            .map(|_| svc.now(&mut ()).unwrap())
+                            .collect::<Vec<_>>()
+                    })
+                })
                 .collect();
             handles
                 .into_iter()
