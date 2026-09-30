@@ -69,6 +69,7 @@ pub struct VerifiedSegment<'a> {
     pub head_chain: ChainHash,
     pub head_cipher: Option<CipherInfo>,
     pub chain_seed: LogHashContext,
+    pub chain_hashes: Vec<ChainHash>,
 }
 
 pub struct DecodedSegment<'a> {
@@ -148,6 +149,9 @@ impl<'a> SegmentReader<'a> {
 
 #[derive(Error, Debug)]
 pub enum SegmentVerifyError {
+    // TODO we want to pull these errors to the top level:
+    // - missing key
+    // - unknown algorithms/tags
     #[error("decode error: {0}")]
     Decode(#[from] SegmentDecodeError),
     #[error("cipher error: {0}")]
@@ -156,6 +160,8 @@ pub enum SegmentVerifyError {
     Signature(#[from] SignatureVerifyError),
     #[error("signature: {0}")]
     Verify(#[from] LogVerifyError),
+    #[error("empty or signature-only segment")]
+    EmptySegment,
 }
 
 pub fn encode_segment_opaque<'a: 'b, 'b>(
@@ -572,35 +578,18 @@ impl<'a> DecodedSegment<'a> {
         self,
         verifying_key: &VerifyingKey,
         key_resolver: &dyn CipherKeyResolver,
-        expected_prev_chain: &ChainHash,
     ) -> Result<VerifiedSegment<'a>, SegmentVerifyError> {
         let header = &self.header;
-        if expected_prev_chain.size < header.prev_chain.size {
-            // segment starts after our expected prev_chain - caller error
-            return Err(SegmentVerifyError::Verify(
-                LogVerifyError::PrevChainMismatch,
-            ));
-        }
         let mut cipher = header.start_cipher;
         let seed = LogHashContext::new(&self.log_id);
-        let chain_hash = match self.entries {
-            DecodedEntries::Opaque(ref entries) => {
-                // make sure we update the end cipher here too
-                let chain_hash = verify_opaque(
-                    verifying_key,
-                    &seed,
-                    &header.prev_chain,
-                    &mut cipher,
-                    entries.iter(),
-                    expected_prev_chain,
-                )?;
-                for e in entries.iter() {
-                    if let LogEntry::IndexedEntry(EntryBody::UseKey(ci)) = e {
-                        cipher = Some(*ci)
-                    }
-                }
-                chain_hash
-            }
+        let chain_hashes = match self.entries {
+            DecodedEntries::Opaque(ref entries) => verify_opaque(
+                verifying_key,
+                &seed,
+                &header.prev_chain,
+                &mut cipher,
+                entries.iter(),
+            )?,
             DecodedEntries::Plaintext(ref entries) => {
                 verify_plaintext(
                     verifying_key,
@@ -609,23 +598,20 @@ impl<'a> DecodedSegment<'a> {
                     &header.prev_chain,
                     key_resolver,
                     entries.iter(),
-                    expected_prev_chain,
                 )
                 .await?
             }
         };
+        let Some(chain_hash) = chain_hashes.last() else {
+            return Err(SegmentVerifyError::EmptySegment);
+        };
         verifying_key.verify_signature(&chain_hash.sign_bytes(&seed), &header.signature)?;
-        if expected_prev_chain.size >= chain_hash.size {
-            // if we hit this case, we had fewer entries than we expected
-            return Err(SegmentVerifyError::Verify(
-                LogVerifyError::PrevChainMismatch,
-            ));
-        }
         Ok(VerifiedSegment {
             decoded: self,
-            head_chain: chain_hash,
+            head_chain: *chain_hash,
             head_cipher: cipher,
             chain_seed: seed,
+            chain_hashes,
         })
     }
 }

@@ -5,6 +5,7 @@ use std::{
 
 use ubiquisync_core::{
     codec::{ReadError, Reader, WriteError, Writer},
+    crypto::RootKey256Fingerprint,
     pack::{PackFileId, PackRef},
 };
 
@@ -57,6 +58,7 @@ pub struct BlockedPackInfo {
     pub parents: HashSet<PackRef>,
     pub read_timestamps: Range<u64>,
     pub attempts: u64,
+    pub need_keys: Vec<RootKey256Fingerprint>,
 }
 
 impl PackReadState {

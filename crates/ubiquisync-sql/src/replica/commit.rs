@@ -69,8 +69,8 @@ impl<R: Reducer> ReplicaInner<R> {
         hash_ctx: &LogHashContext,
     ) -> Result<(), TryCommitError> {
         if stream.commit_err.is_some() {
-            // we actually can't commit now because committing is stalled with an error
-            return Ok(());
+            // TODO should we do anything here? we may be retrying this stream
+            // when the stall condition has been cleared or we hit a retry time
         }
 
         let mut commit_size = stream.commit_size;
@@ -78,7 +78,7 @@ impl<R: Reducer> ReplicaInner<R> {
             todo!("internal error, stream sizes don't match expected based on no err")
         }
 
-        let decoded = match segment.entries {
+        let decoded = match &segment.entries {
             DecodedEntries::Opaque(items) => todo!(),
             DecodedEntries::Plaintext(items) => items,
         };
@@ -120,7 +120,7 @@ impl<R: Reducer> ReplicaInner<R> {
                                         ),
                                     ));
                                 }
-                                Err(crate::op::OpDecodeError::Invalid(e)) => {
+                                Err(crate::op::OpDecodeError::Invalid(_)) => {
                                     return Err(TryCommitError::Stall(CommitErr::Frozen));
                                 }
                             };
@@ -129,22 +129,20 @@ impl<R: Reducer> ReplicaInner<R> {
                                 Ok(read_state) => Some(
                                     match self.reducer.apply(batch.as_mut(), ts, &op, read_state) {
                                         Ok(apply_state) => apply_state,
-                                        Err(ApplyError::Db(e)) => {
-                                            return Err(TryCommitError::Db(e));
-                                        }
-                                        Err(ApplyError::Internal(e)) => {
-                                            return Err(TryCommitError::Internal(e));
+                                        _ => {
+                                            return Ok(self
+                                                .set_internal_commit_err(stream)
+                                                .await?);
                                         }
                                     },
                                 ),
-                                Err(PrepareError::Db(e)) => return Err(TryCommitError::Db(e)),
-                                Err(PrepareError::Internal(e)) => {
-                                    return Err(TryCommitError::Internal(e));
+                                Err(PrepareError::Db(_)) | Err(PrepareError::Internal(_)) => {
+                                    return Ok(self.set_internal_commit_err(stream).await?);
                                 }
                                 Err(PrepareError::NeedsRebuild(e)) => {
                                     return Err(TryCommitError::NeedsRebuild(e));
                                 }
-                                Err(PrepareError::NeedsDeps(e)) => {
+                                Err(PrepareError::NeedsDeps(_)) => {
                                     todo!("insert dep rows")
                                 }
                                 // we skip this op and don't call post-apply
@@ -158,21 +156,6 @@ impl<R: Reducer> ReplicaInner<R> {
                         }
                         ubiquisync_core::log::EntryBody::UseKey(cipher_info) => {
                             todo!("try to resolve the key!");
-                            update_cols_batch::<(streams::CommitSize, streams::CommitErr)>(
-                                batch.as_mut(),
-                                (
-                                    commit_size,
-                                    Some(CommitErr::NeedKey(cipher_info.fingerprint)),
-                                ),
-                                Query::update()
-                                    .table(streams::Table)
-                                    .and_where(Expr::column(streams::Id).eq(stream.id)),
-                            )?;
-
-                            let _ = batch.commit().await?;
-                            // we can't resolve encryption keys let so we're done processing
-                            // and commit is stalled until encryption support arrives
-                            return Ok(());
                         }
                         ubiquisync_core::log::EntryBody::Expunged(_) => {
                             // NOTE: maybe we could skip updating commit index for expunged entries
@@ -212,6 +195,26 @@ impl<R: Reducer> ReplicaInner<R> {
         )
         .await?;
         Ok(())
+    }
+
+    async fn set_internal_commit_err(&self, stream: &StreamInfo) -> Result<(), DbError> {
+        let ts = wall_ms();
+        let err = if let Some(CommitErr::Internal {
+            retry_time_span,
+            retry_count,
+        }) = &stream.commit_err
+        {
+            CommitErr::Internal {
+                retry_time_span: retry_time_span.start..ts,
+                retry_count: retry_count + 1,
+            }
+        } else {
+            CommitErr::Internal {
+                retry_time_span: ts..ts,
+                retry_count: 0,
+            }
+        };
+        self.set_commit_err(stream, err).await
     }
 
     pub(crate) async fn retry_commit(&self) {
