@@ -3,9 +3,10 @@ use std::borrow::Borrow;
 use sea_query::{Expr, ExprTrait, Query};
 use thiserror::Error;
 use ubiquisync_core::{
+    crypto::CipherKeyResolveError,
     hlc::{HlcError, wall_ms},
     log::{
-        LogEntry, LogHashContext, SegmentCipherError,
+        ChainHashError, LogEntry, LogHashContext, SegmentCipherError,
         segment::{DecodedEntries, DecodedSegment},
     },
 };
@@ -47,10 +48,10 @@ enum TryCommitError {
 }
 
 impl<R: Reducer> ReplicaInner<R> {
-    pub(crate) async fn try_commit(
+    async fn try_commit(
         &self,
         stream: &StreamInfo,
-        segment: &DecodedSegment<'_>,
+        segment: DecodedSegment<'_>,
     ) -> Result<(), CommitError> {
         match self.do_try_commit(stream, segment).await {
             Ok(_) => Ok(()),
@@ -64,7 +65,7 @@ impl<R: Reducer> ReplicaInner<R> {
     async fn do_try_commit(
         &self,
         stream: &StreamInfo,
-        segment: &DecodedSegment<'_>,
+        segment: DecodedSegment<'_>,
     ) -> Result<(), TryCommitError> {
         if stream.commit_err.is_some() {
             // TODO should we do anything here? we may be retrying this stream
@@ -76,13 +77,35 @@ impl<R: Reducer> ReplicaInner<R> {
             todo!("internal error, stream sizes don't match expected based on no err")
         }
 
+        let log_id = segment.chain_seed.log_id().clone();
         for res in segment.to_plaintext(self.key_resolver.as_ref()).await {
             let (entry, hash) = match res {
                 Ok((entry, hash)) => (entry, hash),
                 Err(e) => match e {
-                    SegmentCipherError::CipherError(cipher_error) => todo!(),
-                    SegmentCipherError::ChainHashError(chain_hash_error) => todo!(),
-                    SegmentCipherError::KeyResolve(cipher_key_resolve_error) => todo!(),
+                    SegmentCipherError::CipherError(_) => {
+                        return Ok(self.set_internal_commit_err(stream).await?);
+                    }
+                    SegmentCipherError::ChainHashError(e) => match e {
+                        // if we overflow we must freeze the chain, but this literally can never occur
+                        ChainHashError::SizeOverflow => {
+                            return Ok(self.set_commit_err(stream, CommitErr::Frozen).await?);
+                        }
+                    },
+                    SegmentCipherError::KeyResolve(e) => match e {
+                        CipherKeyResolveError::NotFound(k) => {
+                            return Ok(self.set_commit_err(stream, CommitErr::NeedKey(k)).await?);
+                        }
+                        CipherKeyResolveError::UnknownSuite(s) => {
+                            return Ok(self
+                                .set_commit_err(
+                                    stream,
+                                    CommitErr::IncompatibleSoftware(
+                                        UnknownSoftwareVersion::CipherSuite(s),
+                                    ),
+                                )
+                                .await?);
+                        }
+                    },
                     SegmentCipherError::InvalidTimestamp => todo!(),
                     SegmentCipherError::Validation(log_validation_error) => todo!(),
                 },
@@ -115,10 +138,11 @@ impl<R: Reducer> ReplicaInner<R> {
                                 }
                             }
 
-                            let op = match self.reducer.codec().decode(
-                                &segment.chain_seed.log_id().container_id,
-                                op_entry.op.borrow(),
-                            ) {
+                            let op = match self
+                                .reducer
+                                .codec()
+                                .decode(&log_id.container_id, op_entry.op.borrow())
+                            {
                                 Ok(op) => op,
                                 // decode errors are either:
                                 // - incompatible software version
@@ -164,8 +188,10 @@ impl<R: Reducer> ReplicaInner<R> {
                                 }
                             }
                         }
-                        ubiquisync_core::log::EntryBody::UseKey(cipher_info) => {
-                            todo!("try to resolve the key!");
+                        ubiquisync_core::log::EntryBody::UseKey(_) => {
+                            // we just advance commit here, no special processing needed because
+                            // we don't store commit ciphers in the streams table
+                            None
                         }
                         ubiquisync_core::log::EntryBody::Expunged(_) => {
                             // NOTE: maybe we could skip updating commit index for expunged entries

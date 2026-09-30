@@ -94,8 +94,8 @@ pub trait CipherKeyResolver: Send + Sync {
 
 #[derive(Error, Debug)]
 pub enum CipherKeyResolveError {
-    #[error("not found")]
-    NotFound,
+    #[error("key {0:?} not found")]
+    NotFound(RootKey256Fingerprint),
     #[error("unknown cipher suite {0}")]
     UnknownSuite(u8),
 }
@@ -212,7 +212,7 @@ impl EntryCipher {
         let key = resolver
             .resolve_container_key(&cipher_info.fingerprint, &log_id.container_id)
             .await
-            .ok_or(CipherKeyResolveError::NotFound)?;
+            .ok_or(CipherKeyResolveError::NotFound(cipher_info.fingerprint))?;
         Ok(Self::new(suite, key, &log_id.peer_id))
     }
 
