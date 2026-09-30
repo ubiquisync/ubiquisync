@@ -15,7 +15,7 @@ use crate::{
         DbError,
         sea_query::{update_cols, update_cols_batch},
     },
-    reducer::{RebuildScope, Reducer},
+    reducer::{ApplyError, PrepareError, RebuildScope, Reducer},
     replica::{
         ReplicaInner,
         ingest::SegmentProcessError,
@@ -25,6 +25,14 @@ use crate::{
 };
 
 use super::schema::UnknownSoftwareVersion;
+
+#[derive(Debug, Error)]
+pub enum CommitError {
+    #[error("db error: {0}")]
+    Db(#[from] DbError),
+    #[error("internal error: {0}")]
+    Internal(String),
+}
 
 #[derive(Debug, Error)]
 enum TryCommitError {
@@ -44,11 +52,13 @@ impl<R: Reducer> ReplicaInner<R> {
         stream: &StreamInfo,
         segment: &DecodedSegment<'_>,
         hash_ctx: &LogHashContext,
-    ) -> Result<(), DbError> {
+    ) -> Result<(), CommitError> {
         match self.do_try_commit(stream, segment, hash_ctx).await {
             Ok(_) => Ok(()),
-            Err(TryCommitError::Db(e)) => Err(e),
-            Err(TryCommitError::Stall(e)) => self.set_commit_err(stream, e).await,
+            Err(TryCommitError::Stall(e)) => Ok(self.set_commit_err(stream, e).await?),
+            Err(TryCommitError::NeedsRebuild(_)) => todo!("rebuild state"),
+            Err(TryCommitError::Db(e)) => Err(CommitError::Db(e)),
+            Err(TryCommitError::Internal(e)) => Err(CommitError::Internal(e)),
         }
     }
 
@@ -115,19 +125,36 @@ impl<R: Reducer> ReplicaInner<R> {
                                 }
                             };
 
-                            // TODO eventually we want a way for reducers to specify causal dependencies
-                            // on other logs as an error, for now all errors cause a stall
-                            let read_state = self
-                                .reducer
-                                .prepare(self.db.as_ref(), &op)
-                                .await
-                                .map_err(|_| TryCommitError::Stall(CommitErr::Frozen))?;
-
-                            let apply_state = self
-                                .reducer
-                                .apply(batch.as_mut(), ts, &op, read_state)
-                                .map_err(|e| SegmentProcessError::Reducer(Box::new(e)))?;
-                            Some(apply_state)
+                            match self.reducer.prepare(self.db.as_ref(), &op).await {
+                                Ok(read_state) => Some(
+                                    match self.reducer.apply(batch.as_mut(), ts, &op, read_state) {
+                                        Ok(apply_state) => apply_state,
+                                        Err(ApplyError::Db(e)) => {
+                                            return Err(TryCommitError::Db(e));
+                                        }
+                                        Err(ApplyError::Internal(e)) => {
+                                            return Err(TryCommitError::Internal(e));
+                                        }
+                                    },
+                                ),
+                                Err(PrepareError::Db(e)) => return Err(TryCommitError::Db(e)),
+                                Err(PrepareError::Internal(e)) => {
+                                    return Err(TryCommitError::Internal(e));
+                                }
+                                Err(PrepareError::NeedsRebuild(e)) => {
+                                    return Err(TryCommitError::NeedsRebuild(e));
+                                }
+                                Err(PrepareError::NeedsDeps(e)) => {
+                                    todo!("insert dep rows")
+                                }
+                                // we skip this op and don't call post-apply
+                                Err(PrepareError::InvalidOp(_)) => None,
+                                Err(PrepareError::Frozen(_)) => {
+                                    return Ok(self
+                                        .set_commit_err(stream, CommitErr::Frozen)
+                                        .await?);
+                                }
+                            }
                         }
                         ubiquisync_core::log::EntryBody::UseKey(cipher_info) => {
                             todo!("try to resolve the key!");
@@ -155,9 +182,9 @@ impl<R: Reducer> ReplicaInner<R> {
                         }
                     };
 
-                    update_cols_batch::<(streams::CommitSize,)>(
+                    update_cols_batch::<(streams::CommitSize, streams::CommitErr)>(
                         batch.as_mut(),
-                        (commit_size,),
+                        (commit_size, None),
                         Query::update()
                             .table(streams::Table)
                             .and_where(Expr::column(streams::Id).eq(stream.id)),
@@ -166,9 +193,7 @@ impl<R: Reducer> ReplicaInner<R> {
                     let batch_result = batch.commit().await?;
 
                     if let Some(apply_state) = apply_state {
-                        self.reducer
-                            .post_apply(apply_state, &batch_result)
-                            .map_err(|e| SegmentProcessError::Reducer(Box::new(e)))?;
+                        self.reducer.post_apply(apply_state, &batch_result)
                     }
                 }
                 LogEntry::Signature(_) => {} // do nothing

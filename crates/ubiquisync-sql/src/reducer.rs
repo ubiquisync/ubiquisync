@@ -5,7 +5,6 @@ use thiserror::Error;
 use ubiquisync_core::{
     hlc::Timestamp,
     ids::{ContainerId, LogId},
-    log::ChainHash,
 };
 
 use crate::{
@@ -66,16 +65,28 @@ pub trait Reducer: Send + Sync + 'static {
 
 #[derive(Error, Debug)]
 pub enum PrepareError {
+    /// A database related error, may be transient or a software bug.
     #[error("db error: {0}")]
     Db(#[from] DbError),
-    #[error("needs dependencies: {0:?}")]
-    NeedsDeps(Vec<PeerDependency>),
-    #[error("needs rebuild: {0:?}")]
-    NeedsRebuild(RebuildScope),
-    #[error("invalid op: {0}")]
-    InvalidOp(String),
+    /// Some internal error which is likely a bug, but in some edge cases could be transient.
     #[error("internal: {0}")]
     Internal(String),
+    /// This operation depends on other specified logs before it can be committed.
+    /// The replica should keep track of this and only commit this operation after
+    /// those dependencies have been committed.
+    #[error("needs dependencies: {0:?}")]
+    NeedsDeps(Vec<PeerDependency>),
+    /// Indicates that the reducer state needs to be rebuilt.
+    /// The replica should drop all reducer state and re-apply all operations.
+    #[error("needs rebuild: {0:?}")]
+    NeedsRebuild(RebuildScope),
+    /// Indicates that the operation should be skipped because it is invalid.
+    /// This return code will cause the replica to skip calling `apply` but still
+    /// mark the op as committed.
+    #[error("invalid op: {0}")]
+    InvalidOp(String),
+    /// This should almost never be used, but it instructs the replica to stop committing this log
+    /// for good.
     #[error("frozen: {0}")]
     Frozen(String),
 }

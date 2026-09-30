@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use thiserror::Error;
 use ubiquisync_core::{
     codec::{ReadError, Reader, Writer},
@@ -46,8 +48,16 @@ def_table_with_auto_id!(streams as __replica_streams (id) => {
 def_table!(segments as __replica_segments (stream_id: i64, end_size: u64) => { // TODO ref streams
     start_idx: u64,
     body: Vec<u8>,
-    // WITH ROWID!
+    // TODO we actually need a rowid and want to have an auto ID anyway for p2p sync tracking
 });
+
+def_table!(stream_deps as __replica_stream_deps (
+    stream_id: i64,
+    peer: i64,
+    container: i64,
+    index: u64,
+    hash_prefix: Vec<u8>,
+) => {});
 
 pub(crate) async fn create_tables(db: &dyn Db) -> Result<(), DbError> {
     let mut batch = db.new_batch();
@@ -101,26 +111,21 @@ pub enum HeadErr {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub enum CommitErr {
+    /// Internal errors may or may not be transient - there may be a temporary database
+    /// availability issue or it could be a software bug.
+    /// Since we don't have a good way of knowing this, we use a retry backoff algorithm.
+    /// Failure reasons aren't included here because they should be included in logs.
+    Internal {
+        retry_time_span: Range<u64>,
+        retry_count: u64,
+    },
     NeedKey(RootKey256Fingerprint),
     HLCForwardSkew(Timestamp),
-    NeedPeerCommits(Vec<PeerDeps>),
+    /// Awaiting dependencies from other logs.
+    /// These will be specified in the stream_deps table.
+    AwaitingDeps,
     IncompatibleSoftware(UnknownSoftwareVersion),
     Frozen,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(test, derive(test_strategy::Arbitrary))]
-pub struct PeerDeps {
-    pub container: Option<ContainerId>,
-    pub deps: Vec<PeerDep>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(test, derive(test_strategy::Arbitrary))]
-pub struct PeerDep {
-    pub peer_db_id: u64,
-    pub size: u64,
-    pub hash_prefix: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,20 +178,7 @@ impl CommitErr {
                 writer.write_byte(1);
                 writer.write_le_u64(timestamp.raw());
             }
-            CommitErr::NeedPeerCommit {
-                peer_id,
-                container_id,
-                head,
-            } => {
-                if let Some(container_id) = container_id {
-                    writer.write_byte(2);
-                    writer.write_array(&container_id.0);
-                } else {
-                    writer.write_byte(3);
-                }
-                writer.write_array(&peer_id.0);
-                head.encode(writer);
-            }
+            CommitErr::AwaitingDeps => writer.write_byte(2),
             CommitErr::IncompatibleSoftware(unknown_software_version) => {
                 writer.write_byte(4);
                 unknown_software_version.encode(writer);
