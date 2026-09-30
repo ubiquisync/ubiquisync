@@ -50,7 +50,7 @@ enum TryCommitError {
 impl<R: Reducer> ReplicaInner<R> {
     async fn try_commit(
         &self,
-        stream: &StreamInfo,
+        stream: &mut StreamInfo,
         segment: DecodedSegment<'_>,
     ) -> Result<(), CommitError> {
         match self.do_try_commit(stream, segment).await {
@@ -64,17 +64,12 @@ impl<R: Reducer> ReplicaInner<R> {
 
     async fn do_try_commit(
         &self,
-        stream: &StreamInfo,
+        stream: &mut StreamInfo,
         segment: DecodedSegment<'_>,
     ) -> Result<(), TryCommitError> {
-        if stream.commit_err.is_some() {
-            // TODO should we do anything here? we may be retrying this stream
-            // when the stall condition has been cleared or we hit a retry time
-        }
-
-        let mut commit_size = stream.commit_size;
-        if commit_size != stream.head_chain.size {
-            todo!("internal error, stream sizes don't match expected based on no err")
+        if let Some(CommitErr::Frozen) = stream.commit_err {
+            // stream is frozen, nothing to do
+            return Ok(());
         }
 
         let log_id = segment.chain_seed.log_id().clone();
@@ -106,12 +101,17 @@ impl<R: Reducer> ReplicaInner<R> {
                                 .await?);
                         }
                     },
-                    SegmentCipherError::InvalidTimestamp => todo!(),
-                    SegmentCipherError::Validation(log_validation_error) => todo!(),
+                    SegmentCipherError::InvalidTimestamp | SegmentCipherError::Validation(_) => {
+                        // we could decide to just skip these entries, but that would require
+                        // a complex refactoring of to_plaintext to continue on such errors
+                        // and it should literally be impossible to construct an entry that hits
+                        // this case if you're building entries correctly
+                        return Ok(self.set_commit_err(stream, CommitErr::Frozen).await?);
+                    }
                 },
             };
 
-            if hash.size <= commit_size {
+            if hash.size <= stream.commit_size {
                 // we've already committed this entry
                 continue;
             }
@@ -121,7 +121,6 @@ impl<R: Reducer> ReplicaInner<R> {
             let local_ts = wall_ms();
             match entry {
                 LogEntry::IndexedEntry(entry) => {
-                    commit_size += 1;
                     let mut batch = self.db.new_batch();
                     let apply_state = match entry {
                         ubiquisync_core::log::EntryBody::Op(op_entry) => {
@@ -201,9 +200,12 @@ impl<R: Reducer> ReplicaInner<R> {
                         }
                     };
 
+                    stream.commit_size += 1;
+                    stream.commit_err = None;
+
                     update_cols_batch::<(streams::CommitSize, streams::CommitErr)>(
                         batch.as_mut(),
-                        (commit_size, None),
+                        (stream.commit_size, None),
                         Query::update()
                             .table(streams::Table)
                             .and_where(Expr::column(streams::Id).eq(stream.id)),
