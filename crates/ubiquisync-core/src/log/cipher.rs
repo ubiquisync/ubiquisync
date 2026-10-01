@@ -66,42 +66,6 @@ pub async fn entries_to_opaque<'a: 'b, 'b>(
     res
 }
 
-/// Head cipher is the cipher at the start of the segment.
-/// It is unnecessary to pass this if the segment starts with UseKey
-/// and doing so will result in unnecessarily resolving the head cipher key.
-pub async fn entries_to_plaintext<'a: 'b, 'b>(
-    seed: &LogHashContext,
-    head_cipher: &mut Option<CipherInfo>,
-    head_chain: &ChainHash,
-    key_resolver: &dyn CipherKeyResolver,
-    entries: impl Iterator<Item = &'b OpaqueLogEntry<'a>>,
-) -> Vec<Result<(PlaintextLogEntry<'a>, ChainHash), SegmentCipherError>> {
-    let mut head_chain = *head_chain;
-    let mut entry_cipher = if let Some(ci) = head_cipher {
-        Some(
-            match EntryCipher::resolve(ci, seed.log_id(), key_resolver).await {
-                Ok(c) => c,
-                Err(e) => return vec![Err(e.into())],
-            },
-        )
-    } else {
-        None
-    };
-    let mut res = vec![];
-    let mut next = async |e| {
-        let e2 = to_plaintext(e, &entry_cipher, &head_chain)?;
-        head_chain = head_chain.next(e, seed, head_cipher)?;
-        check_cipher_change(head_cipher, &mut entry_cipher, seed, key_resolver).await?;
-        Ok((e2, head_chain))
-    };
-    for e in entries {
-        if res.push_mut(next(e).await).is_err() {
-            break;
-        }
-    }
-    res
-}
-
 fn to_opaque<'a>(
     entry: &PlaintextLogEntry<'a>,
     cipher: &Option<EntryCipher>,

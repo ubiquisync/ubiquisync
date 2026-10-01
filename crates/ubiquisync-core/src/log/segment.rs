@@ -18,8 +18,8 @@ use crate::{
     ids::LogId,
     log::{
         ChainHash, ChainHashError, DecodeTimestamp, LogDecodeError, LogEncodeError, LogEntry,
-        LogHashContext, LogValidationError, LogVerifyError, OpaqueLogEntry, PlaintextLogEntry,
-        SegmentCipherError, TimestampRepr, check_cipher_change, entries_to_opaque, to_plaintext,
+        LogHashContext, LogValidationError, OpaqueLogEntry, PlaintextLogEntry, SegmentCipherError,
+        TimestampRepr, check_cipher_change, entries_to_opaque, to_plaintext,
     },
 };
 
@@ -182,8 +182,6 @@ pub enum SegmentVerifyError {
     Cipher(#[from] SegmentCipherError),
     #[error("signature: {0}")]
     Signature(#[from] SignatureVerifyError),
-    #[error("signature: {0}")]
-    Verify(#[from] LogVerifyError),
 }
 
 pub fn encode_segment_opaque<'a: 'b, 'b>(
