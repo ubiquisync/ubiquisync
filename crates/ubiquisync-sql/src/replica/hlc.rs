@@ -105,3 +105,21 @@ fn check_skew(local: WallTime, remote: Timestamp) -> Result<(), HlcError> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use test_case::test_case;
+
+    use super::*;
+
+    #[test_case(-1_000_000 => true ; "far past")]
+    #[test_case(0 => true ; "same instant")]
+    #[test_case(MAX_SKEW_MS as i64 => true ; "window edge")]
+    #[test_case(MAX_SKEW_MS as i64 + 1 => false ; "beyond window")]
+    fn skew(remote_offset_ms: i64) -> bool {
+        let local: u64 = 10_000_000;
+        let remote = WallTime::from_millis(local.checked_add_signed(remote_offset_ms).unwrap());
+        let remote = Timestamp::from_parts(remote, 0).unwrap();
+        check_skew(WallTime::from_millis(local), remote).is_ok()
+    }
+}

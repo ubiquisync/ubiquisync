@@ -129,3 +129,86 @@ impl WallTime {
         Self { millis }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use proptest::prelude::*;
+    use test_case::test_case;
+    use test_strategy::{Arbitrary, proptest};
+
+    use super::*;
+
+    fn ts(ms: u64, counter: u16) -> Timestamp {
+        Timestamp::from_parts(WallTime::from_millis(ms), counter).unwrap()
+    }
+
+    #[test_case(5, 3, 0 => (5, 4) ; "wall behind bumps counter")]
+    #[test_case(5, 3, 5 => (5, 4) ; "same ms bumps counter")]
+    #[test_case(5, u16::MAX, 0 => (6, 0) ; "saturated counter borrows a ms")]
+    #[test_case(5, 3, 9 => (9, 0) ; "wall ahead resets counter")]
+    fn next_local(ms: u64, counter: u16, now: u64) -> (u64, u16) {
+        let next = ts(ms, counter)
+            .next_local(WallTime::from_millis(now))
+            .unwrap();
+        (next.millis(), next.counter())
+    }
+
+    #[test_case(MILLIS_MAX + 1, 0, 0 ; "wall past max")]
+    #[test_case(MILLIS_MAX, u16::MAX, 0 ; "bump past max")]
+    fn overflow(ms: u64, counter: u16, now: u64) {
+        let res = Timestamp::from_parts(WallTime::from_millis(ms), counter)
+            .and_then(|t| t.next_local(WallTime::from_millis(now)));
+        assert!(res.is_err());
+    }
+
+    #[proptest]
+    fn parts_roundtrip_and_order(
+        #[strategy(0..=MILLIS_MAX)] a: u64,
+        ca: u16,
+        #[strategy(0..=MILLIS_MAX)] b: u64,
+        cb: u16,
+    ) {
+        let (ta, tb) = (ts(a, ca), ts(b, cb));
+        prop_assert_eq!((ta.millis(), ta.counter()), (a, ca));
+        prop_assert_eq!(ta.cmp(&tb), (a, ca).cmp(&(b, cb)));
+        prop_assert_eq!(Timestamp::try_from(i64::from(ta)).unwrap(), ta);
+    }
+
+    #[proptest]
+    fn rejects_out_of_range(
+        #[strategy(i64::MAX as u64 + 1..)] big: u64,
+        #[strategy(..0i64)] neg: i64,
+    ) {
+        prop_assert!(Timestamp::try_from(big).is_err());
+        prop_assert!(Timestamp::try_from(neg).is_err());
+    }
+
+    #[derive(Debug, Arbitrary)]
+    enum Step {
+        Local(#[strategy(0..=MILLIS_MAX)] u64),
+        Observe(Timestamp),
+    }
+
+    #[proptest]
+    fn clock_strictly_monotonic(start: Timestamp, steps: Vec<Step>) {
+        let mut state = start;
+        for step in steps {
+            state = match step {
+                Step::Local(ms) => {
+                    let Ok(next) = state.next_local(WallTime::from_millis(ms)) else {
+                        continue;
+                    };
+                    prop_assert!(next > state && next.millis() >= ms);
+                    next
+                }
+                Step::Observe(remote) => {
+                    let Ok(next) = state.next_after(remote) else {
+                        continue;
+                    };
+                    prop_assert!(next > remote && next >= state);
+                    next
+                }
+            };
+        }
+    }
+}
