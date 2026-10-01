@@ -45,7 +45,7 @@ pub trait DecodeTimestamp<'a>: TimestampRepr {
 
 impl TimestampRepr for Timestamp {
     fn encode(&self, w: &mut Writer) {
-        w.write_le_u64(self.into());
+        w.write_le_u64((*self).into());
     }
 }
 

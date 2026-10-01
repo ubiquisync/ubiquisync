@@ -85,19 +85,6 @@ impl From<Timestamp> for i64 {
     }
 }
 
-impl From<&Timestamp> for u64 {
-    fn from(value: &Timestamp) -> Self {
-        value.value
-    }
-}
-
-impl From<&Timestamp> for i64 {
-    fn from(value: &Timestamp) -> Self {
-        // the constructors for Timestamp ensures it is convertible to i64
-        value.value as i64
-    }
-}
-
 impl TryFrom<u64> for Timestamp {
     type Error = TimestampOverflow;
 

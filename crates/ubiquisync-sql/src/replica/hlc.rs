@@ -18,7 +18,7 @@ pub enum HlcError {
     Db(#[from] DbError),
     #[error("timestamp overflow")]
     Overflow(#[from] TimestampOverflow),
-    #[error("clock seq, remote: {remote:?}, local: {local:?}")]
+    #[error("forward clock skew, remote: {remote:?}, local: {local:?}")]
     Skew { remote: Timestamp, local: WallTime },
 }
 
@@ -50,12 +50,8 @@ impl<R> Replica<R> {
         remote: Timestamp,
     ) -> Result<(), HlcError> {
         let local = WallTime::now();
-        let remote_ms = remote.wall();
-        if remote_ms > local && remote_ms.as_millis() - local.as_millis() > MAX_SKEW_MS {
-            return Err(HlcError::Skew { remote, local });
-        }
-        let next = remote.next_local(local)?;
-        self.update_hlc(batch, |ts| ts.next_after(next))?;
+        check_skew(local, remote)?;
+        self.update_hlc(batch, |ts| ts.next_after(remote))?;
         Ok(())
     }
 
@@ -63,20 +59,24 @@ impl<R> Replica<R> {
     where
         F: Fn(Timestamp) -> Result<Timestamp, TimestampOverflow>,
     {
-        let mut last = self.hlc.load(Ordering::Relaxed);
+        let mut last_raw = self.hlc.load(Ordering::Relaxed);
         loop {
-            let next = f(Timestamp::try_from(last).expect("valid timestamp"))?;
+            let last_ts = Timestamp::try_from(last_raw)?;
+            let next_ts = f(last_ts)?;
+            if next_ts == last_ts {
+                return Ok(next_ts);
+            }
             match self.hlc.compare_exchange_weak(
-                last,
-                next.into(),
+                last_raw,
+                next_ts.into(),
                 Ordering::Relaxed,
                 Ordering::Relaxed,
             ) {
                 Ok(_) => {
-                    self.persist_hlc(next, batch)?;
-                    return Ok(next);
+                    self.persist_hlc(next_ts, batch)?;
+                    return Ok(next_ts);
                 }
-                Err(cur) => last = cur,
+                Err(cur) => last_raw = cur,
             }
         }
     }
@@ -96,4 +96,12 @@ impl<R> Replica<R> {
             ),
         )
     }
+}
+
+fn check_skew(local: WallTime, remote: Timestamp) -> Result<(), HlcError> {
+    let remote_ms = remote.wall();
+    if remote_ms > local && remote_ms.as_millis() - local.as_millis() > MAX_SKEW_MS {
+        return Err(HlcError::Skew { remote, local });
+    }
+    Ok(())
 }

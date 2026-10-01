@@ -96,7 +96,7 @@ fn to_opaque<'a>(
              }| {
                 let mut slot_cipher = cipher.slot_cipher(prev_chain);
                 let timestamp = slot_cipher.encrypt_slot(&PlaintextBytes::from(
-                    &Into::<u64>::into(timestamp).to_le_bytes()[..],
+                    &Into::<u64>::into(*timestamp).to_le_bytes()[..],
                 ));
                 slot_cipher.add_context(timestamp.borrow());
                 let server_attested_user_id = if !server_attested_user_id.is_empty() {
@@ -121,7 +121,7 @@ fn to_opaque<'a>(
                  op,
              }| {
                 Ok(OpEntry {
-                    timestamp: Into::<u64>::into(timestamp).to_le_bytes().to_vec().into(),
+                    timestamp: Into::<u64>::into(*timestamp).to_le_bytes().to_vec().into(),
                     server_attested_user_id: OpaqueBytes(server_attested_user_id.0.clone()),
                     op: OpaqueBytes(op.0.clone()),
                 })
