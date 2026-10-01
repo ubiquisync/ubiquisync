@@ -143,7 +143,7 @@ impl PackHeader {
 impl SignedPackHeader {
     pub fn encode(&self, w: &mut Writer) -> Result<(), WriteError> {
         self.header.encode(w)?;
-        self.signature.encode(w);
+        self.signature.encode(w)?;
         Ok(())
     }
 

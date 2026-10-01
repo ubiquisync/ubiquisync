@@ -1,10 +1,7 @@
 use sea_query::{Expr, ExprTrait, OnConflict, Query};
 use thiserror::Error;
 use tokio::time;
-use ubiquisync_core::{
-    hlc::wall_ms,
-    pack::{PackStore, PackStoreError, Topic},
-};
+use ubiquisync_core::pack::{PackStore, PackStoreError, Topic};
 
 use crate::{
     db::{
@@ -83,7 +80,7 @@ impl<R: Reducer> ReplicaInner<R> {
             .one()?
             .unwrap_or_default();
 
-            let read_plan = read_state.prepare_read(wall_ms(), &packs);
+            let read_plan = read_state.prepare_read(&packs);
             for todo in read_plan.to_read.iter() {}
         }
         Ok(())

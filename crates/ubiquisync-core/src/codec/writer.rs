@@ -2,8 +2,9 @@ use std::ops::Range;
 
 use thiserror::Error;
 
-use crate::codec::varint::{
-    MAX_VAR_U64_SIZE, MAX_ZIGZAG_I64_SIZE, encode_var_u64, encode_zigzag_i64,
+use crate::{
+    codec::varint::{MAX_VAR_U64_SIZE, MAX_ZIGZAG_I64_SIZE, encode_var_u64, encode_zigzag_i64},
+    hlc::Timestamp,
 };
 
 #[derive(Default)]
@@ -14,7 +15,7 @@ pub struct Writer {
 #[derive(Error, Debug)]
 pub enum WriteError {
     #[error("invalid range {0:?}")]
-    EmptyRange(Range<u64>),
+    InvalidRange(Range<u64>),
 }
 
 impl Writer {
@@ -75,9 +76,13 @@ impl Writer {
         self.write_slice(res)
     }
 
+    pub fn write_timestamp(&mut self, x: Timestamp) {
+        self.write_le_u64(x.into());
+    }
+
     pub fn write_range(&mut self, range: &Range<u64>) -> Result<(), WriteError> {
-        if range.is_empty() {
-            return Err(WriteError::EmptyRange(range.clone()));
+        if range.start > range.end {
+            return Err(WriteError::InvalidRange(range.clone()));
         }
         self.write_var_u64(range.start);
         let span = range.end - range.start; // already checked with range.is_empty()
@@ -89,16 +94,17 @@ impl Writer {
         self.write_range(&(range.start as u64..range.end as u64))
     }
 
-    pub fn write_option<T, F>(&mut self, t: &Option<T>, mut f: F)
+    pub fn write_option<T, F>(&mut self, t: &Option<T>, mut f: F) -> Result<(), WriteError>
     where
-        F: FnMut(&mut Self, &T),
+        F: FnMut(&mut Self, &T) -> Result<(), WriteError>,
     {
         if let Some(t) = t {
             self.write_byte(1);
-            f(self, t);
+            f(self, t)?;
         } else {
             self.write_byte(0);
         }
+        Ok(())
     }
 
     pub fn len(&self) -> usize {

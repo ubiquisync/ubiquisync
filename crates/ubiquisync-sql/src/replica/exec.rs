@@ -63,7 +63,7 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
         } else if stream_rows.len() > 1 {
             todo!("found multiple rows, this means we have a fork and need to know what to do")
         } else {
-            let stream = stream_rows[0];
+            let stream = &stream_rows[0];
 
             if stream.head_err.is_some() {
                 todo!("handle some unexpected status")
@@ -80,7 +80,7 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
                 stream.id,
                 stream.head_chain,
                 stream.head_cipher,
-                stream.commit_err,
+                stream.commit_err.clone(),
             )
         };
 
@@ -100,7 +100,7 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
             .compute_next_plaintext(
                 &seed,
                 &mut head_cipher,
-                &NullCipherKeyResolver,
+                self.inner.key_resolver.as_ref(),
                 entries.iter(),
             )
             .await?;
@@ -167,10 +167,7 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
 
             let batch_result = batch.commit().await?;
 
-            inner
-                .reducer
-                .post_apply(apply_state, &batch_result)
-                .map_err(|e| ExecError::Reducer(Box::new(e)))?;
+            inner.reducer.post_apply(apply_state, &batch_result);
         } else {
             // we cannot commit because our commit status is non-Ok, so we just update the head size and hash
             update_cols_batch::<(streams::HeadSize, streams::HeadHash, streams::HeadCipher)>(

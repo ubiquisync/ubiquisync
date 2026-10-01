@@ -1,9 +1,9 @@
-use std::sync::Arc;
+use std::sync::{Arc, atomic::AtomicU64};
 
 use sea_query::{Expr, ExprTrait, Query};
 use thiserror::Error;
 use ubiquisync_core::{
-    crypto::{CryptoDecodeError, credentials::Credentials},
+    crypto::{CryptoDecodeError, NullCipherKeyResolver, credentials::Credentials},
     ids::{AppId, PeerId},
     init::{
         InitCommitment, InitCreationError, InitDecodeError, InitEntry, InitVerifyError, Version,
@@ -18,6 +18,7 @@ use crate::{
     reducer::Reducer,
     replica::{
         HlcError, Replica, ReplicaInner,
+        hlc::load_hlc,
         schema::{create_tables, peers},
         stream_lock::KeyedLock,
     },
@@ -37,7 +38,7 @@ impl<R: Reducer> Replica<R> {
         // initialize schema, in the future we need some more proper migrations
         create_tables(db.as_ref()).await?;
 
-        let hlc = Self::load_hlc(db.as_ref()).await?;
+        let hlc = load_hlc(db.as_ref()).await?;
 
         let self_id = if let Some((self_id, commitment_bytes, signature)) =
             select_cols::<(peers::PeerId, peers::CommitmentBytes, peers::Signature)>(
@@ -119,6 +120,7 @@ impl<R: Reducer> Replica<R> {
                 hlc: AtomicU64::new(hlc.into()),
                 stream_locks: KeyedLock::new(),
                 pack_remotes: Default::default(),
+                key_resolver: Arc::new(NullCipherKeyResolver),
             }),
             tasks: Default::default(),
             cancel: Default::default(),

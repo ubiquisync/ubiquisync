@@ -149,7 +149,7 @@ impl ColType for Uuid {
 
 pub trait ColRepr: Sized {
     type Repr: ColType;
-    fn to_repr(self) -> Self::Repr;
+    fn to_repr(self) -> Result<Self::Repr, DbError>;
     fn from_repr<'a>(value: <Self::Repr as ColType>::BorrowedType<'a>) -> Result<Self, DbError>;
 }
 
@@ -166,7 +166,7 @@ impl<T: ColRepr> ColType for T {
     }
 
     fn to_db_val(value: Self) -> Result<DbValue, DbError> {
-        T::Repr::to_db_val(value.to_repr())
+        T::Repr::to_db_val(value.to_repr()?)
     }
 }
 
@@ -175,10 +175,11 @@ macro_rules! codeable_col_repr {
     ($typ:ty) => {
         impl $crate::db::ColRepr for $typ {
             type Repr = Vec<u8>;
-            fn to_repr(self) -> Self::Repr {
+            fn to_repr(self) -> Result<Self::Repr, $crate::db::DbError> {
                 let mut w = ubiquisync_core::codec::Writer::new();
-                self.encode(&mut w);
-                w.finalize()
+                self.encode(&mut w)
+                    .map_err(|e| $crate::db::DbError::EncodeError(Box::new(e)))?;
+                Ok(w.finalize())
             }
             fn from_repr<'a>(
                 value: <Self::Repr as $crate::db::ColType>::BorrowedType<'a>,
@@ -206,8 +207,8 @@ macro_rules! try_from_into_col_repr {
     ($typ:ty, $repr:ty) => {
         impl $crate::db::ColRepr for $typ {
             type Repr = $repr;
-            fn to_repr(self) -> Self::Repr {
-                self.into()
+            fn to_repr(self) -> Result<Self::Repr, DbError> {
+                Ok(self.into())
             }
             fn from_repr<'a>(
                 value: <Self::Repr as $crate::db::ColType>::BorrowedType<'a>,

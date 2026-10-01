@@ -2,16 +2,14 @@ use std::ops::Range;
 
 use thiserror::Error;
 use ubiquisync_core::{
-    codec::{ReadError, Reader, Writer},
+    codec::{ReadError, Reader, WriteError, Writer},
     crypto::{CipherInfo, RootKey256Fingerprint, Signature},
     hlc::Timestamp,
-    ids::{ContainerId, PeerId},
-    log::ChainHash,
 };
 
 use crate::{
     codeable_col_repr,
-    db::{ColRepr, CreateTableDef, Db, DbError},
+    db::{CreateTableDef, Db, DbError},
     def_table, def_table_with_auto_id,
     dialect::SqlDialect,
     try_from_into_col_repr,
@@ -59,6 +57,9 @@ def_table!(stream_deps as __replica_stream_deps (
     hash_prefix: Vec<u8>,
 ) => {});
 
+def_table!(hlc as __replica_hlc (id:i64) => {timestamp: super::Timestamp});
+try_from_into_col_repr!(Timestamp, i64);
+
 pub(crate) async fn create_tables(db: &dyn Db) -> Result<(), DbError> {
     let mut batch = db.new_batch();
     for st in create_table_sql(db.dialect()) {
@@ -96,15 +97,6 @@ codeable_col_repr!(Signature);
 
 // TODO: CREATE UNIQUE INDEX streams_root ON streams(peer_id, container_id) WHERE parent_id IS NULL;
 // TODO: we might also want a unique on (parent_id, fork_idx, fork_hash) to avoid races
-
-def_table!(segments as __replica_segments (stream_id: i64, end_size: u64) => { // TODO ref streams
-    start_idx: u64,
-    body: Vec<u8>,
-    // WITH ROWID!
-});
-
-def_table!(hlc as __replica_hlc (id:i64) => {timestamp: super::Timestamp});
-try_from_into_col_repr!(Timestamp, i64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]
@@ -158,7 +150,7 @@ pub enum StatusDecodeError {
 }
 
 impl HeadErr {
-    pub fn encode(&self, writer: &mut Writer) {
+    pub fn encode(&self, writer: &mut Writer) -> Result<(), WriteError> {
         match self {
             HeadErr::Blocked(size) => {
                 writer.write_byte(0);
@@ -169,6 +161,7 @@ impl HeadErr {
                 writer.write_array(&root_key256_fingerprint.0);
             }
         }
+        Ok(())
     }
 
     pub fn decode<'a>(reader: &mut Reader<'a>) -> Result<Self, StatusDecodeError> {
@@ -181,7 +174,7 @@ impl HeadErr {
 }
 
 impl CommitErr {
-    pub fn encode(&self, writer: &mut Writer) {
+    pub fn encode(&self, writer: &mut Writer) -> Result<(), WriteError> {
         match self {
             CommitErr::NeedKey(root_key256_fingerprint) => {
                 writer.write_byte(0);
@@ -189,36 +182,40 @@ impl CommitErr {
             }
             CommitErr::HLCForwardSkew(timestamp) => {
                 writer.write_byte(1);
-                writer.write_le_u64(timestamp.raw());
+                writer.write_timestamp(*timestamp);
             }
             CommitErr::AwaitingDeps => writer.write_byte(2),
             CommitErr::IncompatibleSoftware(unknown_software_version) => {
-                writer.write_byte(4);
+                writer.write_byte(3);
                 unknown_software_version.encode(writer);
+            }
+            CommitErr::Internal {
+                retry_time_span,
+                retry_count,
+            } => {
+                writer.write_byte(4);
+                writer.write_range(retry_time_span)?;
+                writer.write_var_u64(*retry_count);
             }
             CommitErr::Frozen => writer.write_byte(5),
         }
+        Ok(())
     }
 
     pub fn decode<'a>(reader: &mut Reader<'a>) -> Result<Self, StatusDecodeError> {
         Ok(match reader.read_byte()? {
             0 => Self::NeedKey(RootKey256Fingerprint(reader.read_array()?)),
-            1 => Self::HLCForwardSkew(Timestamp::from_raw(reader.read_le_u64()?)),
-            b @ (2 | 3) => {
-                let container_id = if b == 2 {
-                    Some(ContainerId(reader.read_array()?))
-                } else {
-                    None
-                };
-                let peer_id = PeerId(reader.read_array()?);
-                let head = ChainHash::decode(reader)?;
-                Self::NeedPeerCommit {
-                    peer_id,
-                    container_id,
-                    head,
+            1 => Self::HLCForwardSkew(reader.read_timestamp()?),
+            2 => Self::AwaitingDeps,
+            3 => Self::IncompatibleSoftware(UnknownSoftwareVersion::decode(reader)?),
+            4 => {
+                let retry_time_span = reader.read_range()?;
+                let retry_count = reader.read_var_u64()?;
+                Self::Internal {
+                    retry_time_span,
+                    retry_count,
                 }
             }
-            4 => Self::IncompatibleSoftware(UnknownSoftwareVersion::decode(reader)?),
             5 => Self::Frozen,
             b => return Err(StatusDecodeError::UnknownTag(b)),
         })
@@ -226,7 +223,7 @@ impl CommitErr {
 }
 
 impl UnknownSoftwareVersion {
-    pub fn encode(&self, writer: &mut Writer) {
+    pub fn encode(&self, writer: &mut Writer) -> Result<(), WriteError> {
         let (tag, version) = match self {
             UnknownSoftwareVersion::EntryType(b) => (0, b),
             UnknownSoftwareVersion::OpType(b) => (1, b),
@@ -234,6 +231,7 @@ impl UnknownSoftwareVersion {
         };
         writer.write_byte(tag);
         writer.write_byte(*version);
+        Ok(())
     }
 
     pub fn decode<'a>(reader: &mut Reader<'a>) -> Result<Self, StatusDecodeError> {
@@ -268,13 +266,14 @@ mod tests {
 
     #[proptest]
     fn roundtrip_commit_err(e: CommitErr) {
-        let e2 = CommitErr::from_repr(&e.to_repr()).unwrap();
+        let enc = e.clone().to_repr().unwrap();
+        let e2 = CommitErr::from_repr(&enc).unwrap();
         assert_eq!(e, e2);
     }
 
     #[proptest]
     fn roundtrip_head_err(e: HeadErr) {
-        let e2 = HeadErr::from_repr(&e.to_repr()).unwrap();
+        let e2 = HeadErr::from_repr(&e.to_repr().unwrap()).unwrap();
         assert_eq!(e, e2);
     }
 }

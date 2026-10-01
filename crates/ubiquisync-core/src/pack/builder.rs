@@ -3,21 +3,16 @@ use std::collections::{BTreeMap, HashSet};
 use thiserror::Error;
 
 use crate::crypto::{TaggedHashDomain, tagged_hash};
+use crate::hlc::WallTime;
 use crate::ids::LogId;
+use crate::log::LogHashContext;
 use crate::pack::{PackFileDescriptor, PackSignError, SignedPackHeader};
 use crate::{
     codec::Writer,
     crypto::{CipherKeyResolver, SigningKey},
     ids::PeerId,
-    log::{,
-    LogHashContext,
-    segment::{JoinSegmentsError, join_segments},
-    },
+    log::segment::{JoinSegmentsError, join_segments},
     pack::{PackHeader, PackRef, PeerData, SegmentDescriptor},
-};
-
-
-    log::{
 };
 
 pub struct PackBuilder {

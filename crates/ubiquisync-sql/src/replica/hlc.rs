@@ -9,7 +9,7 @@ use crate::{
         Db, DbBatch, DbError,
         sea_query::{insert_cols_batch, select_cols},
     },
-    replica::{Replica, schema::hlc},
+    replica::{ReplicaInner, schema::hlc},
 };
 
 #[derive(Error, Debug)]
@@ -22,23 +22,23 @@ pub enum HlcError {
     Skew { remote: Timestamp, local: WallTime },
 }
 
-const MAX_SKEW_MS: u64 = 60_000;
-impl<R> Replica<R> {
-    pub(crate) async fn load_hlc(db: &dyn Db) -> Result<Timestamp, HlcError> {
-        let Some((ts,)) = select_cols::<(hlc::Timestamp,)>(
-            db,
-            Query::select()
-                .from(hlc::Table)
-                .and_where(Expr::column(hlc::Id).eq(1)),
-        )
-        .await?
-        .one()?
-        else {
-            return Ok(Timestamp::default());
-        };
-        Ok(ts)
-    }
+pub(crate) async fn load_hlc(db: &dyn Db) -> Result<Timestamp, HlcError> {
+    let Some((ts,)) = select_cols::<(hlc::Timestamp,)>(
+        db,
+        Query::select()
+            .from(hlc::Table)
+            .and_where(Expr::column(hlc::Id).eq(1)),
+    )
+    .await?
+    .one()?
+    else {
+        return Ok(Timestamp::default());
+    };
+    Ok(ts)
+}
 
+const MAX_SKEW_MS: u64 = 60_000;
+impl<R> ReplicaInner<R> {
     pub(crate) fn local_hlc(&self, batch: &mut dyn DbBatch) -> Result<Timestamp, HlcError> {
         let wall_ms = WallTime::now();
         self.update_hlc(batch, |ts| ts.next_local(wall_ms))

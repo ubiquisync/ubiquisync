@@ -32,7 +32,7 @@ impl StreamLog {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct StreamInfo {
     pub id: i64,
     pub head_chain: ChainHash,

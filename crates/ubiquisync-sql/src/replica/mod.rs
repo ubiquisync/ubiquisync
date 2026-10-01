@@ -1,12 +1,12 @@
 mod commit;
 mod exec;
 mod fork;
-mod fs;
-mod fs_read;
+// mod fs;
+// mod fs_read;
 mod fs_sync_schema;
-mod fs_write;
-mod ingest;
+// mod fs_write;
 mod hlc;
+// mod ingest;
 mod init;
 mod peers;
 mod query;
@@ -31,7 +31,6 @@ use ubiquisync_core::{
 
 use crate::{
     db::Db,
-
     replica::{stream_lock::KeyedLock, streams::StreamLog},
 };
 

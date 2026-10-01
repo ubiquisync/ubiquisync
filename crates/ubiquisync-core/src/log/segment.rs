@@ -456,9 +456,9 @@ impl SegmentHeader {
 
     pub fn encode(&self, w: &mut Writer) -> Result<(), WriteError> {
         self.prev_chain.encode(w);
-        self.signature.encode(w);
+        self.signature.encode(w)?;
         self.encoding.encode(w)?;
-        w.write_option(&self.start_cipher, |w, c| c.encode(w));
+        w.write_option(&self.start_cipher, |w, c| c.encode(w))?;
         Ok(())
     }
 
@@ -484,7 +484,7 @@ impl SegmentEncoding {
             }
             SegmentEncoding::Plaintext(enc) => {
                 w.write_byte(SEGMENT_ENCODING_PLAINTEXT);
-                enc.encode(w);
+                enc.encode(w)?;
             }
         }
         Ok(())
@@ -500,9 +500,10 @@ impl SegmentEncoding {
 }
 
 impl PlaintextSegmentEncoding {
-    pub fn encode(&self, w: &mut Writer) {
-        w.write_option(&self.outer_encryption, |w, e| e.encode(w));
+    pub fn encode(&self, w: &mut Writer) -> Result<(), WriteError> {
+        w.write_option(&self.outer_encryption, |w, e| e.encode(w))?;
         w.write_byte(self.inner_compression.into());
+        Ok(())
     }
 
     pub fn decode(r: &mut Reader) -> Result<Self, SegmentDecodeError> {
@@ -517,9 +518,10 @@ impl PlaintextSegmentEncoding {
 }
 
 impl EncryptionInfo {
-    pub fn encode(&self, w: &mut Writer) {
-        w.write_option(&self.cipher, |w, c| c.encode(w));
+    pub fn encode(&self, w: &mut Writer) -> Result<(), WriteError> {
+        w.write_option(&self.cipher, |w, c| c.encode(w))?;
         w.write_len_prefixed(&self.nonce);
+        Ok(())
     }
 
     pub fn decode(r: &mut Reader) -> Result<Self, SegmentDecodeError> {

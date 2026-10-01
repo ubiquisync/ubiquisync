@@ -3,7 +3,6 @@ use std::{borrow::Borrow, ops::Range};
 use sea_query::{Expr, ExprTrait, Query};
 use thiserror::Error;
 use ubiquisync_core::{
-    hlc::{HlcError, wall_ms},
     ids::LogId,
     log::{
         ChainHash, LogEntry, LogHashContext, LogValidationError, SegmentCipherError,

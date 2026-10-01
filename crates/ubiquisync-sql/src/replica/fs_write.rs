@@ -11,14 +11,14 @@ use crate::{
     db::sea_query::select_cols,
     reducer::Reducer,
     replica::{
-        Replica,
+        Replica, ReplicaInner,
         fs_sync_schema::{published, topics},
         peers::PeerInfo,
         schema::{containers, segments, streams},
     },
 };
 
-impl<R: Reducer> Replica<R> {
+impl<R: Reducer> ReplicaInner<R> {
     async fn publish_topic(&self, remote_id: i64, topic_id: i64) -> anyhow::Result<()> {
         // TODO if we're selected for other peers, we should give them some grace period to publish their own segments
         // TODO indexes: maybe containers(topic_id) and streams(container_id)

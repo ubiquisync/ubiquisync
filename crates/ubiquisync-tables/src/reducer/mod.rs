@@ -22,6 +22,7 @@ use std::sync::Arc;
 use tokio::sync::{OwnedRwLockReadGuard, RwLock};
 use ubiquisync_core::event::{EventBusPublisher, Publisher};
 use ubiquisync_core::ids::ContainerId;
+use ubiquisync_sql::reducer::PrepareError;
 use ubiquisync_sql::{
     db::{Db, DbBatch, DbStatementResult, StmtId},
     op::OpCodec,
@@ -91,7 +92,6 @@ impl Reducer {
 #[async_trait::async_trait]
 impl ubiquisync_sql::reducer::Reducer for Reducer {
     type Op = Op;
-    type Error = TablesError;
     type ReadState = ReadState;
     type ApplyState = ApplyState;
 
@@ -99,7 +99,7 @@ impl ubiquisync_sql::reducer::Reducer for Reducer {
         &self.codec
     }
 
-    async fn prepare(&self, db: &dyn Db, op: &Op) -> Result<Self::ReadState, Self::Error> {
+    async fn prepare(&self, db: &dyn Db, op: &Op) -> Result<Self::ReadState, PrepareError> {
         // Reject malformed ops before touching the schema or building any SQL.
         let table_rguard = match op {
             Op::Upsert(upsert) => {
@@ -120,7 +120,7 @@ impl ubiquisync_sql::reducer::Reducer for Reducer {
         timestamp: ubiquisync_core::hlc::Timestamp,
         op: &Op,
         read_state: Self::ReadState,
-    ) -> Result<ApplyState, Self::Error> {
+    ) -> Result<ApplyState, ApplyError> {
         match op {
             Op::Upsert(upsert) => {
                 self.apply_upsert(batch, timestamp, upsert, read_state.table_rguard)

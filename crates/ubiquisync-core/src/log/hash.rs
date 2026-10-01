@@ -3,9 +3,12 @@ use thiserror::Error;
 use crate::{
     bytes::OpaqueBytes,
     codec::{ReadError, Reader, Writer},
-    crypto::{CipherInfo, Hash256, Hasher, TaggedHashDomain, new_tagged_hasher},
+    crypto::{CipherInfo, CipherKeyResolver, Hash256, Hasher, TaggedHashDomain, new_tagged_hasher},
     ids::LogId,
-    log::{EntryBody, LogEntry, OpEntry, OpaqueLogEntry},
+    log::{
+        EntryBody, LogEntry, OpEntry, OpaqueLogEntry, PlaintextLogEntry, SegmentCipherError,
+        entries_to_opaque,
+    },
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,6 +98,22 @@ impl ChainHash {
             }
             LogEntry::Signature(_) => Ok(*self),
         }
+    }
+
+    pub async fn compute_next_plaintext<'a: 'b, 'b>(
+        &self,
+        seed: &LogHashContext,
+        head_cipher: &mut Option<CipherInfo>,
+        key_resolver: &dyn CipherKeyResolver,
+        entries: impl Iterator<Item = &'b PlaintextLogEntry<'a>>,
+    ) -> Result<Self, SegmentCipherError> {
+        let opaque = entries_to_opaque(seed, head_cipher, self, key_resolver, entries).await;
+        let Some(last) = opaque.into_iter().last() else {
+            // maybe this should be a hard error, but for now we just return self if there were no entries
+            return Ok(*self);
+        };
+        let last = last?;
+        Ok(last.1)
     }
 
     pub fn sign_bytes(&self, seed: &LogHashContext) -> Hash256 {

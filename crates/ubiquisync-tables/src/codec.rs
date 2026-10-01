@@ -39,8 +39,10 @@ impl OpCodec<Op> for Codec {
         container_id: &ContainerId,
         op: &ubiquisync_core::bytes::PlaintextBytes,
     ) -> Result<Op, ubiquisync_sql::op::OpDecodeError> {
-        self.do_decode(container_id, op)
-            .map_err(|e| OpDecodeError::Invalid(Box::new(e)))
+        self.do_decode(container_id, op).map_err(|e| match e {
+            DecodeOpError::UnknownTag(t) => OpDecodeError::UnknownOpTag(t),
+            e => OpDecodeError::Invalid(Box::new(e)),
+        })
     }
 }
 

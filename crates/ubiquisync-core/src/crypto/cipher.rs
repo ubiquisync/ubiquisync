@@ -24,6 +24,7 @@ use crate::bytes::PlaintextBytes;
 use crate::codec::MAX_VAR_U64_SIZE;
 use crate::codec::ReadError;
 use crate::codec::Reader;
+use crate::codec::WriteError;
 use crate::codec::Writer;
 use crate::codec::encode_var_u64;
 use crate::ids::ContainerId;
@@ -382,9 +383,10 @@ impl SegmentCipher {
 }
 
 impl CipherInfo {
-    pub fn encode(&self, writer: &mut Writer) {
+    pub fn encode(&self, writer: &mut Writer) -> Result<(), WriteError> {
         writer.write_byte(self.cipher_suite);
         writer.write_array(&self.fingerprint.0);
+        Ok(())
     }
 
     pub fn decode<'a>(reader: &mut Reader<'a>) -> Result<Self, ReadError> {

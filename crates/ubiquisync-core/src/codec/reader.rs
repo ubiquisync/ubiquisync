@@ -2,7 +2,10 @@ use std::ops::Range;
 
 use thiserror::Error;
 
-use crate::codec::varint::{decode_var_u64, decode_zigzag_i64};
+use crate::{
+    codec::varint::{decode_var_u64, decode_zigzag_i64},
+    hlc::Timestamp,
+};
 
 pub struct Reader<'a> {
     buf: &'a [u8],
@@ -23,6 +26,8 @@ pub enum ReadError {
     TrailingBytes,
     #[error("error reading Option<T>")]
     InvalidOption,
+    #[error("invalid timestamp")]
+    InvalidTimestamp,
 }
 
 impl<'a> Reader<'a> {
@@ -80,12 +85,15 @@ impl<'a> Reader<'a> {
         Ok(x)
     }
 
+    pub fn read_timestamp(&mut self) -> Result<Timestamp, ReadError> {
+        self.read_le_u64()?
+            .try_into()
+            .map_err(|_| ReadError::InvalidTimestamp)
+    }
+
     pub fn read_range(&mut self) -> Result<Range<u64>, ReadError> {
         let start = self.read_var_u64()?;
         let span = self.read_var_u64()?;
-        if span == 0 {
-            return Err(ReadError::InvalidRange { start, span });
-        }
         let end = start
             .checked_add(span)
             .ok_or(ReadError::InvalidRange { start, span })?;

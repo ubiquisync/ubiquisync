@@ -4,11 +4,8 @@ use sea_query::{Expr, ExprTrait, Query};
 use thiserror::Error;
 use ubiquisync_core::{
     crypto::CipherKeyResolveError,
-    hlc::{HlcError, wall_ms},
-    log::{
-        ChainHashError, LogEntry, LogHashContext, SegmentCipherError,
-        segment::{DecodedEntries, DecodedSegment},
-    },
+    hlc::WallTime,
+    log::{ChainHashError, LogEntry, SegmentCipherError, segment::DecodedSegment},
 };
 
 use crate::{
@@ -16,10 +13,9 @@ use crate::{
         DbError,
         sea_query::{update_cols, update_cols_batch},
     },
-    reducer::{ApplyError, PrepareError, RebuildScope, Reducer},
+    reducer::{PrepareError, RebuildScope, Reducer},
     replica::{
-        ReplicaInner,
-        ingest::SegmentProcessError,
+        HlcError, ReplicaInner,
         schema::{CommitErr, streams},
         streams::StreamInfo,
     },
@@ -122,22 +118,21 @@ impl<R: Reducer> ReplicaInner<R> {
 
             // TODO add UPDATE clause to clear stream deps waiting on this entry
 
-            let local_ts = wall_ms();
             match entry {
                 LogEntry::IndexedEntry(entry) => {
                     let mut batch = self.db.new_batch();
                     let apply_state = match entry {
                         ubiquisync_core::log::EntryBody::Op(op_entry) => {
                             let ts = op_entry.timestamp;
-                            match self.hlc.observe(ts, local_ts, batch.as_mut()) {
+                            match self.observe_remote_hlc(batch.as_mut(), ts) {
                                 Ok(_) => {}
-                                Err(HlcError::Skew(e)) => {
+                                Err(HlcError::Skew { remote, .. }) => {
                                     return Err(TryCommitError::Stall(CommitErr::HLCForwardSkew(
-                                        e.received,
+                                        remote,
                                     )));
                                 }
-                                Err(HlcError::Storage(e)) => {
-                                    return Err(e.into());
+                                Err(_) => {
+                                    return Ok(self.set_internal_commit_err(stream).await?);
                                 }
                             }
 
@@ -241,7 +236,7 @@ impl<R: Reducer> ReplicaInner<R> {
     }
 
     async fn set_internal_commit_err(&self, stream: &mut StreamInfo) -> Result<(), DbError> {
-        let ts = wall_ms();
+        let ts = WallTime::now().as_millis();
         let err = if let Some(CommitErr::Internal {
             retry_time_span,
             retry_count,

@@ -11,7 +11,7 @@ use sea_query::{Expr, ExprTrait, Query};
 use thiserror::Error;
 use ubiquisync_core::{
     crypto::{CipherKeyResolver, NullCipherKeyResolver},
-    hlc::{HlcError, wall_ms},
+    hlc::{HlcError, WallTime, wall_ms},
     ids::LogId,
     log::{
         LogEntry, LogHashContext, LogValidationError, SegmentCipherError,
@@ -83,7 +83,8 @@ impl BlockedPackInfo {
 }
 
 impl PackReadState {
-    pub fn prepare_read(self, ts: u64, cur_files: &[PackFileId]) -> PackReadPlan {
+    pub fn prepare_read(self, cur_files: &[PackFileId]) -> PackReadPlan {
+        let ts = WallTime::now();
         let cur_files = dedupe_pack_files(cur_files);
         let mut to_read = vec![];
         let mut consumed = HashSet::new();
