@@ -98,7 +98,7 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
         };
 
         let mut batch = self.db.new_batch();
-        let timestamp = self.hlc.now(batch.as_mut())?;
+        let timestamp = self.local_hlc(batch.as_mut())?;
 
         let entry = PlaintextLogEntry::IndexedEntry(EntryBody::Op(OpEntry::new(
             timestamp,

@@ -2,6 +2,7 @@ use thiserror::Error;
 use ubiquisync_core::{
     codec::{ReadError, Reader, Writer},
     crypto::{CipherInfo, RootKey256Fingerprint, Signature},
+    hlc::Timestamp,
     ids::{ContainerId, PeerId},
     log::ChainHash,
 };
@@ -35,6 +36,7 @@ fn table_defs() -> Vec<CreateTableDef> {
         peers::create_table_def().with_unique(&["peer_id"]),
         streams::create_table_def(),
         segments::create_table_def(),
+        hlc::create_table_def(),
     ]
 }
 
@@ -73,6 +75,9 @@ def_table!(segments as __replica_segments (stream_id: i64, end_size: u64) => { /
     body: Vec<u8>,
     // WITH ROWID!
 });
+
+def_table!(hlc as __replica_hlc (id:i64) => {timestamp: super::Timestamp});
+try_from_into_col_repr!(Timestamp, i64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]

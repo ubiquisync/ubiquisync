@@ -80,8 +80,7 @@ impl Reducer {
         let mut set_clauses = vec![];
         let mut where_clauses = vec![];
 
-        let timestamp_value = DbValue::from_u64(timestamp.raw())?;
-        let timestamp_placeholder = value_binder.bind_next(timestamp_value.clone());
+        let timestamp_placeholder = value_binder.bind_next(timestamp.into());
 
         // UPSERT_TS_COL binding
         insert_into_cols.push(UPSERT_TS_COL.into());

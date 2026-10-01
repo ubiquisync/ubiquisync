@@ -17,6 +17,8 @@ pub enum LogDecodeError {
     EmptyOps,
     #[error("read error: {0}")]
     ReadError(#[from] ReadError),
+    #[error("invalid timestamp: {0}")]
+    InvalidTimestamp(u64),
     #[error("u64 add overflow: {0} + {1}")]
     U64AddOverflow(u64, u64),
     #[error("unknown signature algorithm: {0}")]

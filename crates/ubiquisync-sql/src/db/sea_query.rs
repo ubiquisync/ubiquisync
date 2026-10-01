@@ -48,7 +48,7 @@ pub fn prep_insert_cols<Inserting: Cols, Returning: Cols>(
     let db_vals = Inserting::encode(params)?;
     let mut vals = vec![];
     for v in db_vals {
-        vals.push(Expr::Constant(db_to_value(v)))
+        vals.push(Expr::Value(db_to_value(v)))
     }
     stmt.values(vals).map_err(|e| match e {
         sea_query::error::Error::ColValNumMismatch { col_len, val_len } => {
@@ -81,7 +81,7 @@ pub fn update_cols_batch<C: Cols>(
     let idens = C::idens();
     let mut iden_exprs = vec![];
     for (i, v) in db_vals.into_iter().enumerate() {
-        iden_exprs.push((idens[i].clone(), Expr::Constant(db_to_value(v))));
+        iden_exprs.push((idens[i].clone(), Expr::Value(db_to_value(v))));
     }
     stmt.values(iden_exprs);
     let (sql, values) = build_sql(stmt, batch.dialect())?;

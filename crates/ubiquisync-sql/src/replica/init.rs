@@ -1,8 +1,9 @@
+use std::sync::atomic::AtomicU64;
+
 use sea_query::{Expr, ExprTrait, Query};
 use thiserror::Error;
 use ubiquisync_core::{
     crypto::{CryptoDecodeError, credentials::Credentials},
-    hlc::HlcService,
     ids::{AppId, PeerId},
     init::{
         InitCommitment, InitCreationError, InitDecodeError, InitEntry, InitVerifyError, Version,
@@ -14,10 +15,9 @@ use crate::{
         Db, DbError,
         sea_query::{insert_cols, select_cols},
     },
-    hlc_storage::SqlHlcStorage,
     reducer::Reducer,
     replica::{
-        Replica,
+        HlcError, Replica,
         schema::{create_tables, peers},
         stream_lock::KeyedLock,
     },
@@ -34,10 +34,10 @@ impl<R: Reducer> Replica<R> {
 
         const SELF_DB_ID: i64 = 1;
 
-        let hlc = HlcService::open(SqlHlcStorage::open(db.as_ref(), "").await?)?;
-
         // initialize schema, in the future we need some more proper migrations
         create_tables(db.as_ref()).await?;
+
+        let hlc = Self::load_hlc(db.as_ref()).await?;
 
         let self_id = if let Some((self_id, commitment_bytes, signature)) =
             select_cols::<(peers::PeerId, peers::CommitmentBytes, peers::Signature)>(
@@ -115,7 +115,7 @@ impl<R: Reducer> Replica<R> {
             credentials,
             db,
             reducer,
-            hlc,
+            hlc: AtomicU64::new(hlc.into()),
             stream_locks: KeyedLock::new(),
         })
     }
@@ -135,4 +135,6 @@ pub enum InitError {
     InitCreation(#[from] InitCreationError),
     #[error("signature decode error: {0}")]
     SigDecode(#[from] CryptoDecodeError),
+    #[error("timestamp error")]
+    Hlc(#[from] HlcError),
 }
