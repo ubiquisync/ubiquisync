@@ -8,6 +8,7 @@ use ubiquisync_core::{
 use crate::{
     db::{DbError, DbRow, DbValue},
     op::OpEncodeError,
+    replica::HlcError,
 };
 
 #[async_trait::async_trait]
@@ -39,4 +40,6 @@ pub enum ExecError {
     SegmentEncode(#[from] SegmentEncodeError),
     #[error("op encode error: {0}")]
     OpEncode(#[from] OpEncodeError),
+    #[error("timestamp error")]
+    Hlc(#[from] HlcError),
 }

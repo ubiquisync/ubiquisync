@@ -6,6 +6,7 @@ mod fs_read;
 mod fs_sync_schema;
 mod fs_write;
 mod ingest;
+mod hlc;
 mod init;
 mod peers;
 mod query;
@@ -15,20 +16,22 @@ mod streams;
 
 use std::{collections::HashMap, sync::Arc};
 
+use std::sync::atomic::AtomicU64;
+
+pub use hlc::HlcError;
 pub use init::InitError;
 
 use tokio::task;
 use tokio_util::sync::CancellationToken;
 use ubiquisync_core::{
     crypto::{CipherKeyResolver, credentials::Credentials},
-    hlc::HlcService,
     ids::{AppId, PeerId},
     pack::PackStore,
 };
 
 use crate::{
     db::Db,
-    hlc_storage::SqlHlcStorage,
+
     replica::{stream_lock::KeyedLock, streams::StreamLog},
 };
 
@@ -46,7 +49,7 @@ pub(crate) struct ReplicaInner<R> {
     pub(crate) credentials: Box<dyn Credentials>,
     pub(crate) db: Box<dyn Db>,
     pub(crate) reducer: R,
-    pub(crate) hlc: HlcService<SqlHlcStorage>,
+    pub(crate) hlc: AtomicU64,
     pub(crate) stream_locks: KeyedLock<StreamLog>,
     pub(crate) pack_remotes: HashMap<u64, PackStore>,
     pub(crate) key_resolver: Arc<dyn CipherKeyResolver>,

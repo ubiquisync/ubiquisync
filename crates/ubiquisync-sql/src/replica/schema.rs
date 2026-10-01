@@ -81,6 +81,7 @@ fn table_defs() -> Vec<CreateTableDef> {
         containers::create_table_def().with_unique(&["container_id"]),
         streams::create_table_def(),
         segments::create_table_def(),
+        hlc::create_table_def(),
     ]
 }
 
@@ -92,6 +93,18 @@ codeable_col_repr!(CipherInfo);
 codeable_col_repr!(CommitErr);
 codeable_col_repr!(HeadErr);
 codeable_col_repr!(Signature);
+
+// TODO: CREATE UNIQUE INDEX streams_root ON streams(peer_id, container_id) WHERE parent_id IS NULL;
+// TODO: we might also want a unique on (parent_id, fork_idx, fork_hash) to avoid races
+
+def_table!(segments as __replica_segments (stream_id: i64, end_size: u64) => { // TODO ref streams
+    start_idx: u64,
+    body: Vec<u8>,
+    // WITH ROWID!
+});
+
+def_table!(hlc as __replica_hlc (id:i64) => {timestamp: super::Timestamp});
+try_from_into_col_repr!(Timestamp, i64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]

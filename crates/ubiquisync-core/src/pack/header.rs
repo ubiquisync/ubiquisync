@@ -3,6 +3,7 @@ use std::ops::Range;
 use thiserror::Error;
 
 use crate::crypto::{SignatureVerifyError, SigningError};
+use crate::hlc::WallTime;
 use crate::pack::PackFileId;
 use crate::{
     codec::{ReadError, Reader, WriteError, Writer},
@@ -14,7 +15,7 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
 pub struct PackHeader {
-    pub timestamp: u64,
+    pub timestamp: WallTime,
     pub parents: Vec<PackRef>,
     /// The list of packs this pack file supersedes directly.
     /// This is used by GC to know when it is safe to delete a pack
@@ -85,7 +86,7 @@ const PACK_HEADER_VERSION: u8 = 0;
 impl PackHeader {
     pub fn encode(&self, w: &mut Writer) -> Result<(), WriteError> {
         w.write_byte(PACK_HEADER_VERSION); // version byte
-        w.write_var_u64(self.timestamp);
+        w.write_var_u64(self.timestamp.as_millis());
         w.write_vec(&self.parents, |w, x| x.encode(w))?;
         w.write_vec(&self.self_supersedes, |w, x| x.encode(w))?;
         w.write_vec(&self.self_segments, |w, x| x.encode(w))?;
@@ -99,7 +100,7 @@ impl PackHeader {
         if version != PACK_HEADER_VERSION {
             return Err(PackHeaderDecodeError::UnknownVersion(version));
         }
-        let timestamp = r.read_var_u64()?;
+        let timestamp = WallTime::from_millis(r.read_var_u64()?);
         let parents = r.read_vec(|r| PackRef::decode(r))?;
         let self_supersedes = r.read_vec(|r| PackRef::decode(r))?;
         let self_segments = r.read_vec(|r| SegmentDescriptor::decode(r))?;

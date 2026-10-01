@@ -45,13 +45,14 @@ pub trait DecodeTimestamp<'a>: TimestampRepr {
 
 impl TimestampRepr for Timestamp {
     fn encode(&self, w: &mut Writer) {
-        w.write_le_u64(self.raw());
+        w.write_le_u64((*self).into());
     }
 }
 
 impl<'a> DecodeTimestamp<'a> for Timestamp {
     fn decode(r: &mut Reader<'a>) -> Result<Self, LogDecodeError> {
-        Ok(Self::from_raw(r.read_le_u64()?))
+        let x = r.read_le_u64()?;
+        Self::try_from(x).map_err(|_| LogDecodeError::InvalidTimestamp(x))
     }
 }
 
