@@ -36,6 +36,7 @@ fn table_defs() -> Vec<CreateTableDef> {
         peers::create_table_def().with_unique(&["peer_id"]),
         streams::create_table_def(),
         segments::create_table_def(),
+        hlc::create_table_def(),
     ]
 }
 
