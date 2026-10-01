@@ -756,7 +756,7 @@ async fn view_row(db: &dyn Db, view: &str, cols: &[&str], k: i64) -> Option<Vec<
 /// Run one op end to end: `prepare` (schema reconcile, outside the batch),
 /// `apply` (emit statements), `commit`, then `post_apply` (build the event).
 async fn apply(reducer: &mut Reducer, db: &dyn Db, raw_ts: u64, op: &Op) -> Option<ChangeEvent> {
-    let ts = Timestamp::from_raw(raw_ts);
+    let ts = Timestamp::try_from(raw_ts).unwrap();
     let read_state = reducer.prepare(db, op).await.expect("prepare");
     let mut batch = db.new_batch();
     let state = reducer

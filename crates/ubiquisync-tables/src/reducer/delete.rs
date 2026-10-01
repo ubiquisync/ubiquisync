@@ -6,7 +6,7 @@ use crate::reducer::{ApplyState, Reducer};
 use crate::watch::{ChangeEvent, DeleteEvent};
 use tokio::sync::OwnedRwLockReadGuard;
 use ubiquisync_core::hlc::Timestamp;
-use ubiquisync_sql::db::{Db, DbBatch, DbStatementResult, DbValue, StmtId, ValueBinder};
+use ubiquisync_sql::db::{Db, DbBatch, DbStatementResult, StmtId, ValueBinder};
 
 impl Reducer {
     pub(crate) async fn sync_delete_schema(
@@ -45,11 +45,9 @@ impl Reducer {
 
         let pk_name_list = table_id.pk_col_name_list();
 
-        let timestamp_value = DbValue::from_u64(timestamp.raw())?;
-
         // DELETED_TS_COL binding
         insert_into_cols.push(DELETED_TS_COL.into());
-        let ts_placeholder = value_binder.bind_next(timestamp_value.clone());
+        let ts_placeholder = value_binder.bind_next(timestamp.into());
         insert_into_value_binds.push(ts_placeholder.clone());
         set_clauses.push(set_lww_sql(DELETED_TS_COL, quoted_table_name, dialect));
 

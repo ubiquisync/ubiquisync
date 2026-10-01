@@ -1,3 +1,5 @@
+use ubiquisync_core::hlc::Timestamp;
+
 use crate::{
     db::DbType,
     dialect::{PlaceholderGen, SqlDialect},
@@ -44,6 +46,12 @@ impl DbValue {
             DbValue::Blob(_) => Some(DbType::Blob),
             DbValue::Uuid(_) => Some(DbType::Uuid),
         }
+    }
+}
+
+impl From<Timestamp> for DbValue {
+    fn from(value: Timestamp) -> Self {
+        DbValue::Integer(value.into())
     }
 }
 

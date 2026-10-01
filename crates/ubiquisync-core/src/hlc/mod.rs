@@ -9,7 +9,7 @@ pub struct Timestamp {
 
 #[derive(Error, Debug)]
 #[error("timestamp overflowed (either did not fit into i64 or was negative)")]
-pub struct HlcTimestampOverflow;
+pub struct TimestampOverflow;
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 #[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
@@ -18,26 +18,26 @@ pub struct WallTime {
 }
 
 impl Timestamp {
-    pub fn from_parts(timestamp: WallTime, counter: u16) -> Result<Self, HlcTimestampOverflow> {
+    pub fn from_parts(timestamp: WallTime, counter: u16) -> Result<Self, TimestampOverflow> {
         Self::from_millis_and_counter(timestamp.millis, counter)
     }
 
-    fn from_millis_and_counter(millis: u64, counter: u16) -> Result<Self, HlcTimestampOverflow> {
+    fn from_millis_and_counter(millis: u64, counter: u16) -> Result<Self, TimestampOverflow> {
         if millis > MILLIS_MAX {
-            return Err(HlcTimestampOverflow);
+            return Err(TimestampOverflow);
         }
         let mut value = millis << COUNTER_BITS;
         value |= counter as u64;
         Ok(Self { value })
     }
 
-    pub fn next_local(&self, now: WallTime) -> Result<Self, HlcTimestampOverflow> {
+    pub fn next_local(&self, now: WallTime) -> Result<Self, TimestampOverflow> {
         let new = Self::from_parts(now, 0)?;
         if &new > self { Ok(new) } else { self.bump() }
     }
 
-    pub fn next_after(&self, other: &Timestamp) -> Result<Self, HlcTimestampOverflow> {
-        if other >= self {
+    pub fn next_after(&self, other: Timestamp) -> Result<Self, TimestampOverflow> {
+        if &other >= self {
             other.bump()
         } else {
             Ok(*self)
@@ -58,7 +58,7 @@ impl Timestamp {
         self.value as u16
     }
 
-    fn bump(&self) -> Result<Self, HlcTimestampOverflow> {
+    fn bump(&self) -> Result<Self, TimestampOverflow> {
         let counter = self.counter();
         if counter == u16::MAX {
             Self::from_millis_and_counter(self.millis() + 1, 0)
@@ -99,23 +99,23 @@ impl From<&Timestamp> for i64 {
 }
 
 impl TryFrom<u64> for Timestamp {
-    type Error = HlcTimestampOverflow;
+    type Error = TimestampOverflow;
 
     fn try_from(value: u64) -> Result<Self, Self::Error> {
         if value > i64::MAX as u64 {
-            return Err(HlcTimestampOverflow);
+            return Err(TimestampOverflow);
         }
         Ok(Self { value })
     }
 }
 
 impl TryFrom<i64> for Timestamp {
-    type Error = HlcTimestampOverflow;
+    type Error = TimestampOverflow;
 
     fn try_from(value: i64) -> Result<Self, Self::Error> {
         if value < 0 {
             // in this case we use the same error for negative
-            return Err(HlcTimestampOverflow);
+            return Err(TimestampOverflow);
         }
         Ok(Self {
             value: value as u64,

@@ -17,7 +17,7 @@ use crate::{
     },
     reducer::Reducer,
     replica::{
-        Replica,
+        HlcError, Replica,
         schema::{create_tables, peers},
         stream_lock::KeyedLock,
     },
@@ -135,4 +135,6 @@ pub enum InitError {
     InitCreation(#[from] InitCreationError),
     #[error("signature decode error: {0}")]
     SigDecode(#[from] CryptoDecodeError),
+    #[error("timestamp error")]
+    Hlc(#[from] HlcError),
 }

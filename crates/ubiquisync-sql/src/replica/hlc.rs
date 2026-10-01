@@ -1,7 +1,8 @@
 use std::{convert::Into, sync::atomic::Ordering};
 
 use sea_query::{Alias, Expr, ExprTrait, OnConflict, Query};
-use ubiquisync_core::hlc::{Timestamp, WallTime};
+use thiserror::Error;
+use ubiquisync_core::hlc::{Timestamp, TimestampOverflow, WallTime};
 
 use crate::{
     db::{
@@ -11,9 +12,19 @@ use crate::{
     replica::{Replica, schema::hlc},
 };
 
+#[derive(Error, Debug)]
+pub enum HlcError {
+    #[error("db error: {0}")]
+    Db(#[from] DbError),
+    #[error("timestamp overflow")]
+    Overflow(#[from] TimestampOverflow),
+    #[error("clock seq, remote: {remote:?}, local: {local:?}")]
+    Skew { remote: Timestamp, local: WallTime },
+}
+
 const MAX_SKEW_MS: u64 = 60_000;
 impl<R> Replica<R> {
-    pub(crate) async fn load_hlc(db: &dyn Db) -> Result<Timestamp, DbError> {
+    pub(crate) async fn load_hlc(db: &dyn Db) -> Result<Timestamp, HlcError> {
         let Some((ts,)) = select_cols::<(hlc::Timestamp,)>(
             db,
             Query::select()
@@ -28,16 +39,46 @@ impl<R> Replica<R> {
         Ok(ts)
     }
 
-    pub(crate) fn local_hlc(&self, batch: &mut dyn DbBatch) -> Result<Timestamp, DbError> {
+    pub(crate) fn local_hlc(&self, batch: &mut dyn DbBatch) -> Result<Timestamp, HlcError> {
         let wall_ms = WallTime::now();
-        let last_hlc = self.hlc.load(Ordering::Relaxed);
-        let next_hlc = Timestamp::try_from(last_hlc)
-            .ok()
-            .and_then(|ts| ts.next_local(wall_ms).ok())
-            .expect("valid timestamp");
-        self.hlc.store(next_hlc.into(), Ordering::Relaxed);
-        self.persist_hlc(next_hlc, batch)?;
-        Ok(next_hlc)
+        self.update_hlc(batch, |ts| ts.next_local(wall_ms))
+    }
+
+    pub(crate) fn observe_remote_hlc(
+        &self,
+        batch: &mut dyn DbBatch,
+        remote: Timestamp,
+    ) -> Result<(), HlcError> {
+        let local = WallTime::now();
+        let remote_ms = remote.wall();
+        if remote_ms > local && remote_ms.as_millis() - local.as_millis() > MAX_SKEW_MS {
+            return Err(HlcError::Skew { remote, local });
+        }
+        let next = remote.next_local(local)?;
+        self.update_hlc(batch, |ts| ts.next_after(next))?;
+        Ok(())
+    }
+
+    fn update_hlc<F>(&self, batch: &mut dyn DbBatch, f: F) -> Result<Timestamp, HlcError>
+    where
+        F: Fn(Timestamp) -> Result<Timestamp, TimestampOverflow>,
+    {
+        let mut last = self.hlc.load(Ordering::Relaxed);
+        loop {
+            let next = f(Timestamp::try_from(last).expect("valid timestamp"))?;
+            match self.hlc.compare_exchange_weak(
+                last,
+                next.into(),
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    self.persist_hlc(next, batch)?;
+                    return Ok(next);
+                }
+                Err(cur) => last = cur,
+            }
+        }
     }
 
     fn persist_hlc(&self, ts: Timestamp, batch: &mut dyn DbBatch) -> Result<(), DbError> {
