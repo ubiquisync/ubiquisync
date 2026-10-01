@@ -76,7 +76,7 @@ def_table!(segments as __replica_segments (stream_id: i64, end_size: u64) => { /
     // WITH ROWID!
 });
 
-def_table_with_auto_id!(hlc as __replica_hlc (id) => {timestamp: super::Timestamp});
+def_table!(hlc as __replica_hlc (id:i64) => {timestamp: super::Timestamp});
 try_from_into_col_repr!(Timestamp, i64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
