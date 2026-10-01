@@ -4,7 +4,7 @@ use crate::{
     bytes::{BytesWrapper, OpaqueBytes, PlaintextBytes},
     codec::{Reader, Writer},
     crypto::{CipherInfo, Hash256, Signature},
-    hlc::HlcTimestamp,
+    hlc::Timestamp,
     log::{
         DecodeTimestamp, LogDecodeError, LogEncodeError, LogValidationError, OpEntry, TimestampRepr,
     },
@@ -25,7 +25,7 @@ pub enum LogEntry<B: BytesWrapper, T: TimestampRepr> {
 /// Log entry where op and header are encoded as canonical hash bytes (may be encrypted)
 pub type OpaqueLogEntry<'a> = LogEntry<OpaqueBytes<'a>, OpaqueBytes<'a>>;
 
-pub type PlaintextLogEntry<'a> = LogEntry<PlaintextBytes<'a>, HlcTimestamp>;
+pub type PlaintextLogEntry<'a> = LogEntry<PlaintextBytes<'a>, Timestamp>;
 
 /// The content of signed and indexed log entries.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,11 +144,11 @@ mod tests {
     use test_strategy::proptest;
 
     use crate::codec::{Reader, Writer};
-    use crate::hlc::HlcTimestamp;
+    use crate::hlc::Timestamp;
     use crate::{bytes::PlaintextBytes, log::LogEntry};
 
     #[proptest]
-    fn test_round_trip(entry: LogEntry<PlaintextBytes<'static>, HlcTimestamp>) {
+    fn test_round_trip(entry: LogEntry<PlaintextBytes<'static>, Timestamp>) {
         let mut w = Writer::new();
         entry.encode(&mut w).unwrap();
         let res = w.finalize();

@@ -1,4 +1,4 @@
-use std::borrow::Borrow;
+use std::{borrow::Borrow, convert::Into};
 
 use thiserror::Error;
 
@@ -95,8 +95,9 @@ fn to_opaque<'a>(
                  op,
              }| {
                 let mut slot_cipher = cipher.slot_cipher(prev_chain);
-                let timestamp = slot_cipher
-                    .encrypt_slot(&PlaintextBytes::from(&timestamp.raw().to_le_bytes()[..]));
+                let timestamp = slot_cipher.encrypt_slot(&PlaintextBytes::from(
+                    &Into::<u64>::into(timestamp).to_le_bytes()[..],
+                ));
                 slot_cipher.add_context(timestamp.borrow());
                 let server_attested_user_id = if !server_attested_user_id.is_empty() {
                     slot_cipher.encrypt_slot(server_attested_user_id)
@@ -120,13 +121,20 @@ fn to_opaque<'a>(
                  op,
              }| {
                 Ok(OpEntry {
-                    timestamp: timestamp.raw().to_le_bytes().to_vec().into(),
+                    timestamp: Into::<u64>::into(timestamp).to_le_bytes().to_vec().into(),
                     server_attested_user_id: OpaqueBytes(server_attested_user_id.0.clone()),
                     op: OpaqueBytes(op.0.clone()),
                 })
             },
         )?)
     }
+}
+
+fn parse_timestamp(buf: &[u8]) -> Result<Timestamp, SegmentCipherError> {
+    TryInto::<[u8; 8]>::try_into(buf)
+        .ok()
+        .and_then(|b| TryInto::<Timestamp>::try_into(u64::from_le_bytes(b)).ok())
+        .ok_or(SegmentCipherError::InvalidTimestamp)
 }
 
 fn to_plaintext<'a>(
@@ -138,11 +146,7 @@ fn to_plaintext<'a>(
         entry.transform(|opaque| {
             let mut slot_cipher = cipher.slot_cipher(prev_chain);
             let timestamp: PlaintextBytes<'_> = slot_cipher.decrypt_slot(&opaque.timestamp);
-            let timestamp: u64 = u64::from_le_bytes(
-                Borrow::<[u8]>::borrow(&timestamp)
-                    .try_into()
-                    .map_err(|_| SegmentCipherError::InvalidTimestamp)?,
-            );
+            let timestamp = parse_timestamp(Borrow::<[u8]>::borrow(&timestamp))?;
             slot_cipher.add_context(opaque.timestamp.borrow());
             let server_attested_user_id = if !opaque.server_attested_user_id.is_empty() {
                 slot_cipher.decrypt_slot(&opaque.server_attested_user_id)
@@ -152,7 +156,7 @@ fn to_plaintext<'a>(
             slot_cipher.add_context(opaque.server_attested_user_id.borrow());
             let op = slot_cipher.decrypt_slot(&opaque.op);
             Ok(OpEntry {
-                timestamp: Timestamp::from_raw(timestamp),
+                timestamp,
                 server_attested_user_id,
                 op,
             })
@@ -164,11 +168,7 @@ fn to_plaintext<'a>(
                  server_attested_user_id,
                  op,
              }| {
-                let timestamp = Timestamp::from_raw(u64::from_le_bytes(
-                    Borrow::<[u8]>::borrow(timestamp)
-                        .try_into()
-                        .map_err(|_| SegmentCipherError::InvalidTimestamp)?,
-                ));
+                let timestamp = parse_timestamp(Borrow::<[u8]>::borrow(timestamp))?;
                 Ok(OpEntry {
                     timestamp,
                     server_attested_user_id: PlaintextBytes(server_attested_user_id.0.clone()),

@@ -3,7 +3,7 @@ use std::borrow::Borrow;
 use crate::{
     bytes::{BytesWrapper, OpaqueBytes, PlaintextBytes, ToStatic},
     codec::{Reader, Writer},
-    hlc::HlcTimestamp,
+    hlc::Timestamp,
     log::{LogDecodeError, LogEncodeError, LogValidationError},
 };
 
@@ -43,15 +43,16 @@ pub trait DecodeTimestamp<'a>: TimestampRepr {
     fn decode(r: &mut Reader<'a>) -> Result<Self, LogDecodeError>;
 }
 
-impl TimestampRepr for HlcTimestamp {
+impl TimestampRepr for Timestamp {
     fn encode(&self, w: &mut Writer) {
-        w.write_le_u64(self.raw());
+        w.write_le_u64(self.into());
     }
 }
 
-impl<'a> DecodeTimestamp<'a> for HlcTimestamp {
+impl<'a> DecodeTimestamp<'a> for Timestamp {
     fn decode(r: &mut Reader<'a>) -> Result<Self, LogDecodeError> {
-        Ok(Self::from_raw(r.read_le_u64()?))
+        let x = r.read_le_u64()?;
+        Self::try_from(x).map_err(|_| LogDecodeError::InvalidTimestamp(x))
     }
 }
 
@@ -68,9 +69,9 @@ impl<'a> DecodeTimestamp<'a> for OpaqueBytes<'a> {
     }
 }
 
-impl<'a> OpEntry<PlaintextBytes<'a>, HlcTimestamp> {
+impl<'a> OpEntry<PlaintextBytes<'a>, Timestamp> {
     pub fn new(
-        timestamp: HlcTimestamp,
+        timestamp: Timestamp,
         server_attested_user_id: PlaintextBytes<'a>,
         op: PlaintextBytes<'a>,
     ) -> Self {
@@ -122,7 +123,7 @@ mod tests {
     use crate::{
         bytes::{BytesWrapper, PlaintextBytes},
         codec::{Reader, Writer},
-        hlc::HlcTimestamp,
+        hlc::Timestamp,
         log::{OpEntry, TimestampRepr},
     };
 
@@ -148,14 +149,14 @@ mod tests {
     }
 
     #[proptest]
-    fn test_roundtrip(op: OpEntry<PlaintextBytes<'static>, HlcTimestamp>) {
+    fn test_roundtrip(op: OpEntry<PlaintextBytes<'static>, Timestamp>) {
         // TODO we only test for opaque and that should be equivalent to plaintext otherwise,
         // but if we wanted we could use a macro to duplicate - the generic lifetimes make it really hard with just generics
         let mut w = Writer::new();
         op.encode(&mut w).unwrap();
         let res = w.finalize();
         let mut r = Reader::new(&res);
-        let decoded = OpEntry::<PlaintextBytes, HlcTimestamp>::decode(&mut r).unwrap();
+        let decoded = OpEntry::<PlaintextBytes, Timestamp>::decode(&mut r).unwrap();
         assert_eq!(op, decoded);
     }
 }

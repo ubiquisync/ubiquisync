@@ -6,7 +6,7 @@ use crate::physical_schema::{DELETED_TS_COL, PhysicalTableSchema, UPSERT_TS_COL}
 use crate::reducer::{ApplyState, Reducer};
 use crate::watch::{ChangeEvent, ColumnValue, UpsertEvent};
 use tokio::sync::OwnedRwLockReadGuard;
-use ubiquisync_core::hlc::HlcTimestamp;
+use ubiquisync_core::hlc::Timestamp;
 use ubiquisync_sql::db::{Db, DbBatch, DbStatementResult, DbValue, StmtId, ValueBinder};
 use ubiquisync_sql::dialect::SqlDialect;
 use ubiquisync_sql::util::quote_ident;
@@ -52,7 +52,7 @@ impl Reducer {
     pub(crate) fn apply_upsert(
         &self,
         batch: &mut dyn DbBatch,
-        timestamp: HlcTimestamp,
+        timestamp: Timestamp,
         upsert: &Upsert,
         table: OwnedRwLockReadGuard<PhysicalTableSchema>,
     ) -> Result<ApplyState, TablesError> {

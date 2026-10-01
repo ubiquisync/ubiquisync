@@ -10,7 +10,7 @@
 
 use std::sync::Mutex;
 
-use super::{Hlc, HlcTimestamp, SkewError, wall_ms};
+use super::{Hlc, SkewError, Timestamp, wall_ms};
 
 /// Durable storage for the clock state: a single packed-`u64` register.
 ///
@@ -103,7 +103,7 @@ impl<S: HlcStorage> HlcService<S> {
     /// Generate a fresh timestamp for a local write and enqueue the new state
     /// into `sink`. Always advances; always writes — the state must reach the
     /// committing batch, or a crash could reissue it.
-    pub fn now(&self, sink: &mut S::Sink) -> Result<HlcTimestamp, S::Error> {
+    pub fn now(&self, sink: &mut S::Sink) -> Result<Timestamp, S::Error> {
         let mut hlc = self.lock();
         let ts = hlc.tick(wall_ms());
         self.storage.save(sink, hlc.state().raw())?;
@@ -126,7 +126,7 @@ impl<S: HlcStorage> HlcService<S> {
     /// would admit) — never unsound, since it can't widen the window.
     pub fn observe(
         &self,
-        received: HlcTimestamp,
+        received: Timestamp,
         local_wall_ms: u64,
         sink: &mut S::Sink,
     ) -> Result<(), HlcError<S::Error>> {
@@ -145,7 +145,7 @@ impl<S: HlcStorage> HlcService<S> {
 
     /// Current clock state without advancing it. Cheap snapshot for callers
     /// that only need to peek (e.g. tests, diagnostics).
-    pub fn state(&self) -> HlcTimestamp {
+    pub fn state(&self) -> Timestamp {
         self.lock().state()
     }
 }
@@ -226,12 +226,12 @@ mod tests {
         let mem = MemStorage::default();
         let svc = HlcService::open(&mem).unwrap();
         let local = wall_ms();
-        let ahead = HlcTimestamp::from_parts(local + MAX_SKEW_MS, 7);
+        let ahead = Timestamp::from_parts(local + MAX_SKEW_MS, 7);
         svc.observe(ahead, local, &mut ()).unwrap();
         let saves_after_advance = mem.saves.load(Ordering::SeqCst);
         assert_eq!(saves_after_advance, 1, "advancing observe persists");
         // When: observing something older. Then: no new save.
-        svc.observe(HlcTimestamp::from_parts(local, 0), local, &mut ())
+        svc.observe(Timestamp::from_parts(local, 0), local, &mut ())
             .unwrap();
         assert_eq!(mem.saves.load(Ordering::SeqCst), saves_after_advance);
         assert_eq!(svc.state(), ahead);
@@ -245,11 +245,11 @@ mod tests {
         let mem = MemStorage::default();
         let svc = HlcService::open(&mem).unwrap();
         let local = wall_ms();
-        let too_far = HlcTimestamp::from_parts(local + MAX_SKEW_MS + 1, 0);
+        let too_far = Timestamp::from_parts(local + MAX_SKEW_MS + 1, 0);
         // When: observing it. Then: HlcError::Skew, state still 0, no save.
         let err = svc.observe(too_far, local, &mut ()).unwrap_err();
         assert!(matches!(err, HlcError::Skew(_)));
-        assert_eq!(svc.state(), HlcTimestamp::from_raw(0));
+        assert_eq!(svc.state(), Timestamp::from_raw(0));
         assert_eq!(mem.saves.load(Ordering::SeqCst), 0);
     }
 
@@ -284,7 +284,7 @@ mod tests {
         // Skew — the timestamp was within the window; only the save failed.
         let svc = HlcService::open(FailingStorage).unwrap();
         let local = wall_ms();
-        let ahead = HlcTimestamp::from_parts(local + MAX_SKEW_MS, 1);
+        let ahead = Timestamp::from_parts(local + MAX_SKEW_MS, 1);
         assert!(matches!(
             svc.observe(ahead, local, &mut ()),
             Err(HlcError::Storage(_))
@@ -316,7 +316,7 @@ mod tests {
         // issued timestamp is unique (hence strictly ordered), none reused.
         let mem = MemStorage::default();
         let svc = HlcService::open(&mem).unwrap();
-        let mut all: Vec<HlcTimestamp> = std::thread::scope(|s| {
+        let mut all: Vec<Timestamp> = std::thread::scope(|s| {
             let handles: Vec<_> = (0..8)
                 .map(|_| {
                     s.spawn(|| {

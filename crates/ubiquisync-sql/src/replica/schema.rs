@@ -2,6 +2,7 @@ use thiserror::Error;
 use ubiquisync_core::{
     codec::{ReadError, Reader, Writer},
     crypto::{CipherInfo, RootKey256Fingerprint, Signature},
+    hlc::Timestamp,
     ids::{ContainerId, PeerId},
     log::ChainHash,
 };
@@ -73,6 +74,9 @@ def_table!(segments as __replica_segments (stream_id: i64, end_size: u64) => { /
     body: Vec<u8>,
     // WITH ROWID!
 });
+
+def_table_with_auto_id!(hlc as __replica_hlc (id) => {timestamp: super::Timestamp});
+try_from_into_col_repr!(Timestamp, i64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]

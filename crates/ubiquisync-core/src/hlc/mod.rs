@@ -1,17 +1,9 @@
 use thiserror::Error;
 
-mod clock;
-mod service;
-mod timestamp;
-
-// pub use clock::{Hlc, MAX_SKEW_MS, SkewError, wall_ms};
-// pub use service::{HlcError, HlcService, HlcStorage};
-// pub use timestamp::Timestamp;
-
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 #[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
-pub struct HlcTimestamp {
-    #[strategy(0..=i64::MAX as u64)]
+pub struct Timestamp {
+    #[cfg_attr(feature = "proptest", strategy(0..=i64::MAX as u64))]
     value: u64,
 }
 
@@ -21,12 +13,12 @@ pub struct HlcTimestampOverflow;
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 #[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
-pub struct Timestamp {
+pub struct WallTime {
     millis: u64,
 }
 
-impl HlcTimestamp {
-    pub fn from_parts(timestamp: &Timestamp, counter: u16) -> Result<Self, HlcTimestampOverflow> {
+impl Timestamp {
+    pub fn from_parts(timestamp: WallTime, counter: u16) -> Result<Self, HlcTimestampOverflow> {
         Self::from_millis_and_counter(timestamp.millis, counter)
     }
 
@@ -39,30 +31,25 @@ impl HlcTimestamp {
         Ok(Self { value })
     }
 
-    pub fn next_local(&self, now: &Timestamp) -> Result<Self, HlcTimestampOverflow> {
+    pub fn next_local(&self, now: WallTime) -> Result<Self, HlcTimestampOverflow> {
         let new = Self::from_parts(now, 0)?;
         if &new > self { Ok(new) } else { self.bump() }
     }
 
-    pub fn next_after(
-        &self,
-        other: &HlcTimestamp,
-        now: &Timestamp,
-    ) -> Result<Self, HlcTimestampOverflow> {
-        let next_local = self.next_local(now)?;
-        if other > &next_local {
+    pub fn next_after(&self, other: &Timestamp) -> Result<Self, HlcTimestampOverflow> {
+        if other >= self {
             other.bump()
         } else {
-            Ok(next_local)
+            Ok(*self)
         }
     }
 
-    pub fn millis(&self) -> u64 {
+    fn millis(&self) -> u64 {
         self.value >> COUNTER_BITS
     }
 
-    pub fn timestamp(&self) -> Timestamp {
-        Timestamp {
+    pub fn wall(&self) -> WallTime {
+        WallTime {
             millis: self.millis(),
         }
     }
@@ -85,20 +72,33 @@ const COUNTER_BITS: u32 = 16;
 const MILLIS_BITS: u32 = 63 - COUNTER_BITS;
 const MILLIS_MAX: u64 = (1 << MILLIS_BITS) - 1;
 
-impl From<HlcTimestamp> for u64 {
-    fn from(value: HlcTimestamp) -> Self {
+impl From<Timestamp> for u64 {
+    fn from(value: Timestamp) -> Self {
         value.value
     }
 }
 
-impl From<HlcTimestamp> for i64 {
-    fn from(value: HlcTimestamp) -> Self {
+impl From<Timestamp> for i64 {
+    fn from(value: Timestamp) -> Self {
         // the constructors for Timestamp ensures it is convertible to i64
         value.value as i64
     }
 }
 
-impl TryFrom<u64> for HlcTimestamp {
+impl From<&Timestamp> for u64 {
+    fn from(value: &Timestamp) -> Self {
+        value.value
+    }
+}
+
+impl From<&Timestamp> for i64 {
+    fn from(value: &Timestamp) -> Self {
+        // the constructors for Timestamp ensures it is convertible to i64
+        value.value as i64
+    }
+}
+
+impl TryFrom<u64> for Timestamp {
     type Error = HlcTimestampOverflow;
 
     fn try_from(value: u64) -> Result<Self, Self::Error> {
@@ -109,7 +109,7 @@ impl TryFrom<u64> for HlcTimestamp {
     }
 }
 
-impl TryFrom<i64> for HlcTimestamp {
+impl TryFrom<i64> for Timestamp {
     type Error = HlcTimestampOverflow;
 
     fn try_from(value: i64) -> Result<Self, Self::Error> {
@@ -123,10 +123,10 @@ impl TryFrom<i64> for HlcTimestamp {
     }
 }
 
-impl Timestamp {
+impl WallTime {
     pub fn now() -> Self {
         use std::time::{SystemTime, UNIX_EPOCH};
-        Timestamp {
+        WallTime {
             millis: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()

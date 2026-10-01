@@ -5,7 +5,7 @@ use crate::reducer::upsert::{bind_pkey, lww_winner_sql, set_lww_sql};
 use crate::reducer::{ApplyState, Reducer};
 use crate::watch::{ChangeEvent, DeleteEvent};
 use tokio::sync::OwnedRwLockReadGuard;
-use ubiquisync_core::hlc::HlcTimestamp;
+use ubiquisync_core::hlc::Timestamp;
 use ubiquisync_sql::db::{Db, DbBatch, DbStatementResult, DbValue, StmtId, ValueBinder};
 
 impl Reducer {
@@ -21,7 +21,7 @@ impl Reducer {
     pub(crate) fn apply_delete(
         &self,
         batch: &mut dyn DbBatch,
-        timestamp: HlcTimestamp,
+        timestamp: Timestamp,
         delete: &Delete,
         table: OwnedRwLockReadGuard<PhysicalTableSchema>,
     ) -> Result<ApplyState, TablesError> {

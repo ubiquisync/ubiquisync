@@ -1,10 +1,12 @@
 mod exec;
 mod fs_sync_schema;
+mod hlc;
 mod init;
 mod query;
 mod schema;
 mod stream_lock;
-// mod segments;
+
+use std::sync::atomic::AtomicU64;
 
 pub use init::InitError;
 
@@ -23,6 +25,6 @@ pub struct Replica<R> {
     pub(crate) credentials: Box<dyn Credentials>,
     pub(crate) db: Box<dyn Db>,
     pub(crate) reducer: R,
-    pub(crate) hlc: HlcService<SqlHlcStorage>,
+    pub(crate) hlc: AtomicU64,
     pub(crate) stream_locks: KeyedLock<LogId>,
 }
