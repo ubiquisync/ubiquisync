@@ -11,18 +11,20 @@ mod schema;
 mod upsert;
 mod validate;
 
+use crate::codec::Codec;
+use crate::error::{InitError, InvalidSchemaError};
 use crate::id::TableId;
 use crate::op::Op;
 use crate::physical_schema::PhysicalTableSchema;
 use crate::schema::TableSchema;
 use crate::watch::ChangeEvent;
-use crate::{codec::Codec, error::TablesError};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{OwnedRwLockReadGuard, RwLock};
 use ubiquisync_core::event::{EventBusPublisher, Publisher};
 use ubiquisync_core::ids::ContainerId;
-use ubiquisync_sql::reducer::PrepareError;
+use ubiquisync_sql::db::DbError;
+use ubiquisync_sql::reducer::{ApplyError, PrepareError};
 use ubiquisync_sql::{
     db::{Db, DbBatch, DbStatementResult, StmtId},
     op::OpCodec,
@@ -53,21 +55,19 @@ impl Reducer {
         tables: &[TableSchema],
         db: &dyn Db,
         event_handler: EventBusPublisher<ChangeEvent>,
-    ) -> Result<Self, TablesError> {
+    ) -> Result<Self, InitError> {
         let mut seen_ids = HashSet::new();
         let mut seen_names = HashSet::new();
         for table in tables {
             if !seen_ids.insert(table.id) {
-                return Err(TablesError::InvalidSchema(format!(
-                    "duplicate table id {:?}",
-                    table.id
-                )));
+                return Err(
+                    InvalidSchemaError(format!("duplicate table id {:?}", table.id)).into(),
+                );
             }
             if !seen_names.insert(table.name.as_str()) {
-                return Err(TablesError::InvalidSchema(format!(
-                    "duplicate table name {:?}",
-                    table.name
-                )));
+                return Err(
+                    InvalidSchemaError(format!("duplicate table name {:?}", table.name)).into(),
+                );
             }
         }
 
@@ -104,11 +104,15 @@ impl ubiquisync_sql::reducer::Reducer for Reducer {
         let table_rguard = match op {
             Op::Upsert(upsert) => {
                 validate::validate_upsert(upsert)?;
-                self.sync_upsert_schema(db, upsert).await?
+                self.sync_upsert_schema(db, upsert)
+                    .await
+                    .map_err(|e| e.to_prepare())?
             }
             Op::Delete(delete) => {
                 validate::validate_delete(delete)?;
-                self.sync_delete_schema(db, delete).await?
+                self.sync_delete_schema(db, delete)
+                    .await
+                    .map_err(|e| e.to_prepare())?
             }
         };
         Ok(ReadState { table_rguard })
@@ -121,25 +125,22 @@ impl ubiquisync_sql::reducer::Reducer for Reducer {
         op: &Op,
         read_state: Self::ReadState,
     ) -> Result<ApplyState, ApplyError> {
-        match op {
+        Ok(match op {
             Op::Upsert(upsert) => {
                 self.apply_upsert(batch, timestamp, upsert, read_state.table_rguard)
             }
             Op::Delete(delete) => {
                 self.apply_delete(batch, timestamp, delete, read_state.table_rguard)
             }
-        }
+        })
     }
 
-    fn post_apply(
-        &self,
-        apply_state: Self::ApplyState,
-        batch_result: &[DbStatementResult],
-    ) -> Result<(), Self::Error> {
-        if let Some(event) = self.do_post_apply(apply_state, batch_result)? {
-            self.event_handler.publish(event);
+    fn post_apply(&self, apply_state: Self::ApplyState, batch_result: &[DbStatementResult]) {
+        match self.do_post_apply(apply_state, batch_result) {
+            Ok(Some(event)) => self.event_handler.publish(event),
+            Ok(_) => {}
+            Err(e) => tracing::warn!(error = e.to_string(), "post apply error"),
         }
-        Ok(())
     }
 }
 
@@ -149,7 +150,7 @@ impl Reducer {
         &self,
         apply_state: ApplyState,
         batch_result: &[DbStatementResult],
-    ) -> Result<Option<ChangeEvent>, TablesError> {
+    ) -> Result<Option<ChangeEvent>, DbError> {
         let ApplyState {
             staged_event,
             table_rguard,
@@ -161,7 +162,7 @@ impl Reducer {
                 self.post_upsert(apply_state.stmt_id, event, batch_result)?
             }
             Some(ChangeEvent::Delete(event)) => {
-                self.post_delete(apply_state.stmt_id, event, batch_result)?
+                self.post_delete(apply_state.stmt_id, event, batch_result)
             }
             None => None,
         })

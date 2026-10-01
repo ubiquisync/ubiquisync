@@ -1,5 +1,5 @@
 use crate::col_type::ColType;
-use crate::error::TablesError;
+use crate::error::PrepareTablesError;
 use crate::id::{ColumnId, TableId};
 use crate::op::{Upsert, Value};
 use crate::physical_schema::{DELETED_TS_COL, PhysicalTableSchema, UPSERT_TS_COL};
@@ -7,7 +7,7 @@ use crate::reducer::{ApplyState, Reducer};
 use crate::watch::{ChangeEvent, ColumnValue, UpsertEvent};
 use tokio::sync::OwnedRwLockReadGuard;
 use ubiquisync_core::hlc::Timestamp;
-use ubiquisync_sql::db::{Db, DbBatch, DbStatementResult, DbValue, StmtId, ValueBinder};
+use ubiquisync_sql::db::{Db, DbBatch, DbError, DbStatementResult, DbValue, StmtId, ValueBinder};
 use ubiquisync_sql::dialect::SqlDialect;
 use ubiquisync_sql::util::quote_ident;
 
@@ -16,7 +16,7 @@ impl Reducer {
         &self,
         db: &dyn Db,
         upsert: &Upsert,
-    ) -> Result<OwnedRwLockReadGuard<PhysicalTableSchema>, TablesError> {
+    ) -> Result<OwnedRwLockReadGuard<PhysicalTableSchema>, PrepareTablesError> {
         let table = self.ensure_table(db, upsert.table_id).await?;
         // collect columns to add (if any) with a single read lock
         let mut to_add = vec![];
@@ -55,7 +55,7 @@ impl Reducer {
         timestamp: Timestamp,
         upsert: &Upsert,
         table: OwnedRwLockReadGuard<PhysicalTableSchema>,
-    ) -> Result<ApplyState, TablesError> {
+    ) -> ApplyState {
         let dialect = batch.dialect();
 
         let table_id = upsert.table_id;
@@ -188,11 +188,11 @@ impl Reducer {
                 changed_columns: changed_col_events,
             })
         });
-        Ok(ApplyState {
+        ApplyState {
             stmt_id,
             staged_event,
             table_rguard: table,
-        })
+        }
     }
 
     pub(crate) fn post_upsert(
@@ -200,7 +200,7 @@ impl Reducer {
         stmt_id: StmtId,
         mut upsert_event: UpsertEvent,
         batch_result: &[DbStatementResult],
-    ) -> Result<Option<ChangeEvent>, TablesError> {
+    ) -> Result<Option<ChangeEvent>, DbError> {
         let res = &batch_result[stmt_id.0];
         if res.rows_affected == 0 {
             return Ok(None);

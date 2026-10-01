@@ -1788,6 +1788,7 @@ dependencies = [
  "test-strategy",
  "thiserror",
  "tokio",
+ "tracing",
  "ubiquisync-core",
  "ubiquisync-sql",
  "uuid",

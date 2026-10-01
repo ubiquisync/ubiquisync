@@ -6,7 +6,7 @@ use ubiquisync_sql::{
 };
 
 use crate::{
-    error::TablesError,
+    error::PrepareTablesError,
     id::{ColumnId, TableId},
     schema::TableSchema,
 };
@@ -40,7 +40,7 @@ impl PhysicalTableSchema {
         prefix: &str,
         id: TableId,
         db: &dyn Db,
-    ) -> Result<Self, TablesError> {
+    ) -> Result<Self, PrepareTablesError> {
         let name = id.table_name(prefix);
         if let Some(descriptor) = db.describe_table(&name).await? {
             Ok(Self::new_from_db_descriptor(prefix, descriptor)?)
@@ -59,7 +59,7 @@ impl PhysicalTableSchema {
         prefix: &str,
         schema: &TableSchema,
         db: &dyn Db,
-    ) -> Result<Self, TablesError> {
+    ) -> Result<Self, PrepareTablesError> {
         let name = schema.id.table_name(prefix);
         if let Some(descriptor) = db.describe_table(&name).await? {
             let mut res = Self::new_from_db_descriptor(prefix, descriptor)?;
@@ -110,12 +110,12 @@ impl PhysicalTableSchema {
     pub(crate) fn new_from_db_descriptor(
         prefix: &str,
         db_table: DbTableDescriptor,
-    ) -> Result<Self, TablesError> {
+    ) -> Result<Self, PrepareTablesError> {
         let name = &db_table.name;
         let id = if let Some(id) = TableId::parse_table_name(prefix, name) {
             id
         } else {
-            return Err(TablesError::SchemaError(format!(
+            return Err(PrepareTablesError::SchemaSync(format!(
                 "can't parse table {name}"
             )));
         };
@@ -226,7 +226,7 @@ impl PhysicalTableSchema {
         })
     }
 
-    async fn create_table(&self, db: &dyn Db) -> Result<(), TablesError> {
+    async fn create_table(&self, db: &dyn Db) -> Result<(), PrepareTablesError> {
         let mut col_defs = vec![];
 
         let pk_count = self.id.pk_count();
@@ -279,7 +279,7 @@ impl PhysicalTableSchema {
         &mut self,
         db: &dyn Db,
         col_id: ColumnId,
-    ) -> Result<(), TablesError> {
+    ) -> Result<(), PrepareTablesError> {
         if self.cols.contains(&col_id) {
             return Ok(());
         }
@@ -317,19 +317,21 @@ impl PhysicalTableSchema {
     }
 }
 
-fn schema_mismatch<T>(id: TableId, detail: String) -> Result<T, TablesError> {
-    Err(TablesError::SchemaError(format!("table {id:?}: {detail}")))
+fn schema_mismatch<T>(id: TableId, detail: String) -> Result<T, PrepareTablesError> {
+    Err(PrepareTablesError::SchemaSync(format!(
+        "table {id:?}: {detail}"
+    )))
 }
 
 fn validate_upsert_delete_ts_cols(
     col_name: &str,
     col_map: &mut BTreeMap<String, DbColumnDescription>,
-) -> Result<(), TablesError> {
+) -> Result<(), PrepareTablesError> {
     // Remove the col from the column map so it doesn't get picked up as a regular column.
     if let Some(col) = col_map.remove(col_name) {
         let db_type = col.db_type;
         if db_type != DbType::Integer {
-            return Err(TablesError::SchemaError(format!(
+            return Err(PrepareTablesError::SchemaSync(format!(
                 "invalid {col_name} type {db_type:?}"
             )));
         }
@@ -344,12 +346,14 @@ fn validate_upsert_delete_ts_cols(
         // loudly with a NOT NULL constraint error on its first insert, not
         // silently corrupt data.
         if col.nullable {
-            return Err(TablesError::SchemaError(format!(
+            return Err(PrepareTablesError::SchemaSync(format!(
                 "{col_name} must be NOT NULL"
             )));
         }
     } else {
-        return Err(TablesError::SchemaError(format!("missing {col_name}")));
+        return Err(PrepareTablesError::SchemaSync(format!(
+            "missing {col_name}"
+        )));
     }
     Ok(())
 }

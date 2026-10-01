@@ -101,7 +101,7 @@ pub enum ApplyError {
 
 #[derive(Debug)]
 pub enum RebuildScope {
-    Container(ContainerId),
+    Container,
     Workspace,
 }
 
