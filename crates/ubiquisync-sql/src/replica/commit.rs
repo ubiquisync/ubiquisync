@@ -68,8 +68,12 @@ impl<R: Reducer> ReplicaInner<R> {
             return Ok(());
         }
 
-        let log_id = segment.chain_seed.log_id().clone();
-        for res in segment.to_plaintext(self.key_resolver.as_ref()).await {
+        let log_id = *segment.chain_seed.log_id();
+        for res in segment
+            .to_plaintext(self.key_resolver.as_ref())
+            .await
+            .entries
+        {
             let (entry, hash) = match res {
                 Ok((entry, hash)) => (entry, hash),
                 Err(e) => match e {

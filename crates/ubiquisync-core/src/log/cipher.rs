@@ -150,13 +150,7 @@ fn to_opaque<'a>(
     }
 }
 
-fn parse_timestamp(buf: &[u8]) -> Result<Timestamp, SegmentCipherError> {
-    TryInto::<[u8; 8]>::try_into(buf)
-        .ok()
-        .and_then(|b| TryInto::<Timestamp>::try_into(u64::from_le_bytes(b)).ok())
-        .ok_or(SegmentCipherError::InvalidTimestamp)
-}
-fn to_plaintext<'a>(
+pub(crate) fn to_plaintext<'a>(
     entry: &OpaqueLogEntry<'a>,
     cipher: &Option<EntryCipher>,
     prev_chain: &ChainHash,
@@ -201,7 +195,14 @@ fn to_plaintext<'a>(
     Ok(e)
 }
 
-async fn check_cipher_change(
+fn parse_timestamp(buf: &[u8]) -> Result<Timestamp, SegmentCipherError> {
+    TryInto::<[u8; 8]>::try_into(buf)
+        .ok()
+        .and_then(|b| TryInto::<Timestamp>::try_into(u64::from_le_bytes(b)).ok())
+        .ok_or(SegmentCipherError::InvalidTimestamp)
+}
+
+pub(crate) async fn check_cipher_change(
     head_ci: &Option<CipherInfo>,
     cipher: &mut Option<EntryCipher>,
     seed: &LogHashContext,

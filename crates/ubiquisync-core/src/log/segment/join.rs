@@ -55,11 +55,10 @@ pub async fn join_segments<'a, B: AsRef<[u8]> + 'a>(
             // start_cipher validity at ommission time and thus this is really a decode-time optimization
         };
         let decoded = reader.read(key_resolver, hash_ctx).await?;
+        chain_hash = Some(decoded.head_chain);
         let mut entries = vec![];
-        for res in decoded.to_plaintext(key_resolver).await {
-            let (e, h) = res?;
+        for e in decoded.to_plaintext(key_resolver).await.collect_all()? {
             entries.push(e);
-            chain_hash = Some(h);
         }
         sig = Some(segment_header.signature);
 
@@ -113,7 +112,7 @@ mod tests {
     use crate::log::LogEntry;
     use crate::log::segment::join::join_segments;
     use crate::log::segment::tests::TestKeyResolver;
-    use crate::log::segment::{DecodedEntries, SegmentReader, encode_segment_plaintext};
+    use crate::log::segment::{SegmentReader, encode_segment_plaintext};
     use crate::log::segment::{encode_segment_opaque, tests::TestCaseData};
     use crate::log::{entries_to_opaque, segment::tests::TestCase};
 
@@ -205,17 +204,16 @@ mod tests {
 
         let reader = SegmentReader::start(&body).unwrap();
         let decoded = reader.read(&key_resolver, &last_data.seed).await.unwrap();
-        let verified = decoded
-            .verify(&last_data.verifying_key, &key_resolver)
+        decoded.verify(&last_data.verifying_key).unwrap();
+
+        assert_eq!(decoded.head_chain, last_data.head_chain);
+        assert_eq!(decoded.head_cipher, last_data.end_cipher);
+
+        let decoded_plaintext = decoded
+            .to_plaintext(&key_resolver)
             .await
+            .collect_all()
             .unwrap();
-        match verified.decoded.entries {
-            DecodedEntries::Opaque(_) => unreachable!(),
-            DecodedEntries::Plaintext(items) => {
-                assert_eq!(items, all_entries);
-            }
-        }
-        assert_eq!(verified.head_chain, last_data.head_chain);
-        assert_eq!(verified.head_cipher, last_data.end_cipher);
+        assert_eq!(decoded_plaintext, all_entries);
     }
 }
