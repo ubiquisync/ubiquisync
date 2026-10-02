@@ -12,7 +12,7 @@ use ubiquisync_sql::{
 };
 
 use crate::{
-    error::{InitError, PrepareTablesError},
+    error::{SchemaSyncError, TablesInitError},
     op::Op,
     reducer::Reducer,
     schema::TableSchema,
@@ -27,7 +27,7 @@ pub struct StoreImpl {
 #[derive(Debug, thiserror::Error)]
 pub enum StoreInitError {
     #[error("tables init error: {0}")]
-    TablesInit(#[from] InitError),
+    TablesInit(#[from] TablesInitError),
     #[error("replica init error: {0}")]
     ReplicaInit(#[from] ReplicaInitError),
 }

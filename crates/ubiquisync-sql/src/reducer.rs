@@ -78,8 +78,8 @@ pub enum PrepareError {
     NeedsDeps(Vec<PeerDependency>),
     /// Indicates that the reducer state needs to be rebuilt.
     /// The replica should drop all reducer state and re-apply all operations.
-    #[error("needs rebuild: {0:?}")]
-    NeedsRebuild(RebuildScope),
+    #[error("needs rebuild, reason: {reason}, scope: {scope:?}")]
+    NeedsRebuild { scope: RebuildScope, reason: String },
     /// Indicates that the operation should be skipped because it is invalid.
     /// This return code will cause the replica to skip calling `apply` but still
     /// mark the op as committed.

@@ -12,7 +12,7 @@ mod upsert;
 mod validate;
 
 use crate::codec::Codec;
-use crate::error::{InitError, InvalidSchemaError};
+use crate::error::{InvalidSchemaError, TablesInitError};
 use crate::id::TableId;
 use crate::op::Op;
 use crate::physical_schema::PhysicalTableSchema;
@@ -55,7 +55,7 @@ impl Reducer {
         tables: &[TableSchema],
         db: &dyn Db,
         event_handler: EventBusPublisher<ChangeEvent>,
-    ) -> Result<Self, InitError> {
+    ) -> Result<Self, TablesInitError> {
         let mut seen_ids = HashSet::new();
         let mut seen_names = HashSet::new();
         for table in tables {
@@ -106,13 +106,13 @@ impl ubiquisync_sql::reducer::Reducer for Reducer {
                 validate::validate_upsert(upsert)?;
                 self.sync_upsert_schema(db, upsert)
                     .await
-                    .map_err(|e| e.to_prepare())?
+                    .map_err(|e| e.into_prepare())?
             }
             Op::Delete(delete) => {
                 validate::validate_delete(delete)?;
                 self.sync_delete_schema(db, delete)
                     .await
-                    .map_err(|e| e.to_prepare())?
+                    .map_err(|e| e.into_prepare())?
             }
         };
         Ok(ReadState { table_rguard })
@@ -139,7 +139,7 @@ impl ubiquisync_sql::reducer::Reducer for Reducer {
         match self.do_post_apply(apply_state, batch_result) {
             Ok(Some(event)) => self.event_handler.publish(event),
             Ok(_) => {}
-            Err(e) => tracing::warn!(error = e.to_string(), "post apply error"),
+            Err(e) => tracing::warn!(error = %e, "post apply error"),
         }
     }
 }

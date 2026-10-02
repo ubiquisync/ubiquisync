@@ -1,5 +1,5 @@
 use crate::col_type::ColType;
-use crate::error::PrepareTablesError;
+use crate::error::SchemaSyncError;
 use crate::id::{ColumnId, TableId};
 use crate::op::{Upsert, Value};
 use crate::physical_schema::{DELETED_TS_COL, PhysicalTableSchema, UPSERT_TS_COL};
@@ -16,7 +16,7 @@ impl Reducer {
         &self,
         db: &dyn Db,
         upsert: &Upsert,
-    ) -> Result<OwnedRwLockReadGuard<PhysicalTableSchema>, PrepareTablesError> {
+    ) -> Result<OwnedRwLockReadGuard<PhysicalTableSchema>, SchemaSyncError> {
         let table = self.ensure_table(db, upsert.table_id).await?;
         // collect columns to add (if any) with a single read lock
         let mut to_add = vec![];

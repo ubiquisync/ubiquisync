@@ -1,4 +1,4 @@
-use crate::error::PrepareTablesError;
+use crate::error::SchemaSyncError;
 use crate::op::Delete;
 use crate::physical_schema::{DELETED_TS_COL, PhysicalTableSchema};
 use crate::reducer::upsert::{bind_pkey, lww_winner_sql, set_lww_sql};
@@ -13,7 +13,7 @@ impl Reducer {
         &self,
         db: &dyn Db,
         delete: &Delete,
-    ) -> Result<OwnedRwLockReadGuard<PhysicalTableSchema>, PrepareTablesError> {
+    ) -> Result<OwnedRwLockReadGuard<PhysicalTableSchema>, SchemaSyncError> {
         let table = self.ensure_table(db, delete.table_id).await?;
         Ok(table.read_owned().await)
     }

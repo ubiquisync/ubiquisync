@@ -35,8 +35,8 @@ pub enum CommitError {
 enum TryCommitError {
     #[error("db error: {0}")]
     Db(#[from] DbError),
-    #[error("needs rebuild: {0:?}")]
-    NeedsRebuild(RebuildScope),
+    #[error("needs rebuild, reason: {reason}, scope: {scope:?}")]
+    NeedsRebuild { scope: RebuildScope, reason: String },
     #[error("internal error: {0}")]
     Internal(String),
     #[error("commit stall: {0:?}")]
@@ -52,7 +52,7 @@ impl<R: Reducer> ReplicaInner<R> {
         match self.do_try_commit(stream, segment).await {
             Ok(_) => Ok(()),
             Err(TryCommitError::Stall(e)) => Ok(self.set_commit_err(stream, e).await?),
-            Err(TryCommitError::NeedsRebuild(_)) => todo!("rebuild state"),
+            Err(TryCommitError::NeedsRebuild { .. }) => todo!("rebuild state"),
             Err(TryCommitError::Db(e)) => Err(CommitError::Db(e)),
             Err(TryCommitError::Internal(e)) => Err(CommitError::Internal(e)),
         }
@@ -175,8 +175,8 @@ impl<R: Reducer> ReplicaInner<R> {
                                 Err(PrepareError::Db(_)) | Err(PrepareError::Internal(_)) => {
                                     return Ok(self.set_internal_commit_err(stream).await?);
                                 }
-                                Err(PrepareError::NeedsRebuild(e)) => {
-                                    return Err(TryCommitError::NeedsRebuild(e));
+                                Err(PrepareError::NeedsRebuild { scope, reason }) => {
+                                    return Err(TryCommitError::NeedsRebuild { scope, reason });
                                 }
                                 Err(PrepareError::NeedsDeps(_)) => {
                                     todo!("insert dep rows")

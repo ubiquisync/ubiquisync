@@ -8,7 +8,7 @@ use ubiquisync_sql::{
 /// An error from the tables layer: either a backend failure or a schema that
 /// doesn't match what the table/column IDs require.
 #[derive(Debug, thiserror::Error)]
-pub enum PrepareTablesError {
+pub enum SchemaSyncError {
     /// A SQL backend error propagated from the [`Db`](ubiquisync_sql::db::Db).
     #[error("db error: {0}")]
     Db(#[from] DbError),
@@ -18,23 +18,25 @@ pub enum PrepareTablesError {
     SchemaSync(String),
 }
 
-impl PrepareTablesError {
-    pub(crate) fn to_prepare(self) -> PrepareError {
+impl SchemaSyncError {
+    pub(crate) fn into_prepare(self) -> PrepareError {
         match self {
-            PrepareTablesError::Db(e) => PrepareError::Db(e),
-            PrepareTablesError::SchemaSync(_) => {
-                PrepareError::NeedsRebuild(RebuildScope::Container)
-            }
+            SchemaSyncError::Db(e) => PrepareError::Db(e),
+            SchemaSyncError::SchemaSync(e) => PrepareError::NeedsRebuild {
+                scope: RebuildScope::Container,
+                reason: e.to_string(),
+            },
         }
     }
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum InitError {
+pub enum TablesInitError {
     #[error("db error: {0}")]
     Db(#[from] DbError),
+    // TODO when we have a schema schema error in init do we also want to trigger a rebuild?
     #[error("tables error: {0}")]
-    Tables(#[from] PrepareTablesError),
+    SchemaSync(#[from] SchemaSyncError),
     #[error("{0}")]
     InvalidSchema(#[from] InvalidSchemaError),
 }
