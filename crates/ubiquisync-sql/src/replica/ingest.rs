@@ -330,20 +330,16 @@ where {
 
         // first we're going to check and see if this segment extends
         // any existing head
-        let mut extends = all_streams
-            .iter()
-            .filter(|s| {
-                new_segment
-                    .decoded
-                    .entries
-                    .iter()
-                    .any(|e| e.chain_hash == s.head_chain)
-            })
-            .collect::<Vec<_>>();
-        extends.sort_by_key(|s| s.head_chain.size);
-        if let Some(extends) = extends.last() {
-            // TODO check first if there are any forks from this point, because there's a rare chance
-            // that some fork stream contains a later entry in the segment
+        if let Some(extends) = all_streams.iter().find(|s| {
+            new_segment
+                .decoded
+                .entries
+                .iter()
+                .any(|e| e.chain_hash == s.head_chain)
+        }) {
+            // TODO: now we know that this segment extends this stream at some, it just has an overlapping prefix
+            // note that we don't need to worry about forks here because a fork cannot happen at the head of any stream
+            todo!()
         }
         // let mut suffix = new_segment
         //     .decoded

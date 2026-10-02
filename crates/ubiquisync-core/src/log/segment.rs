@@ -632,6 +632,46 @@ impl<'a> DecodedSegment<'a> {
         }
         DecodedPlaintextEntries { entries }
     }
+
+    pub fn chain_meta_iter(&self, start_size: u64) -> impl Iterator<Item = ChainMeta> {
+        // TODO we could make this more efficient by binary searching for the starting element
+        let mut chain_hash = Some(self.header.prev_chain);
+        let mut cipher_info = self.header.start_cipher;
+        let mut it = self.entries.iter();
+        std::iter::from_fn(move || {
+            let cur = chain_hash.map(|chain_hash| ChainMeta {
+                chain_hash,
+                cipher_info,
+            });
+            loop {
+                if let Some(next) = it.next() {
+                    match next.body {
+                        DecodedEntryBody::Opaque(LogEntry::IndexedEntry(EntryBody::UseKey(ci))) => {
+                            cipher_info = Some(ci)
+                        }
+                        DecodedEntryBody::Plaintext(LogEntry::IndexedEntry(EntryBody::UseKey(
+                            ci,
+                        ))) => cipher_info = Some(ci),
+                        _ => {}
+                    }
+                    if Some(next.chain_hash) == chain_hash {
+                        continue;
+                    }
+                    chain_hash = Some(next.chain_hash);
+                    return cur;
+                } else {
+                    chain_hash = None;
+                    return cur;
+                }
+            }
+        })
+        .skip_while(move |h| h.chain_hash.size < start_size)
+    }
+}
+
+pub struct ChainMeta {
+    pub chain_hash: ChainHash,
+    pub cipher_info: Option<CipherInfo>,
 }
 
 impl<'a> ToStatic for DecodedSegment<'a> {

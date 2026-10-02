@@ -40,6 +40,8 @@ pub(crate) struct StreamInfo {
     pub head_err: Option<HeadErr>,
     pub commit_size: u64,
     pub commit_err: Option<CommitErr>,
+    pub parent_id: Option<i64>,
+    pub fork_size: Option<u64>,
 }
 
 impl<R> ReplicaInner<R> {
@@ -56,6 +58,8 @@ impl<R> ReplicaInner<R> {
             streams::HeadErr,
             streams::CommitSize,
             streams::CommitErr,
+            streams::ParentId,
+            streams::ForkSize,
         )>(
             self.db.as_ref(),
             Query::select()
@@ -68,7 +72,17 @@ impl<R> ReplicaInner<R> {
         .await?;
         let mut res = vec![];
         for r in rows.iter() {
-            let (id, head_size, head_hash, head_cipher, head_err, commit_size, commit_err) = r?;
+            let (
+                id,
+                head_size,
+                head_hash,
+                head_cipher,
+                head_err,
+                commit_size,
+                commit_err,
+                parent_id,
+                fork_size,
+            ) = r?;
             let info = StreamInfo {
                 id,
                 head_chain: ChainHash {
@@ -79,6 +93,8 @@ impl<R> ReplicaInner<R> {
                 head_err,
                 commit_size,
                 commit_err,
+                parent_id,
+                fork_size,
             };
             res.push(info);
         }
@@ -120,6 +136,8 @@ impl<R> ReplicaInner<R> {
             head_err: None,
             commit_size: 0,
             commit_err: None,
+            fork_size: None,
+            parent_id: None,
         })
     }
 }

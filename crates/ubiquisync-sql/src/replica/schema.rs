@@ -38,8 +38,7 @@ def_table_with_auto_id!(streams as __replica_streams (id) => {
    commit_size: u64, // TODO default 0
    commit_err: Option<super::CommitErr>,
    parent_id: Option<i64>, // TODO ref streams
-   fork_idx: Option<u64>,
-   fork_hash: Option<[u8;32]>,
+   fork_size: Option<u64>,
    // TODO CHECK(commit_size <= head_size)
 });
 

@@ -24,7 +24,7 @@ tracing = { workspace = true }
 num_enum = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
-anyhow = "1"  # TODO: remove this before merging!! just for prototyping
+async-recursion = { workspace = true }
 
 [dev-dependencies]
 ubiquisync-core = { workspace = true, features = ["proptest"] }
