@@ -17,7 +17,8 @@ use crate::{
     replica::{
         HlcError, ReplicaInner,
         schema::{CommitErr, streams},
-        streams::StreamInfo,
+        stream_lock::KeyedLockGuard,
+        streams::{StreamInfo, StreamLog},
     },
 };
 
@@ -46,10 +47,11 @@ enum TryCommitError {
 impl<R: Reducer> ReplicaInner<R> {
     async fn try_commit(
         &self,
+        guard: &KeyedLockGuard<StreamLog>,
         stream: &mut StreamInfo,
         segment: DecodedSegment<'_>,
     ) -> Result<(), CommitError> {
-        match self.do_try_commit(stream, segment).await {
+        match self.do_try_commit(guard, stream, segment).await {
             Ok(_) => Ok(()),
             Err(TryCommitError::Stall(e)) => Ok(self.set_commit_err(stream, e).await?),
             Err(TryCommitError::NeedsRebuild { .. }) => todo!("rebuild state"),
@@ -60,6 +62,7 @@ impl<R: Reducer> ReplicaInner<R> {
 
     async fn do_try_commit(
         &self,
+        _guard: &KeyedLockGuard<StreamLog>,
         stream: &mut StreamInfo,
         segment: DecodedSegment<'_>,
     ) -> Result<(), TryCommitError> {
@@ -260,6 +263,7 @@ impl<R: Reducer> ReplicaInner<R> {
     }
 
     pub(crate) async fn retry_commit(&self) {
+        // TODO setup tokio task interval loop
         // TODO
         // 1. select any streams where commit_size < head_size AND commit_error == NULL
         // 2. select any streams where commit_error is HLC and clock has advanced

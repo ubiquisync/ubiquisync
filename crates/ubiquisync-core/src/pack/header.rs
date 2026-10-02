@@ -4,6 +4,7 @@ use thiserror::Error;
 
 use crate::crypto::{SignatureVerifyError, SigningError};
 use crate::hlc::WallTime;
+use crate::log::ChainHash;
 use crate::pack::PackFileId;
 use crate::{
     codec::{ReadError, Reader, WriteError, Writer},
@@ -64,8 +65,8 @@ pub struct PeerData {
 pub struct SegmentDescriptor {
     pub container_id: ContainerId,
     pub idx_range: Range<u64>,
-    pub prev_chain: Hash256,
-    pub end_chain: Hash256,
+    pub prev_chain_hash: Hash256,
+    pub end_chain_hash: Hash256,
     pub body_loc: Range<usize>,
 }
 
@@ -230,8 +231,8 @@ impl SegmentDescriptor {
     pub fn encode(&self, w: &mut Writer) -> Result<(), WriteError> {
         w.write_array(&self.container_id.0);
         w.write_range(&self.idx_range)?;
-        w.write_array(&self.prev_chain);
-        w.write_array(&self.end_chain);
+        w.write_array(&self.prev_chain_hash);
+        w.write_array(&self.end_chain_hash);
         w.write_usize_range(&self.body_loc)?;
         Ok(())
     }
@@ -244,11 +245,25 @@ impl SegmentDescriptor {
         let body_loc = r.read_usize_range()?;
         Ok(Self {
             container_id,
-            prev_chain,
-            end_chain,
+            prev_chain_hash: prev_chain,
+            end_chain_hash: end_chain,
             idx_range,
             body_loc,
         })
+    }
+
+    pub fn prev_chain(&self) -> ChainHash {
+        ChainHash {
+            hash: self.prev_chain_hash,
+            size: self.idx_range.start,
+        }
+    }
+
+    pub fn end_chain(&self) -> ChainHash {
+        ChainHash {
+            hash: self.end_chain_hash,
+            size: self.idx_range.end,
+        }
     }
 }
 

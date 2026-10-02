@@ -6,11 +6,12 @@ mod fork;
 mod fs_sync_schema;
 // mod fs_write;
 mod hlc;
-// mod ingest;
+mod ingest;
 mod init;
 mod peers;
 mod query;
 mod schema;
+mod segment;
 mod stream_lock;
 mod streams;
 

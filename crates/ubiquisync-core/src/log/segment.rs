@@ -582,9 +582,7 @@ impl<'a> DecodedSegment<'a> {
         )?;
         Ok(())
     }
-}
 
-impl<'a> DecodedSegment<'a> {
     pub async fn to_plaintext(
         self,
         key_resolver: &dyn CipherKeyResolver,
@@ -633,6 +631,42 @@ impl<'a> DecodedSegment<'a> {
             }
         }
         DecodedPlaintextEntries { entries }
+    }
+}
+
+impl<'a> ToStatic for DecodedSegment<'a> {
+    type Static = DecodedSegment<'static>;
+
+    fn to_static(self) -> Self::Static {
+        Self::Static {
+            header: self.header,
+            chain_seed: self.chain_seed,
+            entries: self.entries.into_iter().map(|e| e.to_static()).collect(),
+            head_chain: self.head_chain,
+            head_cipher: self.head_cipher,
+        }
+    }
+}
+
+impl<'a> ToStatic for DecodedEntry<'a> {
+    type Static = DecodedEntry<'static>;
+
+    fn to_static(self) -> Self::Static {
+        Self::Static {
+            chain_hash: self.chain_hash,
+            body: self.body.to_static(),
+        }
+    }
+}
+
+impl<'a> ToStatic for DecodedEntryBody<'a> {
+    type Static = DecodedEntryBody<'static>;
+
+    fn to_static(self) -> Self::Static {
+        match self {
+            DecodedEntryBody::Opaque(e) => DecodedEntryBody::Opaque(e.to_static()),
+            DecodedEntryBody::Plaintext(e) => DecodedEntryBody::Plaintext(e.to_static()),
+        }
     }
 }
 

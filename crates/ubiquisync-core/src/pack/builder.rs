@@ -71,8 +71,8 @@ impl PackBuilder {
         let desc = SegmentDescriptor {
             container_id: hash_ctx.log_id().container_id,
             idx_range,
-            prev_chain: joined.prev_chain.hash,
-            end_chain: joined.chain_hash.hash,
+            prev_chain_hash: joined.prev_chain.hash,
+            end_chain_hash: joined.chain_hash.hash,
             body_loc: body_start..body_end,
         };
         let peer_id = hash_ctx.log_id().peer_id;
