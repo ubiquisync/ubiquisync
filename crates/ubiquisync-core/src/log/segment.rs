@@ -667,6 +667,23 @@ impl<'a> DecodedSegment<'a> {
         })
         .skip_while(move |h| h.chain_hash.size < start_size)
     }
+
+    pub fn reencode_suffix(&self, start_size: u64) {
+        let mut entries = self
+            .entries
+            .iter()
+            .skip_while(|e| e.chain_hash.size < start_size);
+        let Some(prev_chain) = entries.next() else {
+            todo!()
+        };
+        // we assume that all entry bodies have the same encoding because that's how we decoded them
+        match prev_chain.body {
+            DecodedEntryBody::Opaque(_) => {
+                encode_segment_opaque(signature, prev_chain.chain_hash, start_cipher, entries)
+            }
+            DecodedEntryBody::Plaintext(_) => todo!(),
+        }
+    }
 }
 
 pub struct ChainMeta {

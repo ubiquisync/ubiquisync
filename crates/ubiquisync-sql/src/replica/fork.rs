@@ -1,6 +1,5 @@
-use std::cmp::{max, min};
+use std::cmp::min;
 
-use async_recursion::async_recursion;
 use sea_query::Query;
 use ubiquisync_core::{
     crypto::CipherInfo,
@@ -12,101 +11,93 @@ use crate::{
     replica::{
         ReplicaInner,
         ingest::SegmentProcessError,
-        peers::PeerInfo,
         schema::streams,
         stream_lock::KeyedLockGuard,
         streams::{StreamInfo, StreamLog},
     },
 };
 
-pub(crate) enum ForkSearchResult {
-    NoAnchor,
-    NewFork(StreamInfo),
-}
-
 impl<R> ReplicaInner<R> {
-    #[async_recursion(Sync)]
     pub(crate) async fn fork_search(
         &self,
         guard: &KeyedLockGuard<StreamLog>,
-        stream: &StreamInfo,
+        mut stream: StreamInfo,
         all_streams: &[StreamInfo],
-        existing_segment: &DecodedSegment<'_>,
+        mut existing_segment: DecodedSegment<'_>,
         new_segment: &DecodedSegment<'_>,
-        peer_info: &PeerInfo,
         hash_ctx: &LogHashContext,
-    ) -> Result<ForkSearchResult, SegmentProcessError> {
-        match compare_segments(&existing_segment, &new_segment) {
-            CompareSegmentsResult::ExistingExhaused => {
-                let Some(next_segment) = self
-                    .get_segment_by_index(
-                        guard,
-                        hash_ctx,
-                        stream.id,
-                        existing_segment.head_chain.size,
-                    )
-                    .await?
-                else {
-                    todo!(
-                        "this is a weird case because if we end up here but don't have a next segment, we should have must on the chain head"
-                    )
-                };
-                return self
-                    .fork_search(
-                        guard,
-                        stream,
-                        all_streams,
-                        &next_segment,
-                        new_segment,
-                        peer_info,
-                        hash_ctx,
-                    )
-                    .await;
-            }
-            CompareSegmentsResult::NewExhausted => {
-                todo!("no fork, we have the entry, but we should have found it before...")
-            }
-            CompareSegmentsResult::Divergent {
-                last_common,
-                cipher_info,
-            } => {
-                if let Some(last_common) = last_common {
+    ) -> Result<Option<StreamInfo>, SegmentProcessError> {
+        let mut cmp_res = compare_segments(
+            &existing_segment,
+            new_segment,
+            new_segment.header.prev_chain,
+        );
+        'outer: loop {
+            match cmp_res {
+                CompareSegmentsResult::ExistingExhaused => {
+                    let Some(next_segment) = self
+                        .get_segment_by_index(
+                            guard,
+                            hash_ctx,
+                            stream.id,
+                            existing_segment.head_chain.size,
+                        )
+                        .await?
+                    else {
+                        // we probably shouldn't end up here, but if we do it just means we actually don't have a fork
+                        return Ok(Some(stream));
+                    };
+                    cmp_res =
+                        compare_segments(&next_segment, new_segment, existing_segment.head_chain);
+                    existing_segment = next_segment;
+                }
+                CompareSegmentsResult::NewExhausted => return Ok(None),
+                CompareSegmentsResult::Divergent {
+                    last_common,
+                    cipher_info,
+                } => {
                     // look in all_streams to see if we have an existing fork to follow at this point
                     let fork_candidates =
-                        find_fork_candidates(stream, all_streams, last_common.size);
-                    if fork_candidates.is_empty() {
-                        let fork = self
-                            .create_fork(guard, stream, last_common, cipher_info)
-                            .await?;
-                        return Ok(ForkSearchResult::NewFork(fork));
-                    } else {
-                        for fork in fork_candidates.iter() {
-                            if let Some(next_segment) = self
-                                .get_segment_by_index(guard, hash_ctx, fork.id, last_common.size)
-                                .await?
-                            {
-                                match self
-                                    .fork_search(
-                                        guard,
-                                        fork,
-                                        all_streams,
-                                        &next_segment,
-                                        new_segment,
-                                        peer_info,
-                                        hash_ctx,
-                                    )
-                                    .await?
-                                {
-                                    ForkSearchResult::NoAnchor => continue,
-                                    r @ ForkSearchResult::NewFork(_) => return Ok(r),
+                        find_fork_candidates(&stream, all_streams, last_common.size);
+                    let mut dangling = None;
+                    for fork in fork_candidates.iter() {
+                        if let Some(next_segment) = self
+                            .get_segment_by_index(guard, hash_ctx, fork.id, last_common.size)
+                            .await?
+                        {
+                            let cmp = compare_segments(&next_segment, new_segment, last_common);
+                            match cmp {
+                                CompareSegmentsResult::Divergent {
+                                    last_common: new_last_common,
+                                    ..
+                                } if new_last_common.size == last_common.size => {
+                                    // this is not a matching fork
+                                    continue;
                                 }
-                            } else {
-                                // TODO should this happen? it probably doesn't matter either way
+                                _ => {
+                                    // this matches enough and we can go back to the outer loop
+                                    stream = fork.clone();
+                                    cmp_res = cmp;
+                                    existing_segment = next_segment;
+                                    continue 'outer;
+                                }
                             }
+                        } else {
+                            // we found a dangling stream with no segments on top
+                            dangling = Some(fork.clone());
                         }
                     }
+                    if let Some(dangling) = dangling
+                        && dangling.head_chain == last_common
+                    {
+                        return Ok(Some(dangling));
+                    } else {
+                        let fork = self
+                            .create_fork(guard, &stream, last_common, cipher_info)
+                            .await?;
+                        return Ok(Some(fork));
+                    }
                 }
-                return Ok(ForkSearchResult::NoAnchor);
             }
         }
     }
@@ -165,11 +156,11 @@ impl<R> ReplicaInner<R> {
 pub(crate) fn compare_segments(
     existing: &DecodedSegment<'_>,
     new: &DecodedSegment<'_>,
+    mut last_common: ChainHash,
 ) -> CompareSegmentsResult {
-    let start = max(existing.header.prev_chain.size, new.header.prev_chain.size);
+    let start = last_common.size;
     let mut new_it = new.chain_meta_iter(start);
     let mut existing_it = existing.chain_meta_iter(start);
-    let mut last_common = None;
     let mut cipher_info = None;
     loop {
         // check new first, because if they are exhausted at the same time, we mainly care that new is exhausted
@@ -189,7 +180,7 @@ pub(crate) fn compare_segments(
                 cipher_info,
             };
         }
-        last_common = Some(existing_ch.chain_hash);
+        last_common = existing_ch.chain_hash;
         debug_assert_eq!(existing_ch.cipher_info, new_ch.cipher_info);
         cipher_info = existing_ch.cipher_info;
     }
@@ -199,7 +190,7 @@ pub(crate) enum CompareSegmentsResult {
     ExistingExhaused,
     NewExhausted,
     Divergent {
-        last_common: Option<ChainHash>,
+        last_common: ChainHash,
         cipher_info: Option<CipherInfo>,
     },
 }

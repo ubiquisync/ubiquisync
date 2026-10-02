@@ -132,17 +132,17 @@ where {
             PlaceSegmentDescResult::Empty => Ok(()),
             PlaceSegmentDescResult::FirstSegment => {
                 let stream = self.create_stream(&guard, hash_ctx).await?;
-                self.place_segment(&guard, &stream, peer_info, hash_ctx, segment_resolver)
+                self.place_segment_direct(&guard, &stream, peer_info, hash_ctx, segment_resolver)
                     .await
             }
             PlaceSegmentDescResult::PlaceExact(stream) => {
-                self.place_segment(&guard, &stream, peer_info, hash_ctx, segment_resolver)
+                self.place_segment_direct(&guard, &stream, peer_info, hash_ctx, segment_resolver)
                     .await
             }
             PlaceSegmentDescResult::AlreadyExists => Ok(()),
             PlaceSegmentDescResult::NoAnchor => Err(SegmentProcessError::Pending),
             PlaceSegmentDescResult::Overlaps(overlapping) => {
-                self.try_place_overlapping_segment(
+                self.try_place_overlapping_segment_desc(
                     &guard,
                     segment_desc,
                     overlapping,
@@ -156,7 +156,7 @@ where {
         }
     }
 
-    async fn place_segment(
+    async fn place_segment_direct(
         &self,
         _guard: &KeyedLockGuard<StreamLog>,
         stream: &StreamInfo,
@@ -251,7 +251,7 @@ where {
         }))
     }
 
-    async fn try_place_overlapping_segment(
+    async fn try_place_overlapping_segment_desc(
         &self,
         guard: &KeyedLockGuard<StreamLog>,
         segment_desc: &SegmentDescriptor,
@@ -290,7 +290,7 @@ where {
             {
                 if segment.entries.iter().any(|e| e.chain_hash == prev_chain) {
                     return self
-                        .place_overlapping_segment(
+                        .try_place_overlapping_segment(
                             guard,
                             stream,
                             all_streams,
@@ -311,7 +311,7 @@ where {
         Err(SegmentProcessError::Pending)
     }
 
-    async fn place_overlapping_segment(
+    async fn try_place_overlapping_segment(
         &self,
         guard: &KeyedLockGuard<StreamLog>,
         stream: &StreamInfo,
@@ -330,16 +330,29 @@ where {
 
         // first we're going to check and see if this segment extends
         // any existing head
-        if let Some(extends) = all_streams.iter().find(|s| {
+        let stream = if let Some(extends) = all_streams.iter().find(|s| {
             new_segment
                 .decoded
                 .entries
                 .iter()
                 .any(|e| e.chain_hash == s.head_chain)
         }) {
-            // TODO: now we know that this segment extends this stream at some, it just has an overlapping prefix
+            // now we know that this segment extends this stream at some, it just has an overlapping prefix
             // note that we don't need to worry about forks here because a fork cannot happen at the head of any stream
-            todo!()
+            extends.clone()
+        } else if let Some(fork) = self
+            .fork_search(
+                guard,
+                stream.clone(),
+                all_streams,
+                existing_segment,
+                &new_segment.decoded,
+                hash_ctx,
+            )
+            .await? {
+            fork
+        } else {
+            return Err(SegmentProcessError::Pending)
         }
         // let mut suffix = new_segment
         //     .decoded
@@ -367,26 +380,9 @@ where {
         // }
 
         // now we use the real data from the verified segment
-        let prev_chain = new_segment.decoded.header.prev_chain;
+        // let prev_chain = new_segment.decoded.header.prev_chain;
 
         // this is the sad path, we have a fork
-        let mut it = existing_segment.entries.iter();
-        while let Some(e) = it.next() {
-            if e.chain_hash.size < prev_chain.size {
-                continue;
-            } else if e.chain_hash.size == prev_chain.size {
-                if e.chain_hash.hash != prev_chain.hash {
-                    // this means the segment we decoded didn't match the header
-                    break;
-                } else {
-                    // now we found the right starting point
-                    // we need to walk both iterators forward comparing hashes
-                    // until we either:
-                    // 1. find new parts of
-                    todo!()
-                }
-            }
-        }
 
         // this means the segment we decoded didn't match the header
         // we could try created a SegmentDescriptor from the real body
