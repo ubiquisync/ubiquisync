@@ -82,7 +82,7 @@ pub async fn join_segments<'a, B: AsRef<[u8]> + 'a>(
             &start_cipher,
             hash_ctx.log_id(),
             key_resolver,
-            &all_entries,
+            all_entries.iter(),
             writer,
         )
         .await?;
@@ -181,7 +181,7 @@ mod tests {
                     &data.start_cipher,
                     &data.case.log_id,
                     &data.key_resolver,
-                    &data.entries,
+                    data.entries.iter(),
                 )
                 .await
                 .unwrap()

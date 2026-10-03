@@ -115,7 +115,7 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
             &head_cipher,
             &log_id,
             &NullCipherKeyResolver,
-            &entries,
+            entries.iter(),
         )
         .await?;
 

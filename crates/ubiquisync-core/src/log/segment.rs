@@ -215,7 +215,7 @@ pub async fn encode_segment_plaintext<'a: 'b, 'b>(
     start_cipher: &Option<CipherInfo>,
     log_id: &LogId,
     key_resolver: &dyn CipherKeyResolver,
-    entries: &'b [PlaintextLogEntry<'a>],
+    entries: impl Iterator<Item = &'b PlaintextLogEntry<'a>> + Clone,
 ) -> Result<Vec<u8>, SegmentEncodeError> {
     let mut w = Writer::new();
     encode_segment_plaintext_writer(
@@ -237,7 +237,7 @@ pub async fn encode_segment_plaintext_writer<'a: 'b, 'b>(
     start_cipher: &Option<CipherInfo>,
     log_id: &LogId,
     key_resolver: &dyn CipherKeyResolver,
-    entries: &'b [PlaintextLogEntry<'a>],
+    entries: impl Iterator<Item = &'b PlaintextLogEntry<'a>> + Clone,
     w: &mut Writer,
 ) -> Result<(), SegmentEncodeError> {
     let (header, cipher) = SegmentHeader::init_plaintext(
@@ -246,14 +246,14 @@ pub async fn encode_segment_plaintext_writer<'a: 'b, 'b>(
         *start_cipher,
         log_id,
         key_resolver,
-        entries,
+        entries.clone(),
     )
     .await?;
     header.encode(w)?;
     let buf = if let Some((cipher, nonce)) = cipher {
-        encode_compress_encrypt_entries(&cipher, prev_chain, &nonce, entries.iter())
+        encode_compress_encrypt_entries(&cipher, prev_chain, &nonce, entries)
     } else {
-        encode_compress_entries(entries.iter())
+        encode_compress_entries(entries)
     }?;
     w.write_slice(buf.as_slice());
     Ok(())
@@ -311,6 +311,8 @@ pub enum SegmentEncodeError {
     MissingSegmentKey(CipherInfo),
     #[error("unknown cipher suite: {0}")]
     UnknownCipherSuite(u8),
+    #[error("start size {0} out of range")]
+    StartSizeOutOfRange(u64),
 }
 
 #[derive(Error, Debug)]
@@ -399,20 +401,20 @@ fn decrypt_decompress_decode_entries(
 }
 
 impl SegmentHeader {
-    async fn init_plaintext(
+    async fn init_plaintext<'a: 'b, 'b>(
         signature: Signature,
         prev_chain: ChainHash,
         start_cipher: Option<CipherInfo>,
         log_id: &LogId,
         key_resolver: &dyn CipherKeyResolver,
-        entries: &[PlaintextLogEntry<'_>],
+        entries: impl Iterator<Item = &'b PlaintextLogEntry<'a>> + Clone,
     ) -> Result<(Self, Option<(SegmentCipher, Vec<u8>)>), SegmentEncodeError> {
         let mut end_cipher = start_cipher;
         let mut header = Self::init_opaque(
             signature,
             prev_chain,
             start_cipher,
-            entries.first().as_ref(),
+            entries.clone().next().as_ref(),
         );
 
         for e in entries {
@@ -673,26 +675,26 @@ impl<'a> DecodedSegment<'a> {
         key_resolver: &dyn CipherKeyResolver,
         start_size: u64,
     ) -> Result<Vec<u8>, SegmentEncodeError> {
-        // TODO we need to capture key changes
+        let Some(ChainMeta {
+            cipher_info: start_cipher,
+            chain_hash: prev_chain,
+        }) = self.chain_meta_iter(start_size).next()
+        else {
+            return Err(SegmentEncodeError::StartSizeOutOfRange(start_size));
+        };
         let mut entries = self
             .entries
             .iter()
-            .skip_while(|e| e.chain_hash.size < start_size);
-        let Some(prev_chain) = entries.next() else {
-            todo!()
-        };
-        let Some(ChainMeta {
-            cipher_info: start_cipher,
-            ..
-        }) = self.chain_meta_iter(start_size).next()
-        else {
-            todo! {}
+            .filter(|e| e.chain_hash.size > start_size)
+            .peekable();
+        let Some(first) = entries.peek() else {
+            return Err(SegmentEncodeError::StartSizeOutOfRange(start_size));
         };
         // we assume that all entry bodies have the same encoding because that's how we decoded them
-        match prev_chain.body {
+        match first.body {
             DecodedEntryBody::Opaque(_) => encode_segment_opaque(
                 &self.header.signature,
-                &prev_chain.chain_hash,
+                &prev_chain,
                 &start_cipher,
                 entries.map(|e| match e.body {
                     DecodedEntryBody::Opaque(ref e) => e,
@@ -702,21 +704,18 @@ impl<'a> DecodedSegment<'a> {
                 }),
             ),
             DecodedEntryBody::Plaintext(_) => {
-                let entries = entries
-                    .map(|e| match e.body {
-                        DecodedEntryBody::Plaintext(ref e) => e.clone(), // TODO find a way to not need to clone here
-                        DecodedEntryBody::Opaque(_) => {
-                            unreachable!("entries should be all opaque or plaintext, not mixed")
-                        }
-                    })
-                    .collect::<Vec<_>>();
                 encode_segment_plaintext(
                     &self.header.signature,
-                    &prev_chain.chain_hash,
+                    &prev_chain,
                     &start_cipher,
                     self.chain_seed.log_id(),
                     key_resolver,
-                    &entries,
+                    entries.map(|e| match e.body {
+                        DecodedEntryBody::Plaintext(ref e) => e,
+                        DecodedEntryBody::Opaque(_) => {
+                            unreachable!("entries should be all opaque or plaintext, not mixed")
+                        }
+                    }),
                 )
                 .await
             }
@@ -917,7 +916,7 @@ pub(crate) mod tests {
             &data.start_cipher,
             &data.case.log_id,
             &data.key_resolver,
-            &data.entries,
+            data.entries.iter(),
         )
         .await
         .unwrap();

@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, ops::Range};
+use std::borrow::Cow;
 
 use sea_query::{Expr, ExprTrait, Query};
 use thiserror::Error;
@@ -132,12 +132,24 @@ where {
             PlaceSegmentDescResult::Empty => Ok(()),
             PlaceSegmentDescResult::FirstSegment => {
                 let stream = self.create_stream(&guard, hash_ctx).await?;
-                self.place_segment_direct(&guard, &stream, peer_info, hash_ctx, segment_resolver)
-                    .await
+                self.resolve_and_place_segment(
+                    &guard,
+                    &stream,
+                    peer_info,
+                    hash_ctx,
+                    segment_resolver,
+                )
+                .await
             }
             PlaceSegmentDescResult::PlaceExact(stream) => {
-                self.place_segment_direct(&guard, &stream, peer_info, hash_ctx, segment_resolver)
-                    .await
+                self.resolve_and_place_segment(
+                    &guard,
+                    &stream,
+                    peer_info,
+                    hash_ctx,
+                    segment_resolver,
+                )
+                .await
             }
             PlaceSegmentDescResult::AlreadyExists => Ok(()),
             PlaceSegmentDescResult::NoAnchor => Err(SegmentProcessError::Pending),
@@ -156,24 +168,37 @@ where {
         }
     }
 
-    async fn place_segment_direct(
+    async fn resolve_and_place_segment(
         &self,
-        _guard: &KeyedLockGuard<StreamLog>,
+        guard: &KeyedLockGuard<StreamLog>,
         stream: &StreamInfo,
         peer_info: &PeerInfo,
         hash_ctx: &LogHashContext,
         segment_resolver: &mut dyn SegmentBytesResolver,
     ) -> Result<(), SegmentProcessError> {
-        if stream.head_err.is_some() {
-            todo!("see if we can place part of the segment")
-        }
-
         let Some(segment) = self
             .fetch_and_verify_remote_segment(peer_info, hash_ctx, segment_resolver)
             .await?
         else {
             todo!("pack disappeared")
         };
+
+        self.place_segment(guard, stream, peer_info, hash_ctx, &segment)
+            .await
+    }
+
+    async fn place_segment(
+        &self,
+        _guard: &KeyedLockGuard<StreamLog>,
+        stream: &StreamInfo,
+        peer_info: &PeerInfo,
+        hash_ctx: &LogHashContext,
+        segment: &ResolvedSegment<'_>,
+    ) -> Result<(), SegmentProcessError> {
+        if stream.head_err.is_some() {
+            todo!("see if we can place part of the segment")
+        }
+
         let header = &segment.decoded.header;
         let chain_hash = segment.decoded.head_chain;
 
@@ -183,11 +208,12 @@ where {
 
         // 1. save the segment
 
-        let mut batch = self.db.new_batch();
-        if header.prev_chain.size < stream.head_chain.size {
-            // we need to drop a prefix from the segment because it starts
-            // before our existing head
-            todo!()
+        let body = if header.prev_chain.size < stream.head_chain.size {
+            let body = segment
+                .decoded
+                .reencode_suffix(self.key_resolver.as_ref(), stream.head_chain.size)
+                .await?;
+            Cow::Owned(body)
         } else {
             // the segment places directly on top of our existing stream
 
@@ -195,23 +221,25 @@ where {
             if header.prev_chain.hash != stream.head_chain.hash {
                 todo!("hash error")
             }
+            Cow::Borrowed(segment.bytes)
+        };
 
-            insert_cols_batch::<(
-                segments::StreamId,
-                segments::StartIdx,
-                segments::EndSize,
-                segments::Body,
-            )>(
-                batch.as_mut(),
-                (
-                    stream.id,
-                    header.prev_chain.size,
-                    chain_hash.size,
-                    segment.bytes.to_vec(),
-                ),
-                Query::insert().into_table(segments::Table),
-            )?;
-        }
+        let mut batch = self.db.new_batch();
+        insert_cols_batch::<(
+            segments::StreamId,
+            segments::StartIdx,
+            segments::EndSize,
+            segments::Body,
+        )>(
+            batch.as_mut(),
+            (
+                stream.id,
+                header.prev_chain.size,
+                chain_hash.size,
+                segment.bytes.to_vec(),
+            ),
+            Query::insert().into_table(segments::Table),
+        )?;
 
         update_cols_batch::<(streams::HeadSize, streams::HeadHash)>(
             batch.as_mut(),
@@ -349,45 +377,15 @@ where {
                 &new_segment.decoded,
                 hash_ctx,
             )
-            .await? {
+            .await?
+        {
             fork
         } else {
-            return Err(SegmentProcessError::Pending)
-        }
-        // let mut suffix = new_segment
-        //     .decoded
-        //     .entries
-        //     .iter()
-        //     .skip_while(|e| e.chain_hash.size < stream.head_chain.size);
-        // if let Some(head) = suffix.next()
-        //     && head.chain_hash == stream.head_chain
-        // {
-        //     // we can just place this suffix now
-        //     // first we re-encode it
-        //     // if we can decode plaintext we attempt that first (better compression)
-        //     // if not we fall back to opaque encoding
-        //     // let suffix = suffix.collect::<Vec<_>>();
-        //     // let body = encode_segment_plaintext(
-        //     //     &new_segment.decoded.header.signature,
-        //     //     &stream.head_chain,
-        //     //     &stream.head_cipher,
-        //     //     hash_ctx.log_id(),
-        //     //     self.key_resolver.as_ref(),
-        //     //     &suffix,
-        //     // )
-        //     // .await?;
-        //     todo!("place segment")
-        // }
+            return Err(SegmentProcessError::Pending);
+        };
 
-        // now we use the real data from the verified segment
-        // let prev_chain = new_segment.decoded.header.prev_chain;
-
-        // this is the sad path, we have a fork
-
-        // this means the segment we decoded didn't match the header
-        // we could try created a SegmentDescriptor from the real body
-        // and placing it again
-        todo!()
+        self.place_segment(guard, &stream, peer_info, hash_ctx, &new_segment)
+            .await
     }
 }
 
