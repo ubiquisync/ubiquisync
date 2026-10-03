@@ -5,10 +5,8 @@ use crate::{
     crypto::CipherKeyResolver,
     log::{
         ChainHash, ChainHashError, LogEntry, LogHashContext, SegmentCipherError,
-        entries_to_plaintext,
         segment::{
-            DecodedEntries, SegmentDecodeError, SegmentEncodeError, SegmentReader,
-            encode_segment_plaintext_writer,
+            SegmentDecodeError, SegmentEncodeError, SegmentReader, encode_segment_plaintext_writer,
         },
     },
 };
@@ -38,17 +36,15 @@ pub async fn join_segments<'a, B: AsRef<[u8]> + 'a>(
     let mut prev_chain = None;
     let mut chain_hash = None;
     let mut start_cipher = None;
-    let mut active_cipher = None;
     let mut all_entries = vec![];
     let mut sig = None;
     for body in bodies {
         let reader = SegmentReader::start(body.as_ref())?;
         let segment_header = reader.header().clone();
-        let cur_hash = if let Some(chain_hash) = chain_hash {
+        if let Some(chain_hash) = chain_hash {
             if chain_hash != segment_header.prev_chain {
                 return Err(JoinSegmentsError::OutOfOrder);
             }
-            chain_hash
         } else {
             // this is the first segment so capture prev_chain and start_cipher
             prev_chain = Some(segment_header.prev_chain);
@@ -57,37 +53,13 @@ pub async fn join_segments<'a, B: AsRef<[u8]> + 'a>(
             // if we did this, we could silently accept whatever cipher the segment claims without
             // a UseKey entry. in reality, this should never occur because replicas should check
             // start_cipher validity at ommission time and thus this is really a decode-time optimization
-            active_cipher = start_cipher;
-            segment_header.prev_chain
         };
-        let decoded = reader.read(key_resolver, hash_ctx.log_id()).await?;
-        let entries = match decoded.entries {
-            DecodedEntries::Opaque(items) => {
-                let entries = entries_to_plaintext(
-                    hash_ctx,
-                    &mut active_cipher,
-                    &cur_hash,
-                    key_resolver,
-                    items.iter(),
-                )
-                .await?;
-                chain_hash = Some(entries.last().map(|e| e.1).unwrap_or(cur_hash));
-                entries.into_iter().map(|e| e.0).collect()
-            }
-            DecodedEntries::Plaintext(items) => {
-                chain_hash = Some(
-                    cur_hash
-                        .compute_next_plaintext(
-                            hash_ctx,
-                            &mut active_cipher,
-                            key_resolver,
-                            items.iter(),
-                        )
-                        .await?,
-                );
-                items
-            }
-        };
+        let decoded = reader.read(key_resolver, hash_ctx).await?;
+        chain_hash = Some(decoded.head_chain);
+        let mut entries = vec![];
+        for e in decoded.to_plaintext(key_resolver).await.collect_all()? {
+            entries.push(e);
+        }
         sig = Some(segment_header.signature);
 
         for e in entries {
@@ -110,7 +82,7 @@ pub async fn join_segments<'a, B: AsRef<[u8]> + 'a>(
             &start_cipher,
             hash_ctx.log_id(),
             key_resolver,
-            &all_entries,
+            all_entries.iter(),
             writer,
         )
         .await?;
@@ -135,13 +107,12 @@ mod tests {
     use secrecy::{ExposeSecret, SecretBox};
     use test_strategy::proptest;
 
-    #[cfg(test)]
     use crate::codec::Writer;
     use crate::crypto::RootKey256;
     use crate::log::LogEntry;
     use crate::log::segment::join::join_segments;
     use crate::log::segment::tests::TestKeyResolver;
-    use crate::log::segment::{DecodedEntries, SegmentReader, encode_segment_plaintext};
+    use crate::log::segment::{SegmentReader, encode_segment_plaintext};
     use crate::log::segment::{encode_segment_opaque, tests::TestCaseData};
     use crate::log::{entries_to_opaque, segment::tests::TestCase};
 
@@ -186,7 +157,7 @@ mod tests {
 
             let body = if opaque {
                 let mut head_cipher = data.start_cipher;
-                let opaque = entries_to_opaque(
+                let opaque: Result<Vec<_>, _> = entries_to_opaque(
                     &data.seed,
                     &mut head_cipher,
                     &data.prev_chain,
@@ -194,12 +165,13 @@ mod tests {
                     data.entries.iter(),
                 )
                 .await
-                .unwrap();
+                .into_iter()
+                .collect();
                 encode_segment_opaque(
                     &data.signature,
                     &data.prev_chain,
                     &data.start_cipher,
-                    opaque.iter().map(|(e, _)| e),
+                    opaque.unwrap().iter().map(|(e, _)| e),
                 )
                 .unwrap()
             } else {
@@ -209,7 +181,7 @@ mod tests {
                     &data.start_cipher,
                     &data.case.log_id,
                     &data.key_resolver,
-                    &data.entries,
+                    data.entries.iter(),
                 )
                 .await
                 .unwrap()
@@ -231,21 +203,17 @@ mod tests {
         assert_eq!(end_chain.unwrap(), joined.chain_hash);
 
         let reader = SegmentReader::start(&body).unwrap();
-        let decoded = reader
-            .read(&key_resolver, last_data.seed.log_id())
+        let decoded = reader.read(&key_resolver, &last_data.seed).await.unwrap();
+        decoded.verify(&last_data.verifying_key).unwrap();
+
+        assert_eq!(decoded.head_chain, last_data.head_chain);
+        assert_eq!(decoded.head_cipher, last_data.end_cipher);
+
+        let decoded_plaintext = decoded
+            .to_plaintext(&key_resolver)
             .await
+            .collect_all()
             .unwrap();
-        let verified = decoded
-            .verify(&last_data.verifying_key, &key_resolver)
-            .await
-            .unwrap();
-        match verified.decoded.entries {
-            DecodedEntries::Opaque(_) => unreachable!(),
-            DecodedEntries::Plaintext(items) => {
-                assert_eq!(items, all_entries);
-            }
-        }
-        assert_eq!(verified.head_chain, last_data.head_chain);
-        assert_eq!(verified.head_cipher, last_data.end_cipher);
+        assert_eq!(decoded_plaintext, all_entries);
     }
 }

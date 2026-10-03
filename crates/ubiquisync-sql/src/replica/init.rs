@@ -1,9 +1,9 @@
-use std::sync::atomic::AtomicU64;
+use std::sync::{Arc, atomic::AtomicU64};
 
 use sea_query::{Expr, ExprTrait, Query};
 use thiserror::Error;
 use ubiquisync_core::{
-    crypto::{CryptoDecodeError, credentials::Credentials},
+    crypto::{CryptoDecodeError, NullCipherKeyResolver, credentials::Credentials},
     ids::{AppId, PeerId},
     init::{
         InitCommitment, InitCreationError, InitDecodeError, InitEntry, InitVerifyError, Version,
@@ -17,7 +17,8 @@ use crate::{
     },
     reducer::Reducer,
     replica::{
-        HlcError, Replica,
+        HlcError, Replica, ReplicaInner,
+        hlc::load_hlc,
         schema::{create_tables, peers},
         stream_lock::KeyedLock,
     },
@@ -25,7 +26,7 @@ use crate::{
 
 impl<R: Reducer> Replica<R> {
     pub async fn new(
-        app_magic: AppId,
+        app_id: AppId,
         db: Box<dyn Db>,
         reducer: R,
         credentials: Box<dyn Credentials>,
@@ -37,7 +38,7 @@ impl<R: Reducer> Replica<R> {
         // initialize schema, in the future we need some more proper migrations
         create_tables(db.as_ref()).await?;
 
-        let hlc = Self::load_hlc(db.as_ref()).await?;
+        let hlc = load_hlc(db.as_ref()).await?;
 
         let self_id = if let Some((self_id, commitment_bytes, signature)) =
             select_cols::<(peers::PeerId, peers::CommitmentBytes, peers::Signature)>(
@@ -54,9 +55,8 @@ impl<R: Reducer> Replica<R> {
                 commitment_bytes: commitment_bytes.into(),
                 peer_id: self_id,
                 signature,
-                outer_endorsement: None,
             };
-            init_entry.verify(&app_magic)?;
+            init_entry.verify(&app_id)?;
             let commit_data = init_entry.commitment_data()?;
             if commit_data.sig_verify_key != credentials.signing_key().verifying_key() {
                 return Err(InitError::Internal(
@@ -82,7 +82,7 @@ impl<R: Reducer> Replica<R> {
                 workspace_join: None,
                 endorsement: vec![],
             };
-            let init_entry = InitEntry::create(commitment, &app_magic, credentials.signing_key())?;
+            let init_entry = InitEntry::create(commitment, &app_id, credentials.signing_key())?;
 
             let (self_db_id,) = insert_cols::<
                 (peers::PeerId, peers::CommitmentBytes, peers::Signature),
@@ -110,13 +110,20 @@ impl<R: Reducer> Replica<R> {
         };
 
         Ok(Self {
-            self_id,
-            self_db_id: SELF_DB_ID,
-            credentials,
-            db,
-            reducer,
-            hlc: AtomicU64::new(hlc.into()),
-            stream_locks: KeyedLock::new(),
+            inner: Arc::new(ReplicaInner {
+                app_id,
+                self_id,
+                self_db_id: SELF_DB_ID,
+                credentials,
+                db,
+                reducer,
+                hlc: AtomicU64::new(hlc.into()),
+                stream_locks: KeyedLock::new(),
+                pack_remotes: Default::default(),
+                key_resolver: Arc::new(NullCipherKeyResolver),
+            }),
+            tasks: Default::default(),
+            cancel: Default::default(),
         })
     }
 }

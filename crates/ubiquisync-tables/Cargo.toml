@@ -22,6 +22,7 @@ pastey = { workspace = true }
 sea-query = { workspace = true }
 uuid = { workspace = true }
 tokio = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

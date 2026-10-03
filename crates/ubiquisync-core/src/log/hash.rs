@@ -19,7 +19,7 @@ pub struct ChainHash {
     pub size: u64,
 }
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone)]
 pub enum ChainHashError {
     #[error("chain size overflowed u64")]
     SizeOverflow,
@@ -107,26 +107,13 @@ impl ChainHash {
         key_resolver: &dyn CipherKeyResolver,
         entries: impl Iterator<Item = &'b PlaintextLogEntry<'a>>,
     ) -> Result<Self, SegmentCipherError> {
-        let opaque = entries_to_opaque(seed, head_cipher, self, key_resolver, entries).await?;
-        if opaque.is_empty() {
-            // TODO: maybe this should be a hard error, but if there are no entries we can validly just clone self
+        let opaque = entries_to_opaque(seed, head_cipher, self, key_resolver, entries).await;
+        let Some(last) = opaque.into_iter().last() else {
+            // maybe this should be a hard error, but for now we just return self if there were no entries
             return Ok(*self);
-        }
-        // we take the last chain hash in the segment
-        Ok(opaque.last().expect("non-empty entries").1)
-    }
-
-    pub fn compute_next_opaque<'a: 'b, 'b>(
-        &self,
-        seed: &LogHashContext,
-        active_cipher: &mut Option<CipherInfo>,
-        entries: impl Iterator<Item = &'a OpaqueLogEntry<'a>>,
-    ) -> Result<Self, ChainHashError> {
-        let mut h: ChainHash = *self;
-        for e in entries {
-            h = h.next(e, seed, active_cipher)?;
-        }
-        Ok(h)
+        };
+        let last = last?;
+        Ok(last.1)
     }
 
     pub fn sign_bytes(&self, seed: &LogHashContext) -> Hash256 {

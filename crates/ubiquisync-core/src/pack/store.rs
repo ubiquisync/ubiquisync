@@ -5,6 +5,7 @@ use thiserror::Error;
 use crate::{
     codec::{WriteError, Writer},
     ids::PeerId,
+    init::InitEntry,
     pack::{
         FileRemote, FileRemoteError, FileType, HEADER_EXT, PackData, PackFileDescriptor,
         PackFileId, PackHeaderDecodeError, SignedPackHeader, Topic,
@@ -136,5 +137,9 @@ impl PackStore {
         self.remote.delete(&file.header_path()).await?;
         self.remote.delete(&file.body_path()).await?;
         Ok(())
+    }
+
+    pub async fn read_peer_init(&self, peer: &PeerId) -> Result<InitEntry, PackStoreError> {
+        todo!()
     }
 }

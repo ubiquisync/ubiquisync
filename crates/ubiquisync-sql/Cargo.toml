@@ -22,6 +22,8 @@ pastey = { workspace = true }
 backon = { workspace = true }
 tracing = { workspace = true }
 num_enum = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
 
 [dev-dependencies]
 ubiquisync-core = { workspace = true, features = ["proptest"] }
