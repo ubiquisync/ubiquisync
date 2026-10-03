@@ -32,12 +32,16 @@ use crate::{
     },
 };
 
+use super::commit::CommitError;
+
 #[derive(Error, Debug)]
 pub(crate) enum SegmentProcessError {
     #[error("pending other data")]
     Pending,
     #[error("db error: {0}")]
     Db(#[from] DbError),
+    #[error("internal error: {0}")]
+    Internal(String),
     #[error("segment decode error: {0}")]
     Decode(#[from] SegmentDecodeError),
     #[error("segment encode error: {0}")]
@@ -48,10 +52,6 @@ pub(crate) enum SegmentProcessError {
     Cipher(#[from] SegmentCipherError),
     #[error("log validation error: {0}")]
     LogValidation(#[from] LogValidationError),
-    #[error("op decode error: {0}")]
-    OpDecode(#[from] OpDecodeError),
-    #[error("reducer error: {0}")]
-    Reducer(BoxError),
     #[error("get segment error: {0}")]
     GetSegment(#[from] GetSegmentError),
 }
@@ -81,7 +81,11 @@ fn evaluate_segment_desc(
     }
 
     if streams.is_empty() {
-        return PlaceSegmentDescResult::FirstSegment;
+        if segment_desc.idx_range.start == 0 {
+            return PlaceSegmentDescResult::FirstSegment;
+        } else {
+            return PlaceSegmentDescResult::NoAnchor;
+        }
     }
 
     let prev_chain = segment_desc.prev_chain();
@@ -134,7 +138,7 @@ where {
                 let stream = self.create_stream(&guard, hash_ctx).await?;
                 self.resolve_and_place_segment(
                     &guard,
-                    &stream,
+                    stream,
                     peer_info,
                     hash_ctx,
                     segment_resolver,
@@ -144,7 +148,7 @@ where {
             PlaceSegmentDescResult::PlaceExact(stream) => {
                 self.resolve_and_place_segment(
                     &guard,
-                    &stream,
+                    stream,
                     peer_info,
                     hash_ctx,
                     segment_resolver,
@@ -171,7 +175,7 @@ where {
     async fn resolve_and_place_segment(
         &self,
         guard: &KeyedLockGuard<StreamLog>,
-        stream: &StreamInfo,
+        stream: StreamInfo,
         peer_info: &PeerInfo,
         hash_ctx: &LogHashContext,
         segment_resolver: &mut dyn SegmentBytesResolver,
@@ -183,17 +187,14 @@ where {
             todo!("pack disappeared")
         };
 
-        self.place_segment(guard, stream, peer_info, hash_ctx, &segment)
-            .await
+        self.place_segment(guard, stream, segment).await
     }
 
     async fn place_segment(
         &self,
-        _guard: &KeyedLockGuard<StreamLog>,
-        stream: &StreamInfo,
-        peer_info: &PeerInfo,
-        hash_ctx: &LogHashContext,
-        segment: &ResolvedSegment<'_>,
+        guard: &KeyedLockGuard<StreamLog>,
+        mut stream: StreamInfo,
+        segment: ResolvedSegment<'_>,
     ) -> Result<(), SegmentProcessError> {
         if stream.head_err.is_some() {
             todo!("see if we can place part of the segment")
@@ -209,11 +210,10 @@ where {
         // 1. save the segment
 
         let body = if header.prev_chain.size < stream.head_chain.size {
-            let body = segment
+            segment
                 .decoded
                 .reencode_suffix(self.key_resolver.as_ref(), stream.head_chain.size)
-                .await?;
-            Cow::Owned(body)
+                .await?
         } else {
             // the segment places directly on top of our existing stream
 
@@ -221,7 +221,7 @@ where {
             if header.prev_chain.hash != stream.head_chain.hash {
                 todo!("hash error")
             }
-            Cow::Borrowed(segment.bytes)
+            segment.bytes.to_vec()
         };
 
         let mut batch = self.db.new_batch();
@@ -232,18 +232,17 @@ where {
             segments::Body,
         )>(
             batch.as_mut(),
-            (
-                stream.id,
-                header.prev_chain.size,
-                chain_hash.size,
-                segment.bytes.to_vec(),
-            ),
+            (stream.id, header.prev_chain.size, chain_hash.size, body),
             Query::insert().into_table(segments::Table),
         )?;
 
-        update_cols_batch::<(streams::HeadSize, streams::HeadHash)>(
+        update_cols_batch::<(streams::HeadSize, streams::HeadHash, streams::HeadCipher)>(
             batch.as_mut(),
-            (chain_hash.size, chain_hash.hash),
+            (
+                chain_hash.size,
+                chain_hash.hash,
+                segment.decoded.head_cipher,
+            ),
             Query::update()
                 .table(streams::Table)
                 .and_where(Expr::column(streams::Id).eq(stream.id)),
@@ -254,7 +253,12 @@ where {
         // at this point we could mark this segment as done within any durable pack process state
         // to auto-resume later via other periodic processes, but for now packs succeed or fail completely
 
-        // TODO call commit
+        self.try_commit(guard, &mut stream, segment.decoded)
+            .await
+            .map_err(|e| match e {
+                CommitError::Db(e) => SegmentProcessError::Db(e),
+                CommitError::Internal(e) => SegmentProcessError::Internal(e),
+            })?;
 
         Ok(())
     }
@@ -381,11 +385,11 @@ where {
         {
             fork
         } else {
-            return Err(SegmentProcessError::Pending);
+            // fork search only returns none when we have every entry
+            return Ok(());
         };
 
-        self.place_segment(guard, &stream, peer_info, hash_ctx, &new_segment)
-            .await
+        self.place_segment(guard, stream, new_segment).await
     }
 }
 
