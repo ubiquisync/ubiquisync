@@ -668,7 +668,12 @@ impl<'a> DecodedSegment<'a> {
         .skip_while(move |h| h.chain_hash.size < start_size)
     }
 
-    pub fn reencode_suffix(&self, start_size: u64) {
+    pub async fn reencode_suffix(
+        &self,
+        key_resolver: &dyn CipherKeyResolver,
+        start_size: u64,
+    ) -> Result<Vec<u8>, SegmentEncodeError> {
+        // TODO we need to capture key changes
         let mut entries = self
             .entries
             .iter()
@@ -676,12 +681,45 @@ impl<'a> DecodedSegment<'a> {
         let Some(prev_chain) = entries.next() else {
             todo!()
         };
+        let Some(ChainMeta {
+            cipher_info: start_cipher,
+            ..
+        }) = self.chain_meta_iter(start_size).next()
+        else {
+            todo! {}
+        };
         // we assume that all entry bodies have the same encoding because that's how we decoded them
         match prev_chain.body {
-            DecodedEntryBody::Opaque(_) => {
-                encode_segment_opaque(signature, prev_chain.chain_hash, start_cipher, entries)
+            DecodedEntryBody::Opaque(_) => encode_segment_opaque(
+                &self.header.signature,
+                &prev_chain.chain_hash,
+                &start_cipher,
+                entries.map(|e| match e.body {
+                    DecodedEntryBody::Opaque(ref e) => e,
+                    DecodedEntryBody::Plaintext(_) => {
+                        unreachable!("entries should be all opaque or plaintext, not mixed")
+                    }
+                }),
+            ),
+            DecodedEntryBody::Plaintext(_) => {
+                let entries = entries
+                    .map(|e| match e.body {
+                        DecodedEntryBody::Plaintext(ref e) => e.clone(), // TODO find a way to not need to clone here
+                        DecodedEntryBody::Opaque(_) => {
+                            unreachable!("entries should be all opaque or plaintext, not mixed")
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                encode_segment_plaintext(
+                    &self.header.signature,
+                    &prev_chain.chain_hash,
+                    &start_cipher,
+                    self.chain_seed.log_id(),
+                    key_resolver,
+                    &entries,
+                )
+                .await
             }
-            DecodedEntryBody::Plaintext(_) => todo!(),
         }
     }
 }
