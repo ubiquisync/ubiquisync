@@ -10,7 +10,7 @@ use crate::{
     db::{DbError, sea_query::insert_cols},
     replica::{
         ReplicaInner,
-        ingest::SegmentProcessError,
+        ingest::{IngestSource, SegmentProcessError},
         schema::streams,
         stream_lock::KeyedLockGuard,
         streams::{StreamInfo, StreamLog},
@@ -18,6 +18,7 @@ use crate::{
 };
 
 impl<R> ReplicaInner<R> {
+    /// Search for a fork of stream (or stream itself) upon which we can place new_segment.
     pub(crate) async fn fork_search(
         &self,
         guard: &KeyedLockGuard<StreamLog>,
@@ -26,6 +27,7 @@ impl<R> ReplicaInner<R> {
         mut existing_segment: DecodedSegment<'_>,
         new_segment: &DecodedSegment<'_>,
         hash_ctx: &LogHashContext,
+        src: &IngestSource,
     ) -> Result<Option<StreamInfo>, SegmentProcessError> {
         let mut cmp_res = compare_segments(
             &existing_segment,
@@ -51,7 +53,14 @@ impl<R> ReplicaInner<R> {
                         compare_segments(&next_segment, new_segment, existing_segment.head_chain);
                     existing_segment = next_segment;
                 }
-                CompareSegmentsResult::NewExhausted => return Ok(None),
+                CompareSegmentsResult::NewExhausted => {
+                    // we probably shouldn't end up here because our other ingest code
+                    // should check that this segment doesn't already eixt
+                    // but if later some other code path does something different we handle this case
+                    self.update_published(src, stream.id, new_segment.head_chain.size)
+                        .await?;
+                    return Ok(None);
+                }
                 CompareSegmentsResult::Divergent {
                     last_common,
                     cipher_info,

@@ -1,10 +1,10 @@
 mod commit;
 mod exec;
 mod fork;
-// mod fs;
-// mod fs_read;
+mod fs;
+mod fs_read;
 mod fs_sync_schema;
-// mod fs_write;
+mod fs_write;
 mod hlc;
 mod ingest;
 mod init;

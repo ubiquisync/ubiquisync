@@ -6,7 +6,8 @@ use ubiquisync_core::{
     crypto::{CipherKeyResolveError, RootKey256Fingerprint},
     ids::LogId,
     log::{
-        ChainHash, LogEntry, LogHashContext, LogValidationError, SegmentCipherError,
+        ChainHash, LogDecodeError, LogEntry, LogHashContext, LogValidationError,
+        SegmentCipherError,
         segment::{
             DecodedSegment, SegmentDecodeError, SegmentEncodeError, SegmentReader,
             SegmentVerifyError, encode_segment_plaintext,
@@ -45,6 +46,10 @@ pub(crate) enum SegmentProcessError {
     NeedKey(RootKey256Fingerprint),
     #[error("segment gone")]
     SegmentGone,
+    /// The segment uses a format (encoding, compression, cipher suite, entry type,
+    /// signature algorithm) this software version doesn't know; retry after an upgrade.
+    #[error("unsupported by this software version: {0}")]
+    Unsupported(SegmentDecodeError),
 
     #[error("db error: {0}")]
     Db(#[from] DbError),
@@ -70,12 +75,23 @@ pub(crate) trait SegmentBytesResolver {
     -> Result<Option<&'a [u8]>, SegmentProcessError>;
 }
 
+pub(crate) enum IngestSource {
+    P2p,
+    Pack { remote_id: i64 },
+}
+
 enum PlaceSegmentDescResult {
+    /// An empty segment which can't be placed anywhere.
     Empty,
+    /// The first segment in a stream.
     FirstSegment,
+    /// Can be placed exactly on top of an existing stream.
     PlaceExact(StreamInfo),
-    AlreadyExists,
+    /// We already have the full segment.
+    AlreadyExists(StreamInfo),
+    /// There is no existing segment which this segment extends.
     NoAnchor,
+    /// This segment may overlap with one or more segments we already have.
     Overlaps(Vec<StreamInfo>),
 }
 
@@ -99,8 +115,8 @@ fn evaluate_segment_desc(
     let prev_chain = segment_desc.prev_chain();
     let end_chain = segment_desc.end_chain();
 
-    if streams.iter().any(|s| s.head_chain == end_chain) {
-        return PlaceSegmentDescResult::AlreadyExists;
+    if let Some(stream) = streams.iter().find(|s| s.head_chain == end_chain) {
+        return PlaceSegmentDescResult::AlreadyExists(stream.clone());
     }
 
     if let Some(stream) = streams.iter().find(|s| s.head_chain == prev_chain) {
@@ -131,6 +147,7 @@ impl<R: Reducer> ReplicaInner<R> {
         peer_info: &PeerInfo,
         segment_desc: &SegmentDescriptor,
         segment_resolver: &mut dyn SegmentBytesResolver,
+        src: &IngestSource,
     ) -> Result<(), SegmentProcessError>
 where {
         // first aquire the lock for this log
@@ -150,6 +167,7 @@ where {
                     peer_info,
                     hash_ctx,
                     segment_resolver,
+                    src,
                 )
                 .await
             }
@@ -160,10 +178,15 @@ where {
                     peer_info,
                     hash_ctx,
                     segment_resolver,
+                    src,
                 )
                 .await
             }
-            PlaceSegmentDescResult::AlreadyExists => Ok(()),
+            PlaceSegmentDescResult::AlreadyExists(stream) => {
+                self.update_published(src, stream.id, segment_desc.idx_range.end)
+                    .await?;
+                Ok(())
+            }
             PlaceSegmentDescResult::NoAnchor => Err(SegmentProcessError::Pending),
             PlaceSegmentDescResult::Overlaps(overlapping) => {
                 self.try_place_overlapping_segment_desc(
@@ -174,6 +197,7 @@ where {
                     peer_info,
                     hash_ctx,
                     segment_resolver,
+                    src,
                 )
                 .await
             }
@@ -187,12 +211,13 @@ where {
         peer_info: &PeerInfo,
         hash_ctx: &LogHashContext,
         segment_resolver: &mut dyn SegmentBytesResolver,
+        src: &IngestSource,
     ) -> Result<(), SegmentProcessError> {
         let segment = self
             .fetch_and_verify_remote_segment(peer_info, hash_ctx, segment_resolver)
             .await?;
 
-        self.place_segment(guard, stream, segment).await
+        self.place_segment(guard, stream, segment, src).await
     }
 
     async fn place_segment(
@@ -200,6 +225,7 @@ where {
         guard: &KeyedLockGuard<StreamLog>,
         mut stream: StreamInfo,
         segment: ResolvedSegment<'_>,
+        src: &IngestSource,
     ) -> Result<(), SegmentProcessError> {
         if let Some(HeadErr::Blocked(_size)) = stream.head_err {
             todo!(
@@ -255,6 +281,8 @@ where {
                 .and_where(Expr::column(streams::Id).eq(stream.id)),
         )?;
 
+        self.update_published_batch(batch.as_mut(), src, stream.id, chain_hash.size)?;
+
         batch.commit().await?;
 
         // at this point we could mark this segment as done within any durable pack process state
@@ -287,16 +315,11 @@ where {
             return Err(SegmentProcessError::SegmentGone);
         };
 
-        let reader = SegmentReader::start(segment_bytes)?;
-        let decoded = match reader.read(self.key_resolver.as_ref(), hash_ctx).await {
-            Ok(decoded) => decoded,
-            Err(e) => match e {
-                SegmentDecodeError::SegmentCipher(SegmentCipherError::KeyResolve(
-                    CipherKeyResolveError::NotFound(k),
-                )) => return Err(SegmentProcessError::NeedKey(k)),
-                e => return Err(e.into()),
-            },
-        };
+        let reader = SegmentReader::start(segment_bytes).map_err(classify_decode_error)?;
+        let decoded = reader
+            .read(self.key_resolver.as_ref(), hash_ctx)
+            .await
+            .map_err(classify_decode_error)?;
         decoded.verify(&peer_info.commitment.sig_verify_key)?;
         Ok(ResolvedSegment {
             bytes: segment_bytes,
@@ -313,6 +336,7 @@ where {
         peer_info: &PeerInfo,
         hash_ctx: &LogHashContext,
         segment_resolver: &mut dyn SegmentBytesResolver,
+        src: &IngestSource,
     ) -> Result<(), SegmentProcessError> {
         let prev_chain = segment_desc.prev_chain();
         let end_chain = segment_desc.end_chain();
@@ -326,6 +350,8 @@ where {
                 {
                     if segment.entries.iter().any(|e| e.chain_hash == end_chain) {
                         // we already have the segment and we found where it is
+                        self.update_published(src, stream.id, end_chain.size)
+                            .await?;
                         return Ok(());
                     }
                 } else {
@@ -352,6 +378,7 @@ where {
                             peer_info,
                             hash_ctx,
                             segment_resolver,
+                            src,
                         )
                         .await;
                 }
@@ -374,6 +401,7 @@ where {
         peer_info: &PeerInfo,
         hash_ctx: &LogHashContext,
         segment_resolver: &mut dyn SegmentBytesResolver,
+        src: &IngestSource,
     ) -> Result<(), SegmentProcessError> {
         let new_segment = self
             .fetch_and_verify_remote_segment(peer_info, hash_ctx, segment_resolver)
@@ -418,7 +446,30 @@ where {
             return Ok(());
         };
 
-        self.place_segment(guard, stream, new_segment).await
+        self.place_segment(guard, stream, new_segment, src).await
+    }
+}
+
+fn classify_decode_error(e: SegmentDecodeError) -> SegmentProcessError {
+    match e {
+        // missing key
+        SegmentDecodeError::MissingSegmentKey(ci) => SegmentProcessError::NeedKey(ci.fingerprint),
+        SegmentDecodeError::SegmentCipher(SegmentCipherError::KeyResolve(
+            CipherKeyResolveError::NotFound(k),
+        )) => SegmentProcessError::NeedKey(k),
+        // some unknown tag or algorithm
+        e @ (SegmentDecodeError::UnknownSegmentEncoding(_)
+        | SegmentDecodeError::UnknownCompression(_)
+        | SegmentDecodeError::UnknownSignatureAlgorithm(_)
+        | SegmentDecodeError::UnknownCipherSuite(_)
+        | SegmentDecodeError::SegmentCipher(SegmentCipherError::KeyResolve(
+            CipherKeyResolveError::UnknownSuite(_),
+        ))
+        | SegmentDecodeError::LogDecodeError(
+            LogDecodeError::UndecodableEntryType(_) | LogDecodeError::UnknownSignatureAlgorithm(_),
+        )) => SegmentProcessError::Unsupported(e),
+        // another error that can't be handled
+        e => SegmentProcessError::Decode(e),
     }
 }
 
