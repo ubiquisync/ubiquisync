@@ -35,20 +35,11 @@ def_table!(pack_read_state as __pack_read_state (
     state: super::PackReadState,
 });
 
-def_table!(pack_write_state as __pack_write_state (
-    remote_id: i64, // TODO ref remotes
-    topic_id: i64, // TODO ref topics
-) => {
-    dir_snapshot: Vec<u8>,
-    tips: Vec<u8>,
-    pending: Vec<u8>,
-});
-
 codeable_col_repr!(PackReadState);
 
 #[derive(Debug, Clone, Default)]
 pub struct PackReadState {
-    pub consumed: HashSet<PackRef>,
+    pub consumed: HashSet<PackFileId>,
     pub blocked: HashMap<PackRef, BlockedPackInfo>,
 }
 

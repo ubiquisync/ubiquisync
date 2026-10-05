@@ -3,6 +3,7 @@ use std::borrow::Cow;
 use sea_query::{Expr, ExprTrait, Query};
 use thiserror::Error;
 use ubiquisync_core::{
+    crypto::{CipherKeyResolveError, RootKey256Fingerprint},
     ids::LogId,
     log::{
         ChainHash, LogEntry, LogHashContext, LogValidationError, SegmentCipherError,
@@ -32,12 +33,19 @@ use crate::{
     },
 };
 
-use super::commit::CommitError;
+use super::{commit::CommitError, schema::HeadErr};
 
 #[derive(Error, Debug)]
 pub(crate) enum SegmentProcessError {
     #[error("pending other data")]
     Pending,
+    #[error("corrupt segment metadata, actual hashes don't match descriptor")]
+    BadMetadata,
+    #[error("need key: {0:?}")]
+    NeedKey(RootKey256Fingerprint),
+    #[error("segment gone")]
+    SegmentGone,
+
     #[error("db error: {0}")]
     Db(#[from] DbError),
     #[error("internal error: {0}")]
@@ -180,12 +188,9 @@ where {
         hash_ctx: &LogHashContext,
         segment_resolver: &mut dyn SegmentBytesResolver,
     ) -> Result<(), SegmentProcessError> {
-        let Some(segment) = self
+        let segment = self
             .fetch_and_verify_remote_segment(peer_info, hash_ctx, segment_resolver)
-            .await?
-        else {
-            todo!("pack disappeared")
-        };
+            .await?;
 
         self.place_segment(guard, stream, segment).await
     }
@@ -196,8 +201,10 @@ where {
         mut stream: StreamInfo,
         segment: ResolvedSegment<'_>,
     ) -> Result<(), SegmentProcessError> {
-        if stream.head_err.is_some() {
-            todo!("see if we can place part of the segment")
+        if let Some(HeadErr::Blocked(_size)) = stream.head_err {
+            todo!(
+                "if the stream is blocked, then we need to only ingest up to the specified size, we'll need to add logic for truncating segments to do this"
+            )
         }
 
         let header = &segment.decoded.header;
@@ -219,7 +226,7 @@ where {
 
             // first check that actual hashes line up
             if header.prev_chain.hash != stream.head_chain.hash {
-                todo!("hash error")
+                return Err(SegmentProcessError::BadMetadata);
             }
             segment.bytes.to_vec()
         };
@@ -232,7 +239,7 @@ where {
             segments::Body,
         )>(
             batch.as_mut(),
-            (stream.id, header.prev_chain.size, chain_hash.size, body),
+            (stream.id, stream.head_chain.size, chain_hash.size, body),
             Query::insert().into_table(segments::Table),
         )?;
 
@@ -253,12 +260,18 @@ where {
         // at this point we could mark this segment as done within any durable pack process state
         // to auto-resume later via other periodic processes, but for now packs succeed or fail completely
 
-        self.try_commit(guard, &mut stream, segment.decoded)
-            .await
-            .map_err(|e| match e {
-                CommitError::Db(e) => SegmentProcessError::Db(e),
-                CommitError::Internal(e) => SegmentProcessError::Internal(e),
-            })?;
+        // we should only call try commit when commit size already matched head size, otherwise commit is behind and we'll fail
+        if stream.head_chain.size == stream.commit_size {
+            // make sure to update the stream based on our latest updates
+            stream.head_chain = chain_hash;
+            stream.head_cipher = segment.decoded.head_cipher;
+            self.try_commit(guard, &mut stream, segment.decoded)
+                .await
+                .map_err(|e| match e {
+                    CommitError::Db(e) => SegmentProcessError::Db(e),
+                    CommitError::Internal(e) => SegmentProcessError::Internal(e),
+                })?;
+        }
 
         Ok(())
     }
@@ -268,19 +281,27 @@ where {
         peer_info: &PeerInfo,
         hash_ctx: &LogHashContext,
         segment_resolver: &'a mut dyn SegmentBytesResolver,
-    ) -> Result<Option<ResolvedSegment<'a>>, SegmentProcessError> {
+    ) -> Result<ResolvedSegment<'a>, SegmentProcessError> {
         let Some(segment_bytes) = segment_resolver.fetch_segment_bytes().await? else {
             // pack no longer exists
-            return Ok(None);
+            return Err(SegmentProcessError::SegmentGone);
         };
 
         let reader = SegmentReader::start(segment_bytes)?;
-        let decoded = reader.read(self.key_resolver.as_ref(), hash_ctx).await?;
+        let decoded = match reader.read(self.key_resolver.as_ref(), hash_ctx).await {
+            Ok(decoded) => decoded,
+            Err(e) => match e {
+                SegmentDecodeError::SegmentCipher(SegmentCipherError::KeyResolve(
+                    CipherKeyResolveError::NotFound(k),
+                )) => return Err(SegmentProcessError::NeedKey(k)),
+                e => return Err(e.into()),
+            },
+        };
         decoded.verify(&peer_info.commitment.sig_verify_key)?;
-        Ok(Some(ResolvedSegment {
+        Ok(ResolvedSegment {
             bytes: segment_bytes,
             decoded,
-        }))
+        })
     }
 
     async fn try_place_overlapping_segment_desc(
@@ -308,7 +329,8 @@ where {
                         return Ok(());
                     }
                 } else {
-                    // TODO we shouldn't end up here, but if we do, what should we do??
+                    // this can happen if the stream is a fork and the segment is held by it's parents
+                    continue;
                 }
             }
         }
@@ -353,22 +375,29 @@ where {
         hash_ctx: &LogHashContext,
         segment_resolver: &mut dyn SegmentBytesResolver,
     ) -> Result<(), SegmentProcessError> {
-        let Some(new_segment) = self
+        let new_segment = self
             .fetch_and_verify_remote_segment(peer_info, hash_ctx, segment_resolver)
-            .await?
-        else {
-            todo!("pack disappeared")
-        };
+            .await?;
 
         // first we're going to check and see if this segment extends
         // any existing head
-        let stream = if let Some(extends) = all_streams.iter().find(|s| {
-            new_segment
-                .decoded
-                .entries
-                .iter()
-                .any(|e| e.chain_hash == s.head_chain)
-        }) {
+        let new_head = new_segment.decoded.head_chain;
+        let stream = if let Some(extends) = all_streams
+            .iter()
+            // make sure the new segment extens the candidate, otherwise we'd have an empty segment
+            // technically we should have filtered this out already, but this is safer
+            .filter(|s| new_head.size > s.head_chain.size)
+            // make sure this isn't an empty fork branch
+            // if we did place on an empty fork branch, we may actually overlap with a real parent
+            // so we never want to select empty forks here (they could however be selected below in the actual fork search)
+            .filter(|s| s.fork_size != Some(s.head_chain.size))
+            .find(|s| {
+                new_segment
+                    .decoded
+                    .entries
+                    .iter()
+                    .any(|e| e.chain_hash == s.head_chain)
+            }) {
             // now we know that this segment extends this stream at some, it just has an overlapping prefix
             // note that we don't need to worry about forks here because a fork cannot happen at the head of any stream
             extends.clone()
