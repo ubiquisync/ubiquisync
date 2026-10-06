@@ -32,13 +32,13 @@ def_table!(pack_read_state as __pack_read_state (
     topic_id: i64, // TODO ref topics
     peer_id: i64, // TODO ref peers
 ) => {
-    state: super::PackReadState,
+    state: super::RemoteTopicReadState,
 });
 
-codeable_col_repr!(PackReadState);
+codeable_col_repr!(RemoteTopicReadState);
 
 #[derive(Debug, Clone, Default)]
-pub struct PackReadState {
+pub struct RemoteTopicReadState {
     pub consumed: HashSet<PackFileId>,
     pub blocked: HashMap<PackRef, BlockedPackInfo>,
 }
@@ -66,7 +66,7 @@ pub struct BlockedPackInfo {
     pub bad_body_hash: bool,
 }
 
-impl PackReadState {
+impl RemoteTopicReadState {
     pub fn encode(&self, writer: &mut Writer) -> Result<(), WriteError> {
         todo!()
     }

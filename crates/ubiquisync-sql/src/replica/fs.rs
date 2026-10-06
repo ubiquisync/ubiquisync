@@ -2,8 +2,9 @@ use sea_query::{Expr, ExprTrait, OnConflict, Query};
 use thiserror::Error;
 use tokio::time;
 use ubiquisync_core::{
+    hlc::WallTime,
     log::segment::SegmentEncodeError,
-    pack::{PackHeaderDecodeError, PackStore, PackStoreError, Topic},
+    pack::{PackFileDescriptor, PackHeaderDecodeError, PackStore, PackStoreError, Topic},
 };
 
 use crate::{
@@ -54,7 +55,7 @@ impl<R: Reducer> ReplicaInner<R> {
 
     async fn process_pack_remote(
         &self,
-        remote_id: u64,
+        remote_id: i64,
         store: &PackStore,
     ) -> Result<(), PackProcessError> {
         // for MVP we only subscribe to the default topic
@@ -64,7 +65,7 @@ impl<R: Reducer> ReplicaInner<R> {
 
     async fn process_topic(
         &self,
-        remote_id: u64,
+        remote_id: i64,
         store: &PackStore,
         topic: &Topic,
     ) -> Result<(), PackProcessError> {
@@ -84,8 +85,41 @@ impl<R: Reducer> ReplicaInner<R> {
             .one()?
             .unwrap_or_default();
 
-            let read_plan = read_state.prepare_read(&packs);
-            for todo in read_plan.to_read.iter() {}
+            let mut read_plan = read_state.prepare_read(WallTime::now(), &packs);
+            for todo in read_plan.to_read.iter() {
+                let pack_file_desc = PackFileDescriptor {
+                    topic: topic.clone(),
+                    peer_id: peer,
+                    id: todo.file().clone(),
+                };
+                match self
+                    .process_pack(&peer_info, &pack_file_desc, remote_id, store, todo)
+                    .await
+                {
+                    Err(e) => match e {
+                        PackProcessError::PackGone => { /* keep going */ }
+                        PackProcessError::Blocked(bi) => {
+                            // mark as blocked
+                            read_plan.next.blocked.insert(todo.file().get_ref(), bi);
+                        }
+                        // not sure what to do for these, should we just mark this as consumed because it's bad
+                        // or have a separate list of bad stuff that wasn't consumed?
+                        PackProcessError::BadHeaderSignature => todo!(),
+                        PackProcessError::CorruptHeader(e) => todo!(),
+                        // these errors should just get logged and possibly cause us to abort this read round??
+                        PackProcessError::Store(e) => todo!(),
+                        PackProcessError::Peer(e) => todo!(),
+                        PackProcessError::Db(e) => todo!(),
+                        PackProcessError::GetSegment(e) => todo!(),
+                        PackProcessError::Encode(e) => todo!(),
+                        PackProcessError::Internal(e) => todo!(),
+                    },
+                    Ok(()) => {
+                        // mark as consumed
+                        read_plan.next.consumed.insert(todo.file().clone());
+                    }
+                }
+            }
         }
         Ok(())
     }

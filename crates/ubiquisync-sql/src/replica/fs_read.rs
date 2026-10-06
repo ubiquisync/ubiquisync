@@ -1,4 +1,10 @@
-use std::{cmp::min, ops::Range, sync::Arc, time::Duration};
+use std::{
+    cmp::{Reverse, max, min},
+    collections::HashSet,
+    ops::Range,
+    sync::Arc,
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use ubiquisync_core::{
@@ -8,7 +14,7 @@ use ubiquisync_core::{
     log::LogHashContext,
     pack::{
         PackFileDescriptor, PackFileId, PackHeader, PackHeaderDecodeError, PackStore,
-        PackStoreError, SegmentDescriptor, SignedPackHeader,
+        PackStoreError, SegmentDescriptor, SignedPackHeader, dedupe_pack_files,
     },
 };
 
@@ -17,7 +23,7 @@ use crate::{
     replica::{
         ReplicaInner,
         fs::PackProcessError,
-        fs_sync_schema::{BlockedPackInfo, PackReadState},
+        fs_sync_schema::{BlockedPackInfo, RemoteTopicReadState},
         ingest::{IngestSource, SegmentBytesResolver, SegmentProcessError},
         peers::PeerInfo,
     },
@@ -25,7 +31,7 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub(crate) struct PackReadPlan {
-    pub new_state: PackReadState,
+    pub next: RemoteTopicReadState,
 
     /// The files we need to inspect. We only retain this
     /// transiently between directory listings and add files
@@ -41,10 +47,10 @@ pub(crate) struct PackReadTodo {
 }
 
 impl PackReadTodo {
-    fn new(file: &PackFileId) -> Self {
-        let ts = WallTime::now().as_millis();
+    fn new(file: PackFileId, ts: WallTime) -> Self {
+        let ts = ts.as_millis();
         PackReadTodo {
-            file: file.clone(),
+            file,
             attempts: 0,
             first_last_timestamps: ts..ts,
         }
@@ -75,95 +81,121 @@ impl PackReadTodo {
             bad_body_hash: false,
         }
     }
+
+    pub(crate) fn file(&self) -> &PackFileId {
+        &self.file
+    }
 }
 
 impl BlockedPackInfo {
-    fn todo(&self, file: &PackFileId, ts: u64) -> PackReadTodo {
+    fn todo(&self, file: PackFileId, ts: WallTime) -> PackReadTodo {
         PackReadTodo {
-            file: file.clone(),
+            file,
             attempts: self.attempts + 1,
-            first_last_timestamps: self.read_timestamps.start..ts,
+            first_last_timestamps: self.read_timestamps.start..ts.as_millis(),
         }
     }
 }
 
-impl PackReadState {
-    pub fn prepare_read(self, cur_files: &[PackFileId]) -> PackReadPlan {
-        // let ts = WallTime::now();
-        // let cur_files = dedupe_pack_files(cur_files);
-        // let mut to_read = vec![];
-        // let mut consumed = HashSet::new();
-        // let mut blocked = HashMap::new();
-        // // we only insert entries for the current set of files in our
-        // // to_read, consumed and blocked buckets because if a file
-        // // no longer exists, we don't care to maintain any state about it
-        // for f in cur_files.iter() {
-        //     let r = f.get_ref();
-        //     // if we already consumed this pack then we mark it as consumed again
-        //     if self.consumed.contains(&f) {
-        //         consumed.insert(r);
-        //     } else if let Some(blocked_info) = self.blocked.get(&r) {
-        //         // we retry if a blocked pack's generation is bumped
-        //         if f.generation > blocked_info.file.generation
-        //             // or if it's retry timetstamp is up
-        //             || blocked_info.next_retry_ts() <= ts
-        //             // or if all of its parents are consumed
-        //             // TODO: this is a bit overly conservative because the parents could be scheduled to read in this
-        //             // round, but we don't have a full dependency tree yet, so for now we'll wait until the next
-        //             // round to unblock for these cases
-        //             || blocked_info.parents.iter().all(|p| self.consumed.contains(p))
-        //         {
-        //             to_read.push(blocked_info.todo(f, ts));
-        //         } else {
-        //             blocked.insert(r, blocked_info.clone());
-        //         }
-        //     } else {
-        //         to_read.push(PackReadTodo::new(f));
-        //     }
-        // }
-        // // order pack files so that we read older ones first
-        // to_read.sort_by_key(|v| v.file.seqs.end);
-        // PackReadPlan {
-        //     new_state: PackReadState { consumed, blocked },
-        //     to_read,
-        // }
-        todo!()
+impl RemoteTopicReadState {
+    /// Prepare a plan for this read plan based on what we read previously and what is
+    /// available now.
+    pub fn prepare_read(self, now: WallTime, cur_files: &[PackFileId]) -> PackReadPlan {
+        // only retain the highest gen for a given id
+        let mut cur_files = dedupe_pack_files(cur_files);
+        // oldest first so parents are consumed before children
+        cur_files.sort_by_key(|f| f.seqs.end);
+
+        let consumed_refs: HashSet<_> = self.consumed.iter().map(|f| f.get_ref()).collect();
+        let covered_seqs = self.covered_seqs();
+
+        let mut to_read = vec![];
+        let mut next = RemoteTopicReadState::default();
+        // the refs that were read or will get read in this round as a way to unblock packs transitively depending on parents
+        let mut will_get_read = consumed_refs.clone();
+
+        for f in cur_files {
+            let r = f.get_ref();
+
+            // 1. a file that was consumed already is still marked as consumed (exact match)
+            if self.consumed.contains(&f) {
+                next.consumed.insert(f);
+                continue;
+            }
+
+            // 2. if a new file has the same ref as a consumed file, we can mark it in consumed
+            //    if and only if every seq it covers was in some consumed file (if not it covers
+            //    some pack we either didn't see or that was blocked)
+            if consumed_refs.contains(&r)
+                && covered_seqs
+                    .iter()
+                    .any(|c| c.start <= f.seqs.start && c.end >= f.seqs.end)
+            {
+                next.consumed.insert(f);
+                continue;
+            }
+
+            // 3. if a was blocked, we check if its wake condition was met
+            //    for now we only check for:
+            //      a. generation bump,
+            //      b. parents arriving, or
+            //      c. time-based retry
+            //   there are other wake conditions we can check in the future!
+            if let Some(blocked) = self.blocked.get(&r) {
+                let wake = f.generation > blocked.file.generation
+                    || (!blocked.parents.is_empty()
+                        && blocked.parents.iter().all(|p| will_get_read.contains(p)))
+                    || blocked.next_retry_ts() <= now.as_millis();
+                if !wake {
+                    next.blocked.insert(r, blocked.clone());
+                } else {
+                    to_read.push(blocked.todo(f, now));
+                    will_get_read.insert(r);
+                }
+                continue;
+            }
+
+            // 4. for any other condition we try to read the pack
+            to_read.push(PackReadTodo::new(f, now));
+            will_get_read.insert(r);
+        }
+
+        PackReadPlan { next, to_read }
+    }
+
+    fn covered_seqs(&self) -> Vec<Range<u64>> {
+        let mut all_seqs: Vec<Range<u64>> = self.consumed.iter().map(|c| c.seqs.clone()).collect();
+        // sort so that the first seqs are at the end, so we can pop them off
+        all_seqs.sort_by_key(|r| Reverse(r.start));
+
+        let mut res = vec![];
+        let Some(mut l) = all_seqs.pop() else {
+            return res;
+        };
+        while let Some(r) = all_seqs.pop() {
+            if r.start <= l.end {
+                l.end = max(l.end, r.end);
+            } else {
+                res.push(l.clone());
+                l = r;
+            }
+        }
+        res.push(l); // make sure we pust the last seq we have
+        res
     }
 }
 
 impl BlockedPackInfo {
     fn next_retry_duration(&self) -> u64 {
         const RETRY_BASE: u128 = Duration::from_secs(10).as_millis();
-        // this caps are retry interval at about 4.5 hours
-        (RETRY_BASE * 2u128.pow(min(self.attempts, 15) as u32)) as u64
+        // this caps the retry interval at about 6 hours
+        (RETRY_BASE * 2u128.pow(min(self.attempts, 11) as u32)) as u64
     }
 
     fn next_retry_ts(&self) -> u64 {
         self.read_timestamps.end + self.next_retry_duration()
     }
 }
-
-// #[derive(Error, Debug)]
-// pub enum PackProcessError {
-//     #[error("pack store error: {0}")]
-//     Store(#[from] PackStoreError),
-//     #[error("peer resolve error: {0}")]
-//     Peer(#[from] PeerResolveError),
-//     #[error("db error: {0}")]
-//     Db(#[from] DbError),
-//     #[error("cipher error: {0}")]
-//     Cipher(#[from] SegmentCipherError),
-//     #[error("segment decode error: {0}")]
-//     Decode(#[from] SegmentDecodeError),
-//     #[error("segment verify error: {0}")]
-//     Verify(#[from] SegmentVerifyError),
-//     #[error("log validation error: {0}")]
-//     LogValidation(#[from] LogValidationError),
-//     #[error("op decode error: {0}")]
-//     OpDecode(#[from] OpDecodeError),
-//     #[error("reducer error: {0}")]
-//     Reducer(BoxError),
-// }
 
 impl<R: Reducer> ReplicaInner<R> {
     async fn read_pack_header(
@@ -193,7 +225,7 @@ impl<R: Reducer> ReplicaInner<R> {
         }
     }
 
-    async fn process_pack(
+    pub(crate) async fn process_pack(
         &self,
         peer_info: &PeerInfo,
         desc: &PackFileDescriptor,

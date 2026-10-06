@@ -51,6 +51,6 @@ pub(crate) struct ReplicaInner<R> {
     pub(crate) reducer: R,
     pub(crate) hlc: AtomicU64,
     pub(crate) stream_locks: KeyedLock<StreamLog>,
-    pub(crate) pack_remotes: HashMap<u64, PackStore>,
+    pub(crate) pack_remotes: HashMap<i64, PackStore>,
     pub(crate) key_resolver: Arc<dyn CipherKeyResolver>,
 }
