@@ -3,7 +3,7 @@ use thiserror::Error;
 use tokio::time;
 use ubiquisync_core::{
     log::segment::SegmentEncodeError,
-    pack::{PackStore, PackStoreError, Topic},
+    pack::{PackHeaderDecodeError, PackStore, PackStoreError, Topic},
 };
 
 use crate::{
@@ -124,4 +124,6 @@ pub enum PackProcessError {
     PackGone,
     #[error("bad pack header signature")]
     BadHeaderSignature,
+    #[error("corrupt pack header: {0}")]
+    CorruptHeader(PackHeaderDecodeError),
 }

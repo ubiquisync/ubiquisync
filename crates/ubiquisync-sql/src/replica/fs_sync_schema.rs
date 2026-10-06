@@ -50,10 +50,20 @@ pub struct BlockedPackInfo {
     pub read_timestamps: Range<u64>,
     pub attempts: u64,
     pub need_keys: HashSet<RootKey256Fingerprint>,
+    /// Any case where we hit some decode error which suggests MAYBE a software upgrade is needed (could also mean corrupt data).
     pub needs_upgrade: bool,
+    /// When a segment simply can't be placed because we're missing some parent segments.
     pub pending: bool,
+    /// The metadata for this segment did not match the actual segment body.
     pub bad_metadata: bool,
+    /// Some decode error which most likely means that retrying will continue to fail.
+    /// If this error is the only error blocked condition after retrying, it means
+    /// we should probably permanently mark this pack as failed.
     pub decode_error: bool,
+    /// The body hash did not match the expect hash. This could mean the file
+    /// wasn't fully transferred yet, so we should retry. If there are repeated
+    /// errors we can mark this pack as failed, but for now we'll retry later.
+    pub bad_body_hash: bool,
 }
 
 impl PackReadState {

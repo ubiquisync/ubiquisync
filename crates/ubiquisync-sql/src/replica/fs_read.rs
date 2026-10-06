@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use sea_query::{Expr, ExprTrait, Query};
 use thiserror::Error;
 use ubiquisync_core::{
-    crypto::{CipherKeyResolver, NullCipherKeyResolver},
+    crypto::{CipherKeyResolver, Hash256, NullCipherKeyResolver, TaggedHashDomain, tagged_hash},
     hlc::WallTime,
     ids::LogId,
     log::{
@@ -63,10 +63,11 @@ pub(crate) struct PackReadTodo {
 
 impl PackReadTodo {
     fn new(file: &PackFileId) -> Self {
+        let ts = WallTime::now().as_millis();
         PackReadTodo {
             file: file.clone(),
             attempts: 0,
-            first_last_timestamps: 0..0,
+            first_last_timestamps: ts..ts,
         }
     }
 
@@ -92,6 +93,7 @@ impl PackReadTodo {
             pending: false,
             bad_metadata: false,
             decode_error: false,
+            bad_body_hash: false,
         }
     }
 }
@@ -199,18 +201,16 @@ impl<R: Reducer> ReplicaInner<R> {
                 Ok(h)
             }
             Ok(None) => Err(PackProcessError::PackGone),
-            Err(err) => match &err {
-                PackStoreError::Decode(e) => match e {
-                    PackHeaderDecodeError::UnknownVersion(_)
-                    | PackHeaderDecodeError::UnknownSignatureType(_) => {
-                        let mut bi = todo.blocked_again_no_header(desc);
-                        bi.needs_upgrade = true;
-                        Err(PackProcessError::Blocked(bi))
-                    }
-                    _ => Err(err.into()),
-                },
-                _ => Err(err.into()),
-            },
+            Err(PackStoreError::Decode(
+                PackHeaderDecodeError::UnknownVersion(_)
+                | PackHeaderDecodeError::UnknownSignatureType(_),
+            )) => {
+                let mut bi = todo.blocked_again_no_header(desc);
+                bi.needs_upgrade = true;
+                Err(PackProcessError::Blocked(bi))
+            }
+            Err(PackStoreError::Decode(e)) => Err(PackProcessError::CorruptHeader(e)),
+            Err(err) => Err(err.into()),
         }
     }
 
@@ -228,6 +228,7 @@ impl<R: Reducer> ReplicaInner<R> {
             desc: desc.clone(),
             store,
             body: None,
+            body_sha256: signed_header.header.body_sha256,
         };
 
         let mut blocked_info = None;
@@ -325,6 +326,12 @@ impl<R: Reducer> ReplicaInner<R> {
                         .get_or_insert_with(init_blocked_info)
                         .bad_metadata = true;
                 }
+                SegmentProcessError::BodyHashMismatch => {
+                    let bi = blocked_info.get_or_insert_with(init_blocked_info);
+                    bi.bad_body_hash = true;
+                    // we can't process any other segments when we hit this error so just pass the error upwards
+                    return Err(PackProcessError::Blocked(bi.clone()));
+                }
                 SegmentProcessError::Decode(_)
                 | SegmentProcessError::Verify(_)
                 | SegmentProcessError::Cipher(_)
@@ -350,6 +357,7 @@ struct PackResolver<'a> {
     desc: PackFileDescriptor,
     store: &'a PackStore,
     body: Option<Vec<u8>>,
+    body_sha256: Hash256,
 }
 
 struct PackSegmentResolver<'a: 'b, 'b> {
@@ -377,6 +385,10 @@ impl<'a> PackResolver<'a> {
     async fn resolve<'b>(&'b mut self) -> Result<Option<&'b [u8]>, SegmentProcessError> {
         if self.body.is_none() {
             if let Some(b) = self.store.read_body(&self.desc).await? {
+                // check hash
+                if tagged_hash(TaggedHashDomain::PackBody, &b) != self.body_sha256 {
+                    return Err(SegmentProcessError::BodyHashMismatch);
+                }
                 self.body = Some(b);
             } else {
                 // pack no longer exists

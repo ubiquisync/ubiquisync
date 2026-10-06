@@ -47,9 +47,11 @@ pub(crate) enum SegmentProcessError {
     #[error("segment gone")]
     SegmentGone,
     /// The segment uses a format (encoding, compression, cipher suite, entry type,
-    /// signature algorithm) this software version doesn't know; retry after an upgrade.
+    /// signature algorithm) this software version doesn't know, retry after an upgrade.
     #[error("unsupported by this software version: {0}")]
     Unsupported(SegmentDecodeError),
+    #[error("body hash mismatch")]
+    BodyHashMismatch,
 
     #[error("db error: {0}")]
     Db(#[from] DbError),
