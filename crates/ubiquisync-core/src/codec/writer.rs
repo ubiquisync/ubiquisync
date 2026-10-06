@@ -36,12 +36,21 @@ impl Writer {
         self.write_slice(bytes);
     }
 
-    pub fn write_vec<T, F, Err>(&mut self, v: &[T], mut f: F) -> Result<(), Err>
+    pub fn write_vec<T, F, Err>(&mut self, v: &[T], f: F) -> Result<(), Err>
     where
         F: FnMut(&mut Self, &T) -> Result<(), Err>,
     {
-        self.write_var_usize(v.len());
-        for x in v.iter() {
+        self.write_iter(v.iter(), f)
+    }
+
+    /// Writes each element of the iterator with a length-prefix.
+    pub fn write_iter<T, I, F, Err>(&mut self, items: I, mut f: F) -> Result<(), Err>
+    where
+        I: ExactSizeIterator<Item = T>,
+        F: FnMut(&mut Self, T) -> Result<(), Err>,
+    {
+        self.write_var_usize(items.len());
+        for x in items {
             f(self, x)?;
         }
         Ok(())

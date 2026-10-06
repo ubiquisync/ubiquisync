@@ -10,6 +10,9 @@ use ubiquisync_core::{
     pack::{PackFileId, PackRef},
 };
 
+use bitfield_struct::bitfield;
+
+use super::schema::StatusDecodeError;
 use crate::{codeable_col_repr, def_table, def_table_with_auto_id};
 
 def_table_with_auto_id!(remotes as __replica_remotes (id) => {});
@@ -38,13 +41,14 @@ def_table!(pack_read_state as __pack_read_state (
 
 codeable_col_repr!(RemoteTopicReadState);
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RemoteTopicReadState {
     pub consumed: HashSet<PackFileId>,
     pub blocked: HashMap<PackRef, BlockedPackInfo>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(test, derive(test_strategy::Arbitrary))]
 pub struct BlockedPackInfo {
     pub file: PackFileId,
     pub read_timestamps: Range<u64>,
@@ -54,6 +58,21 @@ pub struct BlockedPackInfo {
     pub pending_parents: HashSet<PackRef>,
     /// Set when we are missing keys for decoding some segment with outer encryption.
     pub need_keys: HashSet<RootKey256Fingerprint>,
+    #[cfg_attr(
+        test,
+        strategy(proptest::strategy::Strategy::prop_map(
+            proptest::arbitrary::any::<u8>(),
+            |b| BlockedReasons::from_bits(b).with_reserved(0)
+        ))
+    )]
+    pub reasons: BlockedReasons,
+    // List of peers referenced in peer data for whom we cannot find an init entry.
+    pub missing_peers: Vec<PeerId>,
+}
+
+#[bitfield(u8)]
+#[derive(PartialEq, Eq)]
+pub struct BlockedReasons {
     /// Any case where we hit some decode error which suggests MAYBE a software upgrade is needed (could also mean corrupt data).
     pub needs_upgrade: bool,
     /// The metadata for this segment did not match the actual segment body.
@@ -72,16 +91,123 @@ pub struct BlockedPackInfo {
     /// The header could not be decoded. Possibly a partially synced file,
     /// so we retry with backoff.
     pub corrupt_header: bool,
-    // List of peers referenced in peer data for whom we cannot find an init entry.
-    pub missing_peers: Vec<PeerId>,
+    #[bits(2)]
+    reserved: u8,
 }
 
 impl RemoteTopicReadState {
     pub fn encode(&self, writer: &mut Writer) -> Result<(), WriteError> {
-        todo!()
+        writer.write_iter(self.consumed.iter(), |w, f| f.encode(w))?;
+        // the map key can be inferred from the values, so only write the values
+        writer.write_iter(self.blocked.values(), |w, b| b.encode(w))
     }
 
-    pub fn decode<'a>(reader: &mut Reader<'a>) -> Result<Self, ReadError> {
-        todo!()
+    pub fn decode(reader: &mut Reader<'_>) -> Result<Self, StatusDecodeError> {
+        let consumed = reader.read_collect(|r| PackFileId::decode(r))?;
+        let blocked = reader.read_collect(|r| {
+            let b = BlockedPackInfo::decode(r)?;
+            Ok::<_, StatusDecodeError>((b.file.get_ref(), b))
+        })?;
+        Ok(Self { consumed, blocked })
+    }
+}
+
+impl BlockedPackInfo {
+    fn encode(&self, writer: &mut Writer) -> Result<(), WriteError> {
+        self.file.encode(writer)?;
+        writer.write_range(&self.read_timestamps)?;
+        writer.write_var_u64(self.attempts);
+        writer.write_iter(self.pending_parents.iter(), |w, p| p.encode(w))?;
+        writer.write_iter(self.need_keys.iter(), |w, k| {
+            w.write_array(&k.0);
+            Ok(())
+        })?;
+        writer.write_byte(self.reasons.into_bits());
+        writer.write_vec(&self.missing_peers, |w, p| {
+            w.write_array(&p.0);
+            Ok(())
+        })
+    }
+
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, StatusDecodeError> {
+        let file = PackFileId::decode(reader)?;
+        let read_timestamps = reader.read_range()?;
+        let attempts = reader.read_var_u64()?;
+        let pending_parents = reader.read_collect(|r| PackRef::decode(r))?;
+        let need_keys =
+            reader.read_collect(|r| Ok::<_, ReadError>(RootKey256Fingerprint(r.read_array()?)))?;
+        let flags = reader.read_byte()?;
+        let reasons = BlockedReasons::from_bits(flags);
+        if reasons.reserved() != 0 {
+            return Err(StatusDecodeError::UnknownTag(flags));
+        }
+        let missing_peers = reader.read_vec(|r| Ok::<_, ReadError>(PeerId(r.read_array()?)))?;
+        Ok(Self {
+            file,
+            read_timestamps,
+            attempts,
+            pending_parents,
+            need_keys,
+            reasons,
+            missing_peers,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use test_case::test_case;
+    use test_strategy::proptest;
+    use ubiquisync_core::pack::PackFileId;
+
+    use super::{BlockedPackInfo, BlockedReasons, RemoteTopicReadState};
+    use crate::db::ColRepr;
+
+    #[proptest]
+    fn roundtrip_read_state(consumed: Vec<PackFileId>, blocked: Vec<BlockedPackInfo>) {
+        let state = RemoteTopicReadState {
+            consumed: consumed.into_iter().collect(),
+            blocked: blocked.into_iter().map(|b| (b.file.get_ref(), b)).collect(),
+        };
+        let state2 = RemoteTopicReadState::from_repr(&state.clone().to_repr().unwrap()).unwrap();
+        assert_eq!(state, state2);
+    }
+
+    /// One blocked entry with no flags set and no missing peers.
+    fn single_blocked_bytes() -> Vec<u8> {
+        let file = PackFileId {
+            seqs: 0..1,
+            id: 1,
+            generation: 0,
+        };
+        let state = RemoteTopicReadState {
+            consumed: Default::default(),
+            blocked: [(
+                file.get_ref(),
+                BlockedPackInfo {
+                    file,
+                    read_timestamps: 0..0,
+                    attempts: 0,
+                    pending_parents: Default::default(),
+                    need_keys: Default::default(),
+                    reasons: BlockedReasons::new(),
+                    missing_peers: vec![],
+                },
+            )]
+            .into(),
+        };
+        state.to_repr().unwrap()
+    }
+
+    // the flags byte is second to last, before the empty missing_peers vec
+    #[test_case(|_| {} => matches Ok(_) ; "valid")]
+    #[test_case(|b| { let i = b.len() - 2; b[i] = 0x80 } => matches Err(_) ; "unknown flag")]
+    #[test_case(|b| b.truncate(b.len() - 1) => matches Err(_) ; "truncated")]
+    fn decode_read_state(
+        patch: fn(&mut Vec<u8>),
+    ) -> Result<RemoteTopicReadState, crate::db::DbError> {
+        let mut b = single_blocked_bytes();
+        patch(&mut b);
+        RemoteTopicReadState::from_repr(&b)
     }
 }

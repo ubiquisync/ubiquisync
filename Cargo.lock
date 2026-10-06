@@ -1741,6 +1741,7 @@ version = "0.0.4"
 dependencies = [
  "async-trait",
  "backon",
+ "bitfield-struct",
  "futures",
  "insta",
  "num_enum",

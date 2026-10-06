@@ -23,7 +23,7 @@ use crate::{
     replica::{
         ReplicaInner,
         fs::PackProcessError,
-        fs_sync_schema::{BlockedPackInfo, RemoteTopicReadState},
+        fs_sync_schema::{BlockedPackInfo, BlockedReasons, RemoteTopicReadState},
         ingest::{IngestSource, SegmentBytesResolver, SegmentProcessError},
         peers::PeerInfo,
     },
@@ -64,12 +64,7 @@ impl PackReadTodo {
             read_timestamps: self.first_last_timestamps.start..ts,
             attempts: self.attempts + 1,
             need_keys: Default::default(),
-            needs_upgrade: false,
-            bad_metadata: false,
-            decode_error: false,
-            bad_body_hash: false,
-            bad_signature: false,
-            corrupt_header: false,
+            reasons: BlockedReasons::new(),
             missing_peers: Default::default(),
         }
     }
@@ -204,7 +199,7 @@ impl<R: Reducer> ReplicaInner<R> {
             Ok(Some(h)) => {
                 if h.verify(&peer_info.commitment.sig_verify_key, desc).is_err() {
                     let mut bi = todo.blocked_again(desc);
-                    bi.bad_signature = true;
+                    bi.reasons.set_bad_signature(true);
                     return Err(PackProcessError::Blocked(bi));
                 }
                 Ok(h)
@@ -214,9 +209,9 @@ impl<R: Reducer> ReplicaInner<R> {
                 let mut bi = todo.blocked_again(desc);
                 match e {
                     PackHeaderDecodeError::UnknownVersion(_)
-                    | PackHeaderDecodeError::UnknownSignatureType(_) => bi.needs_upgrade = true,
+                    | PackHeaderDecodeError::UnknownSignatureType(_) => bi.reasons.set_needs_upgrade(true),
                     PackHeaderDecodeError::Read(_) | PackHeaderDecodeError::TrailingBytes => {
-                        bi.corrupt_header = true
+                        bi.reasons.set_corrupt_header(true)
                     }
                 }
                 Err(PackProcessError::Blocked(bi))
@@ -338,16 +333,16 @@ impl<R: Reducer> ReplicaInner<R> {
                 SegmentProcessError::Unsupported(_) => {
                     blocked_info
                         .get_or_insert_with(init_blocked_info)
-                        .needs_upgrade = true;
+                        .reasons.set_needs_upgrade(true);
                 }
                 SegmentProcessError::BadMetadata => {
                     blocked_info
                         .get_or_insert_with(init_blocked_info)
-                        .bad_metadata = true;
+                        .reasons.set_bad_metadata(true);
                 }
                 SegmentProcessError::BodyHashMismatch => {
                     let bi = blocked_info.get_or_insert_with(init_blocked_info);
-                    bi.bad_body_hash = true;
+                    bi.reasons.set_bad_body_hash(true);
                     // we can't process any other segments when we hit this error so just pass the error upwards
                     return Err(PackProcessError::Blocked(bi.clone()));
                 }
@@ -357,7 +352,7 @@ impl<R: Reducer> ReplicaInner<R> {
                 | SegmentProcessError::LogValidation(_) => {
                     blocked_info
                         .get_or_insert_with(init_blocked_info)
-                        .decode_error = true;
+                        .reasons.set_decode_error(true);
                 }
                 SegmentProcessError::SegmentGone => return Err(PackProcessError::PackGone),
                 // internal errors - push upwards

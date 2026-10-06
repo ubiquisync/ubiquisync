@@ -125,18 +125,25 @@ impl<'a> Reader<'a> {
         }
     }
 
-    pub fn read_vec<T, F, E>(&mut self, mut decode: F) -> Result<Vec<T>, E>
+    pub fn read_vec<T, F, E>(&mut self, decode: F) -> Result<Vec<T>, E>
     where
         F: FnMut(&mut Self) -> Result<T, E>,
         E: From<ReadError>,
     {
+        self.read_collect(decode)
+    }
+
+    /// Reads a length-prefixed sequence (as written by `write_vec`/`write_iter`)
+    /// into any collection.
+    pub fn read_collect<T, C, F, E>(&mut self, mut decode: F) -> Result<C, E>
+    where
+        C: FromIterator<T>,
+        F: FnMut(&mut Self) -> Result<T, E>,
+        E: From<ReadError>,
+    {
         let n = self.read_var_usize()?;
-        // NOTE: DO NOT pre-allocate the vec, input could be untrusted and cause OOM
-        let mut res = vec![];
-        for _ in 0..n {
-            res.push(decode(self)?);
-        }
-        Ok(res)
+        // NOTE: DO NOT attempt to do any pre-allocate, input could be untrusted and cause OOM.
+        (0..n).map(|_| decode(self)).collect()
     }
 
     pub fn is_empty(&self) -> bool {
