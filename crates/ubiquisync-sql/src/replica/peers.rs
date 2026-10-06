@@ -37,11 +37,14 @@ impl<R> ReplicaInner<R> {
         &self,
         peer: &PeerId,
         store: &PackStore,
-    ) -> Result<PeerInfo, PeerResolveError> {
+    ) -> Result<Option<PeerInfo>, PeerResolveError> {
         if let Some(info) = self.resolve_peer(peer).await? {
-            Ok(info)
+            Ok(Some(info))
         } else {
-            let init_entry = store.read_peer_init(peer).await?;
+            let Some(init_entry) = store.read_peer_init(peer).await? else {
+                return Ok(None);
+            };
+
             init_entry.verify(&self.app_id)?;
             let commitment = init_entry.commitment_data()?;
             let (id,) = insert_cols::<
@@ -61,11 +64,11 @@ impl<R> ReplicaInner<R> {
             )
             .await?
             .exactly_one()?;
-            Ok(PeerInfo {
+            Ok(Some(PeerInfo {
                 peer: *peer,
                 db_id: id,
                 commitment,
-            })
+            }))
         }
     }
 

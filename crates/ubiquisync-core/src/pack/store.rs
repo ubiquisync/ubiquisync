@@ -139,7 +139,7 @@ impl PackStore {
         Ok(())
     }
 
-    pub async fn read_peer_init(&self, peer: &PeerId) -> Result<InitEntry, PackStoreError> {
+    pub async fn read_peer_init(&self, peer: &PeerId) -> Result<Option<InitEntry>, PackStoreError> {
         todo!()
     }
 

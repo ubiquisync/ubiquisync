@@ -1,4 +1,4 @@
-use sea_query::{Expr, ExprTrait, OnConflict, Query};
+use sea_query::{Expr, ExprTrait, IntoIden, OnConflict, Query};
 use thiserror::Error;
 use tokio::time;
 use ubiquisync_core::{
@@ -28,6 +28,7 @@ impl<R: Reducer> Replica<R> {
         self.tasks.spawn(async move {
             const PACK_POLL_INTERVAL: time::Duration = time::Duration::from_secs(2);
             let mut interval = time::interval(PACK_POLL_INTERVAL);
+            interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
             loop {
                 tokio::select! {
                     _ = cancel_token.cancelled() => {
@@ -71,7 +72,10 @@ impl<R: Reducer> ReplicaInner<R> {
     ) -> Result<(), PackProcessError> {
         let topic_id = self.resolve_topic_id(topic).await?;
         for peer in store.list_topic_peers(topic).await? {
-            let peer_info = self.resolve_or_init_peer(&peer, store).await?;
+            let Some(peer_info) = self.resolve_or_init_peer(&peer, store).await? else {
+                // TODO log missing peer init
+                continue;
+            };
             let packs = store.list_packs(topic, &peer).await?;
             let (read_state,) = select_cols::<(pack_read_state::State,)>(
                 self.db.as_ref(),
@@ -106,9 +110,13 @@ impl<R: Reducer> ReplicaInner<R> {
                         // or have a separate list of bad stuff that wasn't consumed?
                         PackProcessError::BadHeaderSignature => todo!(),
                         PackProcessError::CorruptHeader(e) => todo!(),
+                        // can't find a peer init
+                        PackProcessError::Peer(e) => {
+                            // TODO logging
+                            continue;
+                        }
                         // these errors should just get logged and possibly cause us to abort this read round??
                         PackProcessError::Store(e) => todo!(),
-                        PackProcessError::Peer(e) => todo!(),
                         PackProcessError::Db(e) => todo!(),
                         PackProcessError::GetSegment(e) => todo!(),
                         PackProcessError::Encode(e) => todo!(),
@@ -120,21 +128,58 @@ impl<R: Reducer> ReplicaInner<R> {
                     }
                 }
             }
+
+            insert_cols::<
+                (
+                    pack_read_state::RemoteId,
+                    pack_read_state::TopicId,
+                    pack_read_state::PeerId,
+                    pack_read_state::State,
+                ),
+                (),
+            >(
+                self.db.as_ref(),
+                (remote_id, topic_id, peer_info.db_id, read_plan.next),
+                Query::insert()
+                    .into_table(pack_read_state::Table)
+                    .on_conflict(
+                        OnConflict::columns([
+                            pack_read_state::RemoteId.into_iden(),
+                            pack_read_state::TopicId.into_iden(),
+                            pack_read_state::PeerId.into_iden(),
+                        ])
+                        .update_column(pack_read_state::State)
+                        .to_owned(),
+                    ),
+            )
+            .await?;
         }
         Ok(())
     }
 
     async fn resolve_topic_id(&self, topic: &Topic) -> Result<i64, DbError> {
-        let (id,) = insert_cols::<(topics::Topic,), (topics::Id,)>(
+        if let Some((topic_id,)) = select_cols::<(topics::Id,)>(
             self.db.as_ref(),
-            (topic.dir(),),
-            Query::insert()
-                .into_table(topics::Table)
-                .on_conflict(OnConflict::column(topics::Topic).do_nothing().to_owned()),
+            Query::select()
+                .from(topics::Table)
+                .and_where(Expr::col(topics::Topic).eq(topic.dir())),
         )
         .await?
-        .exactly_one()?;
-        Ok(id)
+        .one()?
+        {
+            Ok(topic_id)
+        } else {
+            let (id,) = insert_cols::<(topics::Topic,), (topics::Id,)>(
+                self.db.as_ref(),
+                (topic.dir(),),
+                Query::insert()
+                    .into_table(topics::Table)
+                    .on_conflict(OnConflict::column(topics::Topic).do_nothing().to_owned()),
+            )
+            .await?
+            .exactly_one()?;
+            Ok(id)
+        }
     }
 }
 

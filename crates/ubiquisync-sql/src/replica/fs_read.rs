@@ -56,29 +56,19 @@ impl PackReadTodo {
         }
     }
 
-    fn blocked_again(
-        &self,
-        pack_desc: &PackFileDescriptor,
-        pack_header: &PackHeader,
-    ) -> BlockedPackInfo {
-        let mut bi = self.blocked_again_no_header(pack_desc);
-        bi.parents = pack_header.parents.iter().cloned().collect();
-        bi
-    }
-
-    fn blocked_again_no_header(&self, pack_desc: &PackFileDescriptor) -> BlockedPackInfo {
+    fn blocked_again(&self, pack_desc: &PackFileDescriptor) -> BlockedPackInfo {
         let ts = WallTime::now().as_millis();
         BlockedPackInfo {
             file: pack_desc.id.clone(),
-            parents: Default::default(),
+            pending_parents: Default::default(),
             read_timestamps: self.first_last_timestamps.start..ts,
             attempts: self.attempts + 1,
             need_keys: Default::default(),
             needs_upgrade: false,
-            pending: false,
             bad_metadata: false,
             decode_error: false,
             bad_body_hash: false,
+            missing_peers: Default::default(),
         }
     }
 
@@ -143,8 +133,11 @@ impl RemoteTopicReadState {
             //   there are other wake conditions we can check in the future!
             if let Some(blocked) = self.blocked.get(&r) {
                 let wake = f.generation > blocked.file.generation
-                    || (!blocked.parents.is_empty()
-                        && blocked.parents.iter().all(|p| will_get_read.contains(p)))
+                    || (!blocked.pending_parents.is_empty()
+                        && blocked
+                            .pending_parents
+                            .iter()
+                            .all(|p| will_get_read.contains(p)))
                     || blocked.next_retry_ts() <= now.as_millis();
                 if !wake {
                     next.blocked.insert(r, blocked.clone());
@@ -216,7 +209,7 @@ impl<R: Reducer> ReplicaInner<R> {
                 PackHeaderDecodeError::UnknownVersion(_)
                 | PackHeaderDecodeError::UnknownSignatureType(_),
             )) => {
-                let mut bi = todo.blocked_again_no_header(desc);
+                let mut bi = todo.blocked_again(desc);
                 bi.needs_upgrade = true;
                 Err(PackProcessError::Blocked(bi))
             }
@@ -259,8 +252,14 @@ impl<R: Reducer> ReplicaInner<R> {
         }
 
         for peer_data in signed_header.header.peer_data.iter() {
-            let Some(peer_info) = self.resolve_peer(&peer_data.peer_id).await? else {
-                todo!()
+            let Some(peer_info) = self.resolve_or_init_peer(&peer_data.peer_id, store).await?
+            else {
+                // can't find peer info, track and continue
+                blocked_info
+                    .get_or_insert_with(|| todo.blocked_again(desc))
+                    .missing_peers
+                    .push(peer_data.peer_id);
+                continue;
             };
             for segment in peer_data.segments.iter() {
                 self.process_pack_segment(
@@ -304,7 +303,7 @@ impl<R: Reducer> ReplicaInner<R> {
             pack_resolver,
         };
 
-        let init_blocked_info = || todo.blocked_again(pack_desc, pack_header);
+        let init_blocked_info = || todo.blocked_again(pack_desc);
 
         match self
             .try_ingest_segment(
@@ -319,7 +318,9 @@ impl<R: Reducer> ReplicaInner<R> {
             Ok(_) => {}
             Err(e) => match e {
                 SegmentProcessError::Pending => {
-                    blocked_info.get_or_insert_with(init_blocked_info).pending = true;
+                    blocked_info
+                        .get_or_insert_with(init_blocked_info)
+                        .pending_parents = pack_header.parents.iter().cloned().collect();
                 }
                 SegmentProcessError::NeedKey(k) => {
                     blocked_info

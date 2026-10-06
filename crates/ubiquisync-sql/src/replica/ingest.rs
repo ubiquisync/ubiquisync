@@ -68,7 +68,7 @@ pub(crate) enum SegmentProcessError {
 }
 
 #[async_trait::async_trait]
-pub(crate) trait SegmentBytesResolver {
+pub(crate) trait SegmentBytesResolver: Send {
     async fn fetch_segment_bytes<'a>(&'a mut self)
     -> Result<Option<&'a [u8]>, SegmentProcessError>;
 }

@@ -6,6 +6,7 @@ use std::{
 use ubiquisync_core::{
     codec::{ReadError, Reader, WriteError, Writer},
     crypto::RootKey256Fingerprint,
+    ids::PeerId,
     pack::{PackFileId, PackRef},
 };
 
@@ -46,14 +47,15 @@ pub struct RemoteTopicReadState {
 #[derive(Debug, Clone)]
 pub struct BlockedPackInfo {
     pub file: PackFileId,
-    pub parents: HashSet<PackRef>,
     pub read_timestamps: Range<u64>,
     pub attempts: u64,
+
+    // Set to the list of missing parents when any segment does not have an anchor (meaning we have a missing dependency).
+    pub pending_parents: HashSet<PackRef>,
+    /// Set when we are missing keys for decoding some segment with outer encryption.
     pub need_keys: HashSet<RootKey256Fingerprint>,
     /// Any case where we hit some decode error which suggests MAYBE a software upgrade is needed (could also mean corrupt data).
     pub needs_upgrade: bool,
-    /// When a segment simply can't be placed because we're missing some parent segments.
-    pub pending: bool,
     /// The metadata for this segment did not match the actual segment body.
     pub bad_metadata: bool,
     /// Some decode error which most likely means that retrying will continue to fail.
@@ -64,6 +66,8 @@ pub struct BlockedPackInfo {
     /// wasn't fully transferred yet, so we should retry. If there are repeated
     /// errors we can mark this pack as failed, but for now we'll retry later.
     pub bad_body_hash: bool,
+    // List of peers referenced in peer data for whome we cannot find an init entry.
+    pub missing_peers: Vec<PeerId>,
 }
 
 impl RemoteTopicReadState {
