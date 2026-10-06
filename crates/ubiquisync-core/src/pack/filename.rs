@@ -14,6 +14,7 @@ use crate::{
     pack::PackRef,
 };
 
+#[derive(Debug, Clone)]
 pub struct PackFileDescriptor {
     pub topic: Topic,
     pub peer_id: PeerId,

@@ -13,7 +13,7 @@ use ubiquisync_core::{
             SegmentVerifyError, encode_segment_plaintext,
         },
     },
-    pack::SegmentDescriptor,
+    pack::{PackStoreError, SegmentDescriptor},
 };
 
 use crate::{
@@ -67,6 +67,8 @@ pub(crate) enum SegmentProcessError {
     LogValidation(#[from] LogValidationError),
     #[error("get segment error: {0}")]
     GetSegment(#[from] GetSegmentError),
+    #[error("pack store error: {0}")]
+    PackStore(#[from] PackStoreError),
 }
 
 #[async_trait::async_trait]
@@ -141,7 +143,7 @@ fn evaluate_segment_desc(
 }
 
 impl<R: Reducer> ReplicaInner<R> {
-    async fn try_ingest_segment(
+    pub(crate) async fn try_ingest_segment(
         &self,
         hash_ctx: &LogHashContext,
         peer_info: &PeerInfo,

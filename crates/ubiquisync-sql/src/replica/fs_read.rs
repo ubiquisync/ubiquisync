@@ -7,18 +7,16 @@ use std::{
     time::Duration,
 };
 
+use async_trait::async_trait;
 use sea_query::{Expr, ExprTrait, Query};
 use thiserror::Error;
 use ubiquisync_core::{
     crypto::{CipherKeyResolver, NullCipherKeyResolver},
-    hlc::{HlcError, WallTime, wall_ms},
+    hlc::WallTime,
     ids::LogId,
     log::{
         LogEntry, LogHashContext, LogValidationError, SegmentCipherError,
-        segment::{
-            DecodedEntries, PlaintextSegmentEncoding, SegmentDecodeError, SegmentEncoding,
-            SegmentReader, SegmentVerifyError, VerifiedSegment,
-        },
+        segment::{SegmentDecodeError, SegmentVerifyError},
     },
     pack::{
         PackFileDescriptor, PackFileId, PackHeader, PackRef, PackStore, PackStoreError,
@@ -38,6 +36,7 @@ use crate::{
         Replica, ReplicaInner,
         fs::PackRemoteProcessError,
         fs_sync_schema::{BlockedPackInfo, PackReadState},
+        ingest::{SegmentBytesResolver, SegmentProcessError},
         peers::{PeerInfo, PeerResolveError},
         schema::{CommitErr, segments, streams},
         stream_lock::KeyedLockGuard,
@@ -84,44 +83,45 @@ impl BlockedPackInfo {
 
 impl PackReadState {
     pub fn prepare_read(self, cur_files: &[PackFileId]) -> PackReadPlan {
-        let ts = WallTime::now();
-        let cur_files = dedupe_pack_files(cur_files);
-        let mut to_read = vec![];
-        let mut consumed = HashSet::new();
-        let mut blocked = HashMap::new();
-        // we only insert entries for the current set of files in our
-        // to_read, consumed and blocked buckets because if a file
-        // no longer exists, we don't care to maintain any state about it
-        for f in cur_files.iter() {
-            let r = f.get_ref();
-            // if we already consumed this pack then we mark it as consumed again
-            if self.consumed.contains(&r) {
-                consumed.insert(r);
-            } else if let Some(blocked_info) = self.blocked.get(&r) {
-                // we retry if a blocked pack's generation is bumped
-                if f.generation > blocked_info.file.generation
-                    // or if it's retry timetstamp is up
-                    || blocked_info.next_retry_ts() <= ts
-                    // or if all of its parents are consumed
-                    // TODO: this is a bit overly conservative because the parents could be scheduled to read in this
-                    // round, but we don't have a full dependency tree yet, so for now we'll wait until the next
-                    // round to unblock for these cases
-                    || blocked_info.parents.iter().all(|p| self.consumed.contains(p))
-                {
-                    to_read.push(blocked_info.todo(f, ts));
-                } else {
-                    blocked.insert(r, blocked_info.clone());
-                }
-            } else {
-                to_read.push(PackReadTodo::new(f));
-            }
-        }
-        // order pack files so that we read older ones first
-        to_read.sort_by_key(|v| v.file.seqs.end);
-        PackReadPlan {
-            new_state: PackReadState { consumed, blocked },
-            to_read,
-        }
+        // let ts = WallTime::now();
+        // let cur_files = dedupe_pack_files(cur_files);
+        // let mut to_read = vec![];
+        // let mut consumed = HashSet::new();
+        // let mut blocked = HashMap::new();
+        // // we only insert entries for the current set of files in our
+        // // to_read, consumed and blocked buckets because if a file
+        // // no longer exists, we don't care to maintain any state about it
+        // for f in cur_files.iter() {
+        //     let r = f.get_ref();
+        //     // if we already consumed this pack then we mark it as consumed again
+        //     if self.consumed.contains(&f) {
+        //         consumed.insert(r);
+        //     } else if let Some(blocked_info) = self.blocked.get(&r) {
+        //         // we retry if a blocked pack's generation is bumped
+        //         if f.generation > blocked_info.file.generation
+        //             // or if it's retry timetstamp is up
+        //             || blocked_info.next_retry_ts() <= ts
+        //             // or if all of its parents are consumed
+        //             // TODO: this is a bit overly conservative because the parents could be scheduled to read in this
+        //             // round, but we don't have a full dependency tree yet, so for now we'll wait until the next
+        //             // round to unblock for these cases
+        //             || blocked_info.parents.iter().all(|p| self.consumed.contains(p))
+        //         {
+        //             to_read.push(blocked_info.todo(f, ts));
+        //         } else {
+        //             blocked.insert(r, blocked_info.clone());
+        //         }
+        //     } else {
+        //         to_read.push(PackReadTodo::new(f));
+        //     }
+        // }
+        // // order pack files so that we read older ones first
+        // to_read.sort_by_key(|v| v.file.seqs.end);
+        // PackReadPlan {
+        //     new_state: PackReadState { consumed, blocked },
+        //     to_read,
+        // }
+        todo!()
     }
 }
 
@@ -166,8 +166,8 @@ impl<R: Reducer> ReplicaInner<R> {
         &self,
         peer_info: &PeerInfo,
         desc: &PackFileDescriptor,
+        remote_id: i64,
         store: &PackStore,
-        plan: &mut PackReadPlan,
     ) -> Result<(), PackRemoteProcessError> {
         let Some(signed_header) = store.read_header(desc).await? else {
             // if by the time we go to read he pack it is gone,
@@ -176,11 +176,23 @@ impl<R: Reducer> ReplicaInner<R> {
             return Ok(());
         };
 
-        let mut body: Option<Vec<u8>> = None;
+        let mut pack_resolver = PackResolver {
+            desc: desc.clone(),
+            store,
+            body: None,
+        };
 
-        // TODO: for each self segment and each peer_data segment call try_ingest_segment
-        for _segment in signed_header.header.self_segments.iter() {
-            todo!("ingest self segment")
+        for segment in signed_header.header.self_segments.iter() {
+            let hash_ctx = LogHashContext::new(&LogId {
+                peer_id: peer_info.peer,
+                container_id: segment.container_id,
+            });
+            let mut resolver = PackSegmentResolver {
+                desc: segment.clone(),
+                pack_resolver: &mut pack_resolver,
+            };
+            self.try_ingest_segment(&hash_ctx, peer_info, segment, &mut resolver, src)
+                .await?;
         }
 
         for peer_data in signed_header.header.peer_data.iter() {
@@ -192,27 +204,47 @@ impl<R: Reducer> ReplicaInner<R> {
 
         Ok(())
     }
+}
 
-    async fn read_segment_bytes<'a>(
-        &self,
-        pack_desc: &PackFileDescriptor,
-        segment_desc: &SegmentDescriptor,
-        store: &PackStore,
-        body: &'a mut Option<Vec<u8>>,
-    ) -> Result<Option<&'a [u8]>, PackStoreError> {
-        let body = if let Some(body) = body {
-            body.as_slice()
+struct PackResolver<'a> {
+    desc: PackFileDescriptor,
+    store: &'a PackStore,
+    body: Option<Vec<u8>>,
+}
+
+struct PackSegmentResolver<'a: 'b, 'b> {
+    desc: SegmentDescriptor,
+    pack_resolver: &'b mut PackResolver<'a>,
+}
+
+#[async_trait]
+impl<'a: 'b, 'b> SegmentBytesResolver for PackSegmentResolver<'a, 'b> {
+    async fn fetch_segment_bytes<'c>(
+        &'c mut self,
+    ) -> Result<Option<&'c [u8]>, SegmentProcessError> {
+        if let Some(body) = self.pack_resolver.resolve().await? {
+            Ok(Some(&body[self.desc.body_loc.clone()]))
         } else {
-            if let Some(b) = store.read_body(pack_desc).await? {
-                let bref = b.as_slice();
-                *body = Some(b);
-                bref
+            Ok(None)
+        }
+    }
+}
+
+impl<'a> PackResolver<'a> {
+    async fn resolve<'b>(&'b mut self) -> Result<Option<&'b [u8]>, SegmentProcessError> {
+        if self.body.is_none() {
+            if let Some(b) = self.store.read_body(&self.desc).await? {
+                self.body = Some(b);
             } else {
                 // pack no longer exists
                 return Ok(None);
             }
-        };
-        Ok(Some(&body[segment_desc.body_loc.clone()]))
+        }
+        if let Some(ref body) = self.body {
+            Ok(Some(body.as_slice()))
+        } else {
+            Ok(None)
+        }
     }
 }
 
