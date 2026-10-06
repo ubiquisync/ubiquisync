@@ -34,9 +34,9 @@ use crate::{
     reducer::Reducer,
     replica::{
         Replica, ReplicaInner,
-        fs::PackRemoteProcessError,
+        fs::PackProcessError,
         fs_sync_schema::{BlockedPackInfo, PackReadState},
-        ingest::{SegmentBytesResolver, SegmentProcessError},
+        ingest::{IngestSource, SegmentBytesResolver, SegmentProcessError},
         peers::{PeerInfo, PeerResolveError},
         schema::{CommitErr, segments, streams},
         stream_lock::KeyedLockGuard,
@@ -137,29 +137,27 @@ impl BlockedPackInfo {
     }
 }
 
-#[derive(Error, Debug)]
-pub enum PackProcessError {
-    #[error("pack store error: {0}")]
-    Store(#[from] PackStoreError),
-    #[error("peer resolve error: {0}")]
-    Peer(#[from] PeerResolveError),
-    #[error("db error: {0}")]
-    Db(#[from] DbError),
-    #[error("cipher error: {0}")]
-    Cipher(#[from] SegmentCipherError),
-    #[error("segment decode error: {0}")]
-    Decode(#[from] SegmentDecodeError),
-    #[error("segment verify error: {0}")]
-    Verify(#[from] SegmentVerifyError),
-    #[error("log validation error: {0}")]
-    LogValidation(#[from] LogValidationError),
-    #[error("op decode error: {0}")]
-    OpDecode(#[from] OpDecodeError),
-    #[error("reducer error: {0}")]
-    Reducer(BoxError),
-    #[error("pending")]
-    Pending,
-}
+// #[derive(Error, Debug)]
+// pub enum PackProcessError {
+//     #[error("pack store error: {0}")]
+//     Store(#[from] PackStoreError),
+//     #[error("peer resolve error: {0}")]
+//     Peer(#[from] PeerResolveError),
+//     #[error("db error: {0}")]
+//     Db(#[from] DbError),
+//     #[error("cipher error: {0}")]
+//     Cipher(#[from] SegmentCipherError),
+//     #[error("segment decode error: {0}")]
+//     Decode(#[from] SegmentDecodeError),
+//     #[error("segment verify error: {0}")]
+//     Verify(#[from] SegmentVerifyError),
+//     #[error("log validation error: {0}")]
+//     LogValidation(#[from] LogValidationError),
+//     #[error("op decode error: {0}")]
+//     OpDecode(#[from] OpDecodeError),
+//     #[error("reducer error: {0}")]
+//     Reducer(BoxError),
+// }
 
 impl<R: Reducer> ReplicaInner<R> {
     async fn process_pack(
@@ -168,12 +166,12 @@ impl<R: Reducer> ReplicaInner<R> {
         desc: &PackFileDescriptor,
         remote_id: i64,
         store: &PackStore,
-    ) -> Result<(), PackRemoteProcessError> {
+    ) -> Result<Option<BlockedPackInfo>, PackProcessError> {
         let Some(signed_header) = store.read_header(desc).await? else {
             // if by the time we go to read he pack it is gone,
             // then it has probably been replaced by a newer generation,
             // we'll get back to it later
-            return Ok(());
+            return Ok(None);
         };
 
         let mut pack_resolver = PackResolver {
@@ -182,26 +180,125 @@ impl<R: Reducer> ReplicaInner<R> {
             body: None,
         };
 
+        let mut blocked_info = None;
+
         for segment in signed_header.header.self_segments.iter() {
-            let hash_ctx = LogHashContext::new(&LogId {
-                peer_id: peer_info.peer,
-                container_id: segment.container_id,
-            });
-            let mut resolver = PackSegmentResolver {
-                desc: segment.clone(),
-                pack_resolver: &mut pack_resolver,
-            };
-            self.try_ingest_segment(&hash_ctx, peer_info, segment, &mut resolver, src)
-                .await?;
+            self.process_pack_segment(
+                desc,
+                &signed_header.header,
+                remote_id,
+                &mut pack_resolver,
+                peer_info,
+                segment,
+                &mut blocked_info,
+            )
+            .await?;
         }
 
         for peer_data in signed_header.header.peer_data.iter() {
-            let _peer_info = self.resolve_peer(&peer_data.peer_id).await?;
-            for _segment in peer_data.segments.iter() {
-                todo!("ingest peer segment")
+            let Some(peer_info) = self.resolve_peer(&peer_data.peer_id).await? else {
+                todo!()
+            };
+            for segment in peer_data.segments.iter() {
+                self.process_pack_segment(
+                    desc,
+                    &signed_header.header,
+                    remote_id,
+                    &mut pack_resolver,
+                    &peer_info,
+                    segment,
+                    &mut blocked_info,
+                )
+                .await?;
             }
         }
 
+        Ok(blocked_info)
+    }
+
+    async fn process_pack_segment(
+        &self,
+        pack_desc: &PackFileDescriptor,
+        pack_header: &PackHeader,
+        remote_id: i64,
+        pack_resolver: &mut PackResolver<'_>,
+        peer_info: &PeerInfo,
+        segment_desc: &SegmentDescriptor,
+        blocked_info: &mut Option<BlockedPackInfo>,
+    ) -> Result<(), PackProcessError> {
+        let hash_ctx = LogHashContext::new(&LogId {
+            peer_id: peer_info.peer,
+            container_id: segment_desc.container_id,
+        });
+        let mut resolver = PackSegmentResolver {
+            desc: segment_desc.clone(),
+            pack_resolver,
+        };
+
+        let init_blocked_info = || {
+            let ts = WallTime::now().as_millis();
+            BlockedPackInfo {
+                file: pack_desc.id.clone(),
+                parents: pack_header.parents.iter().cloned().collect(),
+                read_timestamps: ts..ts,
+                attempts: 1,
+                need_keys: Default::default(),
+                needs_upgrade: false,
+                pending: false,
+                bad_metadata: false,
+                decode_error: false,
+            }
+        };
+
+        match self
+            .try_ingest_segment(
+                &hash_ctx,
+                peer_info,
+                segment_desc,
+                &mut resolver,
+                &IngestSource::Pack { remote_id },
+            )
+            .await
+        {
+            Ok(_) => {}
+            Err(e) => match e {
+                SegmentProcessError::Pending => {
+                    blocked_info.get_or_insert_with(init_blocked_info).pending = true;
+                }
+                SegmentProcessError::NeedKey(k) => {
+                    blocked_info
+                        .get_or_insert_with(init_blocked_info)
+                        .need_keys
+                        .insert(k);
+                }
+                SegmentProcessError::Unsupported(_) => {
+                    blocked_info
+                        .get_or_insert_with(init_blocked_info)
+                        .needs_upgrade = true;
+                }
+                SegmentProcessError::SegmentGone => return Err(PackProcessError::PackGone),
+                // internal errors - push upwards
+                SegmentProcessError::Db(e) => return Err(PackProcessError::Db(e)),
+                SegmentProcessError::PackStore(e) => return Err(PackProcessError::Store(e)),
+                SegmentProcessError::Internal(e) => return Err(PackProcessError::Internal(e)),
+                SegmentProcessError::GetSegment(e) => return Err(PackProcessError::GetSegment(e)),
+                // bad segment errors, flag on BlockedPackInfo in such a way that we can figure out if all segments are corrupted or not
+                SegmentProcessError::BadMetadata => {
+                    blocked_info
+                        .get_or_insert_with(init_blocked_info)
+                        .bad_metadata = true;
+                }
+                SegmentProcessError::Decode(_)
+                | SegmentProcessError::Encode(_)
+                | SegmentProcessError::Verify(_)
+                | SegmentProcessError::Cipher(_)
+                | SegmentProcessError::LogValidation(_) => {
+                    blocked_info
+                        .get_or_insert_with(init_blocked_info)
+                        .decode_error = true;
+                }
+            },
+        }
         Ok(())
     }
 }

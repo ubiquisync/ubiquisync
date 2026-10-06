@@ -142,4 +142,8 @@ impl PackStore {
     pub async fn read_peer_init(&self, peer: &PeerId) -> Result<InitEntry, PackStoreError> {
         todo!()
     }
+
+    pub async fn write_peer_init(&self, init_entry: &InitEntry) -> Result<(), PackStoreError> {
+        todo!()
+    }
 }

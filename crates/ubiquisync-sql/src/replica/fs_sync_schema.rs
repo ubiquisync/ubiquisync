@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    range::Range,
+    ops::Range,
 };
 
 use ubiquisync_core::{
@@ -41,7 +41,6 @@ codeable_col_repr!(PackReadState);
 pub struct PackReadState {
     pub consumed: HashSet<PackFileId>,
     pub blocked: HashMap<PackRef, BlockedPackInfo>,
-    pub corrupted: HashSet<PackFileId>,
 }
 
 #[derive(Debug, Clone)]
@@ -50,8 +49,11 @@ pub struct BlockedPackInfo {
     pub parents: HashSet<PackRef>,
     pub read_timestamps: Range<u64>,
     pub attempts: u64,
-    pub need_keys: Vec<RootKey256Fingerprint>,
+    pub need_keys: HashSet<RootKey256Fingerprint>,
     pub needs_upgrade: bool,
+    pub pending: bool,
+    pub bad_metadata: bool,
+    pub decode_error: bool,
 }
 
 impl PackReadState {
