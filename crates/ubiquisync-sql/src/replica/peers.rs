@@ -59,7 +59,12 @@ impl<R> ReplicaInner<R> {
                 ),
                 Query::insert()
                     .into_table(peers::Table)
-                    .on_conflict(OnConflict::column(peers::PeerId).do_nothing().to_owned())
+                    // we update here if the row already exists to get the id returned if there is a concurrent insert
+                    .on_conflict(
+                        OnConflict::column(peers::PeerId)
+                            .update_column(peers::PeerId)
+                            .to_owned(),
+                    )
                     .returning(Query::returning().column(peers::Id)),
             )
             .await?

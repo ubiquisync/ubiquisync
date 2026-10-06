@@ -4,7 +4,7 @@ use tokio::time;
 use ubiquisync_core::{
     hlc::WallTime,
     log::segment::SegmentEncodeError,
-    pack::{PackFileDescriptor, PackHeaderDecodeError, PackStore, PackStoreError, Topic},
+    pack::{PackFileDescriptor, PackStore, PackStoreError, Topic},
 };
 
 use crate::{
@@ -106,10 +106,6 @@ impl<R: Reducer> ReplicaInner<R> {
                             // mark as blocked
                             read_plan.next.blocked.insert(todo.file().get_ref(), bi);
                         }
-                        // not sure what to do for these, should we just mark this as consumed because it's bad
-                        // or have a separate list of bad stuff that wasn't consumed?
-                        PackProcessError::BadHeaderSignature => todo!(),
-                        PackProcessError::CorruptHeader(e) => todo!(),
                         // can't find a peer init
                         PackProcessError::Peer(e) => {
                             // TODO logging
@@ -174,7 +170,12 @@ impl<R: Reducer> ReplicaInner<R> {
                 (topic.dir(),),
                 Query::insert()
                     .into_table(topics::Table)
-                    .on_conflict(OnConflict::column(topics::Topic).do_nothing().to_owned()),
+                    // we update here if the row already exists to get the id returned if there is a concurrent insert
+                    .on_conflict(
+                        OnConflict::column(topics::Topic)
+                            .update_column(topics::Topic)
+                            .to_owned(),
+                    ),
             )
             .await?
             .exactly_one()?;
@@ -201,8 +202,4 @@ pub enum PackProcessError {
     Blocked(BlockedPackInfo),
     #[error("pack gone")]
     PackGone,
-    #[error("bad pack header signature")]
-    BadHeaderSignature,
-    #[error("corrupt pack header: {0}")]
-    CorruptHeader(PackHeaderDecodeError),
 }

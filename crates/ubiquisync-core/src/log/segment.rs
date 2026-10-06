@@ -682,12 +682,13 @@ impl<'a> DecodedSegment<'a> {
         else {
             return Err(SegmentEncodeError::StartSizeOutOfRange(start_size));
         };
-        let mut entries = self
+        // collected up front to avoid Send bound errors with futures
+        let entries: Vec<&DecodedEntry<'_>> = self
             .entries
             .iter()
             .filter(|e| e.chain_hash.size > start_size)
-            .peekable();
-        let Some(first) = entries.peek() else {
+            .collect();
+        let Some(first) = entries.first() else {
             return Err(SegmentEncodeError::StartSizeOutOfRange(start_size));
         };
         // we assume that all entry bodies have the same encoding because that's how we decoded them
@@ -696,7 +697,7 @@ impl<'a> DecodedSegment<'a> {
                 &self.header.signature,
                 &prev_chain,
                 &start_cipher,
-                entries.map(|e| match e.body {
+                entries.iter().map(|e| match e.body {
                     DecodedEntryBody::Opaque(ref e) => e,
                     DecodedEntryBody::Plaintext(_) => {
                         unreachable!("entries should be all opaque or plaintext, not mixed")
@@ -704,18 +705,22 @@ impl<'a> DecodedSegment<'a> {
                 }),
             ),
             DecodedEntryBody::Plaintext(_) => {
+                let bodies: Vec<&PlaintextLogEntry<'_>> = entries
+                    .iter()
+                    .map(|e| match e.body {
+                        DecodedEntryBody::Plaintext(ref e) => e,
+                        DecodedEntryBody::Opaque(_) => {
+                            unreachable!("entries should be all opaque or plaintext, not mixed")
+                        }
+                    })
+                    .collect();
                 encode_segment_plaintext(
                     &self.header.signature,
                     &prev_chain,
                     &start_cipher,
                     self.chain_seed.log_id(),
                     key_resolver,
-                    entries.map(|e| match e.body {
-                        DecodedEntryBody::Plaintext(ref e) => e,
-                        DecodedEntryBody::Opaque(_) => {
-                            unreachable!("entries should be all opaque or plaintext, not mixed")
-                        }
-                    }),
+                    bodies.iter().copied(),
                 )
                 .await
             }

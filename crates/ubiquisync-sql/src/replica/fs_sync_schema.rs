@@ -66,7 +66,13 @@ pub struct BlockedPackInfo {
     /// wasn't fully transferred yet, so we should retry. If there are repeated
     /// errors we can mark this pack as failed, but for now we'll retry later.
     pub bad_body_hash: bool,
-    // List of peers referenced in peer data for whome we cannot find an init entry.
+    /// The header signature failed verification. Possibly a partially synced file,
+    /// so we retry with backoff.
+    pub bad_signature: bool,
+    /// The header could not be decoded. Possibly a partially synced file,
+    /// so we retry with backoff.
+    pub corrupt_header: bool,
+    // List of peers referenced in peer data for whom we cannot find an init entry.
     pub missing_peers: Vec<PeerId>,
 }
 

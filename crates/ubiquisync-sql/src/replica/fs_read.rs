@@ -68,6 +68,8 @@ impl PackReadTodo {
             bad_metadata: false,
             decode_error: false,
             bad_body_hash: false,
+            bad_signature: false,
+            corrupt_header: false,
             missing_peers: Default::default(),
         }
     }
@@ -200,20 +202,25 @@ impl<R: Reducer> ReplicaInner<R> {
     ) -> Result<SignedPackHeader, PackProcessError> {
         match store.read_header(desc).await {
             Ok(Some(h)) => {
-                h.verify(&peer_info.commitment.sig_verify_key, desc)
-                    .map_err(|_| PackProcessError::BadHeaderSignature)?;
+                if h.verify(&peer_info.commitment.sig_verify_key, desc).is_err() {
+                    let mut bi = todo.blocked_again(desc);
+                    bi.bad_signature = true;
+                    return Err(PackProcessError::Blocked(bi));
+                }
                 Ok(h)
             }
             Ok(None) => Err(PackProcessError::PackGone),
-            Err(PackStoreError::Decode(
-                PackHeaderDecodeError::UnknownVersion(_)
-                | PackHeaderDecodeError::UnknownSignatureType(_),
-            )) => {
+            Err(PackStoreError::Decode(e)) => {
                 let mut bi = todo.blocked_again(desc);
-                bi.needs_upgrade = true;
+                match e {
+                    PackHeaderDecodeError::UnknownVersion(_)
+                    | PackHeaderDecodeError::UnknownSignatureType(_) => bi.needs_upgrade = true,
+                    PackHeaderDecodeError::Read(_) | PackHeaderDecodeError::TrailingBytes => {
+                        bi.corrupt_header = true
+                    }
+                }
                 Err(PackProcessError::Blocked(bi))
             }
-            Err(PackStoreError::Decode(e)) => Err(PackProcessError::CorruptHeader(e)),
             Err(err) => Err(err.into()),
         }
     }
