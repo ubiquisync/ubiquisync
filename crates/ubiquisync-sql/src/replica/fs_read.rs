@@ -19,8 +19,8 @@ use ubiquisync_core::{
         segment::{SegmentDecodeError, SegmentVerifyError},
     },
     pack::{
-        PackFileDescriptor, PackFileId, PackHeader, PackRef, PackStore, PackStoreError,
-        SegmentDescriptor, dedupe_pack_files,
+        PackFileDescriptor, PackFileId, PackHeader, PackHeaderDecodeError, PackRef, PackStore,
+        PackStoreError, SegmentDescriptor, SignedPackHeader, dedupe_pack_files,
     },
 };
 
@@ -67,6 +67,31 @@ impl PackReadTodo {
             file: file.clone(),
             attempts: 0,
             first_last_timestamps: 0..0,
+        }
+    }
+
+    fn blocked_again(
+        &self,
+        pack_desc: &PackFileDescriptor,
+        pack_header: &PackHeader,
+    ) -> BlockedPackInfo {
+        let mut bi = self.blocked_again_no_header(pack_desc);
+        bi.parents = pack_header.parents.iter().cloned().collect();
+        bi
+    }
+
+    fn blocked_again_no_header(&self, pack_desc: &PackFileDescriptor) -> BlockedPackInfo {
+        let ts = WallTime::now().as_millis();
+        BlockedPackInfo {
+            file: pack_desc.id.clone(),
+            parents: Default::default(),
+            read_timestamps: self.first_last_timestamps.start..ts,
+            attempts: self.attempts + 1,
+            need_keys: Default::default(),
+            needs_upgrade: false,
+            pending: false,
+            bad_metadata: false,
+            decode_error: false,
         }
     }
 }
@@ -160,19 +185,44 @@ impl BlockedPackInfo {
 // }
 
 impl<R: Reducer> ReplicaInner<R> {
+    async fn read_pack_header(
+        &self,
+        desc: &PackFileDescriptor,
+        store: &PackStore,
+        peer_info: &PeerInfo,
+        todo: &PackReadTodo,
+    ) -> Result<SignedPackHeader, PackProcessError> {
+        match store.read_header(desc).await {
+            Ok(Some(h)) => {
+                h.verify(&peer_info.commitment.sig_verify_key, desc)
+                    .map_err(|_| PackProcessError::BadHeaderSignature)?;
+                Ok(h)
+            }
+            Ok(None) => Err(PackProcessError::PackGone),
+            Err(err) => match &err {
+                PackStoreError::Decode(e) => match e {
+                    PackHeaderDecodeError::UnknownVersion(_)
+                    | PackHeaderDecodeError::UnknownSignatureType(_) => {
+                        let mut bi = todo.blocked_again_no_header(desc);
+                        bi.needs_upgrade = true;
+                        Err(PackProcessError::Blocked(bi))
+                    }
+                    _ => Err(err.into()),
+                },
+                _ => Err(err.into()),
+            },
+        }
+    }
+
     async fn process_pack(
         &self,
         peer_info: &PeerInfo,
         desc: &PackFileDescriptor,
         remote_id: i64,
         store: &PackStore,
-    ) -> Result<Option<BlockedPackInfo>, PackProcessError> {
-        let Some(signed_header) = store.read_header(desc).await? else {
-            // if by the time we go to read he pack it is gone,
-            // then it has probably been replaced by a newer generation,
-            // we'll get back to it later
-            return Ok(None);
-        };
+        todo: &PackReadTodo,
+    ) -> Result<(), PackProcessError> {
+        let signed_header = self.read_pack_header(desc, store, peer_info, todo).await?;
 
         let mut pack_resolver = PackResolver {
             desc: desc.clone(),
@@ -191,6 +241,7 @@ impl<R: Reducer> ReplicaInner<R> {
                 peer_info,
                 segment,
                 &mut blocked_info,
+                todo,
             )
             .await?;
         }
@@ -208,12 +259,17 @@ impl<R: Reducer> ReplicaInner<R> {
                     &peer_info,
                     segment,
                     &mut blocked_info,
+                    todo,
                 )
                 .await?;
             }
         }
 
-        Ok(blocked_info)
+        if let Some(bi) = blocked_info {
+            Err(PackProcessError::Blocked(bi))
+        } else {
+            Ok(())
+        }
     }
 
     async fn process_pack_segment(
@@ -225,6 +281,7 @@ impl<R: Reducer> ReplicaInner<R> {
         peer_info: &PeerInfo,
         segment_desc: &SegmentDescriptor,
         blocked_info: &mut Option<BlockedPackInfo>,
+        todo: &PackReadTodo,
     ) -> Result<(), PackProcessError> {
         let hash_ctx = LogHashContext::new(&LogId {
             peer_id: peer_info.peer,
@@ -235,20 +292,7 @@ impl<R: Reducer> ReplicaInner<R> {
             pack_resolver,
         };
 
-        let init_blocked_info = || {
-            let ts = WallTime::now().as_millis();
-            BlockedPackInfo {
-                file: pack_desc.id.clone(),
-                parents: pack_header.parents.iter().cloned().collect(),
-                read_timestamps: ts..ts,
-                attempts: 1,
-                need_keys: Default::default(),
-                needs_upgrade: false,
-                pending: false,
-                bad_metadata: false,
-                decode_error: false,
-            }
-        };
+        let init_blocked_info = || todo.blocked_again(pack_desc, pack_header);
 
         match self
             .try_ingest_segment(
@@ -276,20 +320,12 @@ impl<R: Reducer> ReplicaInner<R> {
                         .get_or_insert_with(init_blocked_info)
                         .needs_upgrade = true;
                 }
-                SegmentProcessError::SegmentGone => return Err(PackProcessError::PackGone),
-                // internal errors - push upwards
-                SegmentProcessError::Db(e) => return Err(PackProcessError::Db(e)),
-                SegmentProcessError::PackStore(e) => return Err(PackProcessError::Store(e)),
-                SegmentProcessError::Internal(e) => return Err(PackProcessError::Internal(e)),
-                SegmentProcessError::GetSegment(e) => return Err(PackProcessError::GetSegment(e)),
-                // bad segment errors, flag on BlockedPackInfo in such a way that we can figure out if all segments are corrupted or not
                 SegmentProcessError::BadMetadata => {
                     blocked_info
                         .get_or_insert_with(init_blocked_info)
                         .bad_metadata = true;
                 }
                 SegmentProcessError::Decode(_)
-                | SegmentProcessError::Encode(_)
                 | SegmentProcessError::Verify(_)
                 | SegmentProcessError::Cipher(_)
                 | SegmentProcessError::LogValidation(_) => {
@@ -297,6 +333,13 @@ impl<R: Reducer> ReplicaInner<R> {
                         .get_or_insert_with(init_blocked_info)
                         .decode_error = true;
                 }
+                SegmentProcessError::SegmentGone => return Err(PackProcessError::PackGone),
+                // internal errors - push upwards
+                SegmentProcessError::Db(e) => return Err(PackProcessError::Db(e)),
+                SegmentProcessError::PackStore(e) => return Err(PackProcessError::Store(e)),
+                SegmentProcessError::Internal(e) => return Err(PackProcessError::Internal(e)),
+                SegmentProcessError::GetSegment(e) => return Err(PackProcessError::GetSegment(e)),
+                SegmentProcessError::Encode(e) => return Err(PackProcessError::Encode(e)),
             },
         }
         Ok(())
@@ -320,7 +363,10 @@ impl<'a: 'b, 'b> SegmentBytesResolver for PackSegmentResolver<'a, 'b> {
         &'c mut self,
     ) -> Result<Option<&'c [u8]>, SegmentProcessError> {
         if let Some(body) = self.pack_resolver.resolve().await? {
-            Ok(Some(&body[self.desc.body_loc.clone()]))
+            Ok(Some(
+                body.get(self.desc.body_loc.clone())
+                    .ok_or(SegmentProcessError::BadMetadata)?,
+            ))
         } else {
             Ok(None)
         }

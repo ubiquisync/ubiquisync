@@ -1,7 +1,10 @@
 use sea_query::{Expr, ExprTrait, OnConflict, Query};
 use thiserror::Error;
 use tokio::time;
-use ubiquisync_core::pack::{PackStore, PackStoreError, Topic};
+use ubiquisync_core::{
+    log::segment::SegmentEncodeError,
+    pack::{PackStore, PackStoreError, Topic},
+};
 
 use crate::{
     db::{
@@ -11,7 +14,7 @@ use crate::{
     reducer::Reducer,
     replica::{
         Replica, ReplicaInner,
-        fs_sync_schema::{pack_read_state, topics},
+        fs_sync_schema::{BlockedPackInfo, pack_read_state, topics},
         peers::PeerResolveError,
         segment::GetSegmentError,
     },
@@ -111,8 +114,14 @@ pub enum PackProcessError {
     Db(#[from] DbError),
     #[error("get segment error: {0}")]
     GetSegment(#[from] GetSegmentError),
+    #[error("encode error: {0}")]
+    Encode(SegmentEncodeError),
     #[error("internal error: {0}")]
     Internal(String),
+    #[error("blocked: {0:?}")]
+    Blocked(BlockedPackInfo),
     #[error("pack gone")]
     PackGone,
+    #[error("bad pack header signature")]
+    BadHeaderSignature,
 }
