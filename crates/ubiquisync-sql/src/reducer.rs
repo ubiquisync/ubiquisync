@@ -4,7 +4,7 @@
 use thiserror::Error;
 use ubiquisync_core::{
     hlc::Timestamp,
-    ids::{ContainerId, LogId},
+    ids::LogId,
 };
 
 use crate::{

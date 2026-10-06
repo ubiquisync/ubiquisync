@@ -1,33 +1,27 @@
-use std::borrow::Cow;
-
 use sea_query::{Expr, ExprTrait, Query};
 use thiserror::Error;
 use ubiquisync_core::{
     crypto::{CipherKeyResolveError, RootKey256Fingerprint},
-    ids::LogId,
     log::{
-        ChainHash, LogDecodeError, LogEntry, LogHashContext, LogValidationError,
-        SegmentCipherError,
+        LogDecodeError, LogHashContext, LogValidationError, SegmentCipherError,
         segment::{
             DecodedSegment, SegmentDecodeError, SegmentEncodeError, SegmentReader,
-            SegmentVerifyError, encode_segment_plaintext,
+            SegmentVerifyError,
         },
     },
     pack::{PackStoreError, SegmentDescriptor},
 };
 
 use crate::{
-    BoxError,
     db::{
         DbError,
-        sea_query::{insert_cols_batch, select_cols, update_cols_batch},
+        sea_query::{insert_cols_batch, update_cols_batch},
     },
-    op::OpDecodeError,
     reducer::Reducer,
     replica::{
         ReplicaInner,
         peers::PeerInfo,
-        schema::{CommitErr, segments, streams},
+        schema::{segments, streams},
         segment::GetSegmentError,
         stream_lock::KeyedLockGuard,
         streams::{StreamInfo, StreamLog},
@@ -441,6 +435,7 @@ where {
                 existing_segment,
                 &new_segment.decoded,
                 hash_ctx,
+                src,
             )
             .await?
         {

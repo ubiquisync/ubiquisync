@@ -1,4 +1,4 @@
-use sea_query::{Expr, ExprTrait, OnConflict, Query, Returning};
+use sea_query::{Expr, ExprTrait, OnConflict, Query};
 use thiserror::Error;
 use ubiquisync_core::{
     ids::PeerId,
@@ -11,7 +11,7 @@ use crate::{
         DbError,
         sea_query::{insert_cols, select_cols},
     },
-    replica::{Replica, ReplicaInner, schema::peers},
+    replica::{ReplicaInner, schema::peers},
 };
 
 #[derive(Error, Debug)]

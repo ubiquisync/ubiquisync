@@ -1,46 +1,25 @@
-use std::{
-    borrow::Borrow,
-    cmp::min,
-    collections::{HashMap, HashSet},
-    ops::Range,
-    sync::Arc,
-    time::Duration,
-};
+use std::{cmp::min, ops::Range, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use sea_query::{Expr, ExprTrait, Query};
-use thiserror::Error;
 use ubiquisync_core::{
-    crypto::{CipherKeyResolver, Hash256, NullCipherKeyResolver, TaggedHashDomain, tagged_hash},
+    crypto::{CipherKeyResolver, Hash256, TaggedHashDomain, tagged_hash},
     hlc::WallTime,
     ids::LogId,
-    log::{
-        LogEntry, LogHashContext, LogValidationError, SegmentCipherError,
-        segment::{SegmentDecodeError, SegmentVerifyError},
-    },
+    log::LogHashContext,
     pack::{
-        PackFileDescriptor, PackFileId, PackHeader, PackHeaderDecodeError, PackRef, PackStore,
-        PackStoreError, SegmentDescriptor, SignedPackHeader, dedupe_pack_files,
+        PackFileDescriptor, PackFileId, PackHeader, PackHeaderDecodeError, PackStore,
+        PackStoreError, SegmentDescriptor, SignedPackHeader,
     },
 };
 
 use crate::{
-    BoxError,
-    db::{
-        DbError,
-        sea_query::{insert_cols_batch, select_cols, update_cols_batch},
-    },
-    op::OpDecodeError,
     reducer::Reducer,
     replica::{
-        Replica, ReplicaInner,
+        ReplicaInner,
         fs::PackProcessError,
         fs_sync_schema::{BlockedPackInfo, PackReadState},
         ingest::{IngestSource, SegmentBytesResolver, SegmentProcessError},
-        peers::{PeerInfo, PeerResolveError},
-        schema::{CommitErr, segments, streams},
-        stream_lock::KeyedLockGuard,
-        streams::{StreamInfo, StreamLog},
+        peers::PeerInfo,
     },
 };
 
@@ -382,7 +361,7 @@ impl<'a: 'b, 'b> SegmentBytesResolver for PackSegmentResolver<'a, 'b> {
 }
 
 impl<'a> PackResolver<'a> {
-    async fn resolve<'b>(&'b mut self) -> Result<Option<&'b [u8]>, SegmentProcessError> {
+    async fn resolve(&mut self) -> Result<Option<&[u8]>, SegmentProcessError> {
         if self.body.is_none() {
             if let Some(b) = self.store.read_body(&self.desc).await? {
                 // check hash

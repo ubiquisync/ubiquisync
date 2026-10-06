@@ -1,27 +1,15 @@
 use sea_query::{
-    Expr, ExprTrait, Func, InsertStatement, IntoColumnRef, IntoIden, OnConflict, Order, Query,
+    Expr, ExprTrait, InsertStatement, IntoIden, OnConflict, Query,
 };
-use ubiquisync_core::{
-    ids::{ContainerId, LogId},
-    log::{
-        ChainHash,
-        segment::{SegmentReader, encode_segment_plaintext},
-    },
-};
-
 use crate::{
     db::{
         DbBatch, DbError,
-        sea_query::{insert_cols, insert_cols_batch, select_cols},
+        sea_query::{insert_cols, insert_cols_batch},
     },
-    reducer::Reducer,
     replica::{
-        Replica, ReplicaInner,
-        fs_sync_schema::{published, topics},
+        ReplicaInner,
+        fs_sync_schema::published,
         ingest::IngestSource,
-        peers::PeerInfo,
-        schema::{containers, segments, streams},
-        streams::StreamInfo,
     },
 };
 
