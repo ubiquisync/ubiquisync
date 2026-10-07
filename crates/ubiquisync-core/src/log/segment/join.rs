@@ -25,11 +25,17 @@ pub enum JoinSegmentsError {
     Empty,
     #[error("out of order bodies, hashes don't chain")]
     OutOfOrder,
+    #[error("unable to find a hash to match start size")]
+    InvalidStartSize,
 }
 
+/// Joins the provided segments by decoding and re-encoding their bodies.
+/// If start_size is > 0, any entries with a chain hash size <= start_size will be dropped
+/// (this means that prev_chain will have start_size).
 pub async fn join_segments<'a, B: AsRef<[u8]> + 'a>(
     key_resolver: &dyn CipherKeyResolver,
     hash_ctx: &LogHashContext,
+    start_size: u64,
     bodies: &'a [B],
     writer: &mut Writer,
 ) -> Result<JoinedSegmentData, JoinSegmentsError> {
@@ -57,7 +63,12 @@ pub async fn join_segments<'a, B: AsRef<[u8]> + 'a>(
         let decoded = reader.read(key_resolver, hash_ctx).await?;
         chain_hash = Some(decoded.head_chain);
         let mut entries = vec![];
-        for e in decoded.to_plaintext(key_resolver).await.collect_all()? {
+        for e in decoded.to_plaintext(key_resolver).await.entries {
+            let (e, h) = e?;
+            if h.size <= start_size {
+                prev_chain = Some(h);
+                continue;
+            }
             entries.push(e);
         }
         sig = Some(segment_header.signature);
@@ -76,6 +87,9 @@ pub async fn join_segments<'a, B: AsRef<[u8]> + 'a>(
         && let Some(chain_hash) = chain_hash
         && let Some(sig) = sig
     {
+        if start_size != 0 && prev_chain.size != start_size {
+            return Err(JoinSegmentsError::InvalidStartSize);
+        }
         encode_segment_plaintext_writer(
             &sig,
             &prev_chain,
@@ -195,7 +209,7 @@ mod tests {
         }
         let last_data = last_data.unwrap();
         let mut w = Writer::new();
-        let joined = join_segments(&key_resolver, &last_data.seed, &bodies, &mut w)
+        let joined = join_segments(&key_resolver, &last_data.seed, 0, &bodies, &mut w)
             .await
             .unwrap();
         let body = w.finalize();

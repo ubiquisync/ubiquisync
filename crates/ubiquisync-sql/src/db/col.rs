@@ -27,6 +27,9 @@ pub trait Cols {
     fn column_refs() -> Vec<ColumnRef>;
 }
 
+#[derive(Copy, Clone, Default)]
+pub struct Nullable<C>(C);
+
 impl ColType for u64 {
     type BorrowedType<'a> = u64;
 
@@ -313,5 +316,21 @@ impl Cols for () {
 
     fn column_refs() -> Vec<ColumnRef> {
         vec![]
+    }
+}
+
+impl<C: Col> Iden for Nullable<C> {
+    fn unquoted(&self) -> &str {
+        self.0.unquoted()
+    }
+}
+
+impl<C: Col> Col for Nullable<C> {
+    type Type = Option<C::Type>;
+
+    type Table = C::Table;
+
+    fn create_col_def() -> CreateColDef {
+        C::create_col_def().nullable()
     }
 }

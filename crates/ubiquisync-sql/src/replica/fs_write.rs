@@ -1,8 +1,8 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use crate::{
     db::{
-        DbBatch, DbError,
+        DbBatch, DbError, Nullable,
         sea_query::{insert_cols, insert_cols_batch, select_cols},
     },
     reducer::Reducer,
@@ -18,16 +18,24 @@ use sea_query::{
 };
 use thiserror::Error;
 use ubiquisync_core::{
-    hlc::WallTime,
     ids::{ContainerId, LogId, PeerId},
     log::LogHashContext,
-    pack::{PackBuilder, PackFileDescriptor, PackFileId, PackStore, Topic},
+    pack::{
+        PackBuildError, PackBuilder, PackFileDescriptor, PackFileId, PackSignError, PackStore,
+        PackStoreError, Topic,
+    },
 };
 
 #[derive(Error, Debug)]
 pub(crate) enum PackPublishError {
     #[error("db error: {0}")]
     Db(#[from] DbError),
+    #[error("pack build error: {0}")]
+    Build(#[from] PackBuildError),
+    #[error("pack sign error: {0}")]
+    Sign(#[from] PackSignError),
+    #[error("pack store error: {0}")]
+    Store(#[from] PackStoreError),
 }
 
 impl<R: Reducer> ReplicaInner<R> {
@@ -52,11 +60,12 @@ impl<R: Reducer> ReplicaInner<R> {
         // .await?;
 
         // select segments we'll publish in this topic
-        let segments = select_cols::<(
+        let rows = select_cols::<(
             streams::Id,
             segments::Body,
             streams::ContainerId,
             peers::PeerId,
+            Nullable<published::PublishedSize>,
         )>(
             self.db.as_ref(),
             Query::select()
@@ -90,8 +99,13 @@ impl<R: Reducer> ReplicaInner<R> {
                     (segments::EndSize.into_column_ref(), Order::Asc),
                 ]),
         )
-        .await?
-        .to_vec()?;
+        .await?;
+        let segments = rows.to_vec()?;
+
+        if segments.is_empty() {
+            // nothing to write
+            return Ok(());
+        }
 
         let write_state = self.get_pack_write_state(remote_id, topic_id).await?;
         let seq = write_state
@@ -104,43 +118,69 @@ impl<R: Reducer> ReplicaInner<R> {
         let pack_desc = PackFileDescriptor {
             topic: topic.clone(),
             peer_id: self.self_id,
-            id,
+            id: id.clone(),
         };
 
         let mut pack_builder = PackBuilder::new(pack_desc, write_state.tips.into_iter().collect());
         let mut sql_batch = self.db.new_batch();
         // chunk by streams
         for chunk in
-            segments.chunk_by(|(a_stream, _, _, _), (b_stream, _, _, _)| a_stream == b_stream)
+            segments.chunk_by(|(a_stream, _, _, _, _), (b_stream, _, _, _, _)| a_stream == b_stream)
         {
-            let (stream_id, _, container_id, peer_id) = chunk.first().expect("non-empty chunk");
-            let bodies = chunk.iter().map(|(_, body, _, _)| body).collect::<Vec<_>>();
+            let (stream_id, _, container_id, peer_id, published_size) =
+                chunk.first().expect("non-empty chunk");
+            let bodies = chunk
+                .iter()
+                .map(|(_, body, _, _, _)| body)
+                .collect::<Vec<_>>();
             let hash_ctx = LogHashContext::new(&LogId {
                 container_id: ContainerId(*container_id),
                 peer_id: PeerId(*peer_id),
             });
-            let published_size = pack_builder
-                .add_container_segments(self.key_resolver.as_ref(), &hash_ctx, &bodies)
+            let new_published_size = pack_builder
+                .add_container_segments(
+                    self.key_resolver.as_ref(),
+                    &hash_ctx,
+                    published_size.unwrap_or(0),
+                    &bodies,
+                )
                 .await?;
             self.update_published_batch(
-                &mut sql_batch,
+                sql_batch.as_mut(),
                 &IngestSource::Pack { remote_id },
-                stream_id,
-                published_size,
+                *stream_id,
+                new_published_size,
             )?;
         }
 
         let pack_data = pack_builder.build(self.credentials.signing_key())?;
 
+        // write the pack
         store.write_pack(&pack_data).await?;
 
+        // update the db after writing the pack, if we fail updating the db, but the pack was written
+        // the write loop will actually update the write state for us
         let mut tips = HashSet::new();
         tips.insert(id.get_ref());
-        sql_batch.commit().await?;
-        // TODO update pack write state in batch
-        self.update_pack_write_state(remote_id, topic_id, PackWriteState { tips })
+        self.update_pack_write_state_batch(
+            sql_batch.as_mut(),
+            remote_id,
+            topic_id,
+            PackWriteState { tips },
+        )?;
+        let mut read_state = self
+            .get_pack_read_state(remote_id, topic_id, self.self_db_id)
             .await?;
-        // TODO add pack to read state consumed
+        read_state.consumed.insert(id);
+        self.update_pack_read_state_batch(
+            sql_batch.as_mut(),
+            remote_id,
+            topic_id,
+            self.self_db_id,
+            read_state,
+        )?;
+
+        sql_batch.commit().await?;
 
         Ok(())
     }
@@ -209,22 +249,21 @@ impl<R: Reducer> ReplicaInner<R> {
         .0)
     }
 
-    pub(crate) async fn update_pack_write_state(
+    pub(crate) fn update_pack_write_state_batch(
         &self,
+        batch: &mut dyn DbBatch,
         remote_id: i64,
         topic_id: i64,
         new_state: PackWriteState,
     ) -> Result<(), DbError> {
-        insert_cols::<
-            (
-                topic_state::RemoteId,
-                topic_state::TopicId,
-                topic_state::WriteState,
-            ),
-            (),
-        >(
-            self.db.as_ref(),
-            (remote_id, topic_id, new_state),
+        insert_cols_batch::<(
+            topic_state::RemoteId,
+            topic_state::TopicId,
+            topic_state::WriteState,
+            topic_state::Dirty,
+        )>(
+            batch,
+            (remote_id, topic_id, new_state, false),
             Query::insert().into_table(topic_state::Table).on_conflict(
                 OnConflict::columns([
                     topic_state::RemoteId.into_iden(),
@@ -234,8 +273,6 @@ impl<R: Reducer> ReplicaInner<R> {
                 .to_owned(),
             ),
         )
-        .await?;
-        Ok(())
     }
 }
 

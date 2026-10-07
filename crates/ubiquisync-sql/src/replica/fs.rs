@@ -12,8 +12,8 @@ use ubiquisync_core::{
 
 use crate::{
     db::{
-        DbError,
-        sea_query::{insert_cols, select_cols},
+        DbBatch, DbError,
+        sea_query::{insert_cols, insert_cols_batch, select_cols},
     },
     reducer::Reducer,
     replica::{
@@ -107,7 +107,7 @@ impl<R: Reducer> ReplicaInner<R> {
             let mut tip_tracker = if peer == self.self_id {
                 let write_state = self.get_pack_write_state(remote_id, topic_id).await?;
                 Some(PackTipTracker {
-                    last: read_state.clone(),
+                    last: read_state,
                     tips: write_state.tips,
                 })
             } else {
@@ -158,37 +158,24 @@ impl<R: Reducer> ReplicaInner<R> {
                 }
             }
 
-            // TODO: as an optimization we could do these two insert/updates in a batch
-            insert_cols::<
-                (
-                    pack_read_state::RemoteId,
-                    pack_read_state::TopicId,
-                    pack_read_state::PeerId,
-                    pack_read_state::State,
-                ),
-                (),
-            >(
-                self.db.as_ref(),
-                (remote_id, topic_id, peer_info.db_id, read_plan.next),
-                Query::insert()
-                    .into_table(pack_read_state::Table)
-                    .on_conflict(
-                        OnConflict::columns([
-                            pack_read_state::RemoteId.into_iden(),
-                            pack_read_state::TopicId.into_iden(),
-                            pack_read_state::PeerId.into_iden(),
-                        ])
-                        .update_column(pack_read_state::State)
-                        .to_owned(),
-                    ),
-            )
-            .await?;
-
+            let mut db_batch = self.db.new_batch();
+            self.update_pack_read_state_batch(
+                db_batch.as_mut(),
+                remote_id,
+                topic_id,
+                peer_info.db_id,
+                read_plan.next,
+            )?;
             // persist writer state
             if let Some(PackTipTracker { tips, .. }) = tip_tracker {
-                self.update_pack_write_state(remote_id, topic_id, PackWriteState { tips })
-                    .await?;
+                self.update_pack_write_state_batch(
+                    db_batch.as_mut(),
+                    remote_id,
+                    topic_id,
+                    PackWriteState { tips },
+                )?;
             }
+            db_batch.commit().await?;
 
             if let Some(err) = err {
                 // there was an error for this peer which aborts the pack round, so we pass it upwards
@@ -246,6 +233,36 @@ impl<R: Reducer> ReplicaInner<R> {
             .exactly_one()?;
             Ok(id)
         }
+    }
+
+    pub(crate) fn update_pack_read_state_batch(
+        &self,
+        batch: &mut dyn DbBatch,
+        remote_id: i64,
+        topic_id: i64,
+        peer_db_id: i64,
+        read_state: PackReadState,
+    ) -> Result<(), DbError> {
+        insert_cols_batch::<(
+            pack_read_state::RemoteId,
+            pack_read_state::TopicId,
+            pack_read_state::PeerId,
+            pack_read_state::State,
+        )>(
+            batch,
+            (remote_id, topic_id, peer_db_id, read_state),
+            Query::insert()
+                .into_table(pack_read_state::Table)
+                .on_conflict(
+                    OnConflict::columns([
+                        pack_read_state::RemoteId.into_iden(),
+                        pack_read_state::TopicId.into_iden(),
+                        pack_read_state::PeerId.into_iden(),
+                    ])
+                    .update_column(pack_read_state::State)
+                    .to_owned(),
+                ),
+        )
     }
 }
 

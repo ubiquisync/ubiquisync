@@ -15,11 +15,12 @@ use crate::{
         Db, DbError,
         sea_query::{insert_cols, select_cols},
     },
+    dialect::SqlDialect,
     reducer::Reducer,
     replica::{
-        HlcError, Replica, ReplicaInner,
+        HlcError, Replica, ReplicaInner, fs_sync_schema,
         hlc::load_hlc,
-        schema::{create_tables, peers},
+        schema::{self, peers},
         stream_lock::KeyedLock,
     },
 };
@@ -126,6 +127,23 @@ impl<R: Reducer> Replica<R> {
             cancel: Default::default(),
         })
     }
+}
+
+async fn create_tables(db: &dyn Db) -> Result<(), DbError> {
+    let mut batch = db.new_batch();
+    for st in create_table_sql(db.dialect()) {
+        batch.add_statement(&st, &[]);
+    }
+    batch.commit().await?;
+    Ok(())
+}
+
+fn create_table_sql(dialect: SqlDialect) -> Vec<String> {
+    schema::table_defs()
+        .iter()
+        .chain(fs_sync_schema::table_defs().iter())
+        .map(|d| d.create_table_sql(dialect))
+        .collect::<Vec<_>>()
 }
 
 #[derive(Error, Debug)]

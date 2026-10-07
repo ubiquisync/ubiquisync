@@ -103,11 +103,7 @@ impl<C: Cols> Rows<C> {
     }
 
     pub fn to_vec<'a>(&'a self) -> Result<Vec<C::Row<'a>>, DbError> {
-        let mut res = vec![];
-        for row in self.rows.iter() {
-            res.push(C::decode(row)?);
-        }
-        Ok(res)
+        self.iter().collect()
     }
 
     pub fn is_empty(&self) -> bool {

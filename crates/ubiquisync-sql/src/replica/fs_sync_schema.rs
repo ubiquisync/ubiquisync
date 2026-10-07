@@ -13,9 +13,23 @@ use ubiquisync_core::{
 use bitfield_struct::bitfield;
 
 use super::schema::StatusDecodeError;
-use crate::{codeable_col_repr, def_table, def_table_with_auto_id};
+use crate::{codeable_col_repr, db::CreateTableDef, def_table, def_table_with_auto_id};
 
-def_table_with_auto_id!(remotes as __replica_remotes (id) => {});
+pub(crate) fn table_defs() -> Vec<CreateTableDef> {
+    vec![
+        remotes::create_table_def(),
+        topics::create_table_def().with_unique(&["topic"]),
+        topic_state::create_table_def(),
+        published::create_table_def(),
+        pack_read_state::create_table_def(),
+    ]
+}
+
+def_table_with_auto_id!(remotes as __pack_remotes (id) => {
+    provider: String,
+    config: String,
+});
+
 def_table_with_auto_id!(topics as __pack_topics (id) => {
     topic: String,
 });

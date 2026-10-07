@@ -59,23 +59,7 @@ def_table!(stream_deps as __replica_stream_deps (
 def_table!(hlc as __replica_hlc (id:i64) => {timestamp: super::Timestamp});
 try_from_into_col_repr!(Timestamp, i64);
 
-pub(crate) async fn create_tables(db: &dyn Db) -> Result<(), DbError> {
-    let mut batch = db.new_batch();
-    for st in create_table_sql(db.dialect()) {
-        batch.add_statement(&st, &[]);
-    }
-    batch.commit().await?;
-    Ok(())
-}
-
-fn create_table_sql(dialect: SqlDialect) -> Vec<String> {
-    table_defs()
-        .iter()
-        .map(|d| d.create_table_sql(dialect))
-        .collect::<Vec<_>>()
-}
-
-fn table_defs() -> Vec<CreateTableDef> {
+pub(crate) fn table_defs() -> Vec<CreateTableDef> {
     vec![
         peers::create_table_def().with_unique(&["peer_id"]),
         containers::create_table_def().with_unique(&["container_id"]),
