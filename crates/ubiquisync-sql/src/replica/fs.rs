@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+
+use backon::{BackoffBuilder, ExponentialBackoff, ExponentialBuilder};
 use sea_query::{Expr, ExprTrait, IntoIden, OnConflict, Query};
 use thiserror::Error;
 use tokio::time;
@@ -29,13 +32,14 @@ impl<R: Reducer> Replica<R> {
             const PACK_POLL_INTERVAL: time::Duration = time::Duration::from_secs(2);
             let mut interval = time::interval(PACK_POLL_INTERVAL);
             interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+            let mut backoffs = HashMap::new();
             loop {
                 tokio::select! {
                     _ = cancel_token.cancelled() => {
                         break;
                     }
                     _ = interval.tick() => {
-                        let _ = inner.process_packs().await;
+                        inner.process_packs(&mut backoffs).await;
                     }
                 }
             }
@@ -44,12 +48,28 @@ impl<R: Reducer> Replica<R> {
 }
 
 impl<R: Reducer> ReplicaInner<R> {
-    /// A single round of pack processing, read, then write.
-    async fn process_packs(&self) {
+    /// A single round of pack processing for a remote, first read, then write.
+    /// Remotes which have errors which filter up, are retried with backoff.
+    async fn process_packs(&self, backoffs: &mut HashMap<i64, RemoteBackoff>) {
         for (remote_id, store) in self.pack_remotes.iter() {
+            if backoffs
+                .get(remote_id)
+                .is_some_and(|b| time::Instant::now() < b.retry_at)
+            {
+                continue;
+            }
             match self.process_pack_remote(*remote_id, store).await {
-                Ok(_) => {}
-                Err(_) => todo!(),
+                Ok(()) => {
+                    backoffs.remove(remote_id);
+                }
+                Err(e) => {
+                    let b = backoffs
+                        .entry(*remote_id)
+                        .or_insert_with(RemoteBackoff::new);
+                    let delay = b.delays.next().unwrap_or(REMOTE_MAX_BACKOFF);
+                    b.retry_at = time::Instant::now() + delay;
+                    tracing::warn!(remote_id, error = %e, ?delay, "pack round failed for remote, backing off");
+                }
             }
         }
     }
@@ -73,7 +93,7 @@ impl<R: Reducer> ReplicaInner<R> {
         let topic_id = self.resolve_topic_id(topic).await?;
         for peer in store.list_topic_peers(topic).await? {
             let Some(peer_info) = self.resolve_or_init_peer(&peer, store).await? else {
-                // TODO log missing peer init
+                tracing::warn!(remote_id, %peer, "no peer init file, skipping peer");
                 continue;
             };
             let packs = store.list_packs(topic, &peer).await?;
@@ -106,17 +126,15 @@ impl<R: Reducer> ReplicaInner<R> {
                             // mark as blocked
                             read_plan.next.blocked.insert(todo.file().get_ref(), bi);
                         }
-                        // can't find a peer init
-                        PackProcessError::Peer(e) => {
-                            // TODO logging
-                            continue;
+                        e @ (PackProcessError::Peer(_)
+                        | PackProcessError::Store(_)
+                        | PackProcessError::Db(_)
+                        | PackProcessError::GetSegment(_)
+                        | PackProcessError::Encode(_)
+                        | PackProcessError::Internal(_)) => {
+                            tracing::warn!(remote_id, %peer, file = %todo.file(), error = %e, "aborting pack round");
+                            return Err(e);
                         }
-                        // these errors should just get logged and possibly cause us to abort this read round??
-                        PackProcessError::Store(e) => todo!(),
-                        PackProcessError::Db(e) => todo!(),
-                        PackProcessError::GetSegment(e) => todo!(),
-                        PackProcessError::Encode(e) => todo!(),
-                        PackProcessError::Internal(e) => todo!(),
                     },
                     Ok(()) => {
                         // mark as consumed
@@ -202,4 +220,25 @@ pub enum PackProcessError {
     Blocked(BlockedPackInfo),
     #[error("pack gone")]
     PackGone,
+}
+
+const REMOTE_MAX_BACKOFF: time::Duration = time::Duration::from_secs(5 * 60);
+
+pub(crate) struct RemoteBackoff {
+    retry_at: time::Instant,
+    delays: ExponentialBackoff,
+}
+
+impl RemoteBackoff {
+    fn new() -> Self {
+        Self {
+            retry_at: time::Instant::now(),
+            delays: ExponentialBuilder::new()
+                .with_min_delay(time::Duration::from_secs(2))
+                .with_max_delay(REMOTE_MAX_BACKOFF)
+                .with_jitter()
+                .without_max_times()
+                .build(),
+        }
+    }
 }
