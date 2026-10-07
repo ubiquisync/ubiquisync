@@ -86,6 +86,16 @@ pub struct PackFileId {
 }
 
 impl PackFileId {
+    pub fn new(seqs: Range<u64>) -> PackFileId {
+        let mut buf = [0; 8];
+        getrandom::fill(&mut buf).unwrap();
+        PackFileId {
+            seqs,
+            id: u64::from_le_bytes(buf),
+            generation: 0,
+        }
+    }
+
     pub fn get_ref(&self) -> PackRef {
         PackRef {
             id: self.id,

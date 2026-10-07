@@ -207,7 +207,7 @@ macro_rules! try_from_into_col_repr {
     ($typ:ty, $repr:ty) => {
         impl $crate::db::ColRepr for $typ {
             type Repr = $repr;
-            fn to_repr(self) -> Result<Self::Repr, DbError> {
+            fn to_repr(self) -> Result<Self::Repr, $crate::db::DbError> {
                 Ok(self.into())
             }
             fn from_repr<'a>(

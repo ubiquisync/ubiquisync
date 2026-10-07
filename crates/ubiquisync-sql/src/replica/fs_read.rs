@@ -13,7 +13,7 @@ use ubiquisync_core::{
     ids::LogId,
     log::LogHashContext,
     pack::{
-        PackFileDescriptor, PackFileId, PackHeader, PackHeaderDecodeError, PackStore,
+        PackFileDescriptor, PackFileId, PackHeader, PackHeaderDecodeError, PackRef, PackStore,
         PackStoreError, SegmentDescriptor, SignedPackHeader, dedupe_pack_files,
     },
 };
@@ -23,7 +23,7 @@ use crate::{
     replica::{
         ReplicaInner,
         fs::PackProcessError,
-        fs_sync_schema::{BlockedPackInfo, BlockedReasons, RemoteTopicReadState},
+        fs_sync_schema::{BlockedPackInfo, BlockedReasons, PackReadState},
         ingest::{IngestSource, SegmentBytesResolver, SegmentProcessError},
         peers::PeerInfo,
     },
@@ -31,7 +31,7 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub(crate) struct PackReadPlan {
-    pub next: RemoteTopicReadState,
+    pub next: PackReadState,
 
     /// The files we need to inspect. We only retain this
     /// transiently between directory listings and add files
@@ -84,10 +84,10 @@ impl BlockedPackInfo {
     }
 }
 
-impl RemoteTopicReadState {
+impl PackReadState {
     /// Prepare a plan for this read plan based on what we read previously and what is
     /// available now.
-    pub fn prepare_read(self, now: WallTime, cur_files: &[PackFileId]) -> PackReadPlan {
+    pub fn prepare_read(&self, now: WallTime, cur_files: &[PackFileId]) -> PackReadPlan {
         // only retain the highest gen for a given id
         let mut cur_files = dedupe_pack_files(cur_files);
         // oldest first so parents are consumed before children
@@ -97,7 +97,7 @@ impl RemoteTopicReadState {
         let covered_seqs = self.covered_seqs();
 
         let mut to_read = vec![];
-        let mut next = RemoteTopicReadState::default();
+        let mut next = PackReadState::default();
         // the refs that were read or will get read in this round as a way to unblock packs transitively depending on parents
         let mut will_get_read = consumed_refs.clone();
 
@@ -197,7 +197,9 @@ impl<R: Reducer> ReplicaInner<R> {
     ) -> Result<SignedPackHeader, PackProcessError> {
         match store.read_header(desc).await {
             Ok(Some(h)) => {
-                if h.verify(&peer_info.commitment.sig_verify_key, desc).is_err() {
+                if h.verify(&peer_info.commitment.sig_verify_key, desc)
+                    .is_err()
+                {
                     let mut bi = todo.blocked_again(desc);
                     bi.reasons.set_bad_signature(true);
                     return Err(PackProcessError::Blocked(bi));
@@ -209,7 +211,9 @@ impl<R: Reducer> ReplicaInner<R> {
                 let mut bi = todo.blocked_again(desc);
                 match e {
                     PackHeaderDecodeError::UnknownVersion(_)
-                    | PackHeaderDecodeError::UnknownSignatureType(_) => bi.reasons.set_needs_upgrade(true),
+                    | PackHeaderDecodeError::UnknownSignatureType(_) => {
+                        bi.reasons.set_needs_upgrade(true)
+                    }
                     PackHeaderDecodeError::Read(_) | PackHeaderDecodeError::TrailingBytes => {
                         bi.reasons.set_corrupt_header(true)
                     }
@@ -227,8 +231,12 @@ impl<R: Reducer> ReplicaInner<R> {
         remote_id: i64,
         store: &PackStore,
         todo: &PackReadTodo,
+        tips: &mut Option<PackTipTracker>,
     ) -> Result<(), PackProcessError> {
         let signed_header = self.read_pack_header(desc, store, peer_info, todo).await?;
+        if let Some(tips) = tips {
+            tips.update_tips(todo.file.get_ref(), &signed_header.header);
+        }
 
         let mut pack_resolver = PackResolver {
             desc: desc.clone(),
@@ -333,12 +341,14 @@ impl<R: Reducer> ReplicaInner<R> {
                 SegmentProcessError::Unsupported(_) => {
                     blocked_info
                         .get_or_insert_with(init_blocked_info)
-                        .reasons.set_needs_upgrade(true);
+                        .reasons
+                        .set_needs_upgrade(true);
                 }
                 SegmentProcessError::BadMetadata => {
                     blocked_info
                         .get_or_insert_with(init_blocked_info)
-                        .reasons.set_bad_metadata(true);
+                        .reasons
+                        .set_bad_metadata(true);
                 }
                 SegmentProcessError::BodyHashMismatch => {
                     let bi = blocked_info.get_or_insert_with(init_blocked_info);
@@ -352,7 +362,8 @@ impl<R: Reducer> ReplicaInner<R> {
                 | SegmentProcessError::LogValidation(_) => {
                     blocked_info
                         .get_or_insert_with(init_blocked_info)
-                        .reasons.set_decode_error(true);
+                        .reasons
+                        .set_decode_error(true);
                 }
                 SegmentProcessError::SegmentGone => return Err(PackProcessError::PackGone),
                 // internal errors - push upwards
@@ -425,16 +436,25 @@ struct PackProcessState {
     key_resolver: Arc<dyn CipherKeyResolver>,
 }
 
-// #[derive(Error, Debug)]
-// #[error("error resolving pack body")]
-// struct PackBodyResolveError;
+pub(crate) struct PackTipTracker {
+    pub last: PackReadState,
+    pub tips: HashSet<PackRef>,
+}
 
-// #[derive(Error, Debug)]
-// enum SegmentResolveError {
-//     #[error("resolving pack body: {0}")]
-//     BodyResolve(#[from] PackBodyResolveError),
-//     #[error("segment decode: {0}")]
-//     SegmentDecode(#[from] SegmentDecodeError),
-//     #[error("verify error: {0}")]
-//     Verify(#[from] SegmentVerifyError),
-// }
+impl PackTipTracker {
+    fn update_tips(&mut self, pack_ref: PackRef, header: &PackHeader) {
+        for r in header.parents.iter() {
+            self.tips.remove(&r);
+        }
+
+        for r in header.self_supersedes.iter() {
+            self.tips.remove(&r);
+        }
+
+        // insert pack as a new tip if it isn't already mentioned in blocked packs
+        // (meaning we already processed this header, and this is just a retry)
+        if !self.last.blocked.contains_key(&pack_ref) {
+            self.tips.insert(pack_ref);
+        }
+    }
+}

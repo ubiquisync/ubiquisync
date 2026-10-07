@@ -21,14 +21,20 @@ def_table_with_auto_id!(topics as __pack_topics (id) => {
 });
 
 def_table!(topic_state as __pack_topic_state (remote_id: i64, topic_id: i64) => {
+    // the dirty flag indicates that we have a membership change on this topic
+    // which requires resetting stream published sizes to 0 for containers which moved out of the topic
+    // and then 1) rewriting those in the new topic and 2) compacting old topic packs to remove the old container data
     dirty: bool,
+    write_state: super::PackWriteState,
 });
 
 def_table!(published as __pack_published (
     remote_id: i64, // TODO ref remotes
     stream_id: i64, // TODO ref streams
 ) => {
-    published_size: u64 // TODO default 0
+    published_size: u64, // TODO default 0
+    // tracks when peer segments aren't published in a pack remote
+    pending_since: Option<u64>
 });
 
 def_table!(pack_read_state as __pack_read_state (
@@ -36,16 +42,22 @@ def_table!(pack_read_state as __pack_read_state (
     topic_id: i64, // TODO ref topics
     peer_id: i64, // TODO ref peers
 ) => {
-    state: super::RemoteTopicReadState,
+    state: super::PackReadState,
 });
 
-codeable_col_repr!(RemoteTopicReadState);
-
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct RemoteTopicReadState {
+pub struct PackReadState {
     pub consumed: HashSet<PackFileId>,
     pub blocked: HashMap<PackRef, BlockedPackInfo>,
 }
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PackWriteState {
+    pub tips: HashSet<PackRef>,
+}
+
+codeable_col_repr!(PackReadState);
+codeable_col_repr!(PackWriteState);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(test, derive(test_strategy::Arbitrary))]
@@ -95,7 +107,7 @@ pub struct BlockedReasons {
     reserved: u8,
 }
 
-impl RemoteTopicReadState {
+impl PackReadState {
     pub fn encode(&self, writer: &mut Writer) -> Result<(), WriteError> {
         writer.write_iter(self.consumed.iter(), |w, f| f.encode(w))?;
         // the map key can be inferred from the values, so only write the values
@@ -109,6 +121,17 @@ impl RemoteTopicReadState {
             Ok::<_, StatusDecodeError>((b.file.get_ref(), b))
         })?;
         Ok(Self { consumed, blocked })
+    }
+}
+impl PackWriteState {
+    pub fn encode(&self, writer: &mut Writer) -> Result<(), WriteError> {
+        writer.write_iter(self.tips.iter(), |w, f| f.encode(w))?;
+        Ok(())
+    }
+
+    pub fn decode(reader: &mut Reader<'_>) -> Result<Self, StatusDecodeError> {
+        let tips = reader.read_collect(|r| PackRef::decode(r))?;
+        Ok(Self { tips })
     }
 }
 
@@ -160,16 +183,16 @@ mod tests {
     use test_strategy::proptest;
     use ubiquisync_core::pack::PackFileId;
 
-    use super::{BlockedPackInfo, BlockedReasons, RemoteTopicReadState};
+    use super::{BlockedPackInfo, BlockedReasons, PackReadState};
     use crate::db::ColRepr;
 
     #[proptest]
     fn roundtrip_read_state(consumed: Vec<PackFileId>, blocked: Vec<BlockedPackInfo>) {
-        let state = RemoteTopicReadState {
+        let state = PackReadState {
             consumed: consumed.into_iter().collect(),
             blocked: blocked.into_iter().map(|b| (b.file.get_ref(), b)).collect(),
         };
-        let state2 = RemoteTopicReadState::from_repr(&state.clone().to_repr().unwrap()).unwrap();
+        let state2 = PackReadState::from_repr(&state.clone().to_repr().unwrap()).unwrap();
         assert_eq!(state, state2);
     }
 
@@ -180,7 +203,7 @@ mod tests {
             id: 1,
             generation: 0,
         };
-        let state = RemoteTopicReadState {
+        let state = PackReadState {
             consumed: Default::default(),
             blocked: [(
                 file.get_ref(),
@@ -203,11 +226,9 @@ mod tests {
     #[test_case(|_| {} => matches Ok(_) ; "valid")]
     #[test_case(|b| { let i = b.len() - 2; b[i] = 0x80 } => matches Err(_) ; "unknown flag")]
     #[test_case(|b| b.truncate(b.len() - 1) => matches Err(_) ; "truncated")]
-    fn decode_read_state(
-        patch: fn(&mut Vec<u8>),
-    ) -> Result<RemoteTopicReadState, crate::db::DbError> {
+    fn decode_read_state(patch: fn(&mut Vec<u8>)) -> Result<PackReadState, crate::db::DbError> {
         let mut b = single_blocked_bytes();
         patch(&mut b);
-        RemoteTopicReadState::from_repr(&b)
+        PackReadState::from_repr(&b)
     }
 }

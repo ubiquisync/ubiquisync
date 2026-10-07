@@ -18,7 +18,8 @@ use crate::{
     reducer::Reducer,
     replica::{
         Replica, ReplicaInner,
-        fs_sync_schema::{BlockedPackInfo, pack_read_state, topics},
+        fs_read::PackTipTracker,
+        fs_sync_schema::{BlockedPackInfo, PackReadState, PackWriteState, pack_read_state, topics},
         peers::PeerResolveError,
         segment::GetSegmentError,
     },
@@ -97,19 +98,23 @@ impl<R: Reducer> ReplicaInner<R> {
                 continue;
             };
             let packs = store.list_packs(topic, &peer).await?;
-            let (read_state,) = select_cols::<(pack_read_state::State,)>(
-                self.db.as_ref(),
-                Query::select()
-                    .from(pack_read_state::Table)
-                    .and_where(Expr::column(pack_read_state::RemoteId).eq(remote_id))
-                    .and_where(Expr::column(pack_read_state::TopicId).eq(topic_id))
-                    .and_where(Expr::column(pack_read_state::PeerId).eq(peer_info.db_id)),
-            )
-            .await?
-            .one()?
-            .unwrap_or_default();
-
+            let read_state = self
+                .get_pack_read_state(remote_id, topic_id, peer_info.db_id)
+                .await?;
             let mut read_plan = read_state.prepare_read(WallTime::now(), &packs);
+
+            // track tips for self
+            let mut tip_tracker = if peer == self.self_id {
+                let write_state = self.get_pack_write_state(remote_id, topic_id).await?;
+                Some(PackTipTracker {
+                    last: read_state.clone(),
+                    tips: write_state.tips,
+                })
+            } else {
+                None
+            };
+
+            let mut err = None;
             for todo in read_plan.to_read.iter() {
                 let pack_file_desc = PackFileDescriptor {
                     topic: topic.clone(),
@@ -117,7 +122,14 @@ impl<R: Reducer> ReplicaInner<R> {
                     id: todo.file().clone(),
                 };
                 match self
-                    .process_pack(&peer_info, &pack_file_desc, remote_id, store, todo)
+                    .process_pack(
+                        &peer_info,
+                        &pack_file_desc,
+                        remote_id,
+                        store,
+                        todo,
+                        &mut tip_tracker,
+                    )
                     .await
                 {
                     Err(e) => match e {
@@ -132,8 +144,11 @@ impl<R: Reducer> ReplicaInner<R> {
                         | PackProcessError::GetSegment(_)
                         | PackProcessError::Encode(_)
                         | PackProcessError::Internal(_)) => {
-                            tracing::warn!(remote_id, %peer, file = %todo.file(), error = %e, "aborting pack round");
-                            return Err(e);
+                            tracing::warn!(remote_id, %peer, file = %todo.file(), error = %e, "aborting pack process round");
+                            // setting err here will cause the round to stop, but will attempt to
+                            // save the peer's state before returning
+                            err = Some(e);
+                            break;
                         }
                     },
                     Ok(()) => {
@@ -143,6 +158,7 @@ impl<R: Reducer> ReplicaInner<R> {
                 }
             }
 
+            // TODO: as an optimization we could do these two insert/updates in a batch
             insert_cols::<
                 (
                     pack_read_state::RemoteId,
@@ -167,8 +183,39 @@ impl<R: Reducer> ReplicaInner<R> {
                     ),
             )
             .await?;
+
+            // persist writer state
+            if let Some(PackTipTracker { tips, .. }) = tip_tracker {
+                self.update_pack_write_state(remote_id, topic_id, PackWriteState { tips })
+                    .await?;
+            }
+
+            if let Some(err) = err {
+                // there was an error for this peer which aborts the pack round, so we pass it upwards
+                return Err(err);
+            }
         }
         Ok(())
+    }
+
+    pub(crate) async fn get_pack_read_state(
+        &self,
+        remote_id: i64,
+        topic_id: i64,
+        peer_db_id: i64,
+    ) -> Result<PackReadState, DbError> {
+        Ok(select_cols::<(pack_read_state::State,)>(
+            self.db.as_ref(),
+            Query::select()
+                .from(pack_read_state::Table)
+                .and_where(Expr::column(pack_read_state::RemoteId).eq(remote_id))
+                .and_where(Expr::column(pack_read_state::TopicId).eq(topic_id))
+                .and_where(Expr::column(pack_read_state::PeerId).eq(peer_db_id)),
+        )
+        .await?
+        .one()?
+        .unwrap_or_default()
+        .0)
     }
 
     async fn resolve_topic_id(&self, topic: &Topic) -> Result<i64, DbError> {

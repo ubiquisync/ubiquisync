@@ -30,7 +30,7 @@ def_table_with_auto_id!(containers as __replica_containers (id) => {
 // TODO should we rename streams to something like branches or logs?
 def_table_with_auto_id!(streams as __replica_streams (id) => {
    peer_id: i64, // TODO ref peers
-   container_id: [u8; 16], // TODO should we ref containers.id or not here?
+   container_id: [u8; 16], // TODO should we ref containers.id as i64 or not here?
    head_size: u64, // TODO default 0
    head_hash: [u8; 32], // TODO could be non-null and default to seed
    head_cipher: Option<super::CipherInfo>,

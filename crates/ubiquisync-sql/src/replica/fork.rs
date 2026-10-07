@@ -8,6 +8,7 @@ use ubiquisync_core::{
 
 use crate::{
     db::{DbError, sea_query::insert_cols},
+    reducer::Reducer,
     replica::{
         ReplicaInner,
         ingest::{IngestSource, SegmentProcessError},
@@ -17,7 +18,7 @@ use crate::{
     },
 };
 
-impl<R> ReplicaInner<R> {
+impl<R: Reducer> ReplicaInner<R> {
     /// Search for a fork of stream (or stream itself) upon which we can place new_segment.
     pub(crate) async fn fork_search(
         &self,
