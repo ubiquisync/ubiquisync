@@ -1,4 +1,4 @@
-use std::{collections::HashSet, time::Duration};
+use std::collections::HashSet;
 
 use crate::{
     db::{
@@ -51,8 +51,8 @@ impl<R: Reducer> ReplicaInner<R> {
 
         // select segments we'll publish in this topic
         let now = WallTime::now();
-        const PEER_PUBLISH_GRACE_MS: u64 = Duration::from_mins(5).as_millis() as u64;
-        let peer_grace_due = now.as_millis() - PEER_PUBLISH_GRACE_MS;
+        let grace_ms = self.config.pack_sync.peer_publish_grace.as_millis() as u64;
+        let peer_grace_due = now.as_millis().saturating_sub(grace_ms);
         let rows = select_cols::<(
             streams::Id,
             segments::Body,
@@ -138,11 +138,6 @@ impl<R: Reducer> ReplicaInner<R> {
             let peer_id = PeerId(*peer_id);
             if !seen_peers.contains(&peer_id) {
                 seen_peers.insert(peer_id);
-                match self.resolve_peer(&peer_id).await {
-                    Ok(Some(info)) => store.ensure_peer_init(&info.init_entry).await?,
-                    Ok(None) => tracing::warn!(%peer_id, "can't resolve peer info"),
-                    Err(error) => tracing::warn!(%peer_id, %error, "can't resolve peer info"),
-                }
             }
 
             let bodies = chunk
@@ -168,6 +163,8 @@ impl<R: Reducer> ReplicaInner<R> {
                 new_published_size,
             )?;
         }
+
+        self.ensure_peer_inits(store, seen_peers).await?;
 
         let pack_data = pack_builder.build(self.credentials.signing_key())?;
 
@@ -291,6 +288,25 @@ impl<R: Reducer> ReplicaInner<R> {
                 .to_owned(),
             ),
         )
+    }
+
+    async fn ensure_peer_inits(
+        &self,
+        store: &PackStore,
+        mut peers: HashSet<PeerId>,
+    ) -> Result<(), PackPublishError> {
+        let existing = store.list_peer_inits().await?;
+        for peer in existing {
+            peers.remove(&peer);
+        }
+        for peer_id in peers {
+            match self.resolve_peer(&peer_id).await {
+                Ok(Some(info)) => store.ensure_peer_init(&info.init_entry).await?,
+                Ok(None) => tracing::warn!(%peer_id, "can't resolve peer info"),
+                Err(error) => tracing::warn!(%peer_id, %error, "can't resolve peer info"),
+            }
+        }
+        Ok(())
     }
 }
 

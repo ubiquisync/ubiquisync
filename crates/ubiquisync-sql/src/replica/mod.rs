@@ -1,4 +1,5 @@
 mod commit;
+mod config;
 mod exec;
 mod fork;
 mod fs;
@@ -15,27 +16,25 @@ mod segment;
 mod stream_lock;
 mod streams;
 
-use std::{collections::HashMap, sync::Arc};
-
-use std::sync::atomic::AtomicU64;
-
-use futures::lock::Mutex;
+pub use config::{PackSyncConfig, ReplicaConfig};
 pub use hlc::HlcError;
 pub use init::InitError;
 
+use futures::lock::Mutex;
+use std::sync::atomic::AtomicU64;
+use std::{collections::HashMap, sync::Arc};
 use tokio::task;
 use tokio_util::sync::CancellationToken;
-use ubiquisync_core::init::InitEntry;
-use ubiquisync_core::pack::FileRemoteProvider;
-use ubiquisync_core::{
-    crypto::{CipherKeyResolver, credentials::Credentials},
-    ids::AppId,
-    pack::PackStore,
-};
 
 use crate::{
     db::Db,
     replica::{stream_lock::KeyedLock, streams::StreamLog},
+};
+use ubiquisync_core::init::InitEntry;
+use ubiquisync_core::{
+    crypto::{CipherKeyResolver, credentials::Credentials},
+    ids::AppId,
+    pack::PackStore,
 };
 
 #[allow(dead_code)]
@@ -55,7 +54,15 @@ pub(crate) struct ReplicaInner<R> {
     pub(crate) reducer: R,
     pub(crate) hlc: AtomicU64,
     pub(crate) stream_locks: KeyedLock<StreamLog>,
-    pub(crate) pack_remote_providers: HashMap<String, Box<dyn FileRemoteProvider>>,
     pub(crate) pack_remotes: Mutex<HashMap<i64, Arc<PackStore>>>,
     pub(crate) key_resolver: Arc<dyn CipherKeyResolver>,
+    pub(crate) config: ReplicaConfig,
+}
+
+impl<R> Replica<R> {
+    /// Gracefully shuts down the replica, waiting for all tasks to finish before returning.
+    pub async fn shutdown(self) {
+        self.cancel.cancel();
+        self.tasks.join_all().await;
+    }
 }

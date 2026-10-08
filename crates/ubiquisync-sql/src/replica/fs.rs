@@ -31,7 +31,11 @@ use crate::{
 };
 
 impl<R: Reducer> Replica<R> {
-    pub async fn add_remote(&self, provider: &str, config: &str) -> Result<i64, DbError> {
+    pub async fn add_remote(
+        &self,
+        provider: &str,
+        config: &str,
+    ) -> Result<i64, PackRemoteInitError> {
         let (id,) = insert_cols::<(remotes::Provider, remotes::Config), (remotes::Id,)>(
             self.inner.db.as_ref(),
             (provider.into(), config.into()),
@@ -39,7 +43,7 @@ impl<R: Reducer> Replica<R> {
         )
         .await?
         .exactly_one()?;
-        self.inner.init_remotes().await?;
+        self.inner.init_remote(id, provider, config).await?;
         Ok(id)
     }
 
@@ -67,33 +71,49 @@ impl<R: Reducer> Replica<R> {
     }
 }
 
+#[derive(Debug, Error)]
+pub enum PackRemoteInitError {
+    #[error("db error: {0}")]
+    Db(#[from] DbError),
+    #[error("remote error: {0}")]
+    Store(#[from] PackStoreError),
+    #[error("unknown provider: {0}")]
+    UnknownProvider(String),
+}
+
 impl<R: Reducer> ReplicaInner<R> {
     pub(crate) async fn init_remotes(&self) -> Result<(), DbError> {
-        let mut remotes_guard = self.pack_remotes.lock().await;
         let remotes = select_cols::<(remotes::Id, remotes::Provider, remotes::Config)>(
             self.db.as_ref(),
             Query::select().from(remotes::Table),
         )
         .await?;
-        // for now we clear all the remotes and then re-initialze them
-        remotes_guard.clear();
+
         for remote in remotes.iter() {
             let (id, prov, cfg) = remote?;
-            let Some(provider) = self.pack_remote_providers.get(prov) else {
-                tracing::warn!(remote_id = id, provider = prov, "provider not found");
-                continue;
-            };
 
-            let remote = match provider.init(cfg).await {
-                Ok(r) => r,
-                Err(error) => {
-                    // we don't log config because it could include things like API keys
-                    tracing::warn!(remote_id = id, provider = prov, %error, "error initializing remote");
-                    continue;
-                }
+            if let Err(error) = self.init_remote(id, prov, cfg).await {
+                tracing::warn!(remote_id = id, provider = prov, %error, "error initializing remote");
             };
-            remotes_guard.insert(id, Arc::new(PackStore::new(self.self_init.peer_id, remote)));
         }
+        Ok(())
+    }
+
+    pub(crate) async fn init_remote(
+        &self,
+        id: i64,
+        prov: &str,
+        cfg: &str,
+    ) -> Result<(), PackRemoteInitError> {
+        let Some(provider) = self.config.pack_remote_providers.get(prov) else {
+            return Err(PackRemoteInitError::UnknownProvider(prov.into()));
+        };
+
+        let remote = provider.init(cfg).await.map_err(PackStoreError::Remote)?;
+        let store = PackStore::new(self.self_init.peer_id, remote);
+
+        let mut remotes_guard = self.pack_remotes.lock().await;
+        remotes_guard.insert(id, Arc::new(store));
         Ok(())
     }
 

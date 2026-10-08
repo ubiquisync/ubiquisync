@@ -1,7 +1,4 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc, atomic::AtomicU64},
-};
+use std::sync::{Arc, atomic::AtomicU64};
 
 use sea_query::{Expr, ExprTrait, Query};
 use thiserror::Error;
@@ -11,7 +8,6 @@ use ubiquisync_core::{
     init::{
         InitCommitment, InitCreationError, InitDecodeError, InitEntry, InitVerifyError, Version,
     },
-    pack::FileRemoteProvider,
 };
 
 use crate::{
@@ -22,7 +18,9 @@ use crate::{
     dialect::SqlDialect,
     reducer::Reducer,
     replica::{
-        HlcError, Replica, ReplicaInner, fs_sync_schema,
+        HlcError, Replica, ReplicaInner,
+        config::ReplicaConfig,
+        fs_sync_schema,
         hlc::load_hlc,
         schema::{self, peers},
         stream_lock::KeyedLock,
@@ -35,7 +33,7 @@ impl<R: Reducer> Replica<R> {
         db: Box<dyn Db>,
         reducer: R,
         credentials: Box<dyn Credentials>,
-        pack_remote_providers: HashMap<String, Box<dyn FileRemoteProvider>>,
+        config: ReplicaConfig,
     ) -> Result<Self, InitError> {
         // TODO support prefixes
 
@@ -127,7 +125,7 @@ impl<R: Reducer> Replica<R> {
                 stream_locks: KeyedLock::new(),
                 pack_remotes: Default::default(),
                 key_resolver: Arc::new(NullCipherKeyResolver),
-                pack_remote_providers,
+                config,
             }),
             tasks: Default::default(),
             cancel: Default::default(),
