@@ -4,6 +4,7 @@ pub use join::*;
 
 use std::io::Read;
 
+use itertools::Itertools;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use thiserror::Error;
 
@@ -73,7 +74,7 @@ pub struct DecodedSegment<'a> {
 }
 
 pub struct DecodedEntry<'a> {
-    pub chain_hash: ChainHash,
+    pub chain_meta: ChainMeta,
     pub body: DecodedEntryBody<'a>,
 }
 
@@ -115,7 +116,10 @@ impl<'a> SegmentReader<'a> {
                     let e = e?;
                     chain_hash = chain_hash.next(&e, hash_ctx, &mut active_cipher)?;
                     entries.push(DecodedEntry {
-                        chain_hash,
+                        chain_meta: ChainMeta {
+                            chain_hash,
+                            cipher_info: active_cipher,
+                        },
                         body: DecodedEntryBody::Opaque(e),
                     });
                 }
@@ -152,10 +156,9 @@ impl<'a> SegmentReader<'a> {
                 )
                 .await;
                 for (op_res, pl) in opaque.into_iter().zip(plaintext) {
-                    let (_, h) = op_res?;
-                    chain_hash = h;
+                    let (_, chain_meta) = op_res?;
                     entries.push(DecodedEntry {
-                        chain_hash,
+                        chain_meta,
                         body: DecodedEntryBody::Plaintext(pl),
                     })
                 }
@@ -612,7 +615,7 @@ impl<'a> DecodedSegment<'a> {
                 DecodedEntryBody::Opaque(b) => {
                     let mut next = async || {
                         let b2 = to_plaintext(&b, &entry_cipher, &prev_chain)?;
-                        prev_chain = e.chain_hash;
+                        prev_chain = e.chain_meta.chain_hash;
                         if let LogEntry::IndexedEntry(EntryBody::UseKey(cipher_info)) = b2 {
                             active_cipher = Some(cipher_info);
                         };
@@ -623,51 +626,28 @@ impl<'a> DecodedSegment<'a> {
                             key_resolver,
                         )
                         .await?;
-                        Ok((b2, e.chain_hash))
+                        Ok((b2, e.chain_meta))
                     };
                     if entries.push_mut(next().await).is_err() {
                         break;
                     }
                 }
-                DecodedEntryBody::Plaintext(b) => entries.push(Ok((b, e.chain_hash))),
+                DecodedEntryBody::Plaintext(b) => entries.push(Ok((b, e.chain_meta))),
             }
         }
         DecodedPlaintextEntries { entries }
     }
 
+    /// Iterates through all `ChainMeta` items in the log starting with `prev_chain`,
+    ///  skipping duplicates.
     pub fn chain_meta_iter(&self, start_size: u64) -> impl Iterator<Item = ChainMeta> {
-        // TODO we could make this more efficient by binary searching for the starting element
-        let mut chain_hash = Some(self.header.prev_chain);
-        let mut cipher_info = self.header.start_cipher;
-        let mut it = self.entries.iter();
-        std::iter::from_fn(move || {
-            let cur = chain_hash.map(|chain_hash| ChainMeta {
-                chain_hash,
-                cipher_info,
-            });
-            loop {
-                if let Some(next) = it.next() {
-                    match next.body {
-                        DecodedEntryBody::Opaque(LogEntry::IndexedEntry(EntryBody::UseKey(ci))) => {
-                            cipher_info = Some(ci)
-                        }
-                        DecodedEntryBody::Plaintext(LogEntry::IndexedEntry(EntryBody::UseKey(
-                            ci,
-                        ))) => cipher_info = Some(ci),
-                        _ => {}
-                    }
-                    if Some(next.chain_hash) == chain_hash {
-                        continue;
-                    }
-                    chain_hash = Some(next.chain_hash);
-                    return cur;
-                } else {
-                    chain_hash = None;
-                    return cur;
-                }
-            }
+        std::iter::once(ChainMeta {
+            chain_hash: self.header.prev_chain,
+            cipher_info: self.header.start_cipher,
         })
-        .skip_while(move |h| h.chain_hash.size < start_size)
+        .chain(self.entries.iter().map(|e| e.chain_meta))
+        .dedup()
+        .skip_while(move |m| m.chain_hash.size < start_size)
     }
 
     pub async fn reencode_suffix(
@@ -686,7 +666,7 @@ impl<'a> DecodedSegment<'a> {
         let entries: Vec<&DecodedEntry<'_>> = self
             .entries
             .iter()
-            .filter(|e| e.chain_hash.size > start_size)
+            .filter(|e| e.chain_meta.chain_hash.size > start_size)
             .collect();
         let Some(first) = entries.first() else {
             return Err(SegmentEncodeError::StartSizeOutOfRange(start_size));
@@ -728,6 +708,7 @@ impl<'a> DecodedSegment<'a> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChainMeta {
     pub chain_hash: ChainHash,
     pub cipher_info: Option<CipherInfo>,
@@ -752,7 +733,7 @@ impl<'a> ToStatic for DecodedEntry<'a> {
 
     fn to_static(self) -> Self::Static {
         Self::Static {
-            chain_hash: self.chain_hash,
+            chain_meta: self.chain_meta,
             body: self.body.to_static(),
         }
     }
@@ -770,7 +751,7 @@ impl<'a> ToStatic for DecodedEntryBody<'a> {
 }
 
 pub struct DecodedPlaintextEntries<'a> {
-    pub entries: Vec<Result<(PlaintextLogEntry<'a>, ChainHash), SegmentCipherError>>,
+    pub entries: Vec<Result<(PlaintextLogEntry<'a>, ChainMeta), SegmentCipherError>>,
 }
 
 impl<'a> DecodedPlaintextEntries<'a> {
@@ -870,7 +851,7 @@ pub(crate) mod tests {
                         signing_key.sign(&head_chain.sign_bytes(&seed)).unwrap(),
                     ),
                 };
-                let last_hash = entries_to_opaque(
+                let last_meta = entries_to_opaque(
                     &seed,
                     &mut head_cipher,
                     &head_chain,
@@ -883,7 +864,7 @@ pub(crate) mod tests {
                 .clone()
                 .unwrap()
                 .1;
-                head_chain = last_hash;
+                head_chain = last_meta.chain_hash;
                 entries.push(e);
             }
             TestCaseData {
@@ -943,7 +924,10 @@ pub(crate) mod tests {
         // this assertion is weirdly tolerant of empty segments which we maybe should reject, but currently they're sort of benign
         assert_eq!(
             data.head_chain,
-            opaque.last().map(|e| e.1).unwrap_or(data.prev_chain)
+            opaque
+                .last()
+                .map(|e| e.1.chain_hash)
+                .unwrap_or(data.prev_chain)
         );
 
         let opaque_segment = encode_segment_opaque(

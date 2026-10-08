@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use backon::{BackoffBuilder, ExponentialBackoff, ExponentialBuilder};
-use sea_query::{Expr, ExprTrait, IntoIden, OnConflict, Query};
+use sea_query::{Expr, ExprTrait, Func, IntoIden, OnConflict, Query};
 use thiserror::Error;
 use tokio::time;
 use ubiquisync_core::{
@@ -13,14 +13,18 @@ use ubiquisync_core::{
 use crate::{
     db::{
         DbBatch, DbError,
-        sea_query::{insert_cols, insert_cols_batch, select_cols},
+        sea_query::{build_sql, insert_cols, insert_cols_batch, select_cols},
     },
     reducer::Reducer,
     replica::{
         Replica, ReplicaInner,
         fs_read::PackTipTracker,
-        fs_sync_schema::{BlockedPackInfo, PackReadState, PackWriteState, pack_read_state, topics},
+        fs_sync_schema::{
+            BlockedPackInfo, PackReadState, PackWriteState, pack_read_state, published, topics,
+        },
+        fs_write::PackPublishError,
         peers::PeerResolveError,
+        schema::streams,
         segment::GetSegmentError,
     },
 };
@@ -40,7 +44,7 @@ impl<R: Reducer> Replica<R> {
                         break;
                     }
                     _ = interval.tick() => {
-                        inner.process_packs(&mut backoffs).await;
+                        inner.process_pack_remotes(&mut backoffs).await;
                     }
                 }
             }
@@ -51,7 +55,7 @@ impl<R: Reducer> Replica<R> {
 impl<R: Reducer> ReplicaInner<R> {
     /// A single round of pack processing for a remote, first read, then write.
     /// Remotes which have errors which filter up, are retried with backoff.
-    async fn process_packs(&self, backoffs: &mut HashMap<i64, RemoteBackoff>) {
+    async fn process_pack_remotes(&self, backoffs: &mut HashMap<i64, RemoteBackoff>) {
         for (remote_id, store) in self.pack_remotes.iter() {
             if backoffs
                 .get(remote_id)
@@ -82,7 +86,11 @@ impl<R: Reducer> ReplicaInner<R> {
     ) -> Result<(), PackProcessError> {
         // for MVP we only subscribe to the default topic
         self.process_topic(remote_id, store, &Topic::default())
-            .await
+            .await?;
+
+        self.update_peer_published_pending(remote_id).await?;
+
+        Ok(())
     }
 
     async fn process_topic(
@@ -143,6 +151,7 @@ impl<R: Reducer> ReplicaInner<R> {
                         | PackProcessError::Db(_)
                         | PackProcessError::GetSegment(_)
                         | PackProcessError::Encode(_)
+                        | PackProcessError::Publish(_)
                         | PackProcessError::Internal(_)) => {
                             tracing::warn!(remote_id, %peer, file = %todo.file(), error = %e, "aborting pack process round");
                             // setting err here will cause the round to stop, but will attempt to
@@ -182,6 +191,11 @@ impl<R: Reducer> ReplicaInner<R> {
                 return Err(err);
             }
         }
+
+        // after we've read all new packs for this topic, we then publish local segments which aren't in the remote
+        self.publish_topic(remote_id, topic_id, topic, store)
+            .await?;
+
         Ok(())
     }
 
@@ -264,6 +278,61 @@ impl<R: Reducer> ReplicaInner<R> {
                 ),
         )
     }
+
+    // Timestamp peer streams which we hold but haven't seen published on this remote as pending
+    // so we know to publish them ourselves if the grace period expires
+    pub(crate) async fn update_peer_published_pending(
+        &self,
+        remote_id: i64,
+    ) -> Result<(), DbError> {
+        let now = WallTime::now();
+        let (sql, params) = build_sql(
+            &Query::insert()
+                .into_table(published::Table)
+                .columns([
+                    published::RemoteId.into_iden(),
+                    published::StreamId.into_iden(),
+                    published::PublishedSize.into_iden(),
+                    published::PendingSince.into_iden(),
+                ])
+                .select_from(
+                    Query::select()
+                        .expr(Expr::val(remote_id))
+                        .column(streams::Id)
+                        .expr(Expr::val(0))
+                        .expr(Expr::val(now.as_millis()))
+                        .from(streams::Table)
+                        .left_join(
+                            published::Table,
+                            Expr::col(streams::Id)
+                                .eq(Expr::col(published::StreamId))
+                                // this condition belongs in the LEFT JOIN ON condition because we don't
+                                // want to filter stream rows where there is no published row
+                                .and(Expr::col(published::RemoteId).eq(remote_id)),
+                        )
+                        .and_where(Expr::col(published::PendingSince).is_null())
+                        .and_where(Expr::col(streams::PeerId).ne(self.self_db_id))
+                        .and_where(Expr::col(streams::HeadSize).gt(Func::coalesce([
+                            Expr::col(published::PublishedSize),
+                            Expr::val(0),
+                        ])))
+                        .take(),
+                )
+                .expect("valid select from")
+                .on_conflict(
+                    OnConflict::columns([
+                        published::RemoteId.into_iden(),
+                        published::StreamId.into_iden(),
+                    ])
+                    .update_column(published::PendingSince)
+                    .to_owned(),
+                )
+                .take(),
+            self.db.dialect(),
+        )?;
+        self.db.exec(&sql, &params).await?;
+        Ok(())
+    }
 }
 
 #[derive(Error, Debug)]
@@ -274,6 +343,8 @@ pub enum PackProcessError {
     Peer(#[from] PeerResolveError),
     #[error("db error: {0}")]
     Db(#[from] DbError),
+    #[error("publish error: {0}")]
+    Publish(#[from] PackPublishError),
     #[error("get segment error: {0}")]
     GetSegment(#[from] GetSegmentError),
     #[error("encode error: {0}")]

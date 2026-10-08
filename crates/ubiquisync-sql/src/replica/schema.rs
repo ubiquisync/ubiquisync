@@ -231,21 +231,12 @@ impl UnknownSoftwareVersion {
 
 #[cfg(test)]
 mod tests {
-    use insta::assert_snapshot;
     use test_strategy::proptest;
 
     use crate::{
         db::ColRepr,
-        replica::schema::{CommitErr, HeadErr, create_table_sql},
+        replica::schema::{CommitErr, HeadErr},
     };
-
-    #[test]
-    fn schema_snapshot() {
-        assert_snapshot!(
-            "sqlite",
-            create_table_sql(crate::dialect::SqlDialect::Sqlite).join(";\n")
-        );
-    }
 
     #[proptest]
     fn roundtrip_commit_err(e: CommitErr) {

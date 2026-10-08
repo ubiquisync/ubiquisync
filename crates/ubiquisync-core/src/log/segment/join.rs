@@ -64,9 +64,10 @@ pub async fn join_segments<'a, B: AsRef<[u8]> + 'a>(
         chain_hash = Some(decoded.head_chain);
         let mut entries = vec![];
         for e in decoded.to_plaintext(key_resolver).await.entries {
-            let (e, h) = e?;
-            if h.size <= start_size {
-                prev_chain = Some(h);
+            let (e, m) = e?;
+            if m.chain_hash.size <= start_size {
+                prev_chain = Some(m.chain_hash);
+                start_cipher = m.cipher_info;
                 continue;
             }
             entries.push(e);

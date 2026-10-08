@@ -113,7 +113,7 @@ impl ChainHash {
             return Ok(*self);
         };
         let last = last?;
-        Ok(last.1)
+        Ok(last.1.chain_hash)
     }
 
     pub fn sign_bytes(&self, seed: &LogHashContext) -> Hash256 {

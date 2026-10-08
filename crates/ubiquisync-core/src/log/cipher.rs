@@ -8,7 +8,7 @@ use crate::{
     hlc::Timestamp,
     log::{
         ChainHash, ChainHashError, LogHashContext, LogValidationError, OpEntry, OpaqueLogEntry,
-        PlaintextLogEntry,
+        PlaintextLogEntry, segment::ChainMeta,
     },
 };
 
@@ -39,7 +39,7 @@ pub async fn entries_to_opaque<'a: 'b, 'b>(
     head_chain: &ChainHash,
     key_resolver: &dyn CipherKeyResolver,
     entries: impl Iterator<Item = &'b PlaintextLogEntry<'a>>,
-) -> Vec<Result<(OpaqueLogEntry<'a>, ChainHash), SegmentCipherError>> {
+) -> Vec<Result<(OpaqueLogEntry<'a>, ChainMeta), SegmentCipherError>> {
     let mut head_chain = *head_chain;
     let mut entry_cipher = if let Some(ci) = head_cipher {
         Some(
@@ -56,7 +56,13 @@ pub async fn entries_to_opaque<'a: 'b, 'b>(
         let e2 = to_opaque(e, &entry_cipher, &head_chain)?;
         head_chain = head_chain.next(&e2, seed, head_cipher)?;
         check_cipher_change(head_cipher, &mut entry_cipher, seed, key_resolver).await?;
-        Ok((e2, head_chain))
+        Ok((
+            e2,
+            ChainMeta {
+                chain_hash: head_chain,
+                cipher_info: *head_cipher,
+            },
+        ))
     };
     for e in entries {
         if res.push_mut(next(e).await).is_err() {

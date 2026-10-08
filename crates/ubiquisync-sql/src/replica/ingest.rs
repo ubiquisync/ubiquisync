@@ -346,7 +346,11 @@ where {
                     .get_segment_for_size(guard, hash_ctx, stream.id, end_chain.size)
                     .await?
                 {
-                    if segment.entries.iter().any(|e| e.chain_hash == end_chain) {
+                    if segment
+                        .entries
+                        .iter()
+                        .any(|e| e.chain_meta.chain_hash == end_chain)
+                    {
                         // we already have the segment and we found where it is
                         self.update_published(src, stream.id, end_chain.size)
                             .await?;
@@ -366,7 +370,11 @@ where {
                 .get_segment_for_size(guard, hash_ctx, stream.id, prev_chain.size)
                 .await?
             {
-                if segment.entries.iter().any(|e| e.chain_hash == prev_chain) {
+                if segment
+                    .entries
+                    .iter()
+                    .any(|e| e.chain_meta.chain_hash == prev_chain)
+                {
                     return self
                         .try_place_overlapping_segment(
                             guard,
@@ -422,7 +430,7 @@ where {
                     .decoded
                     .entries
                     .iter()
-                    .any(|e| e.chain_hash == s.head_chain)
+                    .any(|e| e.chain_meta.chain_hash == s.head_chain)
             }) {
             // now we know that this segment extends this stream at some, it just has an overlapping prefix
             // note that we don't need to worry about forks here because a fork cannot happen at the head of any stream

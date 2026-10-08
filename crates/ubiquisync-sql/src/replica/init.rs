@@ -163,3 +163,18 @@ pub enum InitError {
     #[error("timestamp error")]
     Hlc(#[from] HlcError),
 }
+
+#[cfg(test)]
+mod tests {
+    use insta::assert_snapshot;
+
+    use crate::replica::init::create_table_sql;
+
+    #[test]
+    fn schema_snapshot() {
+        assert_snapshot!(
+            "sqlite",
+            create_table_sql(crate::dialect::SqlDialect::Sqlite).join(";\n")
+        );
+    }
+}

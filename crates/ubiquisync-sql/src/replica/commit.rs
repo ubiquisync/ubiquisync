@@ -77,8 +77,8 @@ impl<R: Reducer> ReplicaInner<R> {
             .await
             .entries
         {
-            let (entry, hash) = match res {
-                Ok((entry, hash)) => (entry, hash),
+            let (entry, meta) = match res {
+                Ok((entry, meta)) => (entry, meta),
                 Err(e) => match e {
                     SegmentCipherError::CipherError(_) => {
                         return Ok(self.set_internal_commit_err(stream).await?);
@@ -114,10 +114,10 @@ impl<R: Reducer> ReplicaInner<R> {
                 },
             };
 
-            if hash.size <= stream.commit_size {
+            if meta.chain_hash.size <= stream.commit_size {
                 // we've already committed this entry
                 continue;
-            } else if hash.size != stream.commit_size + 1 {
+            } else if meta.chain_hash.size != stream.commit_size + 1 {
                 return Err(TryCommitError::Internal(
                     "caller error: segment starts after commit size".into(),
                 ));

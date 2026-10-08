@@ -1,9 +1,9 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, time::Duration};
 
 use crate::{
     db::{
         DbBatch, DbError, Nullable,
-        sea_query::{insert_cols, insert_cols_batch, select_cols},
+        sea_query::{build_sql, insert_cols, insert_cols_batch, select_cols},
     },
     reducer::Reducer,
     replica::{
@@ -18,6 +18,7 @@ use sea_query::{
 };
 use thiserror::Error;
 use ubiquisync_core::{
+    hlc::WallTime,
     ids::{ContainerId, LogId, PeerId},
     log::LogHashContext,
     pack::{
@@ -39,7 +40,7 @@ pub(crate) enum PackPublishError {
 }
 
 impl<R: Reducer> ReplicaInner<R> {
-    async fn publish_topic(
+    pub(crate) async fn publish_topic(
         &self,
         remote_id: i64,
         topic_id: i64,
@@ -48,18 +49,10 @@ impl<R: Reducer> ReplicaInner<R> {
     ) -> Result<(), PackPublishError> {
         // TODO indexes: maybe containers(topic_id) and streams(container_id)
 
-        // TODO: timestamp peer streams which we hold but haven't seen published on this remote as pending
-        // so we know to publish them ourselves if the grace period expires
-        // let now = WallTime::now();
-        // insert_cols::<(
-        //     published::RemoteId,
-        //     published::StreamId,
-        //     published::PublishedSize,
-        //     published::PendingSince,
-        // )>(self.db.as_ref(), (), Query::insert())
-        // .await?;
-
         // select segments we'll publish in this topic
+        let now = WallTime::now();
+        const PEER_PUBLISH_GRACE_MS: u64 = Duration::from_mins(5).as_millis() as u64;
+        let peer_grace_due = now.as_millis() - PEER_PUBLISH_GRACE_MS;
         let rows = select_cols::<(
             streams::Id,
             segments::Body,
@@ -93,6 +86,12 @@ impl<R: Reducer> ReplicaInner<R> {
                     Expr::col(published::PublishedSize),
                     Expr::val(0),
                 ])))
+                .and_where(
+                    // select our own streams or peer streams that have been pending since before our grace timestamp
+                    Expr::col(streams::PeerId)
+                        .eq(self.self_db_id)
+                        .or(Expr::col(published::PendingSince).lt(peer_grace_due)),
+                )
                 .order_by_columns([
                     (streams::Id.into_column_ref(), Order::Asc),
                     // order on end_size because its already in the primary key index
@@ -122,7 +121,7 @@ impl<R: Reducer> ReplicaInner<R> {
         };
 
         let mut pack_builder = PackBuilder::new(pack_desc, write_state.tips.into_iter().collect());
-        let mut sql_batch = self.db.new_batch();
+        let mut db_batch = self.db.new_batch();
         // chunk by streams
         for chunk in
             segments.chunk_by(|(a_stream, _, _, _, _), (b_stream, _, _, _, _)| a_stream == b_stream)
@@ -146,7 +145,7 @@ impl<R: Reducer> ReplicaInner<R> {
                 )
                 .await?;
             self.update_published_batch(
-                sql_batch.as_mut(),
+                db_batch.as_mut(),
                 &IngestSource::Pack { remote_id },
                 *stream_id,
                 new_published_size,
@@ -163,7 +162,7 @@ impl<R: Reducer> ReplicaInner<R> {
         let mut tips = HashSet::new();
         tips.insert(id.get_ref());
         self.update_pack_write_state_batch(
-            sql_batch.as_mut(),
+            db_batch.as_mut(),
             remote_id,
             topic_id,
             PackWriteState { tips },
@@ -173,14 +172,14 @@ impl<R: Reducer> ReplicaInner<R> {
             .await?;
         read_state.consumed.insert(id);
         self.update_pack_read_state_batch(
-            sql_batch.as_mut(),
+            db_batch.as_mut(),
             remote_id,
             topic_id,
             self.self_db_id,
             read_state,
         )?;
 
-        sql_batch.commit().await?;
+        db_batch.commit().await?;
 
         Ok(())
     }
@@ -199,11 +198,12 @@ impl<R: Reducer> ReplicaInner<R> {
                 published::RemoteId,
                 published::StreamId,
                 published::PublishedSize,
+                published::PendingSince,
             ),
             (),
         >(
             self.db.as_ref(),
-            (*remote_id, stream_id, size),
+            (*remote_id, stream_id, size, None),
             &mut update_published_stmt(size),
         )
         .await?;
@@ -224,9 +224,10 @@ impl<R: Reducer> ReplicaInner<R> {
             published::RemoteId,
             published::StreamId,
             published::PublishedSize,
+            published::PendingSince,
         )>(
             batch,
-            (*remote_id, stream_id, size),
+            (*remote_id, stream_id, size, None),
             &mut update_published_stmt(size),
         )
     }
@@ -285,6 +286,7 @@ fn update_published_stmt(size: u64) -> InsertStatement {
                 published::StreamId.into_iden(),
             ])
             .update_column(published::PublishedSize)
+            .update_column(published::PendingSince)
             .action_and_where(Expr::col((published::Table, published::PublishedSize)).lt(size))
             .to_owned(),
         )
