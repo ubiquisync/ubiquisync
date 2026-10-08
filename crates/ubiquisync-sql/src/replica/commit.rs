@@ -1,7 +1,8 @@
-use std::borrow::Borrow;
+use std::{borrow::Borrow, collections::HashMap};
 
 use sea_query::{Expr, ExprTrait, Query};
 use thiserror::Error;
+use tokio::time;
 use ubiquisync_core::{
     crypto::CipherKeyResolveError,
     hlc::WallTime,
@@ -11,11 +12,11 @@ use ubiquisync_core::{
 use crate::{
     db::{
         DbError,
-        sea_query::{update_cols, update_cols_batch},
+        sea_query::{select_cols, update_cols, update_cols_batch},
     },
     reducer::{PrepareError, RebuildScope, Reducer},
     replica::{
-        HlcError, ReplicaInner,
+        HlcError, Replica, ReplicaInner,
         schema::{CommitErr, streams},
         stream_lock::KeyedLockGuard,
         streams::{StreamInfo, StreamLog},
@@ -262,11 +263,32 @@ impl<R: Reducer> ReplicaInner<R> {
         self.set_commit_err(stream, err).await
     }
 
-    pub(crate) async fn retry_commit(&self) {
-        // TODO setup tokio task interval loop
+    async fn retry_commit(&self) {
         // TODO
         // 1. select any streams where commit_size < head_size AND commit_error == NULL
         // 2. select any streams where commit_error is HLC and clock has advanced
         // 3. other conditions: waiting for peer, key or software upgrade
+        select_cols::<(streams::Id,)>(self.db.as_ref(), Query::select().from(streams::Table)).await;
+    }
+}
+
+impl<R: Reducer> Replica<R> {
+    pub(crate) async fn retry_commit_loop(&mut self) {
+        let inner = self.inner.clone();
+        let cancel_token = self.cancel.clone();
+        self.tasks.spawn(async move {
+            let mut interval = time::interval(inner.config.pack_sync.poll_interval); // TODO custom interval
+            interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    _ = cancel_token.cancelled() => {
+                        break;
+                    }
+                    _ = interval.tick() => {
+                        inner.retry_commit().await;
+                    }
+                }
+            }
+        });
     }
 }
