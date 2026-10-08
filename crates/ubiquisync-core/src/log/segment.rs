@@ -157,6 +157,7 @@ impl<'a> SegmentReader<'a> {
                 .await;
                 for (op_res, pl) in opaque.into_iter().zip(plaintext) {
                     let (_, chain_meta) = op_res?;
+                    chain_hash = chain_meta.chain_hash;
                     entries.push(DecodedEntry {
                         chain_meta,
                         body: DecodedEntryBody::Plaintext(pl),

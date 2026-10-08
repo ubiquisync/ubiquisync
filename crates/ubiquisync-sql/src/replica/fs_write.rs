@@ -65,41 +65,53 @@ impl<R: Reducer> ReplicaInner<R> {
                 .from(segments::Table)
                 .inner_join(
                     streams::Table,
-                    Expr::col(segments::StreamId).eq(Expr::col(streams::Id)),
+                    Expr::col((segments::Table, segments::StreamId))
+                        .eq(Expr::col((streams::Table, streams::Id))),
                 )
                 // left join because a container with no row is in the default topic
                 .left_join(
                     containers::Table,
-                    Expr::col(streams::ContainerId).eq(Expr::col(containers::ContainerId)),
+                    Expr::col((streams::Table, streams::ContainerId))
+                        .eq(Expr::col((containers::Table, containers::ContainerId))),
                 )
                 .inner_join(
                     peers::Table,
-                    Expr::col(streams::PeerId).eq(Expr::col(peers::Id)),
+                    Expr::col((streams::Table, streams::PeerId))
+                        .eq(Expr::col((peers::Table, peers::Id))),
                 )
                 .left_join(
                     published::Table,
-                    Expr::col(streams::Id)
-                        .eq(Expr::col(published::StreamId))
-                        .and(Expr::col(published::RemoteId).eq(remote_id)),
+                    Expr::col((streams::Table, streams::Id))
+                        .eq(Expr::col((published::Table, published::StreamId)))
+                        .and(Expr::col((published::Table, published::RemoteId)).eq(remote_id)),
                 )
                 .and_where(
-                    Func::coalesce([Expr::col(containers::TopicId), Expr::val(DEFAULT_TOPIC_ID)])
-                        .eq(topic_id),
+                    Func::coalesce([
+                        Expr::col((containers::Table, containers::TopicId)),
+                        Expr::val(DEFAULT_TOPIC_ID),
+                    ])
+                    .eq(topic_id),
                 )
-                .and_where(Expr::col(segments::EndSize).gt(Func::coalesce([
-                    Expr::col(published::PublishedSize),
-                    Expr::val(0),
-                ])))
+                .and_where(
+                    Expr::col((segments::Table, segments::EndSize)).gt(Func::coalesce([
+                        Expr::col((published::Table, published::PublishedSize)),
+                        Expr::val(0),
+                    ])),
+                )
                 .and_where(
                     // select our own streams or peer streams that have been pending since before our grace timestamp
-                    Expr::col(streams::PeerId)
+                    Expr::col((streams::Table, streams::PeerId))
                         .eq(self.self_db_id)
-                        .or(Expr::col(published::PendingSince).lt(peer_grace_due)),
+                        .or(Expr::col((published::Table, published::PendingSince))
+                            .lt(peer_grace_due)),
                 )
                 .order_by_columns([
-                    (streams::Id.into_column_ref(), Order::Asc),
+                    ((streams::Table, streams::Id).into_column_ref(), Order::Asc),
                     // order on end_size because its already in the primary key index
-                    (segments::EndSize.into_column_ref(), Order::Asc),
+                    (
+                        (segments::Table, segments::EndSize).into_column_ref(),
+                        Order::Asc,
+                    ),
                 ]),
         )
         .await?;

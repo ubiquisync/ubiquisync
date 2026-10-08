@@ -183,6 +183,11 @@ impl<R: Reducer> ReplicaInner<R> {
             let mut read_plan =
                 read_state.prepare_read(WallTime::now(), &packs, &self.config.pack_sync);
 
+            if read_plan.to_read.is_empty() {
+                // nothing to do
+                return Ok(());
+            }
+
             // track tips for self
             let mut tip_tracker = if peer == self.self_init.peer_id {
                 let write_state = self.get_pack_write_state(remote_id, topic_id).await?;
@@ -373,24 +378,29 @@ impl<R: Reducer> ReplicaInner<R> {
                 .select_from(
                     Query::select()
                         .expr(Expr::val(remote_id))
-                        .column(streams::Id)
+                        .column((streams::Table, streams::Id))
                         .expr(Expr::val(0))
                         .expr(Expr::val(now.as_millis()))
                         .from(streams::Table)
                         .left_join(
                             published::Table,
-                            Expr::col(streams::Id)
-                                .eq(Expr::col(published::StreamId))
+                            Expr::col((streams::Table, streams::Id))
+                                .eq(Expr::col((published::Table, published::StreamId)))
                                 // this condition belongs in the LEFT JOIN ON condition because we don't
                                 // want to filter stream rows where there is no published row
-                                .and(Expr::col(published::RemoteId).eq(remote_id)),
+                                .and(
+                                    Expr::col((published::Table, published::RemoteId))
+                                        .eq(remote_id),
+                                ),
                         )
-                        .and_where(Expr::col(published::PendingSince).is_null())
-                        .and_where(Expr::col(streams::PeerId).ne(self.self_db_id))
-                        .and_where(Expr::col(streams::HeadSize).gt(Func::coalesce([
-                            Expr::col(published::PublishedSize),
-                            Expr::val(0),
-                        ])))
+                        .and_where(Expr::col((published::Table, published::PendingSince)).is_null())
+                        .and_where(Expr::col((streams::Table, streams::PeerId)).ne(self.self_db_id))
+                        .and_where(Expr::col((streams::Table, streams::HeadSize)).gt(
+                            Func::coalesce([
+                                Expr::col((published::Table, published::PublishedSize)),
+                                Expr::val(0),
+                            ]),
+                        ))
                         .take(),
                 )
                 .expect("valid select from")
