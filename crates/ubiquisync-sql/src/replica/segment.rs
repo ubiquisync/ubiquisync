@@ -29,11 +29,10 @@ impl<R> ReplicaInner<R> {
         stream_id: i64,
         size: u64,
     ) -> Result<Option<DecodedSegment<'static>>, GetSegmentError> {
-        if size == 0 {
-            return Ok(None);
-        }
+        // if size == 0, we get the segment for the 0th entry
+        let index = if size > 0 { size - 1 } else { 0 };
 
-        self.get_segment_by_index(guard, hash_ctx, stream_id, size - 1)
+        self.get_segment_by_index(guard, hash_ctx, stream_id, index)
             .await
     }
 

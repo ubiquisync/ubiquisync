@@ -371,9 +371,8 @@ where {
                 .await?
             {
                 if segment
-                    .entries
-                    .iter()
-                    .any(|e| e.chain_meta.chain_hash == prev_chain)
+                    .chain_meta_iter(prev_chain.size)
+                    .any(|m| m.chain_hash == prev_chain)
                 {
                     return self
                         .try_place_overlapping_segment(
