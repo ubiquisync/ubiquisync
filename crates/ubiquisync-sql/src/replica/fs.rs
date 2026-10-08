@@ -183,20 +183,18 @@ impl<R: Reducer> ReplicaInner<R> {
             let mut read_plan =
                 read_state.prepare_read(WallTime::now(), &packs, &self.config.pack_sync);
 
-            if read_plan.to_read.is_empty() {
-                // nothing to do
-                return Ok(());
-            }
-
-            // track tips for self
-            let mut tip_tracker = if peer == self.self_init.peer_id {
+            // track tips for self, keeping the loaded tips to check for changes
+            let (mut tip_tracker, loaded_tips) = if peer == self.self_init.peer_id {
                 let write_state = self.get_pack_write_state(remote_id, topic_id).await?;
-                Some(PackTipTracker {
-                    last: read_state,
-                    tips: write_state.tips,
-                })
+                (
+                    Some(PackTipTracker {
+                        last: read_state.clone(),
+                        tips: write_state.tips.clone(),
+                    }),
+                    Some(write_state.tips),
+                )
             } else {
-                None
+                (None, None)
             };
 
             let mut err = None;
@@ -244,24 +242,33 @@ impl<R: Reducer> ReplicaInner<R> {
                 }
             }
 
-            let mut db_batch = self.db.new_batch();
-            self.update_pack_read_state_batch(
-                db_batch.as_mut(),
-                remote_id,
-                topic_id,
-                peer_info.db_id,
-                read_plan.next,
-            )?;
-            // persist writer state
-            if let Some(PackTipTracker { tips, .. }) = tip_tracker {
-                self.update_pack_write_state_batch(
-                    db_batch.as_mut(),
-                    remote_id,
-                    topic_id,
-                    PackWriteState { tips },
-                )?;
+            // only write state that changed, most rounds change nothing
+            let read_state_changed = read_plan.next != read_state;
+            let new_tips = tip_tracker
+                .map(|t| t.tips)
+                .filter(|tips| Some(tips) != loaded_tips.as_ref());
+            if read_state_changed || new_tips.is_some() {
+                let mut db_batch = self.db.new_batch();
+                if read_state_changed {
+                    self.update_pack_read_state_batch(
+                        db_batch.as_mut(),
+                        remote_id,
+                        topic_id,
+                        peer_info.db_id,
+                        read_plan.next,
+                    )?;
+                }
+                // persist writer state
+                if let Some(tips) = new_tips {
+                    self.update_pack_write_state_batch(
+                        db_batch.as_mut(),
+                        remote_id,
+                        topic_id,
+                        PackWriteState { tips },
+                    )?;
+                }
+                db_batch.commit().await?;
             }
-            db_batch.commit().await?;
 
             if let Some(err) = err {
                 // there was an error for this peer which aborts the pack round, so we pass it upwards
