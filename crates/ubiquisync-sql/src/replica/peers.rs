@@ -30,6 +30,7 @@ pub(crate) struct PeerInfo {
     pub peer: PeerId,
     pub db_id: i64,
     pub commitment: InitCommitment,
+    pub init_entry: InitEntry,
 }
 
 impl<R> ReplicaInner<R> {
@@ -54,7 +55,7 @@ impl<R> ReplicaInner<R> {
                 self.db.as_ref(),
                 (
                     init_entry.peer_id.0,
-                    init_entry.commitment_bytes,
+                    init_entry.commitment_bytes.clone(),
                     init_entry.signature,
                 ),
                 Query::insert()
@@ -73,6 +74,7 @@ impl<R> ReplicaInner<R> {
                 peer: *peer,
                 db_id: id,
                 commitment,
+                init_entry,
             }))
         }
     }
@@ -103,6 +105,7 @@ impl<R> ReplicaInner<R> {
                 peer: *peer,
                 db_id: id,
                 commitment,
+                init_entry,
             }))
         } else {
             Ok(None)

@@ -36,7 +36,7 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
         let stream_rows = inner.resolve_streams(&stream_guard).await?;
 
         let log_id = LogId {
-            peer_id: inner.self_id,
+            peer_id: inner.self_init.peer_id,
             container_id,
         };
         let seed = LogHashContext::new(&log_id);

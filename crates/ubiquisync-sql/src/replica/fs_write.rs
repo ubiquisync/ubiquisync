@@ -120,25 +120,38 @@ impl<R: Reducer> ReplicaInner<R> {
         let id = PackFileId::new(seq..seq + 1);
         let pack_desc = PackFileDescriptor {
             topic: topic.clone(),
-            peer_id: self.self_id,
+            peer_id: self.self_init.peer_id,
             id: id.clone(),
         };
 
         let mut pack_builder = PackBuilder::new(pack_desc, write_state.tips.into_iter().collect());
         let mut db_batch = self.db.new_batch();
+        let mut seen_peers = HashSet::new();
         // chunk by streams
         for chunk in
             segments.chunk_by(|(a_stream, _, _, _, _), (b_stream, _, _, _, _)| a_stream == b_stream)
         {
             let (stream_id, _, container_id, peer_id, published_size) =
                 chunk.first().expect("non-empty chunk");
+
+            // ensure peer inits are written
+            let peer_id = PeerId(*peer_id);
+            if !seen_peers.contains(&peer_id) {
+                seen_peers.insert(peer_id);
+                match self.resolve_peer(&peer_id).await {
+                    Ok(Some(info)) => store.ensure_peer_init(&info.init_entry).await?,
+                    Ok(None) => tracing::warn!(%peer_id, "can't resolve peer info"),
+                    Err(error) => tracing::warn!(%peer_id, %error, "can't resolve peer info"),
+                }
+            }
+
             let bodies = chunk
                 .iter()
                 .map(|(_, body, _, _, _)| body)
                 .collect::<Vec<_>>();
             let hash_ctx = LogHashContext::new(&LogId {
                 container_id: ContainerId(*container_id),
-                peer_id: PeerId(*peer_id),
+                peer_id,
             });
             let new_published_size = pack_builder
                 .add_container_segments(

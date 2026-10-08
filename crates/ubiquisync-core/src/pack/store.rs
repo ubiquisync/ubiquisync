@@ -1,11 +1,9 @@
-use std::sync::Arc;
-
 use thiserror::Error;
 
 use crate::{
     codec::{WriteError, Writer},
     ids::PeerId,
-    init::InitEntry,
+    init::{InitDecodeError, InitEntry},
     pack::{
         FileRemote, FileRemoteError, FileType, HEADER_EXT, PackData, PackFileDescriptor,
         PackFileId, PackHeaderDecodeError, SignedPackHeader, Topic,
@@ -22,7 +20,9 @@ pub enum PackStoreError {
     #[error("remote error: {0}")]
     Remote(#[from] FileRemoteError),
     #[error("header decode error: {0}")]
-    Decode(#[from] PackHeaderDecodeError),
+    HeaderDecode(#[from] PackHeaderDecodeError),
+    #[error("init decode error: {0}")]
+    InitDecode(#[from] InitDecodeError),
     #[error("write error: {0}")]
     Write(#[from] WriteError),
     #[error("can't author packs for other peers")]
@@ -140,10 +140,24 @@ impl PackStore {
     }
 
     pub async fn read_peer_init(&self, peer: &PeerId) -> Result<Option<InitEntry>, PackStoreError> {
-        todo!()
+        let Some(bz) = self.remote.read(&format!("{PEERS_DIR}/{peer}")).await? else {
+            return Ok(None);
+        };
+        Ok(Some(InitEntry::decode(*peer, &bz)?))
     }
 
     pub async fn write_peer_init(&self, init_entry: &InitEntry) -> Result<(), PackStoreError> {
-        todo!()
+        let peer = init_entry.peer_id;
+        let bz = init_entry.encode()?;
+        self.remote
+            .write(&format!("{PEERS_DIR}/{peer}"), &bz)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn ensure_peer_init(&self, init_entry: &InitEntry) -> Result<(), PackStoreError> {
+        // TODO: only write if the init doesn't exist!
+        // this requires some sort of stat method on the remote which we don't have yet
+        self.write_peer_init(init_entry).await
     }
 }

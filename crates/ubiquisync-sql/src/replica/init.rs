@@ -1,4 +1,7 @@
-use std::sync::{Arc, atomic::AtomicU64};
+use std::{
+    collections::HashMap,
+    sync::{Arc, atomic::AtomicU64},
+};
 
 use sea_query::{Expr, ExprTrait, Query};
 use thiserror::Error;
@@ -8,6 +11,7 @@ use ubiquisync_core::{
     init::{
         InitCommitment, InitCreationError, InitDecodeError, InitEntry, InitVerifyError, Version,
     },
+    pack::FileRemoteProvider,
 };
 
 use crate::{
@@ -31,6 +35,7 @@ impl<R: Reducer> Replica<R> {
         db: Box<dyn Db>,
         reducer: R,
         credentials: Box<dyn Credentials>,
+        pack_remote_providers: HashMap<String, Box<dyn FileRemoteProvider>>,
     ) -> Result<Self, InitError> {
         // TODO support prefixes
 
@@ -41,7 +46,7 @@ impl<R: Reducer> Replica<R> {
 
         let hlc = load_hlc(db.as_ref()).await?;
 
-        let self_id = if let Some((self_id, commitment_bytes, signature)) =
+        let self_init = if let Some((self_id, commitment_bytes, signature)) =
             select_cols::<(peers::PeerId, peers::CommitmentBytes, peers::Signature)>(
                 db.as_ref(),
                 Query::select()
@@ -70,7 +75,7 @@ impl<R: Reducer> Replica<R> {
                 ));
             }
 
-            self_id
+            init_entry
         } else {
             let commitment = InitCommitment {
                 version: Version::default(),
@@ -92,7 +97,7 @@ impl<R: Reducer> Replica<R> {
                 db.as_ref(),
                 (
                     init_entry.peer_id.0,
-                    init_entry.commitment_bytes,
+                    init_entry.commitment_bytes.clone(),
                     init_entry.signature,
                 ),
                 Query::insert().into_table(peers::Table),
@@ -107,13 +112,13 @@ impl<R: Reducer> Replica<R> {
                 )));
             }
 
-            init_entry.peer_id
+            init_entry
         };
 
-        Ok(Self {
+        let mut res = Self {
             inner: Arc::new(ReplicaInner {
                 app_id,
-                self_id,
+                self_init,
                 self_db_id: SELF_DB_ID,
                 credentials,
                 db,
@@ -122,10 +127,16 @@ impl<R: Reducer> Replica<R> {
                 stream_locks: KeyedLock::new(),
                 pack_remotes: Default::default(),
                 key_resolver: Arc::new(NullCipherKeyResolver),
+                pack_remote_providers,
             }),
             tasks: Default::default(),
             cancel: Default::default(),
-        })
+        };
+
+        res.inner.init_remotes().await?;
+        res.start_process_packs();
+
+        Ok(res)
     }
 }
 

@@ -2,7 +2,7 @@ use bitfield_struct::bitfield;
 use thiserror::Error;
 
 use crate::{
-    codec::{ReadError, Reader, Writer},
+    codec::{ReadError, Reader, WriteError, Writer},
     crypto::{
         CryptoDecodeError, Hash256Suite, Signature, SignatureVerifyError, SigningError, SigningKey,
         TaggedHashDomain, VerifyingKey, kem::EncapsulationKey, new_tagged_hasher,
@@ -10,6 +10,7 @@ use crate::{
     ids::{AppId, PeerId},
 };
 
+#[derive(Clone, Debug)]
 pub struct InitEntry {
     pub commitment_bytes: Vec<u8>,
     pub peer_id: PeerId,
@@ -160,6 +161,27 @@ pub enum InitDecodeError {
     UnknownInitData { version: Version, remaining: usize },
 }
 
+impl InitEntry {
+    /// Encodes the body and signatures. It is assumed the peer ID will be stored in the filename.
+    pub fn encode(&self) -> Result<Vec<u8>, WriteError> {
+        let mut w = Writer::new();
+        w.write_len_prefixed(&self.commitment_bytes);
+        self.signature.encode(&mut w)?;
+        Ok(w.finalize())
+    }
+
+    pub fn decode(peer_id: PeerId, bytes: &[u8]) -> Result<Self, InitDecodeError> {
+        let mut r = Reader::new(bytes);
+        let commitment_bytes = r.read_len_prefixed()?.to_vec();
+        let signature = Signature::decode(&mut r).map_err(InitDecodeError::from_sig_decode_err)?;
+        Ok(Self {
+            commitment_bytes,
+            peer_id,
+            signature,
+        })
+    }
+}
+
 impl InitCommitment {
     pub fn encode(&self, writer: &mut Writer) {
         writer.write_byte(self.version.into());
@@ -191,10 +213,8 @@ impl InitCommitment {
         if flags.reserved() != 0 {
             return Err(InitDecodeError::UnknownInitFlags(flags.0));
         }
-        let sig_verify_key = VerifyingKey::decode(&mut reader).map_err(|e| match e {
-            CryptoDecodeError::ReadError(read_error) => InitDecodeError::ReadError(read_error),
-            CryptoDecodeError::UnknownAlgorithm(b) => InitDecodeError::UnknownSignatureKeyType(b),
-        })?;
+        let sig_verify_key =
+            VerifyingKey::decode(&mut reader).map_err(InitDecodeError::from_sig_decode_err)?;
         let encrypt_wrap_key = EncapsulationKey::decode(&mut reader).map_err(|e| match e {
             CryptoDecodeError::ReadError(read_error) => InitDecodeError::ReadError(read_error),
             CryptoDecodeError::UnknownAlgorithm(b) => {
@@ -225,5 +245,14 @@ impl InitCommitment {
             workspace_join,
             endorsement,
         })
+    }
+}
+
+impl InitDecodeError {
+    fn from_sig_decode_err(e: CryptoDecodeError) -> Self {
+        match e {
+            CryptoDecodeError::ReadError(read_error) => Self::ReadError(read_error),
+            CryptoDecodeError::UnknownAlgorithm(b) => Self::UnknownSignatureKeyType(b),
+        }
     }
 }

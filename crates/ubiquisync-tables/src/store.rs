@@ -1,7 +1,10 @@
+use std::collections::HashMap;
+
 use ubiquisync_core::{
     crypto::credentials::Credentials,
     event::{EventBus, Subscribe, event_bus},
     ids::{AppId, ContainerId},
+    pack::FileRemoteProvider,
     uuid::Uuid,
 };
 use ubiquisync_sql::{
@@ -12,11 +15,7 @@ use ubiquisync_sql::{
 };
 
 use crate::{
-    error::{SchemaSyncError, TablesInitError},
-    op::Op,
-    reducer::Reducer,
-    schema::TableSchema,
-    watch::ChangeEvent,
+    error::TablesInitError, op::Op, reducer::Reducer, schema::TableSchema, watch::ChangeEvent,
 };
 
 pub struct StoreImpl {
@@ -40,11 +39,13 @@ impl StoreImpl {
         prefix: &str,
         tables: &[TableSchema],
         db: Box<dyn Db>,
+        pack_remote_providers: HashMap<String, Box<dyn FileRemoteProvider>>,
     ) -> Result<Self, StoreInitError> {
         let (event_handler, event_bus) = event_bus();
         let reducer =
             Reducer::new(container_id, prefix, tables, db.as_ref(), event_handler).await?;
-        let replica = Replica::new(app_magic, db, reducer, credentials).await?;
+        let replica =
+            Replica::new(app_magic, db, reducer, credentials, pack_remote_providers).await?;
         Ok(Self { replica, event_bus })
     }
 }

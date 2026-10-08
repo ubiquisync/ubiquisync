@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use backon::{BackoffBuilder, ExponentialBackoff, ExponentialBuilder};
 use sea_query::{Expr, ExprTrait, Func, IntoIden, OnConflict, Query};
@@ -7,7 +7,7 @@ use tokio::time;
 use ubiquisync_core::{
     hlc::WallTime,
     log::segment::SegmentEncodeError,
-    pack::{FileRemoteError, PackFileDescriptor, PackStore, PackStoreError, Topic},
+    pack::{PackFileDescriptor, PackStore, PackStoreError, Topic},
 };
 
 use crate::{
@@ -31,7 +31,7 @@ use crate::{
 };
 
 impl<R: Reducer> Replica<R> {
-    pub async fn add_remote(&self, provider: &str, config: &str) -> Result<i64, RemoteConfigError> {
+    pub async fn add_remote(&self, provider: &str, config: &str) -> Result<i64, DbError> {
         let (id,) = insert_cols::<(remotes::Provider, remotes::Config), (remotes::Id,)>(
             self.inner.db.as_ref(),
             (provider.into(), config.into()),
@@ -67,18 +67,8 @@ impl<R: Reducer> Replica<R> {
     }
 }
 
-#[derive(Debug, Error)]
-pub enum RemoteConfigError {
-    #[error("db error: {0}")]
-    Db(#[from] DbError),
-    #[error("remote error: {0}")]
-    Remote(#[from] FileRemoteError),
-    #[error("unknown provider: {0}")]
-    UnknownProvider(String),
-}
-
 impl<R: Reducer> ReplicaInner<R> {
-    async fn init_remotes(&self) -> Result<(), RemoteConfigError> {
+    pub(crate) async fn init_remotes(&self) -> Result<(), DbError> {
         let mut remotes_guard = self.pack_remotes.lock().await;
         let remotes = select_cols::<(remotes::Id, remotes::Provider, remotes::Config)>(
             self.db.as_ref(),
@@ -89,12 +79,20 @@ impl<R: Reducer> ReplicaInner<R> {
         remotes_guard.clear();
         for remote in remotes.iter() {
             let (id, prov, cfg) = remote?;
-            let provider = self
-                .pack_remote_providers
-                .get(prov)
-                .ok_or(RemoteConfigError::UnknownProvider(prov.into()))?;
-            let store = PackStore::new(self.self_id, provider.init(&cfg)?);
-            remotes_guard.insert(id, store);
+            let Some(provider) = self.pack_remote_providers.get(prov) else {
+                tracing::warn!(remote_id = id, provider = prov, "provider not found");
+                continue;
+            };
+
+            let remote = match provider.init(cfg).await {
+                Ok(r) => r,
+                Err(error) => {
+                    // we don't log config because it could include things like API keys
+                    tracing::warn!(remote_id = id, provider = prov, %error, "error initializing remote");
+                    continue;
+                }
+            };
+            remotes_guard.insert(id, Arc::new(PackStore::new(self.self_init.peer_id, remote)));
         }
         Ok(())
     }
@@ -102,8 +100,9 @@ impl<R: Reducer> ReplicaInner<R> {
     /// A single round of pack processing for a remote, first read, then write.
     /// Remotes which have errors which filter up, are retried with backoff.
     async fn process_pack_remotes(&self, backoffs: &mut HashMap<i64, RemoteBackoff>) {
-        let remotes_guard = self.pack_remotes.lock().await;
-        for (remote_id, store) in remotes_guard.iter() {
+        // clone the remotes map so we don't hold the lock for the whole round
+        let remotes = { self.pack_remotes.lock().await.clone() };
+        for (remote_id, store) in remotes.iter() {
             if backoffs
                 .get(remote_id)
                 .is_some_and(|b| time::Instant::now() < b.retry_at)
@@ -159,7 +158,7 @@ impl<R: Reducer> ReplicaInner<R> {
             let mut read_plan = read_state.prepare_read(WallTime::now(), &packs);
 
             // track tips for self
-            let mut tip_tracker = if peer == self.self_id {
+            let mut tip_tracker = if peer == self.self_init.peer_id {
                 let write_state = self.get_pack_write_state(remote_id, topic_id).await?;
                 Some(PackTipTracker {
                     last: read_state,

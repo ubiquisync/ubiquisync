@@ -168,7 +168,7 @@ impl CommitErr {
             CommitErr::AwaitingDeps => writer.write_byte(2),
             CommitErr::IncompatibleSoftware(unknown_software_version) => {
                 writer.write_byte(3);
-                unknown_software_version.encode(writer);
+                unknown_software_version.encode(writer)?;
             }
             CommitErr::Internal {
                 retry_time_span,

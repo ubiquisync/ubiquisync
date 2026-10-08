@@ -4,11 +4,12 @@ use std::{
     path::PathBuf,
 };
 
+use async_trait::async_trait;
 use thiserror::Error;
 
 use crate::hlc::WallTime;
 
-#[async_trait::async_trait]
+#[async_trait]
 pub trait FileRemote: Send + Sync {
     async fn list(&self, dir: &str) -> Result<Vec<DirEntry>, FileRemoteError>;
     async fn read(&self, path: &str) -> Result<Option<Vec<u8>>, FileRemoteError>;
@@ -16,9 +17,10 @@ pub trait FileRemote: Send + Sync {
     async fn delete(&self, path: &str) -> Result<(), FileRemoteError>;
 }
 
+#[async_trait]
 pub trait FileRemoteProvider: Send + Sync {
     /// Initializes a remote with a provider specific config string.
-    fn init(&self, config: &str) -> Result<Box<dyn FileRemote>, FileRemoteError>;
+    async fn init(&self, config: &str) -> Result<Box<dyn FileRemote>, FileRemoteError>;
 }
 
 type BoxError = Box<dyn core::error::Error + Send + Sync>;
@@ -54,15 +56,16 @@ pub enum FileType {
     Dir,
 }
 
+#[async_trait]
 impl FileRemoteProvider for StdFsRemoteProvider {
-    fn init(&self, config: &str) -> Result<Box<dyn FileRemote>, FileRemoteError> {
+    async fn init(&self, config: &str) -> Result<Box<dyn FileRemote>, FileRemoteError> {
         Ok(Box::new(StdFsRemote {
             root: config.into(),
         }))
     }
 }
 
-#[async_trait::async_trait]
+#[async_trait]
 impl FileRemote for StdFsRemote {
     async fn list(&self, dir: &str) -> Result<Vec<DirEntry>, FileRemoteError> {
         let mut res = vec![];

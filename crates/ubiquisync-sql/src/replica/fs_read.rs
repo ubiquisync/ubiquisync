@@ -207,7 +207,7 @@ impl<R: Reducer> ReplicaInner<R> {
                 Ok(h)
             }
             Ok(None) => Err(PackProcessError::PackGone),
-            Err(PackStoreError::Decode(e)) => {
+            Err(PackStoreError::HeaderDecode(e)) => {
                 let mut bi = todo.blocked_again(desc);
                 match e {
                     PackHeaderDecodeError::UnknownVersion(_)
