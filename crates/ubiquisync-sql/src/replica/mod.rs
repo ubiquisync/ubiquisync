@@ -15,6 +15,8 @@ mod schema;
 mod segment;
 mod stream_lock;
 mod streams;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 
 pub use config::{PackSyncConfig, ReplicaConfig};
 pub use hlc::HlcError;
