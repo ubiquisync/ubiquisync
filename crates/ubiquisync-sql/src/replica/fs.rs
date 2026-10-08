@@ -20,7 +20,8 @@ use crate::{
         Replica, ReplicaInner,
         fs_read::PackTipTracker,
         fs_sync_schema::{
-            BlockedPackInfo, PackReadState, PackWriteState, pack_read_state, published, topics,
+            BlockedPackInfo, DEFAULT_TOPIC_ID, PackReadState, PackWriteState, pack_read_state,
+            published, topics,
         },
         fs_write::PackPublishError,
         peers::PeerResolveError,
@@ -221,6 +222,9 @@ impl<R: Reducer> ReplicaInner<R> {
     }
 
     async fn resolve_topic_id(&self, topic: &Topic) -> Result<i64, DbError> {
+        if topic.is_default() {
+            return Ok(DEFAULT_TOPIC_ID);
+        }
         if let Some((topic_id,)) = select_cols::<(topics::Id,)>(
             self.db.as_ref(),
             Query::select()

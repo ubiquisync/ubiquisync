@@ -94,7 +94,7 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
                 .unwrap_or_default(),
             op_bytes,
         )));
-        let entries = vec![entry];
+        let entries = [entry];
 
         let next_chain_head = chain_head
             .compute_next_plaintext(

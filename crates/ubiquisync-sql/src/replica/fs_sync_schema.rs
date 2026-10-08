@@ -15,6 +15,10 @@ use bitfield_struct::bitfield;
 use super::schema::StatusDecodeError;
 use crate::{codeable_col_repr, db::CreateTableDef, def_table, def_table_with_auto_id};
 
+/// The default topic id has no row in the topics table,
+/// since auto-inserted id's start at 1, we can use 0.
+pub(crate) const DEFAULT_TOPIC_ID: i64 = 0;
+
 pub(crate) fn table_defs() -> Vec<CreateTableDef> {
     vec![
         remotes::create_table_def(),

@@ -444,11 +444,11 @@ pub(crate) struct PackTipTracker {
 impl PackTipTracker {
     fn update_tips(&mut self, pack_ref: PackRef, header: &PackHeader) {
         for r in header.parents.iter() {
-            self.tips.remove(&r);
+            self.tips.remove(r);
         }
 
         for r in header.self_supersedes.iter() {
-            self.tips.remove(&r);
+            self.tips.remove(r);
         }
 
         // insert pack as a new tip if it isn't already mentioned in blocked packs

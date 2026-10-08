@@ -3,12 +3,12 @@ use std::{collections::HashSet, time::Duration};
 use crate::{
     db::{
         DbBatch, DbError, Nullable,
-        sea_query::{build_sql, insert_cols, insert_cols_batch, select_cols},
+        sea_query::{insert_cols, insert_cols_batch, select_cols},
     },
     reducer::Reducer,
     replica::{
         ReplicaInner,
-        fs_sync_schema::{PackWriteState, published, topic_state},
+        fs_sync_schema::{DEFAULT_TOPIC_ID, PackWriteState, published, topic_state},
         ingest::IngestSource,
         schema::{containers, peers, segments, streams},
     },
@@ -67,7 +67,8 @@ impl<R: Reducer> ReplicaInner<R> {
                     streams::Table,
                     Expr::col(segments::StreamId).eq(Expr::col(streams::Id)),
                 )
-                .inner_join(
+                // left join because a container with no row is in the default topic
+                .left_join(
                     containers::Table,
                     Expr::col(streams::ContainerId).eq(Expr::col(containers::ContainerId)),
                 )
@@ -81,7 +82,10 @@ impl<R: Reducer> ReplicaInner<R> {
                         .eq(Expr::col(published::StreamId))
                         .and(Expr::col(published::RemoteId).eq(remote_id)),
                 )
-                .and_where(Expr::col(containers::TopicId).eq(topic_id))
+                .and_where(
+                    Func::coalesce([Expr::col(containers::TopicId), Expr::val(DEFAULT_TOPIC_ID)])
+                        .eq(topic_id),
+                )
                 .and_where(Expr::col(segments::EndSize).gt(Func::coalesce([
                     Expr::col(published::PublishedSize),
                     Expr::val(0),

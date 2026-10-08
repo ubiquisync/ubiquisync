@@ -8,10 +8,7 @@ use ubiquisync_core::{
 };
 
 use crate::{
-    codeable_col_repr,
-    db::{CreateTableDef, Db, DbError},
-    def_table, def_table_with_auto_id,
-    dialect::SqlDialect,
+    codeable_col_repr, db::CreateTableDef, def_table, def_table_with_auto_id,
     try_from_into_col_repr,
 };
 
@@ -24,7 +21,8 @@ def_table_with_auto_id!(peers as __replica_peers (id) => {
 // TODO when we intialize a container we should resolve its topic
 def_table_with_auto_id!(containers as __replica_containers (id) => {
     container_id: [u8; 16],
-    topic_id: i64,
+    // NULL means the default topic, a container with no row is also in the default topic
+    topic_id: Option<i64>,
 });
 
 // TODO should we rename streams to something like branches or logs?
