@@ -25,6 +25,7 @@ pub use init::InitError;
 
 use tokio::task;
 use tokio_util::sync::CancellationToken;
+use ubiquisync_core::pack::FileRemoteProvider;
 use ubiquisync_core::{
     crypto::{CipherKeyResolver, credentials::Credentials},
     ids::{AppId, PeerId},
@@ -52,6 +53,7 @@ pub(crate) struct ReplicaInner<R> {
     pub(crate) reducer: R,
     pub(crate) hlc: AtomicU64,
     pub(crate) stream_locks: KeyedLock<StreamLog>,
+    pub(crate) pack_remote_providers: HashMap<String, Box<dyn FileRemoteProvider>>,
     pub(crate) pack_remotes: Mutex<HashMap<i64, PackStore>>,
     pub(crate) key_resolver: Arc<dyn CipherKeyResolver>,
 }

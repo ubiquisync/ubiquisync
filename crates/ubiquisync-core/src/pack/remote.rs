@@ -16,10 +16,9 @@ pub trait FileRemote: Send + Sync {
     async fn delete(&self, path: &str) -> Result<(), FileRemoteError>;
 }
 
-pub trait FileRemoteProvider {
-    type Remote: FileRemote;
-
-    fn init(&self, config: &str) -> Result<Self::Remote, FileRemoteError>;
+pub trait FileRemoteProvider: Send + Sync {
+    /// Initializes a remote with a provider specific config string.
+    fn init(&self, config: &str) -> Result<Box<dyn FileRemote>, FileRemoteError>;
 }
 
 type BoxError = Box<dyn core::error::Error + Send + Sync>;
@@ -42,6 +41,8 @@ pub struct StdFsRemote {
     root: PathBuf,
 }
 
+pub struct StdFsRemoteProvider;
+
 pub struct DirEntry {
     pub file_name: String,
     pub file_type: FileType,
@@ -51,6 +52,14 @@ pub struct DirEntry {
 pub enum FileType {
     File,
     Dir,
+}
+
+impl FileRemoteProvider for StdFsRemoteProvider {
+    fn init(&self, config: &str) -> Result<Box<dyn FileRemote>, FileRemoteError> {
+        Ok(Box::new(StdFsRemote {
+            root: config.into(),
+        }))
+    }
 }
 
 #[async_trait::async_trait]

@@ -7,7 +7,7 @@ use tokio::time;
 use ubiquisync_core::{
     hlc::WallTime,
     log::segment::SegmentEncodeError,
-    pack::{PackFileDescriptor, PackStore, PackStoreError, Topic},
+    pack::{FileRemoteError, PackFileDescriptor, PackStore, PackStoreError, Topic},
 };
 
 use crate::{
@@ -21,7 +21,7 @@ use crate::{
         fs_read::PackTipTracker,
         fs_sync_schema::{
             BlockedPackInfo, DEFAULT_TOPIC_ID, PackReadState, PackWriteState, pack_read_state,
-            published, topics,
+            published, remotes, topics,
         },
         fs_write::PackPublishError,
         peers::PeerResolveError,
@@ -31,6 +31,20 @@ use crate::{
 };
 
 impl<R: Reducer> Replica<R> {
+    pub async fn add_remote(&self, provider: &str, config: &str) -> Result<i64, RemoteConfigError> {
+        let (id,) = insert_cols::<(remotes::Provider, remotes::Config), (remotes::Id,)>(
+            self.inner.db.as_ref(),
+            (provider.into(), config.into()),
+            Query::insert().into_table(remotes::Table),
+        )
+        .await?
+        .exactly_one()?;
+        self.inner.init_remotes().await?;
+        Ok(id)
+    }
+
+    // TODO add remove_remote fn
+    //
     pub(crate) fn start_process_packs(&mut self) {
         let inner = self.inner.clone();
         let cancel_token = self.cancel.clone();
@@ -53,7 +67,38 @@ impl<R: Reducer> Replica<R> {
     }
 }
 
+#[derive(Debug, Error)]
+pub enum RemoteConfigError {
+    #[error("db error: {0}")]
+    Db(#[from] DbError),
+    #[error("remote error: {0}")]
+    Remote(#[from] FileRemoteError),
+    #[error("unknown provider: {0}")]
+    UnknownProvider(String),
+}
+
 impl<R: Reducer> ReplicaInner<R> {
+    async fn init_remotes(&self) -> Result<(), RemoteConfigError> {
+        let mut remotes_guard = self.pack_remotes.lock().await;
+        let remotes = select_cols::<(remotes::Id, remotes::Provider, remotes::Config)>(
+            self.db.as_ref(),
+            Query::select().from(remotes::Table),
+        )
+        .await?;
+        // for now we clear all the remotes and then re-initialze them
+        remotes_guard.clear();
+        for remote in remotes.iter() {
+            let (id, prov, cfg) = remote?;
+            let provider = self
+                .pack_remote_providers
+                .get(prov)
+                .ok_or(RemoteConfigError::UnknownProvider(prov.into()))?;
+            let store = PackStore::new(self.self_id, provider.init(&cfg)?);
+            remotes_guard.insert(id, store);
+        }
+        Ok(())
+    }
+
     /// A single round of pack processing for a remote, first read, then write.
     /// Remotes which have errors which filter up, are retried with backoff.
     async fn process_pack_remotes(&self, backoffs: &mut HashMap<i64, RemoteBackoff>) {

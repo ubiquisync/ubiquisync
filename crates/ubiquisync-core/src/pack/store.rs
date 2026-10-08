@@ -14,7 +14,7 @@ use crate::{
 
 pub struct PackStore {
     self_id: PeerId,
-    remote: Arc<dyn FileRemote>,
+    remote: Box<dyn FileRemote>,
 }
 
 #[derive(Error, Debug)]
@@ -32,7 +32,7 @@ pub enum PackStoreError {
 const PEERS_DIR: &str = "peers";
 
 impl PackStore {
-    pub fn new(self_id: PeerId, remote: Arc<dyn FileRemote>) -> Self {
+    pub fn new(self_id: PeerId, remote: Box<dyn FileRemote>) -> Self {
         Self { self_id, remote }
     }
 
