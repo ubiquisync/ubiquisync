@@ -56,7 +56,8 @@ impl<R: Reducer> ReplicaInner<R> {
     /// A single round of pack processing for a remote, first read, then write.
     /// Remotes which have errors which filter up, are retried with backoff.
     async fn process_pack_remotes(&self, backoffs: &mut HashMap<i64, RemoteBackoff>) {
-        for (remote_id, store) in self.pack_remotes.iter() {
+        let remotes_guard = self.pack_remotes.lock().await;
+        for (remote_id, store) in remotes_guard.iter() {
             if backoffs
                 .get(remote_id)
                 .is_some_and(|b| time::Instant::now() < b.retry_at)

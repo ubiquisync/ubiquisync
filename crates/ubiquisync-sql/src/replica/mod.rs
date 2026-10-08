@@ -19,6 +19,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use std::sync::atomic::AtomicU64;
 
+use futures::lock::Mutex;
 pub use hlc::HlcError;
 pub use init::InitError;
 
@@ -51,6 +52,6 @@ pub(crate) struct ReplicaInner<R> {
     pub(crate) reducer: R,
     pub(crate) hlc: AtomicU64,
     pub(crate) stream_locks: KeyedLock<StreamLog>,
-    pub(crate) pack_remotes: HashMap<i64, PackStore>,
+    pub(crate) pack_remotes: Mutex<HashMap<i64, PackStore>>,
     pub(crate) key_resolver: Arc<dyn CipherKeyResolver>,
 }

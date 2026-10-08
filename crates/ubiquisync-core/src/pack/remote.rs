@@ -16,6 +16,12 @@ pub trait FileRemote: Send + Sync {
     async fn delete(&self, path: &str) -> Result<(), FileRemoteError>;
 }
 
+pub trait FileRemoteProvider {
+    type Remote: FileRemote;
+
+    fn init(&self, config: &str) -> Result<Self::Remote, FileRemoteError>;
+}
+
 type BoxError = Box<dyn core::error::Error + Send + Sync>;
 
 #[derive(Debug, Error)]
