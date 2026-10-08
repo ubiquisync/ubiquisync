@@ -154,10 +154,4 @@ impl PackStore {
             .await?;
         Ok(())
     }
-
-    pub async fn ensure_peer_init(&self, init_entry: &InitEntry) -> Result<(), PackStoreError> {
-        // TODO: only write if the init doesn't exist!
-        // this requires some sort of stat method on the remote which we don't have yet
-        self.write_peer_init(init_entry).await
-    }
 }

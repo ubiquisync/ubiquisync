@@ -1,5 +1,5 @@
 use std::{
-    cmp::{Reverse, max, min},
+    cmp::{Reverse, max},
     collections::HashSet,
     ops::Range,
     sync::Arc,
@@ -21,6 +21,7 @@ use ubiquisync_core::{
 use crate::{
     reducer::Reducer,
     replica::{
+        config::PackSyncConfig,
         ReplicaInner,
         fs::PackProcessError,
         fs_sync_schema::{BlockedPackInfo, BlockedReasons, PackReadState},
@@ -87,7 +88,12 @@ impl BlockedPackInfo {
 impl PackReadState {
     /// Prepare a plan for this read plan based on what we read previously and what is
     /// available now.
-    pub fn prepare_read(&self, now: WallTime, cur_files: &[PackFileId]) -> PackReadPlan {
+    pub fn prepare_read(
+        &self,
+        now: WallTime,
+        cur_files: &[PackFileId],
+        cfg: &PackSyncConfig,
+    ) -> PackReadPlan {
         // only retain the highest gen for a given id
         let mut cur_files = dedupe_pack_files(cur_files);
         // oldest first so parents are consumed before children
@@ -135,7 +141,7 @@ impl PackReadState {
                             .pending_parents
                             .iter()
                             .all(|p| will_get_read.contains(p)))
-                    || blocked.next_retry_ts() <= now.as_millis();
+                    || blocked.next_retry_ts(cfg) <= now.as_millis();
                 if !wake {
                     next.blocked.insert(r, blocked.clone());
                 } else {
@@ -176,14 +182,15 @@ impl PackReadState {
 }
 
 impl BlockedPackInfo {
-    fn next_retry_duration(&self) -> u64 {
-        const RETRY_BASE: u128 = Duration::from_secs(10).as_millis();
-        // this caps the retry interval at about 6 hours
-        (RETRY_BASE * 2u128.pow(min(self.attempts, 11) as u32)) as u64
+    fn next_retry_duration(&self, cfg: &PackSyncConfig) -> Duration {
+        let factor = 1u32.checked_shl(self.attempts.min(31) as u32).unwrap_or(u32::MAX);
+        cfg.pack_retry_min
+            .saturating_mul(factor)
+            .min(cfg.pack_retry_max)
     }
 
-    fn next_retry_ts(&self) -> u64 {
-        self.read_timestamps.end + self.next_retry_duration()
+    fn next_retry_ts(&self, cfg: &PackSyncConfig) -> u64 {
+        self.read_timestamps.end + self.next_retry_duration(cfg).as_millis() as u64
     }
 }
 

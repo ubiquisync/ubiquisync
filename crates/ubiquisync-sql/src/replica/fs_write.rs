@@ -301,7 +301,7 @@ impl<R: Reducer> ReplicaInner<R> {
         }
         for peer_id in peers {
             match self.resolve_peer(&peer_id).await {
-                Ok(Some(info)) => store.ensure_peer_init(&info.init_entry).await?,
+                Ok(Some(info)) => store.write_peer_init(&info.init_entry).await?,
                 Ok(None) => tracing::warn!(%peer_id, "can't resolve peer info"),
                 Err(error) => tracing::warn!(%peer_id, %error, "can't resolve peer info"),
             }

@@ -18,6 +18,7 @@ use crate::{
     reducer::Reducer,
     replica::{
         Replica, ReplicaInner,
+        config::PackSyncConfig,
         fs_read::PackTipTracker,
         fs_sync_schema::{
             BlockedPackInfo, DEFAULT_TOPIC_ID, PackReadState, PackWriteState, pack_read_state,
@@ -36,6 +37,7 @@ impl<R: Reducer> Replica<R> {
         provider: &str,
         config: &str,
     ) -> Result<i64, PackRemoteInitError> {
+        let store = self.inner.init_remote(provider, config).await?;
         let (id,) = insert_cols::<(remotes::Provider, remotes::Config), (remotes::Id,)>(
             self.inner.db.as_ref(),
             (provider.into(), config.into()),
@@ -43,7 +45,8 @@ impl<R: Reducer> Replica<R> {
         )
         .await?
         .exactly_one()?;
-        self.inner.init_remote(id, provider, config).await?;
+        let mut remotes_guard = self.inner.pack_remotes.lock().await;
+        remotes_guard.insert(id, Arc::new(store));
         Ok(id)
     }
 
@@ -53,8 +56,7 @@ impl<R: Reducer> Replica<R> {
         let inner = self.inner.clone();
         let cancel_token = self.cancel.clone();
         self.tasks.spawn(async move {
-            const PACK_POLL_INTERVAL: time::Duration = time::Duration::from_secs(2);
-            let mut interval = time::interval(PACK_POLL_INTERVAL);
+            let mut interval = time::interval(inner.config.pack_sync.poll_interval);
             interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
             let mut backoffs = HashMap::new();
             loop {
@@ -89,32 +91,34 @@ impl<R: Reducer> ReplicaInner<R> {
         )
         .await?;
 
+        let mut remotes_guard = self.pack_remotes.lock().await;
         for remote in remotes.iter() {
             let (id, prov, cfg) = remote?;
 
-            if let Err(error) = self.init_remote(id, prov, cfg).await {
-                tracing::warn!(remote_id = id, provider = prov, %error, "error initializing remote");
-            };
+            match self.init_remote(prov, cfg).await {
+                Ok(store) => {
+                    remotes_guard.insert(id, Arc::new(store));
+                }
+                Err(error) => {
+                    tracing::warn!(remote_id = id, provider = prov, %error, "error initializing remote");
+                }
+            }
         }
         Ok(())
     }
 
     pub(crate) async fn init_remote(
         &self,
-        id: i64,
         prov: &str,
         cfg: &str,
-    ) -> Result<(), PackRemoteInitError> {
+    ) -> Result<PackStore, PackRemoteInitError> {
         let Some(provider) = self.config.pack_remote_providers.get(prov) else {
             return Err(PackRemoteInitError::UnknownProvider(prov.into()));
         };
 
         let remote = provider.init(cfg).await.map_err(PackStoreError::Remote)?;
         let store = PackStore::new(self.self_init.peer_id, remote);
-
-        let mut remotes_guard = self.pack_remotes.lock().await;
-        remotes_guard.insert(id, Arc::new(store));
-        Ok(())
+        Ok(store)
     }
 
     /// A single round of pack processing for a remote, first read, then write.
@@ -134,10 +138,11 @@ impl<R: Reducer> ReplicaInner<R> {
                     backoffs.remove(remote_id);
                 }
                 Err(e) => {
+                    let cfg = &self.config.pack_sync;
                     let b = backoffs
                         .entry(*remote_id)
-                        .or_insert_with(RemoteBackoff::new);
-                    let delay = b.delays.next().unwrap_or(REMOTE_MAX_BACKOFF);
+                        .or_insert_with(|| RemoteBackoff::new(cfg));
+                    let delay = b.delays.next().unwrap_or(cfg.remote_retry_max);
                     b.retry_at = time::Instant::now() + delay;
                     tracing::warn!(remote_id, error = %e, ?delay, "pack round failed for remote, backing off");
                 }
@@ -175,7 +180,8 @@ impl<R: Reducer> ReplicaInner<R> {
             let read_state = self
                 .get_pack_read_state(remote_id, topic_id, peer_info.db_id)
                 .await?;
-            let mut read_plan = read_state.prepare_read(WallTime::now(), &packs);
+            let mut read_plan =
+                read_state.prepare_read(WallTime::now(), &packs, &self.config.pack_sync);
 
             // track tips for self
             let mut tip_tracker = if peer == self.self_init.peer_id {
@@ -426,20 +432,18 @@ pub enum PackProcessError {
     PackGone,
 }
 
-const REMOTE_MAX_BACKOFF: time::Duration = time::Duration::from_secs(5 * 60);
-
 pub(crate) struct RemoteBackoff {
     retry_at: time::Instant,
     delays: ExponentialBackoff,
 }
 
 impl RemoteBackoff {
-    fn new() -> Self {
+    fn new(cfg: &PackSyncConfig) -> Self {
         Self {
             retry_at: time::Instant::now(),
             delays: ExponentialBuilder::new()
-                .with_min_delay(time::Duration::from_secs(2))
-                .with_max_delay(REMOTE_MAX_BACKOFF)
+                .with_min_delay(cfg.remote_retry_min)
+                .with_max_delay(cfg.remote_retry_max)
                 .with_jitter()
                 .without_max_times()
                 .build(),
