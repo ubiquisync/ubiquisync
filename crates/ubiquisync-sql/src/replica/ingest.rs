@@ -139,6 +139,7 @@ fn evaluate_segment_desc(
 }
 
 impl<R: Reducer> ReplicaInner<R> {
+    #[tracing::instrument(skip_all)]
     pub(crate) async fn try_ingest_segment(
         &self,
         hash_ctx: &LogHashContext,
@@ -218,6 +219,7 @@ where {
         self.place_segment(guard, stream, segment, src).await
     }
 
+    #[tracing::instrument(skip_all)]
     async fn place_segment(
         &self,
         guard: &KeyedLockGuard<StreamLog>,

@@ -16,7 +16,7 @@ async-trait = { workspace = true }
 secrecy = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "ansi"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "ansi", "registry", "std"] }
 
 [lints]
 workspace = true

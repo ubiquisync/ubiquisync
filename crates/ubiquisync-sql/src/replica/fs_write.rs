@@ -40,6 +40,7 @@ pub(crate) enum PackPublishError {
 }
 
 impl<R: Reducer> ReplicaInner<R> {
+    #[tracing::instrument(skip_all)]
     pub(crate) async fn publish_topic(
         &self,
         remote_id: i64,

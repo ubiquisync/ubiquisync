@@ -231,6 +231,7 @@ impl<R: Reducer> ReplicaInner<R> {
         }
     }
 
+    #[tracing::instrument(skip_all)]
     pub(crate) async fn process_pack(
         &self,
         peer_info: &PeerInfo,

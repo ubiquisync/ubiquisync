@@ -46,6 +46,7 @@ enum TryCommitError {
 }
 
 impl<R: Reducer> ReplicaInner<R> {
+    #[tracing::instrument(skip_all)]
     pub(crate) async fn try_commit(
         &self,
         guard: &KeyedLockGuard<StreamLog>,

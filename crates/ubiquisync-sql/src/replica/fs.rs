@@ -123,6 +123,7 @@ impl<R: Reducer> ReplicaInner<R> {
 
     /// A single round of pack processing for a remote, first read, then write.
     /// Remotes which have errors which filter up, are retried with backoff.
+    #[tracing::instrument(skip_all)]
     async fn process_pack_remotes(&self, backoffs: &mut HashMap<i64, RemoteBackoff>) {
         // clone the remotes map so we don't hold the lock for the whole round
         let remotes = { self.pack_remotes.lock().await.clone() };
@@ -164,6 +165,7 @@ impl<R: Reducer> ReplicaInner<R> {
         Ok(())
     }
 
+    #[tracing::instrument(skip_all)]
     async fn process_topic(
         &self,
         remote_id: i64,
