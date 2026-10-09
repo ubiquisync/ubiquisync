@@ -2,7 +2,7 @@
 #[macro_export]
 macro_rules! __def_table_struct {
     ($name:ident, $dbname:ident) => {
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, Default)]
         #[allow(dead_code)]
         pub struct Table;
         impl sea_query::types::Iden for Table {
@@ -71,6 +71,7 @@ macro_rules! def_col {
             pub struct [< $name:camel >];
             impl $crate::db::Col for [< $name:camel >] {
                 type Type = $typ;
+                type Table = Table;
                 fn create_col_def() -> $crate::db::CreateColDef {
                     <$typ as $crate::db::ColType>::create_col_def(stringify!($name)) $(.$modifier $args)?
                 }

@@ -1,9 +1,9 @@
-use std::sync::atomic::AtomicU64;
+use std::sync::{Arc, atomic::AtomicU64};
 
 use sea_query::{Expr, ExprTrait, Query};
 use thiserror::Error;
 use ubiquisync_core::{
-    crypto::{CryptoDecodeError, credentials::Credentials},
+    crypto::{CryptoDecodeError, NullCipherKeyResolver, credentials::Credentials},
     ids::{AppId, PeerId},
     init::{
         InitCommitment, InitCreationError, InitDecodeError, InitEntry, InitVerifyError, Version,
@@ -15,20 +15,25 @@ use crate::{
         Db, DbError,
         sea_query::{insert_cols, select_cols},
     },
+    dialect::SqlDialect,
     reducer::Reducer,
     replica::{
-        HlcError, Replica,
-        schema::{create_tables, peers},
+        HlcError, Replica, ReplicaInner,
+        config::ReplicaConfig,
+        fs_sync_schema,
+        hlc::load_hlc,
+        schema::{self, peers},
         stream_lock::KeyedLock,
     },
 };
 
 impl<R: Reducer> Replica<R> {
     pub async fn new(
-        app_magic: AppId,
+        app_id: AppId,
         db: Box<dyn Db>,
         reducer: R,
         credentials: Box<dyn Credentials>,
+        config: ReplicaConfig,
     ) -> Result<Self, InitError> {
         // TODO support prefixes
 
@@ -37,9 +42,9 @@ impl<R: Reducer> Replica<R> {
         // initialize schema, in the future we need some more proper migrations
         create_tables(db.as_ref()).await?;
 
-        let hlc = Self::load_hlc(db.as_ref()).await?;
+        let hlc = load_hlc(db.as_ref()).await?;
 
-        let self_id = if let Some((self_id, commitment_bytes, signature)) =
+        let self_init = if let Some((self_id, commitment_bytes, signature)) =
             select_cols::<(peers::PeerId, peers::CommitmentBytes, peers::Signature)>(
                 db.as_ref(),
                 Query::select()
@@ -54,9 +59,8 @@ impl<R: Reducer> Replica<R> {
                 commitment_bytes: commitment_bytes.into(),
                 peer_id: self_id,
                 signature,
-                outer_endorsement: None,
             };
-            init_entry.verify(&app_magic)?;
+            init_entry.verify(&app_id)?;
             let commit_data = init_entry.commitment_data()?;
             if commit_data.sig_verify_key != credentials.signing_key().verifying_key() {
                 return Err(InitError::Internal(
@@ -69,7 +73,7 @@ impl<R: Reducer> Replica<R> {
                 ));
             }
 
-            self_id
+            init_entry
         } else {
             let commitment = InitCommitment {
                 version: Version::default(),
@@ -82,7 +86,7 @@ impl<R: Reducer> Replica<R> {
                 workspace_join: None,
                 endorsement: vec![],
             };
-            let init_entry = InitEntry::create(commitment, &app_magic, credentials.signing_key())?;
+            let init_entry = InitEntry::create(commitment, &app_id, credentials.signing_key())?;
 
             let (self_db_id,) = insert_cols::<
                 (peers::PeerId, peers::CommitmentBytes, peers::Signature),
@@ -91,7 +95,7 @@ impl<R: Reducer> Replica<R> {
                 db.as_ref(),
                 (
                     init_entry.peer_id.0,
-                    init_entry.commitment_bytes,
+                    init_entry.commitment_bytes.clone(),
                     init_entry.signature,
                 ),
                 Query::insert().into_table(peers::Table),
@@ -106,19 +110,49 @@ impl<R: Reducer> Replica<R> {
                 )));
             }
 
-            init_entry.peer_id
+            init_entry
         };
 
-        Ok(Self {
-            self_id,
-            self_db_id: SELF_DB_ID,
-            credentials,
-            db,
-            reducer,
-            hlc: AtomicU64::new(hlc.into()),
-            stream_locks: KeyedLock::new(),
-        })
+        let mut res = Self {
+            inner: Arc::new(ReplicaInner {
+                app_id,
+                self_init,
+                self_db_id: SELF_DB_ID,
+                credentials,
+                db,
+                reducer,
+                hlc: AtomicU64::new(hlc.into()),
+                stream_locks: KeyedLock::new(),
+                pack_remotes: Default::default(),
+                key_resolver: Arc::new(NullCipherKeyResolver),
+                config,
+            }),
+            tasks: Default::default(),
+            cancel: Default::default(),
+        };
+
+        res.inner.init_remotes().await?;
+        res.start_process_packs();
+
+        Ok(res)
     }
+}
+
+async fn create_tables(db: &dyn Db) -> Result<(), DbError> {
+    let mut batch = db.new_batch();
+    for st in create_table_sql(db.dialect()) {
+        batch.add_statement(&st, &[]);
+    }
+    batch.commit().await?;
+    Ok(())
+}
+
+fn create_table_sql(dialect: SqlDialect) -> Vec<String> {
+    schema::table_defs()
+        .iter()
+        .chain(fs_sync_schema::table_defs().iter())
+        .map(|d| d.create_table_sql(dialect))
+        .collect::<Vec<_>>()
 }
 
 #[derive(Error, Debug)]
@@ -137,4 +171,19 @@ pub enum InitError {
     SigDecode(#[from] CryptoDecodeError),
     #[error("timestamp error")]
     Hlc(#[from] HlcError),
+}
+
+#[cfg(test)]
+mod tests {
+    use insta::assert_snapshot;
+
+    use crate::replica::init::create_table_sql;
+
+    #[test]
+    fn schema_snapshot() {
+        assert_snapshot!(
+            "sqlite",
+            create_table_sql(crate::dialect::SqlDialect::Sqlite).join(";\n")
+        );
+    }
 }

@@ -1,4 +1,4 @@
-use crate::error::TablesError;
+use crate::error::SchemaSyncError;
 use crate::op::Delete;
 use crate::physical_schema::{DELETED_TS_COL, PhysicalTableSchema};
 use crate::reducer::upsert::{bind_pkey, lww_winner_sql, set_lww_sql};
@@ -13,7 +13,7 @@ impl Reducer {
         &self,
         db: &dyn Db,
         delete: &Delete,
-    ) -> Result<OwnedRwLockReadGuard<PhysicalTableSchema>, TablesError> {
+    ) -> Result<OwnedRwLockReadGuard<PhysicalTableSchema>, SchemaSyncError> {
         let table = self.ensure_table(db, delete.table_id).await?;
         Ok(table.read_owned().await)
     }
@@ -24,7 +24,7 @@ impl Reducer {
         timestamp: Timestamp,
         delete: &Delete,
         table: OwnedRwLockReadGuard<PhysicalTableSchema>,
-    ) -> Result<ApplyState, TablesError> {
+    ) -> ApplyState {
         let dialect = batch.dialect();
         let table_id = delete.table_id;
         let quoted_table_name = table.get_quoted_name();
@@ -82,11 +82,11 @@ impl Reducer {
                 table_name: named_table.name.clone(),
             })
         });
-        Ok(ApplyState {
+        ApplyState {
             stmt_id,
             staged_event,
             table_rguard: table,
-        })
+        }
     }
 
     /// Emit the `DeleteEvent` if and only if the statement wrote a row.
@@ -97,10 +97,10 @@ impl Reducer {
         stmt_id: StmtId,
         delete_event: DeleteEvent,
         batch_result: &[DbStatementResult],
-    ) -> Result<Option<ChangeEvent>, TablesError> {
+    ) -> Option<ChangeEvent> {
         if batch_result[stmt_id.0].rows_affected == 0 {
-            return Ok(None);
+            return None;
         }
-        Ok(Some(ChangeEvent::Delete(delete_event)))
+        Some(ChangeEvent::Delete(delete_event))
     }
 }

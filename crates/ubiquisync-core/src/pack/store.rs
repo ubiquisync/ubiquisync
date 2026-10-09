@@ -1,10 +1,9 @@
-use std::sync::Arc;
-
 use thiserror::Error;
 
 use crate::{
     codec::{WriteError, Writer},
     ids::PeerId,
+    init::{InitDecodeError, InitEntry},
     pack::{
         FileRemote, FileRemoteError, FileType, HEADER_EXT, PackData, PackFileDescriptor,
         PackFileId, PackHeaderDecodeError, SignedPackHeader, Topic,
@@ -13,7 +12,7 @@ use crate::{
 
 pub struct PackStore {
     self_id: PeerId,
-    remote: Arc<dyn FileRemote>,
+    remote: Box<dyn FileRemote>,
 }
 
 #[derive(Error, Debug)]
@@ -21,7 +20,9 @@ pub enum PackStoreError {
     #[error("remote error: {0}")]
     Remote(#[from] FileRemoteError),
     #[error("header decode error: {0}")]
-    Decode(#[from] PackHeaderDecodeError),
+    HeaderDecode(#[from] PackHeaderDecodeError),
+    #[error("init decode error: {0}")]
+    InitDecode(#[from] InitDecodeError),
     #[error("write error: {0}")]
     Write(#[from] WriteError),
     #[error("can't author packs for other peers")]
@@ -31,7 +32,7 @@ pub enum PackStoreError {
 const PEERS_DIR: &str = "peers";
 
 impl PackStore {
-    pub fn new(self_id: PeerId, remote: Arc<dyn FileRemote>) -> Self {
+    pub fn new(self_id: PeerId, remote: Box<dyn FileRemote>) -> Self {
         Self { self_id, remote }
     }
 
@@ -135,6 +136,22 @@ impl PackStore {
         // header first, body second
         self.remote.delete(&file.header_path()).await?;
         self.remote.delete(&file.body_path()).await?;
+        Ok(())
+    }
+
+    pub async fn read_peer_init(&self, peer: &PeerId) -> Result<Option<InitEntry>, PackStoreError> {
+        let Some(bz) = self.remote.read(&format!("{PEERS_DIR}/{peer}")).await? else {
+            return Ok(None);
+        };
+        Ok(Some(InitEntry::decode(*peer, &bz)?))
+    }
+
+    pub async fn write_peer_init(&self, init_entry: &InitEntry) -> Result<(), PackStoreError> {
+        let peer = init_entry.peer_id;
+        let bz = init_entry.encode()?;
+        self.remote
+            .write(&format!("{PEERS_DIR}/{peer}"), &bz)
+            .await?;
         Ok(())
     }
 }

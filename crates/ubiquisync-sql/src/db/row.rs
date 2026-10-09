@@ -102,6 +102,10 @@ impl<C: Cols> Rows<C> {
         self.rows.iter().map(C::decode)
     }
 
+    pub fn to_vec<'a>(&'a self) -> Result<Vec<C::Row<'a>>, DbError> {
+        self.iter().collect()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.rows.is_empty()
     }
