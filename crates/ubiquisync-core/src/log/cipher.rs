@@ -8,11 +8,11 @@ use crate::{
     hlc::Timestamp,
     log::{
         ChainHash, ChainHashError, LogHashContext, LogValidationError, OpEntry, OpaqueLogEntry,
-        PlaintextLogEntry,
+        PlaintextLogEntry, segment::ChainMeta,
     },
 };
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone)]
 pub enum SegmentCipherError {
     #[error("cipher error {0}")]
     CipherError(#[from] CipherError),
@@ -39,47 +39,37 @@ pub async fn entries_to_opaque<'a: 'b, 'b>(
     head_chain: &ChainHash,
     key_resolver: &dyn CipherKeyResolver,
     entries: impl Iterator<Item = &'b PlaintextLogEntry<'a>>,
-) -> Result<Vec<(OpaqueLogEntry<'a>, ChainHash)>, SegmentCipherError> {
+) -> Vec<Result<(OpaqueLogEntry<'a>, ChainMeta), SegmentCipherError>> {
     let mut head_chain = *head_chain;
     let mut entry_cipher = if let Some(ci) = head_cipher {
-        Some(EntryCipher::resolve(ci, seed.log_id(), key_resolver).await?)
+        Some(
+            match EntryCipher::resolve(ci, seed.log_id(), key_resolver).await {
+                Ok(c) => c,
+                Err(e) => return vec![Err(e.into())],
+            },
+        )
     } else {
         None
     };
     let mut res = vec![];
-    for e in entries {
+    let mut next = async |e| {
         let e2 = to_opaque(e, &entry_cipher, &head_chain)?;
         head_chain = head_chain.next(&e2, seed, head_cipher)?;
         check_cipher_change(head_cipher, &mut entry_cipher, seed, key_resolver).await?;
-        res.push((e2, head_chain));
-    }
-    Ok(res)
-}
-
-/// Head cipher is the cipher at the start of the segment.
-/// It is unnecessary to pass this if the segment starts with UseKey
-/// and doing so will result in unnecessarily resolving the head cipher key.
-pub async fn entries_to_plaintext<'a: 'b, 'b>(
-    seed: &LogHashContext,
-    head_cipher: &mut Option<CipherInfo>,
-    head_chain: &ChainHash,
-    key_resolver: &dyn CipherKeyResolver,
-    entries: impl Iterator<Item = &'b OpaqueLogEntry<'a>>,
-) -> Result<Vec<(PlaintextLogEntry<'a>, ChainHash)>, SegmentCipherError> {
-    let mut head_chain = *head_chain;
-    let mut entry_cipher = if let Some(ci) = head_cipher {
-        Some(EntryCipher::resolve(ci, seed.log_id(), key_resolver).await?)
-    } else {
-        None
+        Ok((
+            e2,
+            ChainMeta {
+                chain_hash: head_chain,
+                cipher_info: *head_cipher,
+            },
+        ))
     };
-    let mut res = vec![];
     for e in entries {
-        let e2 = to_plaintext(e, &entry_cipher, &head_chain)?;
-        head_chain = head_chain.next(e, seed, head_cipher)?;
-        check_cipher_change(head_cipher, &mut entry_cipher, seed, key_resolver).await?;
-        res.push((e2, head_chain));
+        if res.push_mut(next(e).await).is_err() {
+            break;
+        }
     }
-    Ok(res)
+    res
 }
 
 fn to_opaque<'a>(
@@ -130,14 +120,7 @@ fn to_opaque<'a>(
     }
 }
 
-fn parse_timestamp(buf: &[u8]) -> Result<Timestamp, SegmentCipherError> {
-    TryInto::<[u8; 8]>::try_into(buf)
-        .ok()
-        .and_then(|b| TryInto::<Timestamp>::try_into(u64::from_le_bytes(b)).ok())
-        .ok_or(SegmentCipherError::InvalidTimestamp)
-}
-
-fn to_plaintext<'a>(
+pub(crate) fn to_plaintext<'a>(
     entry: &OpaqueLogEntry<'a>,
     cipher: &Option<EntryCipher>,
     prev_chain: &ChainHash,
@@ -182,7 +165,14 @@ fn to_plaintext<'a>(
     Ok(e)
 }
 
-async fn check_cipher_change(
+fn parse_timestamp(buf: &[u8]) -> Result<Timestamp, SegmentCipherError> {
+    TryInto::<[u8; 8]>::try_into(buf)
+        .ok()
+        .and_then(|b| TryInto::<Timestamp>::try_into(u64::from_le_bytes(b)).ok())
+        .ok_or(SegmentCipherError::InvalidTimestamp)
+}
+
+pub(crate) async fn check_cipher_change(
     head_ci: &Option<CipherInfo>,
     cipher: &mut Option<EntryCipher>,
     seed: &LogHashContext,

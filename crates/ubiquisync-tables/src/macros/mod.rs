@@ -83,7 +83,7 @@ macro_rules! define_table {
             /// rejected at compile time (const evaluation) — never at runtime.
             pub fn table() -> ::core::result::Result<
                 $crate::schema::TableSchema,
-                $crate::error::TablesError,
+                $crate::error::InvalidSchemaError,
             > {
                 $crate::schema::TableSchema::new(
                     TABLE_ID,
@@ -172,7 +172,7 @@ macro_rules! define_tables {
         /// `Reducer::new`.
         pub fn tables() -> ::core::result::Result<
             ::std::vec::Vec<$crate::schema::TableSchema>,
-            $crate::error::TablesError,
+            $crate::error::InvalidSchemaError,
         > {
             ::core::result::Result::Ok(::std::vec![ $( $mod::table()? ),+ ])
         }

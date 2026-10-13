@@ -4,15 +4,13 @@ use thiserror::Error;
 
 use crate::crypto::{TaggedHashDomain, tagged_hash};
 use crate::hlc::WallTime;
+use crate::log::LogHashContext;
 use crate::pack::{PackFileDescriptor, PackSignError, SignedPackHeader};
 use crate::{
     codec::Writer,
     crypto::{CipherKeyResolver, SigningKey},
     ids::PeerId,
-    log::{
-        LogHashContext,
-        segment::{JoinSegmentsError, join_segments},
-    },
+    log::segment::{JoinSegmentsError, join_segments},
     pack::{PackHeader, PackRef, PeerData, SegmentDescriptor},
 };
 
@@ -49,13 +47,21 @@ impl PackBuilder {
         &mut self,
         key_resolver: &dyn CipherKeyResolver,
         hash_ctx: &LogHashContext,
+        start_size: u64,
         segments: &'a [B],
-    ) -> Result<(), PackBuildError> {
+    ) -> Result<u64, PackBuildError> {
         // TODO we can skip joining segments when there's only one segment
-        let body_start = self.body_writer.len() as u64;
+        let body_start = self.body_writer.len();
         // note that a failure here may leave some body bytes written, but this is mostly harmless and in most cases any error will cause the caller to abandon building the pack anyway
-        let joined = join_segments(key_resolver, hash_ctx, segments, &mut self.body_writer).await?;
-        let body_end = self.body_writer.len() as u64;
+        let joined = join_segments(
+            key_resolver,
+            hash_ctx,
+            start_size,
+            segments,
+            &mut self.body_writer,
+        )
+        .await?;
+        let body_end = self.body_writer.len();
         let idx_range = joined.prev_chain.size..joined.chain_hash.size;
         if idx_range.is_empty() {
             return Err(PackBuildError::EmptySegmentRange);
@@ -63,8 +69,8 @@ impl PackBuilder {
         let desc = SegmentDescriptor {
             container_id: hash_ctx.log_id().container_id,
             idx_range,
-            prev_chain: joined.prev_chain.hash,
-            end_chain: joined.chain_hash.hash,
+            prev_chain_hash: joined.prev_chain.hash,
+            end_chain_hash: joined.chain_hash.hash,
             body_loc: body_start..body_end,
         };
         let peer_id = hash_ctx.log_id().peer_id;
@@ -81,7 +87,7 @@ impl PackBuilder {
                 .segments
                 .push(desc);
         }
-        Ok(())
+        Ok(joined.chain_hash.size)
     }
 
     pub fn build(self, signing_key: &dyn SigningKey) -> Result<PackData, PackSignError> {

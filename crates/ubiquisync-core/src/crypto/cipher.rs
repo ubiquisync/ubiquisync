@@ -24,6 +24,7 @@ use crate::bytes::PlaintextBytes;
 use crate::codec::MAX_VAR_U64_SIZE;
 use crate::codec::ReadError;
 use crate::codec::Reader;
+use crate::codec::WriteError;
 use crate::codec::Writer;
 use crate::codec::encode_var_u64;
 use crate::ids::ContainerId;
@@ -92,10 +93,10 @@ pub trait CipherKeyResolver: Send + Sync {
     ) -> Option<ContainerKey256>;
 }
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone)]
 pub enum CipherKeyResolveError {
-    #[error("not found")]
-    NotFound,
+    #[error("key {0:?} not found")]
+    NotFound(RootKey256Fingerprint),
     #[error("unknown cipher suite {0}")]
     UnknownSuite(u8),
 }
@@ -104,7 +105,7 @@ pub enum CipherKeyResolveError {
 #[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
 pub struct RootKey256Fingerprint(pub [u8; 32]);
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone)]
 #[error("cipher error")]
 pub struct CipherError;
 
@@ -212,7 +213,7 @@ impl EntryCipher {
         let key = resolver
             .resolve_container_key(&cipher_info.fingerprint, &log_id.container_id)
             .await
-            .ok_or(CipherKeyResolveError::NotFound)?;
+            .ok_or(CipherKeyResolveError::NotFound(cipher_info.fingerprint))?;
         Ok(Self::new(suite, key, &log_id.peer_id))
     }
 
@@ -382,9 +383,10 @@ impl SegmentCipher {
 }
 
 impl CipherInfo {
-    pub fn encode(&self, writer: &mut Writer) {
+    pub fn encode(&self, writer: &mut Writer) -> Result<(), WriteError> {
         writer.write_byte(self.cipher_suite);
         writer.write_array(&self.fingerprint.0);
+        Ok(())
     }
 
     pub fn decode<'a>(reader: &mut Reader<'a>) -> Result<Self, ReadError> {

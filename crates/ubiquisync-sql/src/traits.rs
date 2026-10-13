@@ -12,13 +12,13 @@ use crate::{
 };
 
 #[async_trait::async_trait]
-pub trait SqlQueryStore {
+pub trait SqlQueryStore: Sync + Send {
     async fn query(&self, sql: &str, params: &[DbValue]) -> Result<Vec<DbRow>, DbError>;
     fn dialect(&self) -> crate::dialect::SqlDialect;
 }
 
 #[async_trait::async_trait]
-pub trait Exec<Op> {
+pub trait Exec<Op>: Sync + Send {
     async fn exec(&self, server_user_id: Option<Uuid>, op: Op) -> Result<(), ExecError>;
 }
 

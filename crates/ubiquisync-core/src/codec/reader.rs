@@ -2,7 +2,10 @@ use std::ops::Range;
 
 use thiserror::Error;
 
-use crate::codec::varint::{decode_var_u64, decode_zigzag_i64};
+use crate::{
+    codec::varint::{decode_var_u64, decode_zigzag_i64},
+    hlc::Timestamp,
+};
 
 pub struct Reader<'a> {
     buf: &'a [u8],
@@ -23,6 +26,8 @@ pub enum ReadError {
     TrailingBytes,
     #[error("error reading Option<T>")]
     InvalidOption,
+    #[error("invalid timestamp")]
+    InvalidTimestamp,
 }
 
 impl<'a> Reader<'a> {
@@ -80,16 +85,32 @@ impl<'a> Reader<'a> {
         Ok(x)
     }
 
+    pub fn read_timestamp(&mut self) -> Result<Timestamp, ReadError> {
+        self.read_le_u64()?
+            .try_into()
+            .map_err(|_| ReadError::InvalidTimestamp)
+    }
+
     pub fn read_range(&mut self) -> Result<Range<u64>, ReadError> {
         let start = self.read_var_u64()?;
         let span = self.read_var_u64()?;
-        if span == 0 {
-            return Err(ReadError::InvalidRange { start, span });
-        }
         let end = start
             .checked_add(span)
             .ok_or(ReadError::InvalidRange { start, span })?;
         Ok(Range { start, end })
+    }
+
+    pub fn read_usize_range(&mut self) -> Result<Range<usize>, ReadError> {
+        let range = self.read_range()?;
+        let start = range
+            .start
+            .try_into()
+            .map_err(|_| ReadError::USizeOverflow(range.start))?;
+        let end = range
+            .end
+            .try_into()
+            .map_err(|_| ReadError::USizeOverflow(range.end))?;
+        Ok(start..end)
     }
 
     pub fn read_option<T, F, E>(&mut self, mut on_some: F) -> Result<Option<T>, E>
@@ -104,18 +125,25 @@ impl<'a> Reader<'a> {
         }
     }
 
-    pub fn read_vec<T, F, E>(&mut self, mut decode: F) -> Result<Vec<T>, E>
+    pub fn read_vec<T, F, E>(&mut self, decode: F) -> Result<Vec<T>, E>
     where
         F: FnMut(&mut Self) -> Result<T, E>,
         E: From<ReadError>,
     {
+        self.read_collect(decode)
+    }
+
+    /// Reads a length-prefixed sequence (as written by `write_vec`/`write_iter`)
+    /// into any collection.
+    pub fn read_collect<T, C, F, E>(&mut self, mut decode: F) -> Result<C, E>
+    where
+        C: FromIterator<T>,
+        F: FnMut(&mut Self) -> Result<T, E>,
+        E: From<ReadError>,
+    {
         let n = self.read_var_usize()?;
-        // NOTE: DO NOT pre-allocate the vec, input could be untrusted and cause OOM
-        let mut res = vec![];
-        for _ in 0..n {
-            res.push(decode(self)?);
-        }
-        Ok(res)
+        // NOTE: DO NOT attempt to do any pre-allocate, input could be untrusted and cause OOM.
+        (0..n).map(|_| decode(self)).collect()
     }
 
     pub fn is_empty(&self) -> bool {

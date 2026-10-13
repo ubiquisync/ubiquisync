@@ -12,7 +12,7 @@ pub async fn select_cols<C: Cols>(
     db: &dyn Db,
     stmt: &mut SelectStatement,
 ) -> Result<Rows<C>, DbError> {
-    stmt.columns(C::idens());
+    stmt.columns(C::column_refs());
     let (sql, params) = build_sql(stmt, db.dialect())?;
     let res = db.query(&sql, &params).await?;
     Ok(res.into())
@@ -66,10 +66,19 @@ pub fn prep_insert_cols<Inserting: Cols, Returning: Cols>(
         for i in returning_idens {
             col_refs.push(ColumnRef::Column(ColumnName(None, i)))
         }
-        stmt.returning(sea_query::ReturningClause::Columns(col_refs));
+        stmt.returning(sea_query::Query::returning().columns(Returning::column_refs()));
     }
 
     build_sql(stmt, dialect)
+}
+
+pub async fn update_cols<C: Cols>(
+    db: &dyn Db,
+    params: C::Params,
+    stmt: &mut UpdateStatement,
+) -> Result<usize, DbError> {
+    let (sql, values) = prep_update_cols::<C>(params, stmt, db.dialect())?;
+    db.exec(&sql, &values).await
 }
 
 pub fn update_cols_batch<C: Cols>(
@@ -77,6 +86,16 @@ pub fn update_cols_batch<C: Cols>(
     params: C::Params,
     stmt: &mut UpdateStatement,
 ) -> Result<(), DbError> {
+    let (sql, values) = prep_update_cols::<C>(params, stmt, batch.dialect())?;
+    batch.add_statement(&sql, &values);
+    Ok(())
+}
+
+fn prep_update_cols<C: Cols>(
+    params: C::Params,
+    stmt: &mut UpdateStatement,
+    dialect: SqlDialect,
+) -> Result<(String, Vec<DbValue>), DbError> {
     let db_vals = C::encode(params)?;
     let idens = C::idens();
     let mut iden_exprs = vec![];
@@ -84,9 +103,7 @@ pub fn update_cols_batch<C: Cols>(
         iden_exprs.push((idens[i].clone(), Expr::Value(db_to_value(v))));
     }
     stmt.values(iden_exprs);
-    let (sql, values) = build_sql(stmt, batch.dialect())?;
-    batch.add_statement(&sql, &values);
-    Ok(())
+    build_sql(stmt, dialect)
 }
 
 pub fn build_sql<S: QueryStatementBuilder>(

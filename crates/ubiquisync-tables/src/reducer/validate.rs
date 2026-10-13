@@ -9,12 +9,13 @@
 
 use std::collections::HashSet;
 
-use crate::error::TablesError;
+use ubiquisync_sql::reducer::PrepareError;
+
 use crate::id::{ColumnId, TableId};
 use crate::op::{Delete, Upsert, Value};
 
 /// Reject an [`Upsert`] whose PK, column values, or column set is malformed.
-pub(crate) fn validate_upsert(upsert: &Upsert) -> Result<(), TablesError> {
+pub(crate) fn validate_upsert(upsert: &Upsert) -> Result<(), PrepareError> {
     validate_pk(upsert.table_id, &upsert.primary_key)?;
 
     // Every written column — value or NULL — must be named at most once, or the
@@ -31,13 +32,13 @@ pub(crate) fn validate_upsert(upsert: &Upsert) -> Result<(), TablesError> {
 }
 
 /// Reject a [`Delete`] whose primary key is malformed.
-pub(crate) fn validate_delete(delete: &Delete) -> Result<(), TablesError> {
+pub(crate) fn validate_delete(delete: &Delete) -> Result<(), PrepareError> {
     validate_pk(delete.table_id, &delete.primary_key)
 }
 
 /// The primary key must have exactly one value per PK slot, each matching that
 /// slot's declared type.
-fn validate_pk(table_id: TableId, primary_key: &[Value]) -> Result<(), TablesError> {
+fn validate_pk(table_id: TableId, primary_key: &[Value]) -> Result<(), PrepareError> {
     let expected = table_id.pk_count();
     if primary_key.len() != expected {
         return Err(invalid(format!(
@@ -57,7 +58,7 @@ fn validate_pk(table_id: TableId, primary_key: &[Value]) -> Result<(), TablesErr
     Ok(())
 }
 
-fn check_value_type(column_id: ColumnId, value: &Value) -> Result<(), TablesError> {
+fn check_value_type(column_id: ColumnId, value: &Value) -> Result<(), PrepareError> {
     let want = column_id.col_type();
     if value.col_type() != want {
         return Err(invalid(format!(
@@ -68,14 +69,16 @@ fn check_value_type(column_id: ColumnId, value: &Value) -> Result<(), TablesErro
     Ok(())
 }
 
-fn insert_unique(seen: &mut HashSet<ColumnId>, column_id: ColumnId) -> Result<(), TablesError> {
+fn insert_unique(seen: &mut HashSet<ColumnId>, column_id: ColumnId) -> Result<(), PrepareError> {
     if seen.insert(column_id) {
         Ok(())
     } else {
-        Err(invalid(format!("column {column_id:?} referenced more than once")))
+        Err(invalid(format!(
+            "column {column_id:?} referenced more than once"
+        )))
     }
 }
 
-fn invalid(msg: String) -> TablesError {
-    TablesError::InvalidOp(msg)
+fn invalid(msg: String) -> PrepareError {
+    PrepareError::InvalidOp(msg)
 }

@@ -8,16 +8,24 @@ use ubiquisync_sql::{
     Exec, ExecError, SqlQueryStore,
     db::{Db, DbError, DbRow, DbValue},
     dialect::SqlDialect,
-    replica::Replica,
+    replica::{InitError as ReplicaInitError, Replica, ReplicaConfig},
 };
 
 use crate::{
-    error::TablesError, op::Op, reducer::Reducer, schema::TableSchema, watch::ChangeEvent,
+    error::TablesInitError, op::Op, reducer::Reducer, schema::TableSchema, watch::ChangeEvent,
 };
 
 pub struct StoreImpl {
     replica: Replica<Reducer>,
     event_bus: EventBus<ChangeEvent>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum StoreInitError {
+    #[error("tables init error: {0}")]
+    TablesInit(#[from] TablesInitError),
+    #[error("replica init error: {0}")]
+    ReplicaInit(#[from] ReplicaInitError),
 }
 
 impl StoreImpl {
@@ -28,11 +36,12 @@ impl StoreImpl {
         prefix: &str,
         tables: &[TableSchema],
         db: Box<dyn Db>,
-    ) -> Result<Self, TablesError> {
+        replica_config: ReplicaConfig,
+    ) -> Result<Self, StoreInitError> {
         let (event_handler, event_bus) = event_bus();
         let reducer =
             Reducer::new(container_id, prefix, tables, db.as_ref(), event_handler).await?;
-        let replica = Replica::new(app_magic, db, reducer, credentials).await?;
+        let replica = Replica::new(app_magic, db, reducer, credentials, replica_config).await?;
         Ok(Self { replica, event_bus })
     }
 }

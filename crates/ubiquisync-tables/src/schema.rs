@@ -1,9 +1,12 @@
 use std::collections::{BTreeMap, HashSet};
 
-use ubiquisync_sql::{db::Db, util::quote_ident};
+use ubiquisync_sql::{
+    db::{Db, DbError},
+    util::quote_ident,
+};
 
 use crate::{
-    error::TablesError,
+    error::InvalidSchemaError,
     id::{ColumnId, TableId},
     physical_schema::{DELETED_TS_COL, UPSERT_TS_COL},
 };
@@ -42,18 +45,16 @@ impl TableSchema {
         name: String,
         pk_names: Vec<String>,
         non_pk_cols: Vec<ColumnSchema>,
-    ) -> Result<Self, TablesError> {
+    ) -> Result<Self, InvalidSchemaError> {
         // A zero-length name quotes to `""`, which Postgres rejects as an empty
         // delimited identifier (SQLite would accept it).
         if name.is_empty() {
-            return Err(TablesError::InvalidSchema(
-                "table name must not be empty".into(),
-            ));
+            return Err(InvalidSchemaError("table name must not be empty".into()));
         }
 
         // One VIEW column name per PK slot.
         if pk_names.len() != id.pk_count() {
-            return Err(TablesError::InvalidSchema(format!(
+            return Err(InvalidSchemaError(format!(
                 "table {name:?}: expected {} PK name(s) to match the table ID, got {}",
                 id.pk_count(),
                 pk_names.len(),
@@ -65,12 +66,12 @@ impl TableSchema {
         let mut seen = HashSet::new();
         for col_name in pk_names.iter().chain(non_pk_cols.iter().map(|c| &c.name)) {
             if col_name.is_empty() {
-                return Err(TablesError::InvalidSchema(format!(
+                return Err(InvalidSchemaError(format!(
                     "table {name:?}: column name must not be empty"
                 )));
             }
             if !seen.insert(col_name.as_str()) {
-                return Err(TablesError::InvalidSchema(format!(
+                return Err(InvalidSchemaError(format!(
                     "table {name:?}: duplicate column name {col_name:?}"
                 )));
             }
@@ -82,7 +83,7 @@ impl TableSchema {
         for col in non_pk_cols {
             let col_id = col.id;
             if value_cols.insert(col_id, col).is_some() {
-                return Err(TablesError::InvalidSchema(format!(
+                return Err(InvalidSchemaError(format!(
                     "table {name:?}: duplicate column id {}",
                     col_id.col_name()
                 )));
@@ -104,7 +105,7 @@ impl TableSchema {
         &self,
         surrogate_prefix: &str,
         db: &dyn Db,
-    ) -> Result<(), TablesError> {
+    ) -> Result<(), DbError> {
         let (drop_sql, create_sql) = self.view_sql(surrogate_prefix);
         let mut batch = db.new_batch();
         batch.add_statement(&drop_sql, &[]);
@@ -164,18 +165,27 @@ mod tests {
     fn rejects_pk_name_count_mismatch() {
         // A single-column PK declared with two names is rejected, not panicked.
         let id = TableId::new(&[ColType::I64], 1);
-        let err = TableSchema::new(id, "t".into(), vec!["a".into(), "b".into()], vec![]).unwrap_err();
-        assert!(matches!(err, TablesError::InvalidSchema(_)), "got {err:?}");
+        let err =
+            TableSchema::new(id, "t".into(), vec!["a".into(), "b".into()], vec![]).unwrap_err();
+        assert!(matches!(err, InvalidSchemaError(_)), "got {err:?}");
     }
 
     #[test]
     fn rejects_duplicate_value_column_name() {
         // Two value columns sharing a user-facing name would make an invalid VIEW.
         let id = TableId::new(&[ColType::I64], 1);
-        let (a, b) = (ColumnId::new(0, ColType::Text), ColumnId::new(1, ColType::Text));
-        let err = TableSchema::new(id, "t".into(), vec!["id".into()], vec![cs("dup", a), cs("dup", b)])
-            .unwrap_err();
-        assert!(matches!(err, TablesError::InvalidSchema(_)), "got {err:?}");
+        let (a, b) = (
+            ColumnId::new(0, ColType::Text),
+            ColumnId::new(1, ColType::Text),
+        );
+        let err = TableSchema::new(
+            id,
+            "t".into(),
+            vec!["id".into()],
+            vec![cs("dup", a), cs("dup", b)],
+        )
+        .unwrap_err();
+        assert!(matches!(err, InvalidSchemaError(_)), "got {err:?}");
     }
 
     #[test]
@@ -184,14 +194,15 @@ mod tests {
         let id = TableId::new(&[ColType::I64], 1);
         let a = ColumnId::new(0, ColType::Text);
         let err = TableSchema::new(id, "t".into(), vec!["x".into()], vec![cs("x", a)]).unwrap_err();
-        assert!(matches!(err, TablesError::InvalidSchema(_)), "got {err:?}");
+        assert!(matches!(err, InvalidSchemaError(_)), "got {err:?}");
     }
 
     #[test]
     fn rejects_duplicate_pk_names() {
         let id = TableId::new(&[ColType::Text, ColType::I64], 1);
-        let err = TableSchema::new(id, "t".into(), vec!["k".into(), "k".into()], vec![]).unwrap_err();
-        assert!(matches!(err, TablesError::InvalidSchema(_)), "got {err:?}");
+        let err =
+            TableSchema::new(id, "t".into(), vec!["k".into(), "k".into()], vec![]).unwrap_err();
+        assert!(matches!(err, InvalidSchemaError(_)), "got {err:?}");
     }
 
     #[test]
@@ -199,16 +210,21 @@ mod tests {
         // Same column ID twice (distinct names) would silently collapse in the map.
         let id = TableId::new(&[ColType::I64], 1);
         let a = ColumnId::new(0, ColType::Text);
-        let err = TableSchema::new(id, "t".into(), vec!["id".into()], vec![cs("a", a), cs("b", a)])
-            .unwrap_err();
-        assert!(matches!(err, TablesError::InvalidSchema(_)), "got {err:?}");
+        let err = TableSchema::new(
+            id,
+            "t".into(),
+            vec!["id".into()],
+            vec![cs("a", a), cs("b", a)],
+        )
+        .unwrap_err();
+        assert!(matches!(err, InvalidSchemaError(_)), "got {err:?}");
     }
 
     #[test]
     fn rejects_empty_table_name() {
         let id = TableId::new(&[ColType::I64], 1);
         let err = TableSchema::new(id, "".into(), vec!["id".into()], vec![]).unwrap_err();
-        assert!(matches!(err, TablesError::InvalidSchema(_)), "got {err:?}");
+        assert!(matches!(err, InvalidSchemaError(_)), "got {err:?}");
     }
 
     #[test]
@@ -216,22 +232,33 @@ mod tests {
         let id = TableId::new(&[ColType::I64], 1);
         let a = ColumnId::new(0, ColType::Text);
         let err = TableSchema::new(id, "t".into(), vec!["id".into()], vec![cs("", a)]).unwrap_err();
-        assert!(matches!(err, TablesError::InvalidSchema(_)), "got {err:?}");
+        assert!(matches!(err, InvalidSchemaError(_)), "got {err:?}");
     }
 
     #[test]
     fn accepts_valid_schema() {
         let id = TableId::new(&[ColType::I64], 1);
-        let (a, b) = (ColumnId::new(0, ColType::Text), ColumnId::new(1, ColType::I64));
-        let schema =
-            TableSchema::new(id, "t".into(), vec!["id".into()], vec![cs("a", a), cs("b", b)]).unwrap();
+        let (a, b) = (
+            ColumnId::new(0, ColType::Text),
+            ColumnId::new(1, ColType::I64),
+        );
+        let schema = TableSchema::new(
+            id,
+            "t".into(),
+            vec!["id".into()],
+            vec![cs("a", a), cs("b", b)],
+        )
+        .unwrap();
         assert_eq!(schema.value_cols.len(), 2);
     }
 
     #[test]
     fn view_sql_quotes_names_and_hides_tombstones() {
         let id = TableId::new(&[ColType::I64], 1);
-        let (body, n) = (ColumnId::new(0, ColType::Text), ColumnId::new(1, ColType::I64));
+        let (body, n) = (
+            ColumnId::new(0, ColType::Text),
+            ColumnId::new(1, ColType::I64),
+        );
         let schema = TableSchema::new(
             id,
             "widgets".into(),

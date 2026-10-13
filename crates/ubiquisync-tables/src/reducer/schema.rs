@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::error::TablesError;
+use crate::error::SchemaSyncError;
 use crate::id::TableId;
 use crate::physical_schema::PhysicalTableSchema;
 use crate::reducer::Reducer;
@@ -13,7 +13,7 @@ impl Reducer {
         &self,
         db: &dyn Db,
         table_id: TableId,
-    ) -> Result<Arc<RwLock<PhysicalTableSchema>>, TablesError> {
+    ) -> Result<Arc<RwLock<PhysicalTableSchema>>, SchemaSyncError> {
         {
             let physical_tables = self.physical_tables.read().await;
             if let Some(t) = physical_tables.get(&table_id) {

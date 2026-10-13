@@ -1,10 +1,11 @@
-use sea_query::{DynIden, Iden};
+use sea_query::{ColumnRef, DynIden, Iden};
 use ubiquisync_core::uuid::Uuid;
 
 use crate::db::{CreateColDef, DbError, DbRow, DbType, DbValue};
 
 pub trait Col: Iden + Copy + Default {
     type Type: ColType;
+    type Table: Iden + Default;
 
     fn create_col_def() -> CreateColDef;
 }
@@ -23,7 +24,11 @@ pub trait Cols {
     fn encode(row: Self::Params) -> Result<Vec<DbValue>, DbError>;
     fn decode<'a>(row: &'a DbRow) -> Result<Self::Row<'a>, DbError>;
     fn idens() -> Vec<DynIden>;
+    fn column_refs() -> Vec<ColumnRef>;
 }
+
+#[derive(Copy, Clone, Default)]
+pub struct Nullable<C>(C);
 
 impl ColType for u64 {
     type BorrowedType<'a> = u64;
@@ -147,7 +152,7 @@ impl ColType for Uuid {
 
 pub trait ColRepr: Sized {
     type Repr: ColType;
-    fn to_repr(self) -> Self::Repr;
+    fn to_repr(self) -> Result<Self::Repr, DbError>;
     fn from_repr<'a>(value: <Self::Repr as ColType>::BorrowedType<'a>) -> Result<Self, DbError>;
 }
 
@@ -164,19 +169,20 @@ impl<T: ColRepr> ColType for T {
     }
 
     fn to_db_val(value: Self) -> Result<DbValue, DbError> {
-        T::Repr::to_db_val(value.to_repr())
+        T::Repr::to_db_val(value.to_repr()?)
     }
 }
 
 #[macro_export]
 macro_rules! codeable_col_repr {
     ($typ:ty) => {
-        impl ColRepr for $typ {
+        impl $crate::db::ColRepr for $typ {
             type Repr = Vec<u8>;
-            fn to_repr(self) -> Self::Repr {
+            fn to_repr(self) -> Result<Self::Repr, $crate::db::DbError> {
                 let mut w = ubiquisync_core::codec::Writer::new();
-                self.encode(&mut w);
-                w.finalize()
+                self.encode(&mut w)
+                    .map_err(|e| $crate::db::DbError::EncodeError(Box::new(e)))?;
+                Ok(w.finalize())
             }
             fn from_repr<'a>(
                 value: <Self::Repr as $crate::db::ColType>::BorrowedType<'a>,
@@ -195,7 +201,7 @@ macro_rules! codeable_col_repr {
 #[macro_export]
 macro_rules! enum_col_repr {
     ($typ:ty) => {
-        try_from_into_col_repr!($typ, i64);
+        $crate::try_from_into_col_repr!($typ, i64);
     };
 }
 
@@ -204,8 +210,8 @@ macro_rules! try_from_into_col_repr {
     ($typ:ty, $repr:ty) => {
         impl $crate::db::ColRepr for $typ {
             type Repr = $repr;
-            fn to_repr(self) -> Self::Repr {
-                self.into()
+            fn to_repr(self) -> Result<Self::Repr, $crate::db::DbError> {
+                Ok(self.into())
             }
             fn from_repr<'a>(
                 value: <Self::Repr as $crate::db::ColType>::BorrowedType<'a>,
@@ -266,6 +272,12 @@ macro_rules! impl_col_tuples {
             fn idens() -> Vec<sea_query::types::DynIden> {
                 vec![$(<$param as sea_query::types::IntoIden>::into_iden($param::default()),)+]
             }
+
+            fn column_refs() -> Vec<sea_query::types::ColumnRef> {
+                vec![$(sea_query::types::ColumnRef::Column(sea_query::types::ColumnName(
+                    Some(sea_query::types::TableName(None, <$param::Table as sea_query::types::IntoIden>::into_iden($param::Table::default()))),
+                    <$param as sea_query::types::IntoIden>::into_iden($param::default()))),)+]
+            }
         }
 
     }
@@ -280,6 +292,11 @@ impl_col_tuples!(A 0, B 1, C 2, D 3, E 4);
 impl_col_tuples!(A 0, B 1, C 2, D 3, E 4, F 5);
 impl_col_tuples!(A 0, B 1, C 2, D 3, E 4, F 5, G 6);
 impl_col_tuples!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7);
+impl_col_tuples!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8);
+impl_col_tuples!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9);
+impl_col_tuples!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9, K 10);
+impl_col_tuples!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9, K 10, L 11);
+impl_col_tuples!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9, K 10, L 11, M 12);
 
 impl Cols for () {
     type Row<'a> = ();
@@ -295,5 +312,25 @@ impl Cols for () {
 
     fn idens() -> Vec<DynIden> {
         vec![]
+    }
+
+    fn column_refs() -> Vec<ColumnRef> {
+        vec![]
+    }
+}
+
+impl<C: Col> Iden for Nullable<C> {
+    fn unquoted(&self) -> &str {
+        self.0.unquoted()
+    }
+}
+
+impl<C: Col> Col for Nullable<C> {
+    type Type = Option<C::Type>;
+
+    type Table = C::Table;
+
+    fn create_col_def() -> CreateColDef {
+        C::create_col_def().nullable()
     }
 }

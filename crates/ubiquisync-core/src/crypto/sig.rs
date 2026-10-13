@@ -1,5 +1,5 @@
 use crate::{
-    codec::{Reader, Writer},
+    codec::{Reader, WriteError, Writer},
     crypto::CryptoDecodeError,
 };
 
@@ -11,7 +11,7 @@ pub enum Signature {
 }
 
 impl Signature {
-    pub fn encode(&self, writer: &mut Writer) {
+    pub fn encode(&self, writer: &mut Writer) -> Result<(), WriteError> {
         // TODO: should we normalize signatures here?
         let s = match self {
             Signature::Ed25519(s) => {
@@ -24,6 +24,7 @@ impl Signature {
             }
         };
         writer.write_array(s);
+        Ok(())
     }
 
     pub fn decode(reader: &mut Reader) -> Result<Self, CryptoDecodeError> {
@@ -51,7 +52,7 @@ mod tests {
     #[proptest]
     fn test_roundtrip(signature: Signature) {
         let mut w = Writer::new();
-        signature.encode(&mut w);
+        signature.encode(&mut w).unwrap();
         let res = w.finalize();
         let mut r = Reader::new(&res);
         let decoded = Signature::decode(&mut r).unwrap();
