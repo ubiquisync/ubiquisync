@@ -2,9 +2,8 @@
 //! real [`Db`].
 //!
 //! Mirrors `ubiquisync-sql`'s `test_support`: the suite is an `async fn` generic
-//! over `<D: Db>`, so it's tied to no particular executor. A driver crate (e.g.
-//! `ubiquisync-sqlite`) hands it a freshly opened database and drives it with
-//! its own `block_on`.
+//! over `<D: Db>`. A driver crate (e.g. `ubiquisync-sqlite`) hands it a freshly
+//! opened database from a `#[tokio::test]`.
 //!
 //! Every case uses a distinct table index, so they can all run against one
 //! database without colliding.

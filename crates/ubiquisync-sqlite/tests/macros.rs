@@ -5,9 +5,7 @@
 use ubiquisync_sqlite::SqliteDb;
 use ubiquisync_tables::test_support::run_macros_suite;
 
-#[test]
-fn macros_suite() {
-    // SQLite's futures are synchronous, so any executor drives the suite to
-    // completion; `pollster` is a minimal, wakeup-correct `block_on`.
-    pollster::block_on(run_macros_suite(SqliteDb::open_in_memory().unwrap()));
+#[tokio::test]
+async fn macros_suite() {
+    run_macros_suite(SqliteDb::open_in_memory().unwrap()).await;
 }
