@@ -1,4 +1,5 @@
 mod commit;
+mod commit_retry;
 mod config;
 mod exec;
 mod fork;
@@ -18,14 +19,14 @@ mod streams;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
-pub use config::{PackSyncConfig, ReplicaConfig};
+pub use config::{CommitRetryConfig, PackSyncConfig, ReplicaConfig};
 pub use hlc::HlcError;
 pub use init::InitError;
 
 use futures::lock::Mutex;
 use std::sync::atomic::AtomicU64;
-use std::{collections::HashMap, sync::Arc};
-use tokio::task;
+use std::{collections::HashMap, sync::Arc, time::Duration};
+use tokio::{task, time};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -66,5 +67,24 @@ impl<R> Replica<R> {
     pub async fn shutdown(self) {
         self.cancel.cancel();
         self.tasks.join_all().await;
+    }
+}
+
+/// The timer for a background loop that does one round of work per tick.
+pub(crate) fn poll_interval(period: Duration) -> time::Interval {
+    let mut interval = time::interval(period);
+    interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+    interval
+}
+
+/// Waits for the next tick (the first one fires right away). Returns false once the replica
+/// is shutting down.
+pub(crate) async fn tick_or_cancelled(
+    interval: &mut time::Interval,
+    cancel: &CancellationToken,
+) -> bool {
+    tokio::select! {
+        _ = cancel.cancelled() => false,
+        _ = interval.tick() => true,
     }
 }
