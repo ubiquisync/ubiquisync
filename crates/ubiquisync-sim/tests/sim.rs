@@ -4,7 +4,7 @@
 //! sync through temp-dir folder remotes while a fault-injecting remote wrapper
 //! fails, truncates and restarts things. Then writes stop, faults turn off, and
 //! every group of peers linked through shared remotes must converge to the same
-//! stream heads and table rows with nothing blocked or left to publish.
+//! branch heads and table rows with nothing blocked or left to publish.
 //!
 //! Replay a run with `SIM_SEED=<seed>`; the seed is printed at the start.
 
@@ -30,7 +30,8 @@ use ubiquisync_sql::{
     Exec, SqlQueryStore,
     db::DbValue,
     replica::{
-        CommitRetryConfig, PackSyncConfig, Replica, ReplicaConfig, test_support::SyncSnapshot,
+        CommitRetryConfig, PackSyncConfig, Replica, ReplicaConfig, ReplicaDeps,
+        test_support::SyncSnapshot,
     },
 };
 use ubiquisync_sqlite::SqliteDb;
@@ -308,7 +309,7 @@ async fn run(params: SimParams) {
     for (_, replica) in &peers {
         let snap = replica.sync_snapshot().await.unwrap();
         total_writes = snap
-            .streams
+            .branches
             .values()
             .map(|heads| heads.iter().map(|(size, _, _)| *size).max().unwrap_or(0))
             .sum::<u64>()
@@ -375,25 +376,25 @@ impl Peer {
             SecretBox::new(Box::new(self.keys.0)),
             SecretBox::new(Box::new(self.keys.1)),
         );
-        let mut config = ReplicaConfig {
+        let config = ReplicaConfig {
             pack_sync: fast_sync_config(),
             commit_retry: CommitRetryConfig {
                 poll_interval: Duration::from_millis(20),
                 retry_min: Duration::from_millis(20),
                 retry_max: Duration::from_secs(1),
             },
-            ..Default::default()
         };
-        config.pack_remote_providers.insert(
-            FAULTY.into(),
-            Box::new(FaultyProvider {
-                peer: self.index,
-                faults: self.faults.clone(),
-            }),
-        );
-        Replica::new(APP_ID, Box::new(db), reducer, Box::new(credentials), config)
-            .await
-            .unwrap()
+        let provider = FaultyProvider {
+            peer: self.index,
+            faults: self.faults.clone(),
+        };
+        let deps = ReplicaDeps {
+            db: Box::new(db),
+            reducer,
+            credentials: Box::new(credentials),
+            pack_remote_providers: [(FAULTY.into(), Box::new(provider) as _)].into(),
+        };
+        Replica::new(APP_ID, deps, config).await.unwrap()
     }
 }
 
@@ -476,9 +477,9 @@ fn check_converged(groups: &[Vec<usize>], states: &[PeerState]) -> Result<(), St
                     s.snapshot.blocked_detail.join("\n  ")
                 ));
             }
-            if s.snapshot.streams != first.snapshot.streams {
+            if s.snapshot.branches != first.snapshot.branches {
                 problems.push(format!(
-                    "peer {i} stream heads differ from peer {}: {:?} vs {:?}",
+                    "peer {i} branch heads differ from peer {}: {:?} vs {:?}",
                     group[0],
                     summarize(&s.snapshot),
                     summarize(&first.snapshot)
@@ -501,10 +502,10 @@ fn check_converged(groups: &[Vec<usize>], states: &[PeerState]) -> Result<(), St
     }
 }
 
-/// Per log: the stream head sizes, for readable failure output.
+/// Per log: the branch head sizes, for readable failure output.
 fn summarize(s: &SyncSnapshot) -> Vec<Vec<u64>> {
     let mut v: Vec<Vec<u64>> = s
-        .streams
+        .branches
         .values()
         .map(|heads| heads.iter().map(|(size, _, _)| *size).collect())
         .collect();
@@ -521,7 +522,7 @@ fn head_matrix(states: &[PeerState]) -> String {
             .iter()
             .map(|a| {
                 s.snapshot
-                    .streams
+                    .branches
                     .get(&(*a, CONTAINER_ID))
                     .map(|heads| {
                         heads

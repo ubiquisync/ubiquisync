@@ -25,8 +25,7 @@ def_table_with_auto_id!(containers as __replica_containers (id) => {
     topic_id: Option<i64>,
 });
 
-// TODO should we rename streams to something like branches or logs?
-def_table_with_auto_id!(streams as __replica_streams (id) => {
+def_table_with_auto_id!(branches as __replica_branches (id) => {
    peer_id: i64, // TODO ref peers
    container_id: [u8; 16], // TODO should we ref containers.id as i64 or not here?
    head_size: u64, // TODO default 0
@@ -35,19 +34,19 @@ def_table_with_auto_id!(streams as __replica_streams (id) => {
    head_err: Option<super::HeadErr>,
    commit_size: u64, // TODO default 0
    commit_err: Option<super::CommitErr>,
-   parent_id: Option<i64>, // TODO ref streams
+   parent_id: Option<i64>, // TODO ref branches
    fork_size: Option<u64>,
    // TODO CHECK(commit_size <= head_size)
 });
 
-def_table!(segments as __replica_segments (stream_id: i64, end_size: u64) => { // TODO ref streams
+def_table!(segments as __replica_segments (branch_id: i64, end_size: u64) => { // TODO ref branches
     start_idx: u64,
     body: Vec<u8>,
     // TODO we actually need a rowid and want to have an auto ID anyway for p2p sync tracking
 });
 
-def_table!(stream_deps as __replica_stream_deps (
-    stream_id: i64,
+def_table!(branch_deps as __replica_branch_deps (
+    branch_id: i64,
     peer: i64,
     container: i64,
     index: u64,
@@ -61,13 +60,13 @@ pub(crate) fn table_defs() -> Vec<CreateTableDef> {
     vec![
         peers::create_table_def().with_unique(&["peer_id"]),
         containers::create_table_def().with_unique(&["container_id"]),
-        streams::create_table_def(),
+        branches::create_table_def(),
         segments::create_table_def(),
         hlc::create_table_def(),
     ]
 }
 
-// TODO: CREATE UNIQUE INDEX streams_root ON streams(peer_id, container_id) WHERE parent_id IS NULL;
+// TODO: CREATE UNIQUE INDEX branches_root ON branches(peer_id, container_id) WHERE parent_id IS NULL;
 // TODO: we might also want a unique on (parent_id, fork_idx, fork_hash) to avoid races
 
 try_from_into_col_repr!([u8; 32], Vec<u8>);
@@ -76,7 +75,7 @@ codeable_col_repr!(CommitErr);
 codeable_col_repr!(HeadErr);
 codeable_col_repr!(Signature);
 
-// TODO: CREATE UNIQUE INDEX streams_root ON streams(peer_id, container_id) WHERE parent_id IS NULL;
+// TODO: CREATE UNIQUE INDEX branches_root ON branches(peer_id, container_id) WHERE parent_id IS NULL;
 // TODO: we might also want a unique on (parent_id, fork_idx, fork_hash) to avoid races
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,7 +107,7 @@ pub enum CommitErr {
     NeedKey(RootKey256Fingerprint),
     HLCForwardSkew(Timestamp),
     /// Awaiting dependencies from other logs.
-    /// These will be specified in the stream_deps table.
+    /// These will be specified in the branch_deps table.
     AwaitingDeps,
     IncompatibleSoftware(UnknownSoftwareVersion),
     Frozen,

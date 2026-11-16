@@ -1,8 +1,8 @@
-//! Catches up streams whose commit is behind their head.
+//! Catches up branches whose commit is behind their head.
 //!
-//! Ingest only commits a segment when the stream's commit had already reached its head, so once
+//! Ingest only commits a segment when the branch's commit had already reached its head, so once
 //! a commit stalls (or the process stops between storing a segment and committing it) nothing
-//! else moves it forward. This loop does: on every tick it finds those streams and commits
+//! else moves it forward. This loop does: on every tick it finds those branches and commits
 //! their stored segments, if their stall allows a retry yet.
 
 use std::collections::HashMap;
@@ -23,14 +23,14 @@ use crate::{
     reducer::Reducer,
     replica::{
         Replica, ReplicaInner,
+        branches::{BranchInfo, LogKey},
         commit::CommitError,
         config::{CommitRetryConfig, backoff_delay},
         hlc::check_skew,
+        keyed_lock::KeyedLockGuard,
         poll_interval,
-        schema::{CommitErr, peers, streams},
+        schema::{CommitErr, branches, peers},
         segment::GetSegmentError,
-        stream_lock::KeyedLockGuard,
-        streams::{StreamInfo, StreamLog},
         tick_or_cancelled,
     },
 };
@@ -66,7 +66,7 @@ impl<R: Reducer> Replica<R> {
 }
 
 impl<R: Reducer> ReplicaInner<R> {
-    /// One round: every stream behind its head gets a chance to catch up. One that fails
+    /// One round: every branch behind its head gets a chance to catch up. One that fails
     /// doesn't stop the others.
     #[tracing::instrument(skip_all)]
     async fn retry_commits(&self, startup: bool) -> Result<(), DbError> {
@@ -78,21 +78,21 @@ impl<R: Reducer> ReplicaInner<R> {
         Ok(())
     }
 
-    /// The logs that have a stream whose commit is behind its head.
-    async fn logs_behind(&self) -> Result<Vec<(PeerId, StreamLog)>, DbError> {
-        select_cols::<(peers::PeerId, streams::PeerId, streams::ContainerId)>(
+    /// The logs that have a branch whose commit is behind its head.
+    async fn logs_behind(&self) -> Result<Vec<(PeerId, LogKey)>, DbError> {
+        select_cols::<(peers::PeerId, branches::PeerId, branches::ContainerId)>(
             self.db.as_ref(),
             Query::select()
                 .distinct()
-                .from(streams::Table)
+                .from(branches::Table)
                 .inner_join(
                     peers::Table,
-                    Expr::col((streams::Table, streams::PeerId))
+                    Expr::col((branches::Table, branches::PeerId))
                         .eq(Expr::col((peers::Table, peers::Id))),
                 )
                 .and_where(
-                    Expr::col((streams::Table, streams::CommitSize))
-                        .lt(Expr::col((streams::Table, streams::HeadSize))),
+                    Expr::col((branches::Table, branches::CommitSize))
+                        .lt(Expr::col((branches::Table, branches::HeadSize))),
                 ),
         )
         .await?
@@ -101,7 +101,7 @@ impl<R: Reducer> ReplicaInner<R> {
             let (peer, peer_db_id, container) = row?;
             Ok((
                 PeerId(peer),
-                StreamLog::new(peer_db_id, ContainerId(container)),
+                LogKey::new(peer_db_id, ContainerId(container)),
             ))
         })
         .collect()
@@ -110,86 +110,86 @@ impl<R: Reducer> ReplicaInner<R> {
     async fn retry_log_commits(
         &self,
         peer: PeerId,
-        log: StreamLog,
+        log: LogKey,
         startup: bool,
     ) -> Result<(), DbError> {
-        let guard = self.stream_locks.lock(&log).await;
+        let guard = self.log_locks.lock(&log).await;
         let hash_ctx = LogHashContext::new(&LogId {
             peer_id: peer,
             container_id: log.container_id,
         });
-        let mut streams = self.resolve_streams(&guard).await?;
+        let mut branches = self.resolve_branches(&guard).await?;
         // a fork is created after its parent, so this order commits parents first
-        streams.sort_by_key(|s| s.id);
+        branches.sort_by_key(|s| s.id);
         let mut commit_sizes = HashMap::new();
-        for mut stream in streams {
-            let parent_commit_size = stream
+        for mut branch in branches {
+            let parent_commit_size = branch
                 .parent_id
                 .and_then(|id| commit_sizes.get(&id).copied());
             let retry = should_retry(
-                stream.commit_err.as_ref(),
+                branch.commit_err.as_ref(),
                 WallTime::now(),
                 &self.config.commit_retry,
                 startup,
             );
             if retry
                 && let Err(error) = self
-                    .catch_up(&guard, &hash_ctx, &mut stream, parent_commit_size)
+                    .catch_up(&guard, &hash_ctx, &mut branch, parent_commit_size)
                     .await
             {
-                tracing::warn!(stream_id = stream.id, %error, "commit retry failed");
+                tracing::warn!(branch_id = branch.id, %error, "commit retry failed");
             }
-            commit_sizes.insert(stream.id, stream.commit_size);
+            commit_sizes.insert(branch.id, branch.commit_size);
         }
         Ok(())
     }
 
-    /// Commits a stream's stored segments until it reaches its head, stalls, or stops making
+    /// Commits a branch's stored segments until it reaches its head, stalls, or stops making
     /// progress.
     async fn catch_up(
         &self,
-        guard: &KeyedLockGuard<StreamLog>,
+        guard: &KeyedLockGuard<LogKey>,
         hash_ctx: &LogHashContext,
-        stream: &mut StreamInfo,
+        branch: &mut BranchInfo,
         parent_commit_size: Option<u64>,
     ) -> Result<(), CommitRetryError> {
         // entries below a fork point are stored and committed on the parent, the fork takes
         // over from there once the parent has committed them
-        if let Some(fork_size) = stream.fork_size
-            && stream.commit_size < fork_size
+        if let Some(fork_size) = branch.fork_size
+            && branch.commit_size < fork_size
         {
             if parent_commit_size.is_none_or(|size| size < fork_size) {
                 return Ok(());
             }
-            update_cols::<(streams::CommitSize,)>(
+            update_cols::<(branches::CommitSize,)>(
                 self.db.as_ref(),
                 (fork_size,),
                 Query::update()
-                    .table(streams::Table)
-                    .and_where(Expr::column(streams::Id).eq(stream.id)),
+                    .table(branches::Table)
+                    .and_where(Expr::column(branches::Id).eq(branch.id)),
             )
             .await?;
-            stream.commit_size = fork_size;
+            branch.commit_size = fork_size;
         }
 
-        while stream.commit_size < stream.head_chain.size {
+        while branch.commit_size < branch.head_chain.size {
             let segment = match self
-                .get_segment_by_index(guard, hash_ctx, stream.id, stream.commit_size)
+                .get_segment_by_index(guard, hash_ctx, branch.id, branch.commit_size)
                 .await
             {
                 Ok(Some(segment)) => segment,
                 not_loaded => {
                     // record a stall so this backs off instead of failing again every tick
-                    self.set_internal_commit_err(stream).await?;
+                    self.set_internal_commit_err(branch).await?;
                     return Err(match not_loaded {
                         Err(e) => e.into(),
-                        Ok(_) => CommitRetryError::MissingSegment(stream.commit_size),
+                        Ok(_) => CommitRetryError::MissingSegment(branch.commit_size),
                     });
                 }
             };
-            let commit_size = stream.commit_size;
-            self.try_commit(guard, stream, segment).await?;
-            if stream.commit_err.is_some() || stream.commit_size == commit_size {
+            let commit_size = branch.commit_size;
+            self.try_commit(guard, branch, segment).await?;
+            if branch.commit_err.is_some() || branch.commit_size == commit_size {
                 break;
             }
         }
@@ -197,7 +197,7 @@ impl<R: Reducer> ReplicaInner<R> {
     }
 }
 
-/// Whether a stream whose commit is behind its head should be tried now.
+/// Whether a branch whose commit is behind its head should be tried now.
 fn should_retry(
     commit_err: Option<&CommitErr>,
     now: WallTime,

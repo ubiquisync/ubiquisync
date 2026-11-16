@@ -16,9 +16,9 @@ use crate::{
     reducer::{PrepareError, RebuildScope, Reducer},
     replica::{
         HlcError, ReplicaInner,
-        schema::{CommitErr, streams},
-        stream_lock::KeyedLockGuard,
-        streams::{StreamInfo, StreamLog},
+        branches::{BranchInfo, LogKey},
+        keyed_lock::KeyedLockGuard,
+        schema::{CommitErr, branches},
     },
 };
 
@@ -48,28 +48,28 @@ impl<R: Reducer> ReplicaInner<R> {
     #[tracing::instrument(skip_all)]
     pub(crate) async fn try_commit(
         &self,
-        guard: &KeyedLockGuard<StreamLog>,
-        stream: &mut StreamInfo,
+        guard: &KeyedLockGuard<LogKey>,
+        branch: &mut BranchInfo,
         segment: DecodedSegment<'_>,
     ) -> Result<(), CommitError> {
-        match self.do_try_commit(guard, stream, segment).await {
+        match self.do_try_commit(guard, branch, segment).await {
             Ok(_) => Ok(()),
-            Err(TryCommitError::Stall(e)) => Ok(self.set_commit_err(stream, e).await?),
+            Err(TryCommitError::Stall(e)) => Ok(self.set_commit_err(branch, e).await?),
             Err(TryCommitError::NeedsRebuild { scope, reason }) => {
                 // TODO rebuild state, until then remote data must not panic the sync task
                 tracing::warn!(
-                    stream_id = stream.id,
+                    branch_id = branch.id,
                     ?scope,
                     reason,
                     "commit needs rebuild, stalling"
                 );
-                Ok(self.set_internal_commit_err(stream).await?)
+                Ok(self.set_internal_commit_err(branch).await?)
             }
             Err(TryCommitError::Db(e)) => {
                 // record the stall so the retry loop backs off (if the db is unreachable this
-                // write fails too, and the stream is simply tried again on the next tick)
-                if let Err(error) = self.set_internal_commit_err(stream).await {
-                    tracing::warn!(stream_id = stream.id, %error, "couldn't record commit stall");
+                // write fails too, and the branch is simply tried again on the next tick)
+                if let Err(error) = self.set_internal_commit_err(branch).await {
+                    tracing::warn!(branch_id = branch.id, %error, "couldn't record commit stall");
                 }
                 Err(CommitError::Db(e))
             }
@@ -79,12 +79,12 @@ impl<R: Reducer> ReplicaInner<R> {
 
     async fn do_try_commit(
         &self,
-        _guard: &KeyedLockGuard<StreamLog>,
-        stream: &mut StreamInfo,
+        _guard: &KeyedLockGuard<LogKey>,
+        branch: &mut BranchInfo,
         segment: DecodedSegment<'_>,
     ) -> Result<(), TryCommitError> {
-        if let Some(CommitErr::Frozen) = stream.commit_err {
-            // stream is frozen, nothing to do
+        if let Some(CommitErr::Frozen) = branch.commit_err {
+            // branch is frozen, nothing to do
             return Ok(());
         }
 
@@ -98,22 +98,22 @@ impl<R: Reducer> ReplicaInner<R> {
                 Ok((entry, meta)) => (entry, meta),
                 Err(e) => match e {
                     SegmentCipherError::CipherError(_) => {
-                        return Ok(self.set_internal_commit_err(stream).await?);
+                        return Ok(self.set_internal_commit_err(branch).await?);
                     }
                     SegmentCipherError::ChainHashError(e) => match e {
                         // if we overflow we must freeze the chain, but this literally can never occur
                         ChainHashError::SizeOverflow => {
-                            return Ok(self.set_commit_err(stream, CommitErr::Frozen).await?);
+                            return Ok(self.set_commit_err(branch, CommitErr::Frozen).await?);
                         }
                     },
                     SegmentCipherError::KeyResolve(e) => match e {
                         CipherKeyResolveError::NotFound(k) => {
-                            return Ok(self.set_commit_err(stream, CommitErr::NeedKey(k)).await?);
+                            return Ok(self.set_commit_err(branch, CommitErr::NeedKey(k)).await?);
                         }
                         CipherKeyResolveError::UnknownSuite(s) => {
                             return Ok(self
                                 .set_commit_err(
-                                    stream,
+                                    branch,
                                     CommitErr::IncompatibleSoftware(
                                         UnknownSoftwareVersion::CipherSuite(s),
                                     ),
@@ -126,21 +126,21 @@ impl<R: Reducer> ReplicaInner<R> {
                         // a complex refactoring of to_plaintext to continue on such errors
                         // and it should literally be impossible to construct an entry that hits
                         // this case if you're building entries correctly
-                        return Ok(self.set_commit_err(stream, CommitErr::Frozen).await?);
+                        return Ok(self.set_commit_err(branch, CommitErr::Frozen).await?);
                     }
                 },
             };
 
-            if meta.chain_hash.size <= stream.commit_size {
+            if meta.chain_hash.size <= branch.commit_size {
                 // we've already committed this entry
                 continue;
-            } else if meta.chain_hash.size != stream.commit_size + 1 {
+            } else if meta.chain_hash.size != branch.commit_size + 1 {
                 return Err(TryCommitError::Internal(
                     "caller error: segment starts after commit size".into(),
                 ));
             }
 
-            // TODO add UPDATE clause to clear stream deps waiting on this entry
+            // TODO add UPDATE clause to clear branch deps waiting on this entry
 
             match entry {
                 LogEntry::IndexedEntry(entry) => {
@@ -156,7 +156,7 @@ impl<R: Reducer> ReplicaInner<R> {
                                     )));
                                 }
                                 Err(_) => {
-                                    return Ok(self.set_internal_commit_err(stream).await?);
+                                    return Ok(self.set_internal_commit_err(branch).await?);
                                 }
                             }
 
@@ -187,33 +187,33 @@ impl<R: Reducer> ReplicaInner<R> {
                                         Ok(apply_state) => apply_state,
                                         _ => {
                                             return Ok(self
-                                                .set_internal_commit_err(stream)
+                                                .set_internal_commit_err(branch)
                                                 .await?);
                                         }
                                     },
                                 ),
                                 Err(PrepareError::Db(_)) | Err(PrepareError::Internal(_)) => {
-                                    return Ok(self.set_internal_commit_err(stream).await?);
+                                    return Ok(self.set_internal_commit_err(branch).await?);
                                 }
                                 Err(PrepareError::NeedsRebuild { scope, reason }) => {
                                     return Err(TryCommitError::NeedsRebuild { scope, reason });
                                 }
                                 Err(PrepareError::NeedsDeps(_)) => {
-                                    // TODO insert stream_deps rows, until then the stream stalls
+                                    // TODO insert branch_deps rows, until then the branch stalls
                                     return Err(TryCommitError::Stall(CommitErr::AwaitingDeps));
                                 }
                                 // we skip this op and don't call post-apply
                                 Err(PrepareError::InvalidOp(_)) => None,
                                 Err(PrepareError::Frozen(_)) => {
                                     return Ok(self
-                                        .set_commit_err(stream, CommitErr::Frozen)
+                                        .set_commit_err(branch, CommitErr::Frozen)
                                         .await?);
                                 }
                             }
                         }
                         ubiquisync_core::log::EntryBody::UseKey(_) => {
                             // we just advance commit here, no special processing needed because
-                            // we don't store commit ciphers in the streams table
+                            // we don't store commit ciphers in the branches table
                             None
                         }
                         ubiquisync_core::log::EntryBody::Expunged(_) => {
@@ -224,18 +224,18 @@ impl<R: Reducer> ReplicaInner<R> {
                         }
                     };
 
-                    update_cols_batch::<(streams::CommitSize, streams::CommitErr)>(
+                    update_cols_batch::<(branches::CommitSize, branches::CommitErr)>(
                         batch.as_mut(),
-                        (stream.commit_size + 1, None),
+                        (branch.commit_size + 1, None),
                         Query::update()
-                            .table(streams::Table)
-                            .and_where(Expr::column(streams::Id).eq(stream.id)),
+                            .table(branches::Table)
+                            .and_where(Expr::column(branches::Id).eq(branch.id)),
                     )?;
 
                     let batch_result = batch.commit().await?;
 
-                    stream.commit_size += 1;
-                    stream.commit_err = None;
+                    branch.commit_size += 1;
+                    branch.commit_err = None;
 
                     if let Some(apply_state) = apply_state {
                         self.reducer.post_apply(apply_state, &batch_result)
@@ -247,25 +247,25 @@ impl<R: Reducer> ReplicaInner<R> {
         Ok(())
     }
 
-    async fn set_commit_err(&self, stream: &mut StreamInfo, err: CommitErr) -> Result<(), DbError> {
-        update_cols::<(streams::CommitErr,)>(
+    async fn set_commit_err(&self, branch: &mut BranchInfo, err: CommitErr) -> Result<(), DbError> {
+        update_cols::<(branches::CommitErr,)>(
             self.db.as_ref(),
             (Some(err.clone()),),
             Query::update()
-                .table(streams::Table)
-                .and_where(Expr::column(streams::Id).eq(stream.id)),
+                .table(branches::Table)
+                .and_where(Expr::column(branches::Id).eq(branch.id)),
         )
         .await?;
-        stream.commit_err = Some(err);
+        branch.commit_err = Some(err);
         Ok(())
     }
 
     pub(crate) async fn set_internal_commit_err(
         &self,
-        stream: &mut StreamInfo,
+        branch: &mut BranchInfo,
     ) -> Result<(), DbError> {
-        let err = next_internal_err(stream.commit_err.as_ref(), WallTime::now());
-        self.set_commit_err(stream, err).await
+        let err = next_internal_err(branch.commit_err.as_ref(), WallTime::now());
+        self.set_commit_err(branch, err).await
     }
 }
 

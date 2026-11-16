@@ -8,7 +8,9 @@ use ubiquisync_sql::{
     Exec, ExecError, SqlQueryStore,
     db::{Db, DbError, DbRow, DbValue},
     dialect::SqlDialect,
-    replica::{InitError as ReplicaInitError, Replica, ReplicaConfig},
+    replica::{
+        InitError as ReplicaInitError, PackRemoteProviders, Replica, ReplicaConfig, ReplicaDeps,
+    },
 };
 
 use crate::{
@@ -29,6 +31,7 @@ pub enum StoreInitError {
 }
 
 impl StoreImpl {
+    #[allow(clippy::too_many_arguments)]
     pub async fn new(
         app_magic: AppId,
         container_id: ContainerId,
@@ -36,12 +39,19 @@ impl StoreImpl {
         prefix: &str,
         tables: &[TableSchema],
         db: Box<dyn Db>,
+        pack_remote_providers: PackRemoteProviders,
         replica_config: ReplicaConfig,
     ) -> Result<Self, StoreInitError> {
         let (event_handler, event_bus) = event_bus();
         let reducer =
             Reducer::new(container_id, prefix, tables, db.as_ref(), event_handler).await?;
-        let replica = Replica::new(app_magic, db, reducer, credentials, replica_config).await?;
+        let deps = ReplicaDeps {
+            db,
+            reducer,
+            credentials,
+            pack_remote_providers,
+        };
+        let replica = Replica::new(app_magic, deps, replica_config).await?;
         Ok(Self { replica, event_bus })
     }
 }

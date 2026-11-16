@@ -3,7 +3,7 @@ use std::sync::{Arc, atomic::AtomicU64};
 use sea_query::{Expr, ExprTrait, Query};
 use thiserror::Error;
 use ubiquisync_core::{
-    crypto::{CryptoDecodeError, NullCipherKeyResolver, credentials::Credentials},
+    crypto::{CryptoDecodeError, NullCipherKeyResolver},
     ids::{AppId, PeerId},
     init::{
         InitCommitment, InitCreationError, InitDecodeError, InitEntry, InitVerifyError, Version,
@@ -18,23 +18,28 @@ use crate::{
     dialect::SqlDialect,
     reducer::Reducer,
     replica::{
-        HlcError, Replica, ReplicaInner,
+        HlcError, Replica, ReplicaDeps, ReplicaInner,
         config::ReplicaConfig,
         fs_sync_schema,
         hlc::load_hlc,
+        keyed_lock::KeyedLock,
         schema::{self, peers},
-        stream_lock::KeyedLock,
     },
 };
 
 impl<R: Reducer> Replica<R> {
     pub async fn new(
         app_id: AppId,
-        db: Box<dyn Db>,
-        reducer: R,
-        credentials: Box<dyn Credentials>,
+        deps: ReplicaDeps<R>,
         config: ReplicaConfig,
     ) -> Result<Self, InitError> {
+        let ReplicaDeps {
+            db,
+            reducer,
+            credentials,
+            pack_remote_providers,
+        } = deps;
+
         // TODO support prefixes
 
         const SELF_DB_ID: i64 = 1;
@@ -122,7 +127,8 @@ impl<R: Reducer> Replica<R> {
                 db,
                 reducer,
                 hlc: AtomicU64::new(hlc.into()),
-                stream_locks: KeyedLock::new(),
+                log_locks: KeyedLock::new(),
+                pack_remote_providers,
                 pack_remotes: Default::default(),
                 key_resolver: Arc::new(NullCipherKeyResolver),
                 config,

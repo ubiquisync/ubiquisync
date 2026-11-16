@@ -11,26 +11,26 @@ use crate::{
     reducer::Reducer,
     replica::{
         ReplicaInner,
+        branches::{BranchInfo, LogKey},
         ingest::{IngestSource, SegmentProcessError},
-        schema::streams,
-        stream_lock::KeyedLockGuard,
-        streams::{StreamInfo, StreamLog},
+        keyed_lock::KeyedLockGuard,
+        schema::branches,
     },
 };
 
 impl<R: Reducer> ReplicaInner<R> {
-    /// Search for a fork of stream (or stream itself) upon which we can place new_segment.
+    /// Search for a fork of branch (or branch itself) upon which we can place new_segment.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn fork_search(
         &self,
-        guard: &KeyedLockGuard<StreamLog>,
-        mut stream: StreamInfo,
-        all_streams: &[StreamInfo],
+        guard: &KeyedLockGuard<LogKey>,
+        mut branch: BranchInfo,
+        all_branches: &[BranchInfo],
         mut existing_segment: DecodedSegment<'_>,
         new_segment: &DecodedSegment<'_>,
         hash_ctx: &LogHashContext,
         src: &IngestSource,
-    ) -> Result<Option<StreamInfo>, SegmentProcessError> {
+    ) -> Result<Option<BranchInfo>, SegmentProcessError> {
         let mut cmp_res = compare_segments(
             &existing_segment,
             new_segment,
@@ -43,13 +43,13 @@ impl<R: Reducer> ReplicaInner<R> {
                         .get_segment_by_index(
                             guard,
                             hash_ctx,
-                            stream.id,
+                            branch.id,
                             existing_segment.head_chain.size,
                         )
                         .await?
                     else {
                         // we probably shouldn't end up here, but if we do it just means we actually don't have a fork
-                        return Ok(Some(stream));
+                        return Ok(Some(branch));
                     };
                     cmp_res =
                         compare_segments(&next_segment, new_segment, existing_segment.head_chain);
@@ -59,7 +59,7 @@ impl<R: Reducer> ReplicaInner<R> {
                     // we probably shouldn't end up here because our other ingest code
                     // should check that this segment doesn't already eixt
                     // but if later some other code path does something different we handle this case
-                    self.update_published(src, stream.id, new_segment.head_chain.size)
+                    self.update_published(src, branch.id, new_segment.head_chain.size)
                         .await?;
                     return Ok(None);
                 }
@@ -67,9 +67,9 @@ impl<R: Reducer> ReplicaInner<R> {
                     last_common,
                     cipher_info,
                 } => {
-                    // look in all_streams to see if we have an existing fork to follow at this point
+                    // look in all_branches to see if we have an existing fork to follow at this point
                     let fork_candidates =
-                        find_fork_candidates(&stream, all_streams, last_common.size);
+                        find_fork_candidates(&branch, all_branches, last_common.size);
                     let mut dangling = None;
                     for fork in fork_candidates.iter() {
                         if let Some(next_segment) = self
@@ -87,14 +87,14 @@ impl<R: Reducer> ReplicaInner<R> {
                                 }
                                 _ => {
                                     // this matches enough and we can go back to the outer loop
-                                    stream = fork.clone();
+                                    branch = fork.clone();
                                     cmp_res = cmp;
                                     existing_segment = next_segment;
                                     continue 'outer;
                                 }
                             }
                         } else {
-                            // we found a dangling stream with no segments on top
+                            // we found a dangling branch with no segments on top
                             dangling = Some(fork.clone());
                         }
                     }
@@ -104,7 +104,7 @@ impl<R: Reducer> ReplicaInner<R> {
                         return Ok(Some(dangling));
                     } else {
                         let fork = self
-                            .create_fork(guard, &stream, last_common, cipher_info)
+                            .create_fork(guard, &branch, last_common, cipher_info)
                             .await?;
                         return Ok(Some(fork));
                     }
@@ -115,24 +115,24 @@ impl<R: Reducer> ReplicaInner<R> {
 
     async fn create_fork(
         &self,
-        guard: &KeyedLockGuard<StreamLog>,
-        parent: &StreamInfo,
+        guard: &KeyedLockGuard<LogKey>,
+        parent: &BranchInfo,
         last_common: ChainHash,
         cipher_info: Option<CipherInfo>,
-    ) -> Result<StreamInfo, DbError> {
+    ) -> Result<BranchInfo, DbError> {
         let commit_size = min(parent.commit_size, last_common.size);
         let (id,) = insert_cols::<
             (
-                streams::PeerId,
-                streams::ContainerId,
-                streams::HeadSize,
-                streams::HeadHash,
-                streams::HeadCipher,
-                streams::CommitSize,
-                streams::ParentId,
-                streams::ForkSize,
+                branches::PeerId,
+                branches::ContainerId,
+                branches::HeadSize,
+                branches::HeadHash,
+                branches::HeadCipher,
+                branches::CommitSize,
+                branches::ParentId,
+                branches::ForkSize,
             ),
-            (streams::Id,),
+            (branches::Id,),
         >(
             self.db.as_ref(),
             (
@@ -147,11 +147,11 @@ impl<R: Reducer> ReplicaInner<R> {
                 Some(parent.id),
                 Some(last_common.size),
             ),
-            Query::insert().into_table(streams::Table),
+            Query::insert().into_table(branches::Table),
         )
         .await?
         .exactly_one()?;
-        Ok(StreamInfo {
+        Ok(BranchInfo {
             id,
             head_chain: last_common,
             head_cipher: cipher_info,
@@ -208,11 +208,11 @@ pub(crate) enum CompareSegmentsResult {
 }
 
 fn find_fork_candidates(
-    parent: &StreamInfo,
-    all_streams: &[StreamInfo],
+    parent: &BranchInfo,
+    all_branches: &[BranchInfo],
     fork_size: u64,
-) -> Vec<StreamInfo> {
-    all_streams
+) -> Vec<BranchInfo> {
+    all_branches
         .iter()
         .filter(|s| s.parent_id == Some(parent.id) && s.fork_size == Some(fork_size))
         .cloned()

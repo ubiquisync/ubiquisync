@@ -14,8 +14,8 @@ use crate::{
     reducer::Reducer,
     replica::{
         Replica,
-        schema::{segments, streams},
-        streams::StreamLog,
+        branches::LogKey,
+        schema::{branches, segments},
     },
 };
 
@@ -26,13 +26,13 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
     async fn exec(&self, server_user_id: Option<Uuid>, op: R::Op) -> Result<(), ExecError> {
         let inner = self.inner.as_ref();
         let (container_id, op_bytes) = inner.reducer.codec().encode(&op)?;
-        // per-stream mutex guard to prevent ensures only one thread touches a single stream
-        let stream_guard = inner
-            .stream_locks
-            .lock(&StreamLog::new(inner.self_db_id, container_id))
+        // per-branch mutex guard to prevent ensures only one thread touches a single branch
+        let log_guard = inner
+            .log_locks
+            .lock(&LogKey::new(inner.self_db_id, container_id))
             .await;
 
-        let stream_rows = inner.resolve_streams(&stream_guard).await?;
+        let branch_rows = inner.resolve_branches(&log_guard).await?;
 
         let log_id = LogId {
             peer_id: inner.self_init.peer_id,
@@ -40,46 +40,46 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
         };
         let seed = LogHashContext::new(&log_id);
 
-        let (stream_id, chain_head, mut head_cipher, commit_err) = if stream_rows.is_empty() {
+        let (branch_id, chain_head, mut head_cipher, commit_err) = if branch_rows.is_empty() {
             let empty_chain = ChainHash::empty(&seed);
             let res = insert_cols::<
                 (
-                    streams::PeerId,
-                    streams::ContainerId,
-                    streams::HeadSize,
-                    streams::HeadHash,
-                    streams::CommitSize,
+                    branches::PeerId,
+                    branches::ContainerId,
+                    branches::HeadSize,
+                    branches::HeadHash,
+                    branches::CommitSize,
                 ),
-                (streams::Id,),
+                (branches::Id,),
             >(
                 inner.db.as_ref(),
                 (inner.self_db_id, container_id.0, 0, empty_chain.hash, 0),
-                Query::insert().into_table(streams::Table),
+                Query::insert().into_table(branches::Table),
             )
             .await?;
-            let (stream_id,) = res.exactly_one()?;
-            (stream_id, empty_chain, None, None)
-        } else if stream_rows.len() > 1 {
+            let (branch_id,) = res.exactly_one()?;
+            (branch_id, empty_chain, None, None)
+        } else if branch_rows.len() > 1 {
             todo!("found multiple rows, this means we have a fork and need to know what to do")
         } else {
-            let stream = &stream_rows[0];
+            let branch = &branch_rows[0];
 
-            if stream.head_err.is_some() {
+            if branch.head_err.is_some() {
                 todo!("handle some unexpected status")
             }
 
-            if stream.commit_err.is_none() && stream.commit_size != stream.head_chain.size {
+            if branch.commit_err.is_none() && branch.commit_size != branch.head_chain.size {
                 return Err(ExecError::Internal(format!(
                     "commit status is okay but head {} and commit {} sizes do not match",
-                    stream.head_chain.size, stream.commit_size,
+                    branch.head_chain.size, branch.commit_size,
                 )));
             }
 
             (
-                stream.id,
-                stream.head_chain,
-                stream.head_cipher,
-                stream.commit_err.clone(),
+                branch.id,
+                branch.head_chain,
+                branch.head_cipher,
+                branch.commit_err.clone(),
             )
         };
 
@@ -119,13 +119,13 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
         .await?;
 
         insert_cols_batch::<(
-            segments::StreamId,
+            segments::BranchId,
             segments::StartIdx,
             segments::EndSize,
             segments::Body,
         )>(
             batch.as_mut(),
-            (stream_id, chain_head.size, next_chain_head.size, segment),
+            (branch_id, chain_head.size, next_chain_head.size, segment),
             Query::insert().into_table(segments::Table),
         )?;
 
@@ -142,10 +142,10 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
                 .map_err(|e| ExecError::Reducer(Box::new(e)))?;
 
             update_cols_batch::<(
-                streams::HeadSize,
-                streams::HeadHash,
-                streams::CommitSize,
-                streams::HeadCipher,
+                branches::HeadSize,
+                branches::HeadHash,
+                branches::CommitSize,
+                branches::HeadCipher,
             )>(
                 batch.as_mut(),
                 (
@@ -155,8 +155,8 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
                     head_cipher,
                 ), // head and commit sizes match
                 Query::update()
-                    .table(streams::Table)
-                    .and_where(Expr::column(streams::Id).eq(stream_id)),
+                    .table(branches::Table)
+                    .and_where(Expr::column(branches::Id).eq(branch_id)),
             )?;
 
             let apply_state = inner
@@ -169,12 +169,12 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
             inner.reducer.post_apply(apply_state, &batch_result);
         } else {
             // we cannot commit because our commit status is non-Ok, so we just update the head size and hash
-            update_cols_batch::<(streams::HeadSize, streams::HeadHash, streams::HeadCipher)>(
+            update_cols_batch::<(branches::HeadSize, branches::HeadHash, branches::HeadCipher)>(
                 batch.as_mut(),
                 (next_chain_head.size, next_chain_head.hash, head_cipher),
                 Query::update()
-                    .table(streams::Table)
-                    .and_where(Expr::column(streams::Id).eq(stream_id)),
+                    .table(branches::Table)
+                    .and_where(Expr::column(branches::Id).eq(branch_id)),
             )?;
 
             batch.commit().await?;

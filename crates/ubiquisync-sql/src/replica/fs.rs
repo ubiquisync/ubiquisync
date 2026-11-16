@@ -27,7 +27,7 @@ use crate::{
         fs_write::PackPublishError,
         peers::{PeerLookup, PeerResolveError},
         poll_interval,
-        schema::streams,
+        schema::branches,
         segment::GetSegmentError,
         tick_or_cancelled,
     },
@@ -106,7 +106,7 @@ impl<R: Reducer> ReplicaInner<R> {
         prov: &str,
         cfg: &str,
     ) -> Result<PackStore, PackRemoteInitError> {
-        let Some(provider) = self.config.pack_remote_providers.get(prov) else {
+        let Some(provider) = self.pack_remote_providers.get(prov) else {
             return Err(PackRemoteInitError::UnknownProvider(prov.into()));
         };
 
@@ -382,7 +382,7 @@ impl<R: Reducer> ReplicaInner<R> {
         )
     }
 
-    // Timestamp peer streams which we hold but haven't seen published on this remote as pending
+    // Timestamp peer branches which we hold but haven't seen published on this remote as pending
     // so we know to publish them ourselves if the grace period expires
     pub(crate) async fn update_peer_published_pending(
         &self,
@@ -394,31 +394,33 @@ impl<R: Reducer> ReplicaInner<R> {
                 .into_table(published::Table)
                 .columns([
                     published::RemoteId.into_iden(),
-                    published::StreamId.into_iden(),
+                    published::BranchId.into_iden(),
                     published::PublishedSize.into_iden(),
                     published::PendingSince.into_iden(),
                 ])
                 .select_from(
                     Query::select()
                         .expr(Expr::val(remote_id))
-                        .column((streams::Table, streams::Id))
+                        .column((branches::Table, branches::Id))
                         .expr(Expr::val(0))
                         .expr(Expr::val(now.as_millis()))
-                        .from(streams::Table)
+                        .from(branches::Table)
                         .left_join(
                             published::Table,
-                            Expr::col((streams::Table, streams::Id))
-                                .eq(Expr::col((published::Table, published::StreamId)))
+                            Expr::col((branches::Table, branches::Id))
+                                .eq(Expr::col((published::Table, published::BranchId)))
                                 // this condition belongs in the LEFT JOIN ON condition because we don't
-                                // want to filter stream rows where there is no published row
+                                // want to filter branch rows where there is no published row
                                 .and(
                                     Expr::col((published::Table, published::RemoteId))
                                         .eq(remote_id),
                                 ),
                         )
                         .and_where(Expr::col((published::Table, published::PendingSince)).is_null())
-                        .and_where(Expr::col((streams::Table, streams::PeerId)).ne(self.self_db_id))
-                        .and_where(Expr::col((streams::Table, streams::HeadSize)).gt(
+                        .and_where(
+                            Expr::col((branches::Table, branches::PeerId)).ne(self.self_db_id),
+                        )
+                        .and_where(Expr::col((branches::Table, branches::HeadSize)).gt(
                             Func::coalesce([
                                 Expr::col((published::Table, published::PublishedSize)),
                                 Expr::val(0),
@@ -430,7 +432,7 @@ impl<R: Reducer> ReplicaInner<R> {
                 .on_conflict(
                     OnConflict::columns([
                         published::RemoteId.into_iden(),
-                        published::StreamId.into_iden(),
+                        published::BranchId.into_iden(),
                     ])
                     .update_column(published::PendingSince)
                     .to_owned(),

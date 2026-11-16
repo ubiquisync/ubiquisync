@@ -11,13 +11,13 @@ use crate::{
     replica::{
         Replica,
         fs_sync_schema::{pack_read_state, published},
-        schema::{peers, streams},
+        schema::{branches, peers},
     },
 };
 
-/// Each stream of a log as `(head_size, head_hash, fork_size)`, where `fork_size` is the size
-/// a fork branched off its parent at (`None` for the root stream).
-pub type StreamHeads = Vec<(u64, Hash256, Option<u64>)>;
+/// Each branch of a log as `(head_size, head_hash, fork_size)`, where `fork_size` is the size
+/// a fork branched off its parent at (`None` for the root branch).
+pub type BranchHeads = Vec<(u64, Hash256, Option<u64>)>;
 
 /// A replica's sync state, keyed so it can be compared across replicas (local db ids differ
 /// between replicas, so logs are keyed by author `PeerId` and `ContainerId`).
@@ -25,13 +25,13 @@ pub type StreamHeads = Vec<(u64, Hash256, Option<u64>)>;
 pub struct SyncSnapshot {
     /// This replica's own peer id.
     pub self_peer: PeerId,
-    /// Every stream of each log, sorted, as `(head_size, head_hash, fork_size)`.
-    pub streams: HashMap<(PeerId, ContainerId), StreamHeads>,
+    /// Every branch of each log, sorted, as `(head_size, head_hash, fork_size)`.
+    pub branches: HashMap<(PeerId, ContainerId), BranchHeads>,
     /// Blocked packs per remote, summed over all topics and publishers.
     pub blocked: HashMap<i64, usize>,
     /// Debug descriptions of every blocked pack, for failure output.
     pub blocked_detail: Vec<String>,
-    /// Streams whose head is ahead of what is published on an attached remote,
+    /// Branches whose head is ahead of what is published on an attached remote,
     /// as `(remote_id, author, container)`, sorted.
     pub unpublished: Vec<(i64, PeerId, ContainerId)>,
 }
@@ -49,29 +49,28 @@ impl<R> Replica<R> {
 
         let rows = select_cols::<(
             peers::PeerId,
-            streams::ContainerId,
-            streams::HeadSize,
-            streams::HeadHash,
-            streams::ForkSize,
+            branches::ContainerId,
+            branches::HeadSize,
+            branches::HeadHash,
+            branches::ForkSize,
         )>(
             db,
-            Query::select().from(streams::Table).inner_join(
+            Query::select().from(branches::Table).inner_join(
                 peers::Table,
-                Expr::col((streams::Table, streams::PeerId))
+                Expr::col((branches::Table, branches::PeerId))
                     .eq(Expr::col((peers::Table, peers::Id))),
             ),
         )
         .await?;
-        let mut stream_map: HashMap<(PeerId, ContainerId), StreamHeads> =
-            HashMap::new();
+        let mut branch_map: HashMap<(PeerId, ContainerId), BranchHeads> = HashMap::new();
         for row in rows.iter() {
             let (peer, container, head_size, head_hash, fork_size) = row?;
-            stream_map
+            branch_map
                 .entry((PeerId(peer), ContainerId(container)))
                 .or_default()
                 .push((head_size, head_hash, fork_size));
         }
-        for heads in stream_map.values_mut() {
+        for heads in branch_map.values_mut() {
             heads.sort();
         }
 
@@ -101,27 +100,27 @@ impl<R> Replica<R> {
             .collect();
         let mut unpublished = vec![];
         for remote_id in remote_ids {
-            let rows = select_cols::<(peers::PeerId, streams::ContainerId)>(
+            let rows = select_cols::<(peers::PeerId, branches::ContainerId)>(
                 db,
                 Query::select()
-                    .from(streams::Table)
+                    .from(branches::Table)
                     .inner_join(
                         peers::Table,
-                        Expr::col((streams::Table, streams::PeerId))
+                        Expr::col((branches::Table, branches::PeerId))
                             .eq(Expr::col((peers::Table, peers::Id))),
                     )
                     .left_join(
                         published::Table,
-                        Expr::col((streams::Table, streams::Id))
-                            .eq(Expr::col((published::Table, published::StreamId)))
+                        Expr::col((branches::Table, branches::Id))
+                            .eq(Expr::col((published::Table, published::BranchId)))
                             .and(Expr::col((published::Table, published::RemoteId)).eq(remote_id)),
                     )
-                    .and_where(
-                        Expr::col((streams::Table, streams::HeadSize)).gt(Func::coalesce([
+                    .and_where(Expr::col((branches::Table, branches::HeadSize)).gt(
+                        Func::coalesce([
                             Expr::col((published::Table, published::PublishedSize)),
                             Expr::val(0),
-                        ])),
-                    ),
+                        ]),
+                    )),
             )
             .await?;
             for row in rows.iter() {
@@ -133,7 +132,7 @@ impl<R> Replica<R> {
 
         Ok(SyncSnapshot {
             self_peer: self.inner.self_init.peer_id,
-            streams: stream_map,
+            branches: branch_map,
             blocked,
             blocked_detail,
             unpublished,
