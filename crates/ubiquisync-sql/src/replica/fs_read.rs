@@ -225,7 +225,7 @@ impl<R: Reducer> ReplicaInner<R> {
                 {
                     let mut bi = todo.blocked_again(desc);
                     bi.reasons.set_bad_signature(true);
-                    return Err(PackProcessError::Blocked(bi));
+                    return Err(PackProcessError::Blocked(Box::new(bi)));
                 }
                 Ok(h)
             }
@@ -241,7 +241,7 @@ impl<R: Reducer> ReplicaInner<R> {
                         bi.reasons.set_corrupt_header(true)
                     }
                 }
-                Err(PackProcessError::Blocked(bi))
+                Err(PackProcessError::Blocked(Box::new(bi)))
             }
             Err(err) => Err(err.into()),
         }
@@ -318,7 +318,7 @@ impl<R: Reducer> ReplicaInner<R> {
         }
 
         if let Some(bi) = blocked_info {
-            Err(PackProcessError::Blocked(bi))
+            Err(PackProcessError::Blocked(Box::new(bi)))
         } else {
             Ok(())
         }
@@ -386,7 +386,7 @@ impl<R: Reducer> ReplicaInner<R> {
                     let bi = blocked_info.get_or_insert_with(init_blocked_info);
                     bi.reasons.set_bad_body_hash(true);
                     // we can't process any other segments when we hit this error so just pass the error upwards
-                    return Err(PackProcessError::Blocked(bi.clone()));
+                    return Err(PackProcessError::Blocked(Box::new(bi.clone())));
                 }
                 SegmentProcessError::Decode(_)
                 | SegmentProcessError::Verify(_)

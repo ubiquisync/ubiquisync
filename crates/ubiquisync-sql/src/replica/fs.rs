@@ -229,7 +229,7 @@ impl<R: Reducer> ReplicaInner<R> {
                         PackProcessError::PackGone => { /* keep going */ }
                         PackProcessError::Blocked(bi) => {
                             // mark as blocked
-                            read_plan.next.blocked.insert(todo.file().get_ref(), bi);
+                            read_plan.next.blocked.insert(todo.file().get_ref(), *bi);
                         }
                         e @ (PackProcessError::Peer(_)
                         | PackProcessError::Store(_)
@@ -466,7 +466,7 @@ pub enum PackProcessError {
     #[error("internal error: {0}")]
     Internal(String),
     #[error("blocked: {0:?}")]
-    Blocked(BlockedPackInfo),
+    Blocked(Box<BlockedPackInfo>),
     #[error("pack gone")]
     PackGone,
 }
