@@ -26,7 +26,7 @@ use crate::{
         fs::PackProcessError,
         fs_sync_schema::{BlockedPackInfo, BlockedReasons, PackReadState},
         ingest::{IngestSource, SegmentBytesResolver, SegmentProcessError},
-        peers::PeerInfo,
+        peers::{PeerInfo, PeerLookup},
     },
 };
 
@@ -281,8 +281,15 @@ impl<R: Reducer> ReplicaInner<R> {
         }
 
         for peer_data in signed_header.header.peer_data.iter() {
-            let Some(peer_info) = self.resolve_or_init_peer(&peer_data.peer_id, store).await?
-            else {
+            let peer_info = match self.resolve_or_init_peer(&peer_data.peer_id, store).await? {
+                PeerLookup::Found(info) => Some(info),
+                PeerLookup::Missing => None,
+                PeerLookup::Invalid(error) => {
+                    tracing::warn!(remote_id, peer = %peer_data.peer_id, %error, "invalid peer init file");
+                    None
+                }
+            };
+            let Some(peer_info) = peer_info else {
                 // can't find peer info, track and continue
                 blocked_info
                     .get_or_insert_with(|| todo.blocked_again(desc))

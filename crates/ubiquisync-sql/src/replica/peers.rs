@@ -2,7 +2,7 @@ use sea_query::{Expr, ExprTrait, OnConflict, Query};
 use thiserror::Error;
 use ubiquisync_core::{
     ids::PeerId,
-    init::{InitCommitment, InitDecodeError, InitEntry, InitVerifyError},
+    init::{InitCommitment, InitEntry, InitVerifyError},
     pack::{PackStore, PackStoreError},
 };
 
@@ -18,12 +18,22 @@ use crate::{
 pub enum PeerResolveError {
     #[error("db error: {0}")]
     Db(#[from] DbError),
-    #[error("error verifying peer init entry: {0}")]
-    InitVerify(#[from] InitVerifyError),
-    #[error("error decoding peer init data: {0}")]
-    InitDecode(#[from] InitDecodeError),
-    #[error("error decoding peer init data: {0}")]
+    /// A peer stored in our own db no longer verifies.
+    #[error("corrupt local peer record: {0}")]
+    CorruptLocalPeer(InitVerifyError),
+    #[error("remote error: {0}")]
     PackStore(#[from] PackStoreError),
+}
+
+/// The result of looking a peer up locally, then on a remote.
+pub(crate) enum PeerLookup {
+    Found(Box<PeerInfo>),
+    /// The remote has no init file for this peer.
+    Missing,
+    /// The remote's init file doesn't decode or verify: corrupt or truncated, from another app,
+    /// or stored under the wrong peer id. Treated like a missing file, so one bad file can't stop
+    /// a remote from syncing, and re-read next time in case it was a partial read.
+    Invalid(InitVerifyError),
 }
 
 pub(crate) struct PeerInfo {
@@ -34,20 +44,27 @@ pub(crate) struct PeerInfo {
 }
 
 impl<R> ReplicaInner<R> {
+    /// Looks a peer up in our db, then in the remote's `peers/` files. `Err` is only for db or
+    /// remote IO failures, which abort the sync round; a bad file on the remote is
+    /// `Ok(PeerLookup::Invalid)`.
     pub(crate) async fn resolve_or_init_peer(
         &self,
         peer: &PeerId,
         store: &PackStore,
-    ) -> Result<Option<PeerInfo>, PeerResolveError> {
+    ) -> Result<PeerLookup, PeerResolveError> {
         if let Some(info) = self.resolve_peer(peer).await? {
-            Ok(Some(info))
+            Ok(PeerLookup::Found(Box::new(info)))
         } else {
-            let Some(init_entry) = store.read_peer_init(peer).await? else {
-                return Ok(None);
+            let init_entry = match store.read_peer_init(peer).await {
+                Ok(Some(init_entry)) => init_entry,
+                Ok(None) => return Ok(PeerLookup::Missing),
+                Err(PackStoreError::InitDecode(e)) => return Ok(PeerLookup::Invalid(e.into())),
+                Err(e) => return Err(e.into()),
             };
-
-            init_entry.verify(&self.app_id)?;
-            let commitment = init_entry.commitment_data()?;
+            let commitment = match init_entry.verify(&self.app_id) {
+                Ok(commitment) => commitment,
+                Err(e) => return Ok(PeerLookup::Invalid(e)),
+            };
             let (id,) = insert_cols::<
                 (peers::PeerId, peers::CommitmentBytes, peers::Signature),
                 (peers::Id,),
@@ -70,12 +87,12 @@ impl<R> ReplicaInner<R> {
             )
             .await?
             .exactly_one()?;
-            Ok(Some(PeerInfo {
+            Ok(PeerLookup::Found(Box::new(PeerInfo {
                 peer: *peer,
                 db_id: id,
                 commitment,
                 init_entry,
-            }))
+            })))
         }
     }
 
@@ -99,8 +116,9 @@ impl<R> ReplicaInner<R> {
                 peer_id: *peer,
                 signature,
             };
-            init_entry.verify(&self.app_id)?;
-            let commitment = init_entry.commitment_data()?;
+            let commitment = init_entry
+                .verify(&self.app_id)
+                .map_err(PeerResolveError::CorruptLocalPeer)?;
             Ok(Some(PeerInfo {
                 peer: *peer,
                 db_id: id,

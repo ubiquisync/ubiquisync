@@ -256,3 +256,52 @@ impl InitDecodeError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        crypto::{
+            Hash256Suite,
+            credentials::{Credentials, software::SoftwareCredentials},
+        },
+        ids::{AppId, PeerId},
+    };
+
+    use super::{InitCommitment, InitEntry, InitVerifyError, Version};
+
+    const APP: AppId = AppId([1; 16]);
+
+    fn init_entry() -> InitEntry {
+        let creds = SoftwareCredentials::generate();
+        let commitment = InitCommitment {
+            version: Version::default(),
+            hash_suite: Hash256Suite::Sha256,
+            sig_verify_key: creds.signing_key().verifying_key(),
+            encrypt_wrap_key: creds.decapsulation_key().encapsulation_key(),
+            server: false,
+            workspace_join: None,
+            endorsement: vec![],
+        };
+        InitEntry::create(commitment, &APP, creds.signing_key()).unwrap()
+    }
+
+    /// Init files are stored as `peers/{peer_id}` and decoded with the id from the filename,
+    /// so a valid file stored under another peer's id must not verify.
+    #[test]
+    fn verify_rejects_init_stored_under_another_id() {
+        let bytes = init_entry().encode().unwrap();
+        let wrong_id = InitEntry::decode(PeerId([9; 32]), &bytes).unwrap();
+        assert!(matches!(
+            wrong_id.verify(&APP),
+            Err(InitVerifyError::HashMismatch)
+        ));
+    }
+
+    #[test]
+    fn verify_rejects_init_from_another_app() {
+        assert!(matches!(
+            init_entry().verify(&AppId([2; 16])),
+            Err(InitVerifyError::HashMismatch)
+        ));
+    }
+}

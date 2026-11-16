@@ -158,6 +158,14 @@ async fn run(params: SimParams) {
     let remote_dirs: Vec<PathBuf> = (0..n_remotes)
         .map(|i| root.join(format!("remote-{i}")))
         .collect();
+    // every remote also holds a junk publisher whose peer init file is garbage, which must
+    // be skipped rather than stopping the remote from syncing
+    let junk_peer = "ab".repeat(32);
+    for dir in &remote_dirs {
+        std::fs::create_dir_all(dir.join("_").join(&junk_peer)).unwrap();
+        std::fs::create_dir_all(dir.join("peers")).unwrap();
+        std::fs::write(dir.join("peers").join(&junk_peer), b"not an init entry").unwrap();
+    }
     let mut attached: Vec<Vec<usize>> = vec![];
     for _ in 0..n_peers {
         let mut set: Vec<usize> = (0..n_remotes).filter(|_| rng.chance(0.5)).collect();

@@ -25,7 +25,7 @@ use crate::{
             published, remotes, topics,
         },
         fs_write::PackPublishError,
-        peers::PeerResolveError,
+        peers::{PeerLookup, PeerResolveError},
         schema::streams,
         segment::GetSegmentError,
     },
@@ -174,9 +174,16 @@ impl<R: Reducer> ReplicaInner<R> {
     ) -> Result<(), PackProcessError> {
         let topic_id = self.resolve_topic_id(topic).await?;
         for peer in store.list_topic_peers(topic).await? {
-            let Some(peer_info) = self.resolve_or_init_peer(&peer, store).await? else {
-                tracing::warn!(remote_id, %peer, "no peer init file, skipping peer");
-                continue;
+            let peer_info = match self.resolve_or_init_peer(&peer, store).await? {
+                PeerLookup::Found(info) => info,
+                PeerLookup::Missing => {
+                    tracing::warn!(remote_id, %peer, "no peer init file, skipping peer");
+                    continue;
+                }
+                PeerLookup::Invalid(error) => {
+                    tracing::warn!(remote_id, %peer, %error, "invalid peer init file, skipping peer");
+                    continue;
+                }
             };
             let packs = store.list_packs(topic, &peer).await?;
             let read_state = self
