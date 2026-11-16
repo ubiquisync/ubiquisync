@@ -124,9 +124,10 @@ impl TableSchema {
         let surrogate_name = quote_ident(&id.table_name(surrogate_prefix));
 
         let mut select_clauses = vec![];
-        for i in 0..id.pk_count() {
+        // `TableSchema::new` guarantees `pk_names.len() == id.pk_count()`.
+        for (i, pk_name) in self.pk_names.iter().enumerate() {
             let surrogate_name = id.pk_col_name(i);
-            let real_name = quote_ident(&self.pk_names[i]);
+            let real_name = quote_ident(pk_name);
             select_clauses.push(format!("{surrogate_name} AS {real_name}"));
         }
 

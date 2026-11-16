@@ -129,8 +129,7 @@ impl PhysicalTableSchema {
                 format!("invalid primary key count, expected {pk_count} got {actual_pk_count}"),
             );
         }
-        for i in 0..pk_count {
-            let db_col = &db_table.pk_cols[i];
+        for (i, db_col) in db_table.pk_cols.iter().enumerate() {
             let db_type = db_col.db_type;
             let pk_type = id.pk_col_type(i);
             // Check primary key type match
