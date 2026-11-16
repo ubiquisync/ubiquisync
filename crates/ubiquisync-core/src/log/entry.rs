@@ -10,7 +10,7 @@ use crate::{
     },
 };
 
-/// Represents a single entry in a stream of logs.
+/// Represents a single entry in a log.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
 pub enum LogEntry<B: BytesWrapper, T: TimestampRepr> {
@@ -43,7 +43,7 @@ pub enum EntryBody<B: BytesWrapper, T: TimestampRepr> {
     /// Expunging entries SHOULD be used extremely rarely as a last line of defense.
     /// It is included primarily to ensure there is a exit hatch for deleting just one thing
     /// when needed for compliance or privacy reasons.
-    /// Expunging entries may make the log stream basically unusable if not done correctly.
+    /// Expunging entries may make the log basically unusable if not done correctly.
     /// For instance, it is an irrecoverable error to expunge a `UseKey` entry because this
     /// will make all following entries indecipherable.
     /// Different op vocabs may fail in similarly spectacular ways - expunging an op that

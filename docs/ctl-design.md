@@ -50,8 +50,8 @@ head_acks: reference containers and heads from peer logs or my own logs
   - no acks needed, but any standing anti-witness boundary on these peers must 
     be lifted (TODO), this sort of permission based boundary
     should probably be an implicit check rather than a
-    per stream status field (non-empty witness boundaries
-    are set per-stream because the boundary was set per-stream and could ove)
+    per branch status field (non-empty witness boundaries
+    are set per-branch because the boundary was set per-branch and could ove)
 - SetContainerPermission (Read -> Write):
   - no key wraps or acks needed, just basically lifting the anti-witness flag
 - TODO: we should specify container permissions which allow only reading/writing via a server as a web-client
@@ -207,7 +207,7 @@ head_acks: reference containers and heads from peer logs or my own logs
         sets the peer's status to jailed
       - one peer creates the op, the other peer must ack it in their ctl log containing any heads for containers
         that they witnessed beyond the first peer's seal points, extending the seal boundary validly
-    - make sure we've created a local fork id (with the parent stream as its prefix) with the proper evidence
+    - make sure we've created a local fork id (with the parent branch as its prefix) with the proper evidence
     - exchange missing fork data to arrive at consistent state (only after having validated expunge points in the next step)
 2. given that we know that the data is authentic, is this data even admissable?
   a peers container might have one of these statues:
@@ -227,7 +227,7 @@ head_acks: reference containers and heads from peer logs or my own logs
   - verify any `UseKey` entries are authorized and don't over-share with an unauthorized audience
     if they do over-share, that's a permission violation by the author and we shouldn't propagate
 - as soon as data passes all these gates:
-  - make sure it has been stored in our `segments` table and atomically advance phase 1 index for this stream
+  - make sure it has been stored in our `segments` table and atomically advance phase 1 index for this branch
   - this makes the data available to other peers where we are certifying that we have processed phase 1 properly
   - **the phase 1 index _is not_ what we would sign in an observe op!!!** _we would only sign phase 3 index as observe heads!_
     this is because we have not actually read and committed the data yet, especially for the `ctl` log, phase 1
@@ -252,7 +252,7 @@ Phase 2a and 2b happen per entry and entries that pass them can directly be deli
 - as soon as any entry was decrypted and passed HLC validation
  - the phase 2 idx for this 
  - it can be passed to phase 3 (these phases can operate concurrently i believe)
-- for entries that can be decrpypted, verify and ingest the HLC (updating local HLC and the stream's HLC):
+- for entries that can be decrpypted, verify and ingest the HLC (updating local HLC and the branch's HLC):
   - if the HLC moved backwards, this log is `Frozen`
   - if the HLC had too much forward skew (> 1m), the log is `StalledOnClockSkew`:
     - first check the local clock, the forward skew could be our own problem
@@ -329,7 +329,7 @@ should vet that before just putting it in ctl. Right now, I can't think of any.
 - read segment header which should contain signature, last leaf hash, & encoding info
   - first verify signature against claimed root/end, if fails, ignore
   - if segment overlaps with local end, then iterate until we reach the leaf that
-    matches our current local end, but what if we have multiple streams open??
+    matches our current local end, but what if we have multiple branches open??
     this could happen if a peer sealed forks and then we are pulling up to the ack point
 
   
