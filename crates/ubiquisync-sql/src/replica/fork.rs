@@ -19,7 +19,7 @@ use crate::{
 };
 
 impl<R: Reducer> ReplicaInner<R> {
-    /// Search for a fork of branch (or branch itself) upon which we can place new_segment.
+    /// Search for a fork of the branch (or the branch itself) upon which we can place new_segment.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn fork_search(
         &self,

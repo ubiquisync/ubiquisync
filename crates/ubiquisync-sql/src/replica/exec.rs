@@ -26,7 +26,7 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
     async fn exec(&self, server_user_id: Option<Uuid>, op: R::Op) -> Result<(), ExecError> {
         let inner = self.inner.as_ref();
         let (container_id, op_bytes) = inner.reducer.codec().encode(&op)?;
-        // per-branch mutex guard to prevent ensures only one thread touches a single branch
+        // per-log lock: only one task touches a log (all of its branches) at a time
         let log_guard = inner
             .log_locks
             .lock(&LogKey::new(inner.self_db_id, container_id))

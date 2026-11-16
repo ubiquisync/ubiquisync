@@ -81,7 +81,7 @@ pub(crate) enum IngestSource {
 enum PlaceSegmentDescResult {
     /// An empty segment which can't be placed anywhere.
     Empty,
-    /// The first segment in a branch.
+    /// The first segment in a log we hold nothing of yet.
     FirstSegment,
     /// Can be placed exactly on top of an existing branch.
     PlaceExact(BranchInfo),

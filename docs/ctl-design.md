@@ -252,7 +252,7 @@ Phase 2a and 2b happen per entry and entries that pass them can directly be deli
 - as soon as any entry was decrypted and passed HLC validation
  - the phase 2 idx for this 
  - it can be passed to phase 3 (these phases can operate concurrently i believe)
-- for entries that can be decrpypted, verify and ingest the HLC (updating local HLC and the branch's HLC):
+- for entries that can be decrpypted, verify and ingest the HLC (updating local HLC and the log's HLC):
   - if the HLC moved backwards, this log is `Frozen`
   - if the HLC had too much forward skew (> 1m), the log is `StalledOnClockSkew`:
     - first check the local clock, the forward skew could be our own problem
