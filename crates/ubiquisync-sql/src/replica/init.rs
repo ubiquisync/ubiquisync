@@ -133,6 +133,7 @@ impl<R: Reducer> Replica<R> {
 
         res.inner.init_remotes().await?;
         res.start_process_packs();
+        res.start_commit_retry();
 
         Ok(res)
     }

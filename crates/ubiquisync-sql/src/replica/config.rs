@@ -6,6 +6,7 @@ use ubiquisync_core::pack::FileRemoteProvider;
 pub struct ReplicaConfig {
     pub pack_remote_providers: HashMap<String, Box<dyn FileRemoteProvider>>,
     pub pack_sync: PackSyncConfig,
+    pub commit_retry: CommitRetryConfig,
 }
 
 /// Timing for pack remote syncing. The defaults suit real use; tests and simulations
@@ -37,5 +38,57 @@ impl Default for PackSyncConfig {
             remote_retry_max: Duration::from_mins(5),
             peer_publish_grace: Duration::from_mins(5),
         }
+    }
+}
+
+/// Timing for retrying commits that stalled or fell behind their stream's head.
+#[derive(Debug, Clone)]
+pub struct CommitRetryConfig {
+    /// How often streams are checked for commits to retry.
+    pub poll_interval: Duration,
+    /// First retry delay after an internal error. Doubles on each further failure up to
+    /// `retry_max`. A restart retries once right away, whatever the delay. (A stall on
+    /// incompatible software is only retried at a restart, never on this backoff.)
+    pub retry_min: Duration,
+    pub retry_max: Duration,
+}
+
+impl Default for CommitRetryConfig {
+    fn default() -> Self {
+        Self {
+            poll_interval: Duration::from_secs(5),
+            retry_min: Duration::from_secs(10),
+            retry_max: Duration::from_hours(1),
+        }
+    }
+}
+
+/// Exponential backoff: `min` doubled `doublings` times, capped at `max`.
+pub(crate) fn backoff_delay(min: Duration, max: Duration, doublings: u64) -> Duration {
+    let factor = 1u32
+        .checked_shl(doublings.min(31) as u32)
+        .unwrap_or(u32::MAX);
+    min.saturating_mul(factor).min(max)
+}
+
+#[cfg(test)]
+mod tests {
+    use proptest::prelude::*;
+    use test_strategy::proptest;
+
+    use super::*;
+
+    #[proptest]
+    fn backoff_doubles_from_min_until_capped(
+        #[strategy(1u64..100_000)] min_ms: u64,
+        #[strategy(0u64..10_000_000)] range_ms: u64,
+        #[strategy(0u64..100)] doublings: u64,
+    ) {
+        let min = Duration::from_millis(min_ms);
+        let max = Duration::from_millis(min_ms + range_ms);
+        prop_assert_eq!(backoff_delay(min, max, 0), min);
+        let delay = backoff_delay(min, max, doublings);
+        let next = backoff_delay(min, max, doublings + 1);
+        prop_assert!(next == max || next == delay * 2);
     }
 }

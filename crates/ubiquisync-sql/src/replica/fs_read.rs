@@ -22,7 +22,7 @@ use crate::{
     reducer::Reducer,
     replica::{
         ReplicaInner,
-        config::PackSyncConfig,
+        config::{PackSyncConfig, backoff_delay},
         fs::PackProcessError,
         fs_sync_schema::{BlockedPackInfo, BlockedReasons, PackReadState},
         ingest::{IngestSource, SegmentBytesResolver, SegmentProcessError},
@@ -198,11 +198,11 @@ impl PackReadState {
 impl BlockedPackInfo {
     fn next_retry_duration(&self, cfg: &PackSyncConfig) -> Duration {
         // the first retry waits pack_retry_min, then doubles
-        let doublings = self.attempts.saturating_sub(1).min(31) as u32;
-        let factor = 1u32.checked_shl(doublings).unwrap_or(u32::MAX);
-        cfg.pack_retry_min
-            .saturating_mul(factor)
-            .min(cfg.pack_retry_max)
+        backoff_delay(
+            cfg.pack_retry_min,
+            cfg.pack_retry_max,
+            self.attempts.saturating_sub(1),
+        )
     }
 
     fn next_retry_ts(&self, cfg: &PackSyncConfig) -> u64 {

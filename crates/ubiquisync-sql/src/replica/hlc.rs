@@ -37,7 +37,7 @@ pub(crate) async fn load_hlc(db: &dyn Db) -> Result<Timestamp, HlcError> {
     Ok(ts)
 }
 
-const MAX_SKEW_MS: u64 = 60_000;
+pub(crate) const MAX_SKEW_MS: u64 = 60_000;
 impl<R> ReplicaInner<R> {
     pub(crate) fn local_hlc(&self, batch: &mut dyn DbBatch) -> Result<Timestamp, HlcError> {
         let wall_ms = WallTime::now();
@@ -64,6 +64,9 @@ impl<R> ReplicaInner<R> {
             let last_ts = Timestamp::try_from(last_raw)?;
             let next_ts = f(last_ts)?;
             if next_ts == last_ts {
+                // the clock may have got here in a batch that was never committed (a commit
+                // attempt that failed), so the value still has to be saved with this batch
+                self.persist_hlc(next_ts, batch)?;
                 return Ok(next_ts);
             }
             match self.hlc.compare_exchange_weak(
@@ -98,7 +101,7 @@ impl<R> ReplicaInner<R> {
     }
 }
 
-fn check_skew(local: WallTime, remote: Timestamp) -> Result<(), HlcError> {
+pub(crate) fn check_skew(local: WallTime, remote: Timestamp) -> Result<(), HlcError> {
     let remote_ms = remote.wall();
     if remote_ms > local && remote_ms.as_millis() - local.as_millis() > MAX_SKEW_MS {
         return Err(HlcError::Skew { remote, local });

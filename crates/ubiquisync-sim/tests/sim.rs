@@ -29,7 +29,9 @@ use ubiquisync_core::{
 use ubiquisync_sql::{
     Exec, SqlQueryStore,
     db::DbValue,
-    replica::{PackSyncConfig, Replica, ReplicaConfig, test_support::SyncSnapshot},
+    replica::{
+        CommitRetryConfig, PackSyncConfig, Replica, ReplicaConfig, test_support::SyncSnapshot,
+    },
 };
 use ubiquisync_sqlite::SqliteDb;
 use ubiquisync_tables::{
@@ -375,6 +377,11 @@ impl Peer {
         );
         let mut config = ReplicaConfig {
             pack_sync: fast_sync_config(),
+            commit_retry: CommitRetryConfig {
+                poll_interval: Duration::from_millis(20),
+                retry_min: Duration::from_millis(20),
+                retry_max: Duration::from_secs(1),
+            },
             ..Default::default()
         };
         config.pack_remote_providers.insert(
@@ -520,7 +527,7 @@ fn head_matrix(states: &[PeerState]) -> String {
                         heads
                             .iter()
                             .map(|(size, _, fork)| {
-                                format!("{size}{}", if *fork { "f" } else { "" })
+                                format!("{size}{}", if fork.is_some() { "f" } else { "" })
                             })
                             .collect::<Vec<_>>()
                             .join("/")

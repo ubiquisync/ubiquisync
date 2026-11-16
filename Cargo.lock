@@ -1784,6 +1784,7 @@ version = "0.0.4"
 dependencies = [
  "async-trait",
  "secrecy",
+ "test-case",
  "tokio",
  "tracing",
  "tracing-subscriber",

@@ -26,8 +26,10 @@ use crate::{
         },
         fs_write::PackPublishError,
         peers::{PeerLookup, PeerResolveError},
+        poll_interval,
         schema::streams,
         segment::GetSegmentError,
+        tick_or_cancelled,
     },
 };
 
@@ -56,18 +58,10 @@ impl<R: Reducer> Replica<R> {
         let inner = self.inner.clone();
         let cancel_token = self.cancel.clone();
         self.tasks.spawn(async move {
-            let mut interval = time::interval(inner.config.pack_sync.poll_interval);
-            interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+            let mut interval = poll_interval(inner.config.pack_sync.poll_interval);
             let mut backoffs = HashMap::new();
-            loop {
-                tokio::select! {
-                    _ = cancel_token.cancelled() => {
-                        break;
-                    }
-                    _ = interval.tick() => {
-                        inner.process_pack_remotes(&mut backoffs).await;
-                    }
-                }
+            while tick_or_cancelled(&mut interval, &cancel_token).await {
+                inner.process_pack_remotes(&mut backoffs).await;
             }
         });
     }
