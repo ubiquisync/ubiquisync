@@ -2,11 +2,13 @@
 //! applies it once the cause is gone.
 
 use std::{
+    collections::HashMap,
     future::Future,
+    ops::Range,
     path::{Path, PathBuf},
     sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -18,7 +20,7 @@ use ubiquisync_core::{
     crypto::credentials::software::SoftwareCredentials,
     event::event_bus,
     hlc::Timestamp,
-    ids::{AppId, ContainerId},
+    ids::{AppId, ContainerId, PeerId},
     pack::StdFsRemoteProvider,
 };
 use ubiquisync_sql::{
@@ -26,7 +28,9 @@ use ubiquisync_sql::{
     db::{Db, DbBatch, DbStatementResult, DbValue},
     op::OpCodec,
     reducer::{ApplyError, PrepareError, Reducer as SqlReducer},
-    replica::{CommitRetryConfig, PackSyncConfig, Replica, ReplicaConfig},
+    replica::{
+        CommitRetryConfig, PackSyncConfig, Replica, ReplicaConfig, test_support::StreamHeads,
+    },
 };
 use ubiquisync_sqlite::SqliteDb;
 use ubiquisync_tables::{
@@ -44,49 +48,142 @@ const COL_V: ColumnId = ColumnId::new(0, ColType::Text);
 const FOLDER: &str = "folder";
 const TICK: Duration = Duration::from_millis(20);
 
-#[test_case(TICK, false ; "once the backoff passes")]
-#[test_case(Duration::from_hours(1), true ; "right after a restart, whatever the backoff")]
+#[test_case(Failure::Prepare, TICK, false ; "once the backoff passes")]
+#[test_case(Failure::Prepare, Duration::from_hours(1), true ; "right after a restart, whatever the backoff")]
+#[test_case(Failure::DbWrite, Duration::from_hours(1), true ; "a failed db write backs off too")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn stalled_commits_catch_up(retry_delay: Duration, restart: bool) {
-    let root = std::env::temp_dir().join(format!("ubiquisync-commit-retry-{restart}"));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
-
-    let writer = Peer::new(&root, 1, retry_delay);
-    let reader = Peer::new(&root, 2, retry_delay);
-    let writer_replica = writer.open().await;
-    let mut reader_replica = reader.open().await;
+async fn stalled_commits_catch_up(failure: Failure, retry_delay: Duration, restart: bool) {
+    let root = temp_root(&format!("stall-{failure:?}-{restart}"));
+    let (writer, reader) = (
+        Peer::new(&root, 1, retry_delay),
+        Peer::new(&root, 2, retry_delay),
+    );
+    let writer_replica = writer.open_attached().await;
+    let mut reader_replica = reader.open_attached().await;
 
     // the reader stalls on the first entry, so the later ones land on a stream whose commit
     // is already behind and are stored without being committed
-    reader.reducer_down.store(true, Ordering::Relaxed);
-    for batch in [0..3, 3..5] {
-        for key in batch {
-            writer_replica.exec(None, upsert(key)).await.unwrap();
-        }
-        wait_until("the reader stores the writer's entries", async || {
-            heads(&reader_replica).await == heads(&writer_replica).await
-        })
-        .await;
+    reader.faults.fail(Some(failure));
+    for keys in [0..3, 3..5] {
+        write(&writer_replica, keys).await;
+        wait_until_synced(&reader_replica, &writer_replica).await;
     }
     assert!(rows(&reader_replica).await.is_empty());
 
-    reader.reducer_down.store(false, Ordering::Relaxed);
     if restart {
-        // the backoff is far away, so only the restart can retry the commit
+        // the backoff is far away: nothing is tried again until the restart
+        let attempts = reader.faults.attempts();
         tokio::time::sleep(10 * TICK).await;
-        assert!(rows(&reader_replica).await.is_empty());
+        assert_eq!(reader.faults.attempts(), attempts);
+        reader.faults.fail(None);
         reader_replica.shutdown().await;
         reader_replica = reader.open().await;
+    } else {
+        reader.faults.fail(None);
     }
-    wait_until("the reader commits the stored entries", async || {
-        rows(&reader_replica).await == rows(&writer_replica).await
-    })
-    .await;
+    wait_until_committed(&reader_replica, &writer_replica).await;
 
     writer_replica.shutdown().await;
     reader_replica.shutdown().await;
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The clock moves when an op is first tried, so an op that only commits on a retry still has
+/// to save it, or a restart would bring back a clock behind an op that was applied.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn retried_commit_saves_the_clock() {
+    let root = temp_root("clock");
+    let (writer, reader) = (Peer::new(&root, 1, TICK), Peer::new(&root, 2, TICK));
+    let writer_replica = writer.open_attached().await;
+    let reader_replica = reader.open_attached().await;
+
+    reader.faults.fail(Some(Failure::Prepare));
+    write(&writer_replica, 0..1).await;
+    wait_until_synced(&reader_replica, &writer_replica).await;
+    reader.faults.fail(None);
+    wait_until_committed(&reader_replica, &writer_replica).await;
+
+    // the writer's saved clock is its op's timestamp
+    assert!(saved_clock(&reader_replica).await > saved_clock(&writer_replica).await);
+
+    writer_replica.shutdown().await;
+    reader_replica.shutdown().await;
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A fork that arrives while its parent's commit is behind has to wait for the parent: the
+/// entries below the fork point are the parent's to commit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fork_of_a_stalled_log_catches_up() {
+    let root = temp_root("fork");
+    let (writer, reader) = (Peer::new(&root, 1, TICK), Peer::new(&root, 2, TICK));
+
+    // the writer backs up its db, carries on, and publishes entries 0..5
+    let writer_replica = writer.open().await;
+    write(&writer_replica, 0..3).await;
+    writer_replica.shutdown().await;
+    let restored = writer.backup();
+    let writer_replica = writer.open_attached().await;
+    write(&writer_replica, 3..5).await;
+
+    reader.faults.fail(Some(Failure::Prepare));
+    let reader_replica = reader.open_attached().await;
+    wait_until_synced(&reader_replica, &writer_replica).await;
+    writer_replica.shutdown().await;
+
+    // the backup writes different entries on top of the first three: a fork at entry 3
+    let restored_replica = restored.open_attached().await;
+    write(&restored_replica, 5..7).await;
+    wait_until("the reader stores the fork", async || {
+        let forks_at_3 = |(_, _, fork_size): &(u64, _, Option<u64>)| *fork_size == Some(3);
+        heads(&reader_replica)
+            .await
+            .values()
+            .flatten()
+            .any(forks_at_3)
+    })
+    .await;
+    assert!(rows(&reader_replica).await.is_empty());
+
+    reader.faults.fail(None);
+    wait_until("the reader commits both branches", async || {
+        rows(&reader_replica).await.len() == 7
+    })
+    .await;
+
+    restored_replica.shutdown().await;
+    reader_replica.shutdown().await;
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// How a peer's reducer fails while its commits should stall.
+#[derive(Debug, Clone, Copy)]
+enum Failure {
+    /// `prepare` returns an error.
+    Prepare,
+    /// The entry's db batch fails when it is committed.
+    DbWrite,
+}
+
+#[derive(Default)]
+struct Faults {
+    failure: Mutex<Option<Failure>>,
+    attempts: AtomicU64,
+}
+
+impl Faults {
+    fn fail(&self, failure: Option<Failure>) {
+        *self.failure.lock().unwrap() = failure;
+    }
+
+    fn failure(&self) -> Option<Failure> {
+        *self.failure.lock().unwrap()
+    }
+
+    /// How many times an entry's commit was tried.
+    fn attempts(&self) -> u64 {
+        self.attempts.load(Ordering::Relaxed)
+    }
 }
 
 struct Peer {
@@ -94,7 +191,7 @@ struct Peer {
     remote_dir: PathBuf,
     key_seed: u8,
     retry_delay: Duration,
-    reducer_down: Arc<AtomicBool>,
+    faults: Arc<Faults>,
 }
 
 impl Peer {
@@ -104,20 +201,42 @@ impl Peer {
             remote_dir: root.join("remote"),
             key_seed,
             retry_delay,
-            reducer_down: Default::default(),
+            faults: Default::default(),
         }
     }
 
-    /// Open (or reopen) this peer's replica on its db file, attached to the shared remote.
+    /// The same peer on a copy of its db as it is now (the replica must be shut down).
+    fn backup(&self) -> Self {
+        let db_path = self.db_path.with_extension("backup.db");
+        std::fs::copy(&self.db_path, &db_path).unwrap();
+        Self {
+            db_path,
+            remote_dir: self.remote_dir.clone(),
+            faults: Default::default(),
+            ..*self
+        }
+    }
+
+    /// Open this peer's replica and attach the shared remote, which the db remembers across
+    /// reopens.
+    async fn open_attached(&self) -> Replica<FlakyReducer> {
+        let replica = self.open().await;
+        replica
+            .add_remote(FOLDER, self.remote_dir.to_str().unwrap())
+            .await
+            .unwrap();
+        replica
+    }
+
+    /// Open (or reopen) this peer's replica on its db file.
     async fn open(&self) -> Replica<FlakyReducer> {
-        let first_open = !self.db_path.exists();
         let db = SqliteDb::open(&self.db_path).unwrap();
         let (events, _) = event_bus();
         let reducer = FlakyReducer {
             inner: Reducer::new(CONTAINER_ID, "app", &[table_schema()], &db, events)
                 .await
                 .unwrap(),
-            down: self.reducer_down.clone(),
+            faults: self.faults.clone(),
         };
         let credentials = SoftwareCredentials::new(
             SecretBox::new(Box::new([self.key_seed; 32])),
@@ -140,24 +259,16 @@ impl Peer {
         config
             .pack_remote_providers
             .insert(FOLDER.into(), Box::new(StdFsRemoteProvider));
-        let replica = Replica::new(APP_ID, Box::new(db), reducer, Box::new(credentials), config)
+        Replica::new(APP_ID, Box::new(db), reducer, Box::new(credentials), config)
             .await
-            .unwrap();
-        if first_open {
-            replica
-                .add_remote(FOLDER, self.remote_dir.to_str().unwrap())
-                .await
-                .unwrap();
-        }
-        replica
+            .unwrap()
     }
 }
 
-/// The tables reducer, with a switch that makes every `prepare` fail the way a broken
-/// database would.
+/// The tables reducer, failing on demand.
 struct FlakyReducer {
     inner: Reducer,
-    down: Arc<AtomicBool>,
+    faults: Arc<Faults>,
 }
 
 #[async_trait]
@@ -171,8 +282,9 @@ impl SqlReducer for FlakyReducer {
     }
 
     async fn prepare(&self, db: &dyn Db, op: &Op) -> Result<Self::ReadState, PrepareError> {
-        if self.down.load(Ordering::Relaxed) {
-            return Err(PrepareError::Internal("reducer is down".into()));
+        self.faults.attempts.fetch_add(1, Ordering::Relaxed);
+        if let Some(Failure::Prepare) = self.faults.failure() {
+            return Err(PrepareError::Internal("injected prepare failure".into()));
         }
         self.inner.prepare(db, op).await
     }
@@ -184,7 +296,11 @@ impl SqlReducer for FlakyReducer {
         op: &Op,
         read: Self::ReadState,
     ) -> Result<Self::ApplyState, ApplyError> {
-        self.inner.apply(batch, timestamp, op, read)
+        let apply_state = self.inner.apply(batch, timestamp, op, read)?;
+        if let Some(Failure::DbWrite) = self.faults.failure() {
+            batch.add_statement(r#"INSERT INTO "no_such_table" VALUES (1)"#, &[]);
+        }
+        Ok(apply_state)
     }
 
     fn post_apply(&self, apply_state: Self::ApplyState, batch_result: &[DbStatementResult]) {
@@ -217,8 +333,21 @@ fn upsert(key: i64) -> Op {
     })
 }
 
+fn temp_root(name: &str) -> PathBuf {
+    let root = std::env::temp_dir().join(format!("ubiquisync-commit-retry-{name}"));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    root
+}
+
+async fn write(replica: &Replica<FlakyReducer>, keys: Range<i64>) {
+    for key in keys {
+        replica.exec(None, upsert(key)).await.unwrap();
+    }
+}
+
 /// Every stream head the replica has stored, comparable across replicas.
-async fn heads(replica: &Replica<FlakyReducer>) -> impl PartialEq + use<> {
+async fn heads(replica: &Replica<FlakyReducer>) -> HashMap<(PeerId, ContainerId), StreamHeads> {
     replica.sync_snapshot().await.unwrap().streams
 }
 
@@ -231,6 +360,32 @@ async fn rows(replica: &Replica<FlakyReducer>) -> Vec<Vec<DbValue>> {
         .into_iter()
         .map(|r| r.values)
         .collect()
+}
+
+/// The replica's saved clock, if it has saved one.
+async fn saved_clock(replica: &Replica<FlakyReducer>) -> Option<i64> {
+    let rows = replica
+        .query(r#"SELECT "timestamp" FROM "__replica_hlc""#, &[])
+        .await
+        .unwrap();
+    match rows.first()?.values[0] {
+        DbValue::Integer(clock) => Some(clock),
+        ref other => panic!("unexpected clock value: {other:?}"),
+    }
+}
+
+async fn wait_until_synced(reader: &Replica<FlakyReducer>, writer: &Replica<FlakyReducer>) {
+    wait_until("the reader stores the writer's entries", async || {
+        heads(reader).await == heads(writer).await
+    })
+    .await;
+}
+
+async fn wait_until_committed(reader: &Replica<FlakyReducer>, writer: &Replica<FlakyReducer>) {
+    wait_until("the reader commits the stored entries", async || {
+        rows(reader).await == rows(writer).await
+    })
+    .await;
 }
 
 async fn wait_until<F: Future<Output = bool>>(what: &str, mut done: impl FnMut() -> F) {

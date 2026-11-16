@@ -64,6 +64,9 @@ impl<R> ReplicaInner<R> {
             let last_ts = Timestamp::try_from(last_raw)?;
             let next_ts = f(last_ts)?;
             if next_ts == last_ts {
+                // the clock may have got here in a batch that was never committed (a commit
+                // attempt that failed), so the value still has to be saved with this batch
+                self.persist_hlc(next_ts, batch)?;
                 return Ok(next_ts);
             }
             match self.hlc.compare_exchange_weak(

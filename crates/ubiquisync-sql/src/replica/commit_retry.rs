@@ -43,6 +43,8 @@ enum CommitRetryError {
     Commit(#[from] CommitError),
     #[error("get segment error: {0}")]
     GetSegment(#[from] GetSegmentError),
+    #[error("no stored segment holds entry {0}")]
+    MissingSegment(u64),
 }
 
 impl<R: Reducer> Replica<R> {
@@ -53,30 +55,27 @@ impl<R: Reducer> Replica<R> {
             let mut interval = poll_interval(inner.config.commit_retry.poll_interval);
             let mut startup = true;
             while tick_or_cancelled(&mut interval, &cancel_token).await {
-                inner.retry_commits(startup).await;
-                startup = false;
+                // a round that couldn't even list the logs doesn't use up the startup attempt
+                match inner.retry_commits(startup).await {
+                    Ok(()) => startup = false,
+                    Err(error) => tracing::warn!(%error, "commit retry round failed"),
+                }
             }
         });
     }
 }
 
 impl<R: Reducer> ReplicaInner<R> {
-    /// One round: every log with a stream behind its head gets a chance to catch up. A log
-    /// that fails doesn't stop the others.
+    /// One round: every stream behind its head gets a chance to catch up. One that fails
+    /// doesn't stop the others.
     #[tracing::instrument(skip_all)]
-    async fn retry_commits(&self, startup: bool) {
-        let logs = match self.logs_behind().await {
-            Ok(logs) => logs,
-            Err(error) => {
-                tracing::warn!(%error, "commit retry round failed");
-                return;
-            }
-        };
-        for (peer, log) in logs {
+    async fn retry_commits(&self, startup: bool) -> Result<(), DbError> {
+        for (peer, log) in self.logs_behind().await? {
             if let Err(error) = self.retry_log_commits(peer, log, startup).await {
                 tracing::warn!(%peer, container = ?log.container_id, %error, "commit retry failed");
             }
         }
+        Ok(())
     }
 
     /// The logs that have a stream whose commit is behind its head.
@@ -113,7 +112,7 @@ impl<R: Reducer> ReplicaInner<R> {
         peer: PeerId,
         log: StreamLog,
         startup: bool,
-    ) -> Result<(), CommitRetryError> {
+    ) -> Result<(), DbError> {
         let guard = self.stream_locks.lock(&log).await;
         let hash_ctx = LogHashContext::new(&LogId {
             peer_id: peer,
@@ -127,14 +126,18 @@ impl<R: Reducer> ReplicaInner<R> {
             let parent_commit_size = stream
                 .parent_id
                 .and_then(|id| commit_sizes.get(&id).copied());
-            if should_retry(
+            let retry = should_retry(
                 stream.commit_err.as_ref(),
                 WallTime::now(),
                 &self.config.commit_retry,
                 startup,
-            ) {
-                self.catch_up(&guard, &hash_ctx, &mut stream, parent_commit_size)
-                    .await?;
+            );
+            if retry
+                && let Err(error) = self
+                    .catch_up(&guard, &hash_ctx, &mut stream, parent_commit_size)
+                    .await
+            {
+                tracing::warn!(stream_id = stream.id, %error, "commit retry failed");
             }
             commit_sizes.insert(stream.id, stream.commit_size);
         }
@@ -170,16 +173,19 @@ impl<R: Reducer> ReplicaInner<R> {
         }
 
         while stream.commit_size < stream.head_chain.size {
-            let Some(segment) = self
+            let segment = match self
                 .get_segment_by_index(guard, hash_ctx, stream.id, stream.commit_size)
-                .await?
-            else {
-                tracing::warn!(
-                    stream_id = stream.id,
-                    commit_size = stream.commit_size,
-                    "no stored segment holds the next entry to commit"
-                );
-                break;
+                .await
+            {
+                Ok(Some(segment)) => segment,
+                not_loaded => {
+                    // record a stall so this backs off instead of failing again every tick
+                    self.set_internal_commit_err(stream).await?;
+                    return Err(match not_loaded {
+                        Err(e) => e.into(),
+                        Ok(_) => CommitRetryError::MissingSegment(stream.commit_size),
+                    });
+                }
             };
             let commit_size = stream.commit_size;
             self.try_commit(guard, stream, segment).await?;
@@ -224,7 +230,7 @@ mod tests {
     use std::time::Duration;
 
     use test_case::test_case;
-    use ubiquisync_core::hlc::Timestamp;
+    use ubiquisync_core::{crypto::RootKey256Fingerprint, hlc::Timestamp};
 
     use super::*;
     use crate::replica::{hlc::MAX_SKEW_MS, schema::UnknownSoftwareVersion};
@@ -261,6 +267,7 @@ mod tests {
     #[test_case(Some(skew(MAX_SKEW_MS)), false => true ; "clock caught up")]
     #[test_case(Some(incompatible()), false => false ; "incompatible software waits for a restart")]
     #[test_case(Some(incompatible()), true => true ; "incompatible software retries at startup")]
+    #[test_case(Some(CommitErr::NeedKey(RootKey256Fingerprint([1; 32]))), true => false ; "need key has no wake yet")]
     #[test_case(Some(CommitErr::AwaitingDeps), true => false ; "awaiting deps has no wake yet")]
     #[test_case(Some(CommitErr::Frozen), true => false ; "frozen never retries")]
     fn retry(commit_err: Option<CommitErr>, startup: bool) -> bool {

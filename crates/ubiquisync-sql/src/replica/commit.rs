@@ -65,7 +65,14 @@ impl<R: Reducer> ReplicaInner<R> {
                 );
                 Ok(self.set_internal_commit_err(stream).await?)
             }
-            Err(TryCommitError::Db(e)) => Err(CommitError::Db(e)),
+            Err(TryCommitError::Db(e)) => {
+                // record the stall so the retry loop backs off (if the db is unreachable this
+                // write fails too, and the stream is simply tried again on the next tick)
+                if let Err(error) = self.set_internal_commit_err(stream).await {
+                    tracing::warn!(stream_id = stream.id, %error, "couldn't record commit stall");
+                }
+                Err(CommitError::Db(e))
+            }
             Err(TryCommitError::Internal(e)) => Err(CommitError::Internal(e)),
         }
     }
@@ -253,24 +260,53 @@ impl<R: Reducer> ReplicaInner<R> {
         Ok(())
     }
 
-    async fn set_internal_commit_err(&self, stream: &mut StreamInfo) -> Result<(), DbError> {
-        let ts = WallTime::now().as_millis();
-        let err = if let Some(CommitErr::Internal {
+    pub(crate) async fn set_internal_commit_err(
+        &self,
+        stream: &mut StreamInfo,
+    ) -> Result<(), DbError> {
+        let err = next_internal_err(stream.commit_err.as_ref(), WallTime::now());
+        self.set_commit_err(stream, err).await
+    }
+}
+
+/// The internal stall to record for a failure at `now`: a repeat failure keeps when it first
+/// failed and counts one more retry, anything else starts over.
+fn next_internal_err(prev: Option<&CommitErr>, now: WallTime) -> CommitErr {
+    let now = now.as_millis();
+    match prev {
+        Some(CommitErr::Internal {
             retry_time_span,
             retry_count,
-        }) = &stream.commit_err
-        {
-            CommitErr::Internal {
-                // never let the span end before it starts if the wall clock stepped backwards
-                retry_time_span: retry_time_span.start..Ord::max(ts, retry_time_span.start),
-                retry_count: retry_count + 1,
-            }
-        } else {
-            CommitErr::Internal {
-                retry_time_span: ts..ts,
-                retry_count: 0,
-            }
-        };
-        self.set_commit_err(stream, err).await
+        }) => CommitErr::Internal {
+            // never let the span end before it starts if the wall clock stepped backwards
+            retry_time_span: retry_time_span.start..Ord::max(now, retry_time_span.start),
+            retry_count: retry_count + 1,
+        },
+        _ => CommitErr::Internal {
+            retry_time_span: now..now,
+            retry_count: 0,
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use test_case::test_case;
+
+    use super::*;
+
+    fn internal(first_failed: u64, last_failed: u64, retry_count: u64) -> CommitErr {
+        CommitErr::Internal {
+            retry_time_span: first_failed..last_failed,
+            retry_count,
+        }
+    }
+
+    #[test_case(None, 50 => internal(50, 50, 0) ; "first failure")]
+    #[test_case(Some(CommitErr::AwaitingDeps), 50 => internal(50, 50, 0) ; "after another stall")]
+    #[test_case(Some(internal(10, 20, 3)), 50 => internal(10, 50, 4) ; "repeat failure")]
+    #[test_case(Some(internal(10, 20, 3)), 5 => internal(10, 10, 4) ; "clock stepped back")]
+    fn internal_err(prev: Option<CommitErr>, now: u64) -> CommitErr {
+        next_internal_err(prev.as_ref(), WallTime::from_millis(now))
     }
 }

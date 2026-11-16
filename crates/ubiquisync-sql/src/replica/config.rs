@@ -79,15 +79,16 @@ mod tests {
     use super::*;
 
     #[proptest]
-    fn backoff_stays_in_bounds_and_never_shrinks(
+    fn backoff_doubles_from_min_until_capped(
         #[strategy(1u64..100_000)] min_ms: u64,
         #[strategy(0u64..10_000_000)] range_ms: u64,
-        doublings: u64,
+        #[strategy(0u64..100)] doublings: u64,
     ) {
         let min = Duration::from_millis(min_ms);
         let max = Duration::from_millis(min_ms + range_ms);
+        prop_assert_eq!(backoff_delay(min, max, 0), min);
         let delay = backoff_delay(min, max, doublings);
-        prop_assert!(min <= delay && delay <= max);
-        prop_assert!(delay <= backoff_delay(min, max, doublings.saturating_add(1)));
+        let next = backoff_delay(min, max, doublings + 1);
+        prop_assert!(next == max || next == delay * 2);
     }
 }

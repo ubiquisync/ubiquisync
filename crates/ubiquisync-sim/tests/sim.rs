@@ -527,7 +527,7 @@ fn head_matrix(states: &[PeerState]) -> String {
                         heads
                             .iter()
                             .map(|(size, _, fork)| {
-                                format!("{size}{}", if *fork { "f" } else { "" })
+                                format!("{size}{}", if fork.is_some() { "f" } else { "" })
                             })
                             .collect::<Vec<_>>()
                             .join("/")

@@ -15,8 +15,9 @@ use crate::{
     },
 };
 
-/// Each stream of a log as `(head_size, head_hash, is_fork)`.
-pub type StreamHeads = Vec<(u64, Hash256, bool)>;
+/// Each stream of a log as `(head_size, head_hash, fork_size)`, where `fork_size` is the size
+/// a fork branched off its parent at (`None` for the root stream).
+pub type StreamHeads = Vec<(u64, Hash256, Option<u64>)>;
 
 /// A replica's sync state, keyed so it can be compared across replicas (local db ids differ
 /// between replicas, so logs are keyed by author `PeerId` and `ContainerId`).
@@ -24,7 +25,7 @@ pub type StreamHeads = Vec<(u64, Hash256, bool)>;
 pub struct SyncSnapshot {
     /// This replica's own peer id.
     pub self_peer: PeerId,
-    /// Every stream of each log, sorted, as `(head_size, head_hash, is_fork)`.
+    /// Every stream of each log, sorted, as `(head_size, head_hash, fork_size)`.
     pub streams: HashMap<(PeerId, ContainerId), StreamHeads>,
     /// Blocked packs per remote, summed over all topics and publishers.
     pub blocked: HashMap<i64, usize>,
@@ -51,7 +52,7 @@ impl<R> Replica<R> {
             streams::ContainerId,
             streams::HeadSize,
             streams::HeadHash,
-            streams::ParentId,
+            streams::ForkSize,
         )>(
             db,
             Query::select().from(streams::Table).inner_join(
@@ -64,11 +65,11 @@ impl<R> Replica<R> {
         let mut stream_map: HashMap<(PeerId, ContainerId), StreamHeads> =
             HashMap::new();
         for row in rows.iter() {
-            let (peer, container, head_size, head_hash, parent_id) = row?;
+            let (peer, container, head_size, head_hash, fork_size) = row?;
             stream_map
                 .entry((PeerId(peer), ContainerId(container)))
                 .or_default()
-                .push((head_size, head_hash, parent_id.is_some()));
+                .push((head_size, head_hash, fork_size));
         }
         for heads in stream_map.values_mut() {
             heads.sort();
