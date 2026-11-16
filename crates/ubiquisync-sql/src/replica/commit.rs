@@ -56,7 +56,16 @@ impl<R: Reducer> ReplicaInner<R> {
         match self.do_try_commit(guard, stream, segment).await {
             Ok(_) => Ok(()),
             Err(TryCommitError::Stall(e)) => Ok(self.set_commit_err(stream, e).await?),
-            Err(TryCommitError::NeedsRebuild { .. }) => todo!("rebuild state"),
+            Err(TryCommitError::NeedsRebuild { scope, reason }) => {
+                // TODO rebuild state, until then remote data must not panic the sync task
+                tracing::warn!(
+                    stream_id = stream.id,
+                    ?scope,
+                    reason,
+                    "commit needs rebuild, stalling"
+                );
+                Ok(self.set_internal_commit_err(stream).await?)
+            }
             Err(TryCommitError::Db(e)) => Err(CommitError::Db(e)),
             Err(TryCommitError::Internal(e)) => Err(CommitError::Internal(e)),
         }
@@ -184,7 +193,8 @@ impl<R: Reducer> ReplicaInner<R> {
                                     return Err(TryCommitError::NeedsRebuild { scope, reason });
                                 }
                                 Err(PrepareError::NeedsDeps(_)) => {
-                                    todo!("insert dep rows")
+                                    // TODO insert stream_deps rows, until then the stream stalls
+                                    return Err(TryCommitError::Stall(CommitErr::AwaitingDeps));
                                 }
                                 // we skip this op and don't call post-apply
                                 Err(PrepareError::InvalidOp(_)) => None,
