@@ -21,8 +21,8 @@ use ubiquisync_core::{
 use crate::{
     reducer::Reducer,
     replica::{
-        config::PackSyncConfig,
         ReplicaInner,
+        config::PackSyncConfig,
         fs::PackProcessError,
         fs_sync_schema::{BlockedPackInfo, BlockedReasons, PackReadState},
         ingest::{IngestSource, SegmentBytesResolver, SegmentProcessError},
@@ -77,9 +77,10 @@ impl PackReadTodo {
 
 impl BlockedPackInfo {
     fn todo(&self, file: PackFileId, ts: WallTime) -> PackReadTodo {
+        // attempts counts failed reads, `blocked_again` adds one if this read fails too
         PackReadTodo {
             file,
-            attempts: self.attempts + 1,
+            attempts: self.attempts,
             first_last_timestamps: self.read_timestamps.start..ts.as_millis(),
         }
     }
@@ -135,12 +136,20 @@ impl PackReadState {
             //      c. time-based retry
             //   there are other wake conditions we can check in the future!
             if let Some(blocked) = self.blocked.get(&r) {
+                // parents only wake a pack when one of them is being read this round, if they
+                // were all consumed already the pack is waiting on something else (e.g. another
+                // log's data relayed elsewhere) and waits for its backoff
+                let parents_arrived = !blocked.pending_parents.is_empty()
+                    && blocked
+                        .pending_parents
+                        .iter()
+                        .all(|p| will_get_read.contains(p))
+                    && blocked
+                        .pending_parents
+                        .iter()
+                        .any(|p| !consumed_refs.contains(p));
                 let wake = f.generation > blocked.file.generation
-                    || (!blocked.pending_parents.is_empty()
-                        && blocked
-                            .pending_parents
-                            .iter()
-                            .all(|p| will_get_read.contains(p)))
+                    || parents_arrived
                     || blocked.next_retry_ts(cfg) <= now.as_millis();
                 if !wake {
                     next.blocked.insert(r, blocked.clone());
@@ -183,7 +192,9 @@ impl PackReadState {
 
 impl BlockedPackInfo {
     fn next_retry_duration(&self, cfg: &PackSyncConfig) -> Duration {
-        let factor = 1u32.checked_shl(self.attempts.min(31) as u32).unwrap_or(u32::MAX);
+        // the first retry waits pack_retry_min, then doubles
+        let doublings = self.attempts.saturating_sub(1).min(31) as u32;
+        let factor = 1u32.checked_shl(doublings).unwrap_or(u32::MAX);
         cfg.pack_retry_min
             .saturating_mul(factor)
             .min(cfg.pack_retry_max)
@@ -464,5 +475,96 @@ impl PackTipTracker {
         if !self.last.blocked.contains_key(&pack_ref) {
             self.tips.insert(pack_ref);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use ubiquisync_core::{hlc::WallTime, pack::PackFileId};
+
+    use crate::replica::{
+        config::PackSyncConfig,
+        fs_sync_schema::{BlockedPackInfo, BlockedReasons, PackReadState},
+    };
+
+    const NOW: u64 = 1_000_000;
+
+    fn file(seq: u64) -> PackFileId {
+        PackFileId {
+            seqs: seq..seq + 1,
+            id: seq,
+            generation: 0,
+        }
+    }
+
+    /// `child` blocked just now (so its backoff hasn't elapsed), waiting on `parent`.
+    fn blocked_on(child: &PackFileId, parent: &PackFileId) -> BlockedPackInfo {
+        BlockedPackInfo {
+            file: child.clone(),
+            read_timestamps: NOW..NOW,
+            attempts: 1,
+            pending_parents: [parent.get_ref()].into(),
+            need_keys: Default::default(),
+            reasons: BlockedReasons::new(),
+            missing_peers: vec![],
+        }
+    }
+
+    fn to_read(state: &PackReadState, listing: &[PackFileId]) -> Vec<PackFileId> {
+        state
+            .prepare_read(
+                WallTime::from_millis(NOW),
+                listing,
+                &PackSyncConfig::default(),
+            )
+            .to_read
+            .iter()
+            .map(|t| t.file().clone())
+            .collect()
+    }
+
+    #[test]
+    fn retry_starts_at_min_and_doubles() {
+        let cfg = PackSyncConfig {
+            pack_retry_min: Duration::from_secs(10),
+            pack_retry_max: Duration::from_secs(60),
+            ..Default::default()
+        };
+        let delay = |attempts| {
+            let mut info = blocked_on(&file(1), &file(0));
+            info.attempts = attempts;
+            info.next_retry_duration(&cfg).as_secs()
+        };
+        assert_eq!(
+            [delay(1), delay(2), delay(3), delay(4), delay(100)],
+            [10, 20, 40, 60, 60]
+        );
+    }
+
+    /// A child whose parents were all consumed already is waiting on something else,
+    /// so it waits for its backoff instead of being retried every round.
+    #[test]
+    fn consumed_parent_does_not_wake_child() {
+        let (parent, child) = (file(0), file(1));
+        let state = PackReadState {
+            consumed: [parent.clone()].into(),
+            blocked: [(child.get_ref(), blocked_on(&child, &parent))].into(),
+        };
+        assert_eq!(to_read(&state, &[parent, child]), vec![]);
+    }
+
+    #[test]
+    fn parent_read_this_round_wakes_child() {
+        let (parent, child) = (file(0), file(1));
+        let state = PackReadState {
+            consumed: Default::default(),
+            blocked: [(child.get_ref(), blocked_on(&child, &parent))].into(),
+        };
+        assert_eq!(
+            to_read(&state, &[parent.clone(), child.clone()]),
+            vec![parent, child]
+        );
     }
 }
