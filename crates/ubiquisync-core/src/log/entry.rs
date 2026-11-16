@@ -85,7 +85,7 @@ impl<B: BytesWrapper, T: TimestampRepr> LogEntry<B, T> {
                 }
                 EntryBody::UseKey(cipher_info) => {
                     writer.write_byte(ENTRY_TYPE_USE_KEY);
-                    cipher_info.encode(writer);
+                    cipher_info.encode(writer)?;
                 }
                 EntryBody::Expunged(hash) => {
                     writer.write_byte(ENTRY_TYPE_EXPUNGED);
@@ -94,7 +94,7 @@ impl<B: BytesWrapper, T: TimestampRepr> LogEntry<B, T> {
             },
             LogEntry::Signature(signature) => {
                 writer.write_byte(ENTRY_TYPE_SIGNATURE);
-                signature.encode(writer);
+                signature.encode(writer)?;
             }
         }
         Ok(())

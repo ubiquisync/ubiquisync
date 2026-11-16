@@ -18,4 +18,6 @@ pub enum OpEncodeError {
 pub enum OpDecodeError {
     #[error("invalid op: {0}")]
     Invalid(BoxError),
+    #[error("unknown op tag: {0}")]
+    UnknownOpTag(u8),
 }

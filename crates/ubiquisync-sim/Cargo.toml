@@ -1,0 +1,22 @@
+[package]
+name = "ubiquisync-sim"
+description = "Multi-replica simulation tests for Ubiquisync. Never published."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dev-dependencies]
+ubiquisync-core = { workspace = true }
+ubiquisync-sql = { workspace = true, features = ["test-support"] }
+ubiquisync-sqlite = { workspace = true }
+ubiquisync-tables = { workspace = true }
+async-trait = { workspace = true }
+secrecy = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "ansi", "registry", "std"] }
+
+[lints]
+workspace = true

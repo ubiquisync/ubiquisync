@@ -18,9 +18,9 @@ use futures_channel::mpsc;
 use futures_core::Stream;
 
 /// An event that knows the set of targets it should be delivered to.
-pub trait RoutableEvent: Clone {
+pub trait RoutableEvent: Clone + Send + Sync {
     /// The routing key subscribers select — the granularity of a subscription.
-    type Target: Eq + Hash + Clone;
+    type Target: Eq + Hash + Clone + Send + Sync;
 
     /// The targets this event fans out to. Treated as a set: yielding the same
     /// target twice delivers the event to that target's subscribers twice.
@@ -36,7 +36,7 @@ pub trait Publisher<E> {
     fn publish(&self, event: E);
 }
 
-pub trait Subscribe<E: RoutableEvent> {
+pub trait Subscribe<E: RoutableEvent>: Send + Sync {
     fn subscribe(&self, target: E::Target) -> Subscription<E>;
 }
 

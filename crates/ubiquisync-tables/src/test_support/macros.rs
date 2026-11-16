@@ -55,6 +55,7 @@ async fn open<D: Db + 'static>(db: D) -> StoreImpl {
         "",
         &tables().expect("schemas build"),
         Box::new(db),
+        Default::default(),
     )
     .await
     .expect("no error")

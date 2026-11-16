@@ -14,6 +14,7 @@ use crate::{
     pack::PackRef,
 };
 
+#[derive(Debug, Clone)]
 pub struct PackFileDescriptor {
     pub topic: Topic,
     pub peer_id: PeerId,
@@ -21,7 +22,7 @@ pub struct PackFileDescriptor {
 }
 
 /// A topic if composed of one or more lowercase ASCII alphanumeric segments.
-#[derive(Default, Debug, Clone, PartialEq, Eq)]
+#[derive(Default, Debug, Clone, PartialEq, Hash)]
 pub struct Topic(Vec<String>);
 
 #[derive(Debug, Error)]
@@ -76,7 +77,7 @@ impl Topic {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "proptest", derive(test_strategy::Arbitrary))]
 pub struct PackFileId {
     pub seqs: Range<u64>,
@@ -85,6 +86,16 @@ pub struct PackFileId {
 }
 
 impl PackFileId {
+    pub fn new(seqs: Range<u64>) -> PackFileId {
+        let mut buf = [0; 8];
+        getrandom::fill(&mut buf).unwrap();
+        PackFileId {
+            seqs,
+            id: u64::from_le_bytes(buf),
+            generation: 0,
+        }
+    }
+
     pub fn get_ref(&self) -> PackRef {
         PackRef {
             id: self.id,

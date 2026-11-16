@@ -324,66 +324,72 @@ fn map_err(err: rusqlite::Error) -> DbError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // SQLite's futures resolve synchronously, so any executor drives them;
-    // `pollster` is a minimal, wakeup-correct `block_on`.
-    use pollster::block_on;
 
-    fn setup() -> SqliteDb {
+    async fn setup() -> SqliteDb {
         let db = SqliteDb::open_in_memory().unwrap();
-        block_on(db.exec(
+        db.exec(
             "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT NOT NULL, data BLOB) WITHOUT ROWID",
             &[],
-        ))
+        )
+        .await
         .unwrap();
         db
     }
 
-    #[test]
-    fn dialect_is_sqlite() {
+    #[tokio::test]
+    async fn dialect_is_sqlite() {
         let db = SqliteDb::open_in_memory().unwrap();
         assert_eq!(db.dialect(), SqlDialect::Sqlite);
         assert_eq!(db.new_batch().dialect(), SqlDialect::Sqlite);
     }
 
-    #[test]
-    fn exec_and_query_roundtrip() {
-        let db = setup();
-        let affected = block_on(db.exec(
-            "INSERT INTO t (id, name, data) VALUES (?1, ?2, ?3)",
-            &[
-                DbValue::Integer(1),
-                DbValue::Text("alice".into()),
-                DbValue::Blob(vec![1, 2, 3]),
-            ],
-        ))
-        .unwrap();
+    #[tokio::test]
+    async fn exec_and_query_roundtrip() {
+        let db = setup().await;
+        let affected = db
+            .exec(
+                "INSERT INTO t (id, name, data) VALUES (?1, ?2, ?3)",
+                &[
+                    DbValue::Integer(1),
+                    DbValue::Text("alice".into()),
+                    DbValue::Blob(vec![1, 2, 3]),
+                ],
+            )
+            .await
+            .unwrap();
         assert_eq!(affected, 1);
 
-        let rows = block_on(db.query(
-            "SELECT id, name, data FROM t WHERE id = ?1",
-            &[DbValue::Integer(1)],
-        ))
-        .unwrap();
+        let rows = db
+            .query(
+                "SELECT id, name, data FROM t WHERE id = ?1",
+                &[DbValue::Integer(1)],
+            )
+            .await
+            .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].get_i64(0).unwrap(), 1);
         assert_eq!(rows[0].get_text(1).unwrap(), "alice");
         assert_eq!(rows[0].get_blob(2).unwrap(), &[1, 2, 3]);
     }
 
-    #[test]
-    fn uuid_roundtrips_as_blob() {
+    #[tokio::test]
+    async fn uuid_roundtrips_as_blob() {
         let db = SqliteDb::open_in_memory().unwrap();
-        block_on(db.exec("CREATE TABLE u (id BLOB PRIMARY KEY)", &[])).unwrap();
+        db.exec("CREATE TABLE u (id BLOB PRIMARY KEY)", &[])
+            .await
+            .unwrap();
         let id = [7u8; 16];
-        block_on(db.exec("INSERT INTO u (id) VALUES (?1)", &[DbValue::Uuid(id)])).unwrap();
-        let rows = block_on(db.query("SELECT id FROM u", &[])).unwrap();
+        db.exec("INSERT INTO u (id) VALUES (?1)", &[DbValue::Uuid(id)])
+            .await
+            .unwrap();
+        let rows = db.query("SELECT id FROM u", &[]).await.unwrap();
         assert_eq!(rows[0].get_uuid(0).unwrap(), id);
     }
 
-    #[test]
-    fn describe_table_reports_pk_and_cols() {
-        let db = setup();
-        let desc = block_on(db.describe_table("t")).unwrap().unwrap();
+    #[tokio::test]
+    async fn describe_table_reports_pk_and_cols() {
+        let db = setup().await;
+        let desc = db.describe_table("t").await.unwrap().unwrap();
         assert_eq!(desc.name, "t");
 
         assert_eq!(desc.pk_cols.len(), 1);
@@ -397,94 +403,107 @@ mod tests {
         assert!(desc.cols[1].nullable);
     }
 
-    #[test]
-    fn describe_missing_table_is_none() {
+    #[tokio::test]
+    async fn describe_missing_table_is_none() {
         let db = SqliteDb::open_in_memory().unwrap();
-        assert!(block_on(db.describe_table("nope")).unwrap().is_none());
+        assert!(db.describe_table("nope").await.unwrap().is_none());
     }
 
-    #[test]
-    fn composite_pk_is_ordered() {
+    #[tokio::test]
+    async fn composite_pk_is_ordered() {
         let db = SqliteDb::open_in_memory().unwrap();
-        block_on(db.exec(
+        db.exec(
             "CREATE TABLE c (a INTEGER, b TEXT, v BLOB, PRIMARY KEY (a, b))",
             &[],
-        ))
+        )
+        .await
         .unwrap();
-        let desc = block_on(db.describe_table("c")).unwrap().unwrap();
+        let desc = db.describe_table("c").await.unwrap().unwrap();
         let pk: Vec<_> = desc.pk_cols.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(pk, vec!["a", "b"]);
     }
 
-    #[test]
-    fn update_and_delete_report_affected_rows() {
-        let db = setup();
+    #[tokio::test]
+    async fn update_and_delete_report_affected_rows() {
+        let db = setup().await;
         for id in 1..=3 {
-            block_on(db.exec(
+            db.exec(
                 "INSERT INTO t (id, name) VALUES (?1, 'x')",
                 &[DbValue::Integer(id)],
-            ))
+            )
+            .await
             .unwrap();
         }
-        let updated = block_on(db.exec("UPDATE t SET name = 'y' WHERE id <= 2", &[])).unwrap();
+        let updated = db
+            .exec("UPDATE t SET name = 'y' WHERE id <= 2", &[])
+            .await
+            .unwrap();
         assert_eq!(updated, 2);
-        let deleted = block_on(db.exec("DELETE FROM t", &[])).unwrap();
+        let deleted = db.exec("DELETE FROM t", &[]).await.unwrap();
         assert_eq!(deleted, 3);
     }
 
-    #[test]
-    fn conditional_upsert_reports_applied() {
+    #[tokio::test]
+    async fn conditional_upsert_reports_applied() {
         // The real use case: an LWW upsert with a WHERE guard. `rows_affected`
         // must be 1 when the row is written and 0 when the WHERE holds it off —
         // even with a DDL statement run in between. Each upsert is itself DML and
         // resets `changes()`, so the answer tracks the upsert, not the preceding
         // DDL (whose own stale `rows_affected` we deliberately don't consult).
         let db = SqliteDb::open_in_memory().unwrap();
-        block_on(db.exec(
+        db.exec(
             "CREATE TABLE lww (pk INTEGER PRIMARY KEY, val TEXT, ts INTEGER)",
             &[],
-        ))
+        )
+        .await
         .unwrap();
 
         let upsert = "INSERT INTO lww (pk, val, ts) VALUES (?1, ?2, ?3) \
              ON CONFLICT(pk) DO UPDATE SET val = excluded.val, ts = excluded.ts \
              WHERE excluded.ts > lww.ts";
-        let up = |val: &str, ts: i64| {
-            block_on(db.exec(
+        let up = async |val: &str, ts: i64| {
+            db.exec(
                 upsert,
                 &[
                     DbValue::Integer(1),
                     DbValue::Text(val.into()),
                     DbValue::Integer(ts),
                 ],
-            ))
+            )
+            .await
         };
 
         // First write inserts.
-        assert_eq!(up("a", 5).unwrap(), 1);
+        assert_eq!(up("a", 5).await.unwrap(), 1);
         // A DDL in between leaves a stale changes()==1 on the connection...
-        block_on(db.exec("CREATE TABLE scratch (x INTEGER)", &[])).unwrap();
+        db.exec("CREATE TABLE scratch (x INTEGER)", &[])
+            .await
+            .unwrap();
         // ...but the older-timestamp upsert is a no-op (WHERE fails) and, being
         // DML, resets the count itself → 0 applied, not the stale 1.
-        assert_eq!(up("stale", 3).unwrap(), 0);
+        assert_eq!(up("stale", 3).await.unwrap(), 0);
         // A newer timestamp wins → applied.
-        assert_eq!(up("b", 9).unwrap(), 1);
+        assert_eq!(up("b", 9).await.unwrap(), 1);
 
-        let rows = block_on(db.query("SELECT val FROM lww WHERE pk = 1", &[])).unwrap();
+        let rows = db
+            .query("SELECT val FROM lww WHERE pk = 1", &[])
+            .await
+            .unwrap();
         assert_eq!(rows[0].get_text(0).unwrap(), "b");
     }
 
-    #[test]
-    fn affinity_maps_declared_types() {
+    #[tokio::test]
+    async fn affinity_maps_declared_types() {
         let db = SqliteDb::open_in_memory().unwrap();
         // `BLOB(16)`/`VARCHAR(8)` are substring matches per SQLite affinity; REAL
         // and NUMERIC are types the engine doesn't model → Other.
-        block_on(db.exec(
+        db.exec(
             "CREATE TABLE m (a INTEGER, s VARCHAR(8), b BLOB(16), r REAL, n NUMERIC)",
             &[],
-        ))
+        )
+        .await
         .unwrap();
-        let desc = block_on(db.describe_table("m")).unwrap().unwrap();
+        let desc = db.describe_table("m").await.unwrap().unwrap();
         let by_name: std::collections::HashMap<_, _> = desc
             .cols
             .iter()
@@ -497,18 +516,18 @@ mod tests {
         assert_eq!(by_name["n"], DbType::Other);
     }
 
-    #[test]
-    fn unique_violation_is_mapped() {
-        let db = setup();
+    #[tokio::test]
+    async fn unique_violation_is_mapped() {
+        let db = setup().await;
         let stmt = "INSERT INTO t (id, name) VALUES (1, 'a')";
-        block_on(db.exec(stmt, &[])).unwrap();
-        let err = block_on(db.exec(stmt, &[])).unwrap_err();
+        db.exec(stmt, &[]).await.unwrap();
+        let err = db.exec(stmt, &[]).await.unwrap_err();
         assert!(matches!(err, DbError::UniqueViolation), "got {err:?}");
     }
 
-    #[test]
-    fn batch_commits_atomically_with_returning() {
-        let db = setup();
+    #[tokio::test]
+    async fn batch_commits_atomically_with_returning() {
+        let db = setup().await;
         let mut batch = db.new_batch();
         let s0 = batch.add_statement(
             "INSERT INTO t (id, name) VALUES (?1, ?2) RETURNING id",
@@ -518,20 +537,20 @@ mod tests {
             "INSERT INTO t (id, name) VALUES (?1, ?2)",
             &[DbValue::Integer(11), DbValue::Text("y".into())],
         );
-        let results = block_on(batch.commit()).unwrap();
+        let results = batch.commit().await.unwrap();
 
         assert_eq!(results[s0.0].rows_affected, 1);
         assert_eq!(results[s0.0].rows[0].get_i64(0).unwrap(), 10);
         assert_eq!(results[s1.0].rows_affected, 1);
         assert!(results[s1.0].rows.is_empty());
 
-        let rows = block_on(db.query("SELECT COUNT(*) FROM t", &[])).unwrap();
+        let rows = db.query("SELECT COUNT(*) FROM t", &[]).await.unwrap();
         assert_eq!(rows[0].get_i64(0).unwrap(), 2);
     }
 
-    #[test]
-    fn batch_rolls_back_on_error() {
-        let db = setup();
+    #[tokio::test]
+    async fn batch_rolls_back_on_error() {
+        let db = setup().await;
         let mut batch = db.new_batch();
         batch.add_statement(
             "INSERT INTO t (id, name) VALUES (?1, ?2)",
@@ -543,10 +562,10 @@ mod tests {
             "INSERT INTO t (id, name) VALUES (?1, ?2)",
             &[DbValue::Integer(20), DbValue::Text("dup".into())],
         );
-        let err = block_on(batch.commit()).unwrap_err();
+        let err = batch.commit().await.unwrap_err();
         assert!(matches!(err, DbError::UniqueViolation), "got {err:?}");
 
-        let rows = block_on(db.query("SELECT COUNT(*) FROM t", &[])).unwrap();
+        let rows = db.query("SELECT COUNT(*) FROM t", &[]).await.unwrap();
         assert_eq!(rows[0].get_i64(0).unwrap(), 0);
     }
 }

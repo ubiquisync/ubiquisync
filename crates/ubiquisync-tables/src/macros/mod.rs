@@ -49,7 +49,7 @@ macro_rules! __col_type {
 
 /// Define one table's schema constructor: `index name (key type, ...) => { (idx col type) ... }`.
 ///
-/// Generates `pub mod name { pub fn table() -> Result<TableSchema, TablesError> }`.
+/// Generates `pub mod name { pub fn table() -> Result<TableSchema, InvalidSchemaError> }`.
 /// The table `name` is the user-facing VIEW name; the key and column idents are
 /// the VIEW's column names. Types are keywords: `Bytes`, `Text`, `I64`, `Uuid`.
 ///
@@ -83,7 +83,7 @@ macro_rules! define_table {
             /// rejected at compile time (const evaluation) — never at runtime.
             pub fn table() -> ::core::result::Result<
                 $crate::schema::TableSchema,
-                $crate::error::TablesError,
+                $crate::error::InvalidSchemaError,
             > {
                 $crate::schema::TableSchema::new(
                     TABLE_ID,
@@ -172,7 +172,7 @@ macro_rules! define_tables {
         /// `Reducer::new`.
         pub fn tables() -> ::core::result::Result<
             ::std::vec::Vec<$crate::schema::TableSchema>,
-            $crate::error::TablesError,
+            $crate::error::InvalidSchemaError,
         > {
             ::core::result::Result::Ok(::std::vec![ $( $mod::table()? ),+ ])
         }

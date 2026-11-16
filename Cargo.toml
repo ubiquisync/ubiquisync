@@ -7,6 +7,7 @@ members = [
   "crates/ubiquisync-postgres",
   "crates/ubiquisync-sqlite",
   "crates/ubiquisync-tables",
+  "crates/ubiquisync-sim",
 ]
 
 [workspace.package]
@@ -32,20 +33,19 @@ futures = "0.3.34"
 futures-channel = "0.3.34"
 futures-core = "0.3.34"
 futures-test = "0.3.34"
-pollster = "0.4.0"
 sea-query = { version = "1.0.2", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "with-uuid", "thread-safe"] }
 uuid = { version = "1.23.4", default-features = false }
 getrandom = "0.4.3"
-rand = "0.10.2"
 zstd = "0.13.3"
-tokio = {version = "1.53.1", features = ["sync", "rt-multi-thread"]}
+tokio = {version = "1.53.1", features = ["sync", "rt-multi-thread", "time", "rt", "macros"]}
+tokio-util = {version="0.7.19"}
 backon = "1.6.0"
 tracing = "0.1.44"
 hex = "0.4.3"
+itertools = "0.15.0"
 
 # macros
 async-trait = "0.1.89"
-async-recursion = "1.1.1"
 bitfield-struct = "0.13.0"
 thiserror = "2.0.18"
 num_enum = "0.7.6"
