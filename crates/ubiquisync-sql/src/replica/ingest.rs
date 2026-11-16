@@ -3,7 +3,7 @@ use thiserror::Error;
 use ubiquisync_core::{
     crypto::{CipherKeyResolveError, RootKey256Fingerprint},
     log::{
-        LogDecodeError, LogHashContext, LogValidationError, SegmentCipherError,
+        ChainHash, LogDecodeError, LogHashContext, LogValidationError, SegmentCipherError,
         segment::{
             DecodedSegment, SegmentDecodeError, SegmentEncodeError, SegmentReader,
             SegmentVerifyError,
@@ -138,6 +138,40 @@ fn evaluate_segment_desc(
     }
 }
 
+/// How a verified segment body attaches to a stream's head.
+#[derive(Debug, PartialEq, Eq)]
+enum HeadPlacement {
+    /// The body ends at or below the head, there is nothing new to store.
+    NothingNew,
+    /// The body starts exactly at the head.
+    Exact,
+    /// The body starts below the head and passes through it, only the suffix is new.
+    Suffix,
+}
+
+/// Checks that a body continues the given head. The body's signature only proves the author
+/// wrote it, not that it is on the same branch as our head, so the chain hash at our head's size
+/// must be our head.
+fn place_on_head(
+    segment: &DecodedSegment<'_>,
+    head: &ChainHash,
+) -> Result<HeadPlacement, SegmentProcessError> {
+    if segment.head_chain.size <= head.size {
+        return Ok(HeadPlacement::NothingNew);
+    }
+    // the first chain point at or above our head size, which is the header's starting point when
+    // the body starts exactly at our head
+    match segment.chain_meta_iter(head.size).next() {
+        Some(m) if m.chain_hash == *head => {}
+        _ => return Err(SegmentProcessError::BadMetadata),
+    }
+    if segment.header.prev_chain.size == head.size {
+        Ok(HeadPlacement::Exact)
+    } else {
+        Ok(HeadPlacement::Suffix)
+    }
+}
+
 impl<R: Reducer> ReplicaInner<R> {
     #[tracing::instrument(skip_all)]
     pub(crate) async fn try_ingest_segment(
@@ -165,6 +199,7 @@ where {
                     stream,
                     peer_info,
                     hash_ctx,
+                    segment_desc,
                     segment_resolver,
                     src,
                 )
@@ -176,6 +211,7 @@ where {
                     stream,
                     peer_info,
                     hash_ctx,
+                    segment_desc,
                     segment_resolver,
                     src,
                 )
@@ -209,11 +245,12 @@ where {
         stream: StreamInfo,
         peer_info: &PeerInfo,
         hash_ctx: &LogHashContext,
+        segment_desc: &SegmentDescriptor,
         segment_resolver: &mut dyn SegmentBytesResolver,
         src: &IngestSource,
     ) -> Result<(), SegmentProcessError> {
         let segment = self
-            .fetch_and_verify_remote_segment(peer_info, hash_ctx, segment_resolver)
+            .fetch_and_verify_remote_segment(peer_info, hash_ctx, segment_desc, segment_resolver)
             .await?;
 
         self.place_segment(guard, stream, segment, src).await
@@ -233,7 +270,6 @@ where {
             )
         }
 
-        let header = &segment.decoded.header;
         let chain_hash = segment.decoded.head_chain;
 
         // we always commit in 2 phases:
@@ -242,19 +278,16 @@ where {
 
         // 1. save the segment
 
-        let body = if header.prev_chain.size < stream.head_chain.size {
-            segment
-                .decoded
-                .reencode_suffix(self.key_resolver.as_ref(), stream.head_chain.size)
-                .await?
-        } else {
+        let body = match place_on_head(&segment.decoded, &stream.head_chain)? {
+            HeadPlacement::NothingNew => return Ok(()),
             // the segment places directly on top of our existing stream
-
-            // first check that actual hashes line up
-            if header.prev_chain.hash != stream.head_chain.hash {
-                return Err(SegmentProcessError::BadMetadata);
+            HeadPlacement::Exact => segment.bytes.to_vec(),
+            HeadPlacement::Suffix => {
+                segment
+                    .decoded
+                    .reencode_suffix(self.key_resolver.as_ref(), stream.head_chain.size)
+                    .await?
             }
-            segment.bytes.to_vec()
         };
 
         let mut batch = self.db.new_batch();
@@ -308,6 +341,7 @@ where {
         &self,
         peer_info: &PeerInfo,
         hash_ctx: &LogHashContext,
+        segment_desc: &SegmentDescriptor,
         segment_resolver: &'a mut dyn SegmentBytesResolver,
     ) -> Result<ResolvedSegment<'a>, SegmentProcessError> {
         let Some(segment_bytes) = segment_resolver.fetch_segment_bytes().await? else {
@@ -321,6 +355,12 @@ where {
             .await
             .map_err(classify_decode_error)?;
         decoded.verify(&peer_info.commitment.sig_verify_key)?;
+        // the body must be the segment its descriptor claims, placement was decided from the descriptor
+        if decoded.header.prev_chain != segment_desc.prev_chain()
+            || decoded.head_chain != segment_desc.end_chain()
+        {
+            return Err(SegmentProcessError::BadMetadata);
+        }
         Ok(ResolvedSegment {
             bytes: segment_bytes,
             decoded,
@@ -384,6 +424,7 @@ where {
                             segment,
                             peer_info,
                             hash_ctx,
+                            segment_desc,
                             segment_resolver,
                             src,
                         )
@@ -407,11 +448,12 @@ where {
         existing_segment: DecodedSegment<'_>,
         peer_info: &PeerInfo,
         hash_ctx: &LogHashContext,
+        segment_desc: &SegmentDescriptor,
         segment_resolver: &mut dyn SegmentBytesResolver,
         src: &IngestSource,
     ) -> Result<(), SegmentProcessError> {
         let new_segment = self
-            .fetch_and_verify_remote_segment(peer_info, hash_ctx, segment_resolver)
+            .fetch_and_verify_remote_segment(peer_info, hash_ctx, segment_desc, segment_resolver)
             .await?;
 
         // first we're going to check and see if this segment extends
@@ -484,4 +526,121 @@ fn classify_decode_error(e: SegmentDecodeError) -> SegmentProcessError {
 struct ResolvedSegment<'a> {
     pub bytes: &'a [u8],
     pub decoded: DecodedSegment<'a>,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ops::Range;
+
+    use ubiquisync_core::{
+        crypto::{NullCipherKeyResolver, Signature},
+        hlc::Timestamp,
+        ids::{ContainerId, LogId, PeerId},
+        log::{
+            ChainHash, EntryBody, LogHashContext, OpEntry, PlaintextLogEntry,
+            segment::{SegmentReader, encode_segment_plaintext},
+        },
+    };
+
+    use super::{HeadPlacement, SegmentProcessError, place_on_head};
+
+    const MAIN: [&str; 6] = ["a0", "a1", "a2", "a3", "a4", "a5"];
+    /// Shares MAIN's first two entries, then diverges.
+    const FORK: [&str; 6] = ["a0", "a1", "b2", "b3", "b4", "b5"];
+
+    const LOG_ID: LogId = LogId {
+        peer_id: PeerId([1; 32]),
+        container_id: ContainerId([2; 16]),
+    };
+
+    fn entries(ops: &[&str]) -> Vec<PlaintextLogEntry<'static>> {
+        ops.iter()
+            .enumerate()
+            .map(|(i, op)| {
+                PlaintextLogEntry::IndexedEntry(EntryBody::Op(OpEntry::new(
+                    Timestamp::try_from(1000 + i as u64).unwrap(),
+                    Default::default(),
+                    op.as_bytes().to_vec().into(),
+                )))
+            })
+            .collect()
+    }
+
+    /// `heads[n]` is the branch's chain head after its first `n` entries.
+    async fn heads(ops: &[&str]) -> Vec<ChainHash> {
+        let ctx = LogHashContext::new(&LOG_ID);
+        let mut heads = vec![ChainHash::empty(&ctx)];
+        for e in entries(ops) {
+            let next = heads
+                .last()
+                .unwrap()
+                .compute_next_plaintext(&ctx, &mut None, &NullCipherKeyResolver, [&e].into_iter())
+                .await
+                .unwrap();
+            heads.push(next);
+        }
+        heads
+    }
+
+    /// Encodes entries `range` of `branch` as a segment and places it on `head`.
+    /// `place_on_head` doesn't check signatures, so a dummy one is used.
+    async fn place(
+        branch: &[&str],
+        range: Range<usize>,
+        head: ChainHash,
+    ) -> Result<HeadPlacement, SegmentProcessError> {
+        let ctx = LogHashContext::new(&LOG_ID);
+        let prev = heads(branch).await[range.start];
+        let bytes = encode_segment_plaintext(
+            &Signature::Ed25519([0; 64]),
+            &prev,
+            &None,
+            &LOG_ID,
+            &NullCipherKeyResolver,
+            entries(branch)[range].iter(),
+        )
+        .await
+        .unwrap();
+        let segment = SegmentReader::start(&bytes)
+            .unwrap()
+            .read(&NullCipherKeyResolver, &ctx)
+            .await
+            .unwrap();
+        place_on_head(&segment, &head)
+    }
+
+    async fn main_head(size: usize) -> ChainHash {
+        heads(&MAIN).await[size]
+    }
+
+    #[tokio::test]
+    async fn starts_at_head() {
+        let res = place(&MAIN, 4..6, main_head(4).await).await;
+        assert!(matches!(res, Ok(HeadPlacement::Exact)));
+    }
+
+    #[tokio::test]
+    async fn overlaps_head() {
+        let res = place(&MAIN, 2..6, main_head(4).await).await;
+        assert!(matches!(res, Ok(HeadPlacement::Suffix)));
+    }
+
+    #[tokio::test]
+    async fn ends_at_head() {
+        let res = place(&MAIN, 0..4, main_head(4).await).await;
+        assert!(matches!(res, Ok(HeadPlacement::NothingNew)));
+    }
+
+    #[tokio::test]
+    async fn starts_above_head() {
+        let res = place(&MAIN, 5..6, main_head(4).await).await;
+        assert!(matches!(res, Err(SegmentProcessError::BadMetadata)));
+    }
+
+    /// The bug this guards against: a body from another branch that passes our head's size.
+    #[tokio::test]
+    async fn forks_below_head() {
+        let res = place(&FORK, 2..6, main_head(4).await).await;
+        assert!(matches!(res, Err(SegmentProcessError::BadMetadata)));
+    }
 }
