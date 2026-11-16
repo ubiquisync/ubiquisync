@@ -239,6 +239,7 @@ where {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn resolve_and_place_segment(
         &self,
         guard: &KeyedLockGuard<StreamLog>,
@@ -367,6 +368,7 @@ where {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn try_place_overlapping_segment_desc(
         &self,
         guard: &KeyedLockGuard<StreamLog>,
@@ -440,6 +442,7 @@ where {
         Err(SegmentProcessError::Pending)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn try_place_overlapping_segment(
         &self,
         guard: &KeyedLockGuard<StreamLog>,

@@ -207,7 +207,8 @@ impl<R: Reducer> ReplicaInner<R> {
             };
 
             let mut err = None;
-            for todo in read_plan.to_read.iter() {
+            let mut aborted_at = None;
+            for (i, todo) in read_plan.to_read.iter().enumerate() {
                 let pack_file_desc = PackFileDescriptor {
                     topic: topic.clone(),
                     peer_id: peer,
@@ -241,12 +242,24 @@ impl<R: Reducer> ReplicaInner<R> {
                             // setting err here will cause the round to stop, but will attempt to
                             // save the peer's state before returning
                             err = Some(e);
+                            aborted_at = Some(i);
                             break;
                         }
                     },
                     Ok(()) => {
                         // mark as consumed
                         read_plan.next.consumed.insert(todo.file().clone());
+                    }
+                }
+            }
+
+            // packs we didn't get through (including the one that errored) that were blocked
+            // before keep their blocked entry, otherwise their attempt count and backoff reset
+            if let Some(i) = aborted_at {
+                for todo in &read_plan.to_read[i..] {
+                    let r = todo.file().get_ref();
+                    if let Some(blocked) = read_state.blocked.get(&r) {
+                        read_plan.next.blocked.insert(r, blocked.clone());
                     }
                 }
             }

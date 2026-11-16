@@ -20,6 +20,7 @@ use crate::{
 
 impl<R: Reducer> ReplicaInner<R> {
     /// Search for a fork of stream (or stream itself) upon which we can place new_segment.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn fork_search(
         &self,
         guard: &KeyedLockGuard<StreamLog>,
@@ -191,8 +192,9 @@ pub(crate) fn compare_segments(
             };
         }
         last_common = existing_ch.chain_hash;
-        debug_assert_eq!(existing_ch.cipher_info, new_ch.cipher_info);
-        cipher_info = existing_ch.cipher_info;
+        // a segment that starts with a UseKey entry leaves start_cipher out of its header, so
+        // at a segment's first point one side can be None while the other has the real cipher
+        cipher_info = existing_ch.cipher_info.or(new_ch.cipher_info);
     }
 }
 

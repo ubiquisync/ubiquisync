@@ -46,7 +46,7 @@ impl Reducer {
     /// declared names is (re)created, and it is tracked so its changes surface as
     /// events.
     ///
-    /// Returns [`TablesError::InvalidSchema`] if two declarations share a table
+    /// Returns [`TablesInitError::InvalidSchema`] if two declarations share a table
     /// `id` or a view `name`; the check runs before any table or view is
     /// created, so a rejected call has no side effects.
     pub async fn new(

@@ -38,7 +38,7 @@ pub struct ColumnSchema {
 impl TableSchema {
     /// Build a validated schema for the table `id`, exposed as a VIEW named
     /// `name` with `pk_names` for its key columns and `non_pk_cols` for the
-    /// rest. Returns [`TablesError::InvalidSchema`] on an empty/duplicate name,
+    /// rest. Returns [`InvalidSchemaError`] on an empty/duplicate name,
     /// a PK-name count that doesn't match `id`, or a duplicate column ID.
     pub fn new(
         id: TableId,

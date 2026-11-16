@@ -58,7 +58,10 @@ impl PackReadTodo {
     }
 
     fn blocked_again(&self, pack_desc: &PackFileDescriptor) -> BlockedPackInfo {
-        let ts = WallTime::now().as_millis();
+        // never let the span end before it starts if the wall clock stepped backwards
+        let ts = WallTime::now()
+            .as_millis()
+            .max(self.first_last_timestamps.start);
         BlockedPackInfo {
             file: pack_desc.id.clone(),
             pending_parents: Default::default(),
@@ -81,7 +84,9 @@ impl BlockedPackInfo {
         PackReadTodo {
             file,
             attempts: self.attempts,
-            first_last_timestamps: self.read_timestamps.start..ts.as_millis(),
+            // never let the span end before it starts if the wall clock stepped backwards
+            first_last_timestamps: self.read_timestamps.start
+                ..ts.as_millis().max(self.read_timestamps.start),
         }
     }
 }
@@ -319,6 +324,7 @@ impl<R: Reducer> ReplicaInner<R> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn process_pack_segment(
         &self,
         pack_desc: &PackFileDescriptor,
@@ -548,6 +554,16 @@ mod tests {
             [delay(1), delay(2), delay(3), delay(4), delay(100)],
             [10, 20, 40, 60, 60]
         );
+    }
+
+    /// A wall clock that stepped backwards must not produce a span that ends before it starts,
+    /// which the codec refuses to encode.
+    #[test]
+    fn clock_step_back_keeps_span_valid() {
+        let mut info = blocked_on(&file(1), &file(0));
+        info.read_timestamps = NOW + 1000..NOW + 1000;
+        let todo = info.todo(file(1), WallTime::from_millis(NOW));
+        assert_eq!(todo.first_last_timestamps, NOW + 1000..NOW + 1000);
     }
 
     /// A child whose parents were all consumed already is waiting on something else,

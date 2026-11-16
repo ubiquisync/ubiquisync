@@ -1,6 +1,5 @@
 use sea_query::{Expr, ExprTrait, Query};
 use ubiquisync_core::{
-    crypto::NullCipherKeyResolver,
     ids::LogId,
     log::{
         ChainHash, EntryBody, LogHashContext, OpEntry, PlaintextLogEntry,
@@ -114,7 +113,7 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
             &chain_head,
             &head_cipher,
             &log_id,
-            &NullCipherKeyResolver,
+            inner.key_resolver.as_ref(),
             entries.iter(),
         )
         .await?;

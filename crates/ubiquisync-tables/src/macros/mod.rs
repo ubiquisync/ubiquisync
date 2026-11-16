@@ -49,7 +49,7 @@ macro_rules! __col_type {
 
 /// Define one table's schema constructor: `index name (key type, ...) => { (idx col type) ... }`.
 ///
-/// Generates `pub mod name { pub fn table() -> Result<TableSchema, TablesError> }`.
+/// Generates `pub mod name { pub fn table() -> Result<TableSchema, InvalidSchemaError> }`.
 /// The table `name` is the user-facing VIEW name; the key and column idents are
 /// the VIEW's column names. Types are keywords: `Bytes`, `Text`, `I64`, `Uuid`.
 ///
