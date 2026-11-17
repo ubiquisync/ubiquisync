@@ -12,18 +12,18 @@ use crate::{
     },
     replica::{
         ReplicaInner,
-        schema::{CommitErr, HeadErr, streams},
-        stream_lock::KeyedLockGuard,
+        keyed_lock::KeyedLockGuard,
+        schema::{CommitErr, HeadErr, branches},
     },
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct StreamLog {
+pub(crate) struct LogKey {
     pub peer_db_id: i64,
     pub container_id: ContainerId,
 }
 
-impl StreamLog {
+impl LogKey {
     pub(crate) fn new(peer_db_id: i64, container_id: ContainerId) -> Self {
         Self {
             peer_db_id,
@@ -33,7 +33,7 @@ impl StreamLog {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct StreamInfo {
+pub(crate) struct BranchInfo {
     pub id: i64,
     pub head_chain: ChainHash,
     pub head_cipher: Option<CipherInfo>,
@@ -45,28 +45,28 @@ pub(crate) struct StreamInfo {
 }
 
 impl<R> ReplicaInner<R> {
-    pub(crate) async fn resolve_streams(
+    pub(crate) async fn resolve_branches(
         &self,
-        guard: &KeyedLockGuard<StreamLog>,
-    ) -> Result<Vec<StreamInfo>, DbError> {
+        guard: &KeyedLockGuard<LogKey>,
+    ) -> Result<Vec<BranchInfo>, DbError> {
         let key = guard.key();
         let rows = select_cols::<(
-            streams::Id,
-            streams::HeadSize,
-            streams::HeadHash,
-            streams::HeadCipher,
-            streams::HeadErr,
-            streams::CommitSize,
-            streams::CommitErr,
-            streams::ParentId,
-            streams::ForkSize,
+            branches::Id,
+            branches::HeadSize,
+            branches::HeadHash,
+            branches::HeadCipher,
+            branches::HeadErr,
+            branches::CommitSize,
+            branches::CommitErr,
+            branches::ParentId,
+            branches::ForkSize,
         )>(
             self.db.as_ref(),
             Query::select()
-                .from(streams::Table)
-                .and_where(Expr::column(streams::PeerId).eq(key.peer_db_id))
+                .from(branches::Table)
+                .and_where(Expr::column(branches::PeerId).eq(key.peer_db_id))
                 .and_where(
-                    Expr::column(streams::ContainerId).eq(Uuid::from_bytes(key.container_id.0)),
+                    Expr::column(branches::ContainerId).eq(Uuid::from_bytes(key.container_id.0)),
                 ),
         )
         .await?;
@@ -83,7 +83,7 @@ impl<R> ReplicaInner<R> {
                 parent_id,
                 fork_size,
             ) = r?;
-            let info = StreamInfo {
+            let info = BranchInfo {
                 id,
                 head_chain: ChainHash {
                     hash: head_hash,
@@ -101,21 +101,21 @@ impl<R> ReplicaInner<R> {
         Ok(res)
     }
 
-    pub(crate) async fn create_stream(
+    pub(crate) async fn create_branch(
         &self,
-        guard: &KeyedLockGuard<StreamLog>,
+        guard: &KeyedLockGuard<LogKey>,
         hash_ctx: &LogHashContext,
-    ) -> Result<StreamInfo, DbError> {
+    ) -> Result<BranchInfo, DbError> {
         let head_chain = ChainHash::empty(hash_ctx);
         let (id,) = insert_cols::<
             (
-                streams::PeerId,
-                streams::ContainerId,
-                streams::HeadSize,
-                streams::HeadHash,
-                streams::CommitSize,
+                branches::PeerId,
+                branches::ContainerId,
+                branches::HeadSize,
+                branches::HeadHash,
+                branches::CommitSize,
             ),
-            (streams::Id,),
+            (branches::Id,),
         >(
             self.db.as_ref(),
             (
@@ -125,11 +125,11 @@ impl<R> ReplicaInner<R> {
                 head_chain.hash,
                 0,
             ),
-            Query::insert().into_table(streams::Table),
+            Query::insert().into_table(branches::Table),
         )
         .await?
         .exactly_one()?;
-        Ok(StreamInfo {
+        Ok(BranchInfo {
             id,
             head_chain,
             head_cipher: None,

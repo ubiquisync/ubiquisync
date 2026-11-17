@@ -1,10 +1,8 @@
-use std::{collections::HashMap, time::Duration};
+use std::time::Duration;
 
-use ubiquisync_core::pack::FileRemoteProvider;
-
-#[derive(Default)]
+/// A replica's settings. What it runs on is separate, in [`ReplicaDeps`](super::ReplicaDeps).
+#[derive(Debug, Clone, Default)]
 pub struct ReplicaConfig {
-    pub pack_remote_providers: HashMap<String, Box<dyn FileRemoteProvider>>,
     pub pack_sync: PackSyncConfig,
     pub commit_retry: CommitRetryConfig,
 }
@@ -41,10 +39,10 @@ impl Default for PackSyncConfig {
     }
 }
 
-/// Timing for retrying commits that stalled or fell behind their stream's head.
+/// Timing for retrying commits that stalled or fell behind their branch's head.
 #[derive(Debug, Clone)]
 pub struct CommitRetryConfig {
-    /// How often streams are checked for commits to retry.
+    /// How often branches are checked for commits to retry.
     pub poll_interval: Duration,
     /// First retry delay after an internal error. Doubles on each further failure up to
     /// `retry_max`. A restart retries once right away, whatever the delay. (A stall on

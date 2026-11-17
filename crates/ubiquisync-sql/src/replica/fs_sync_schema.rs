@@ -40,7 +40,7 @@ def_table_with_auto_id!(topics as __pack_topics (id) => {
 
 def_table!(topic_state as __pack_topic_state (remote_id: i64, topic_id: i64) => {
     // the dirty flag indicates that we have a membership change on this topic
-    // which requires resetting stream published sizes to 0 for containers which moved out of the topic
+    // which requires resetting branch published sizes to 0 for containers which moved out of the topic
     // and then 1) rewriting those in the new topic and 2) compacting old topic packs to remove the old container data
     dirty: bool,
     write_state: super::PackWriteState,
@@ -48,7 +48,7 @@ def_table!(topic_state as __pack_topic_state (remote_id: i64, topic_id: i64) => 
 
 def_table!(published as __pack_published (
     remote_id: i64, // TODO ref remotes
-    stream_id: i64, // TODO ref streams
+    branch_id: i64, // TODO ref branches
 ) => {
     published_size: u64, // TODO default 0
     // tracks when peer segments aren't published in a pack remote

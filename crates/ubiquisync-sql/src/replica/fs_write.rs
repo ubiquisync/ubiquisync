@@ -10,7 +10,7 @@ use crate::{
         ReplicaInner,
         fs_sync_schema::{DEFAULT_TOPIC_ID, PackWriteState, published, topic_state},
         ingest::IngestSource,
-        schema::{containers, peers, segments, streams},
+        schema::{branches, containers, peers, segments},
     },
 };
 use sea_query::{
@@ -48,16 +48,16 @@ impl<R: Reducer> ReplicaInner<R> {
         topic: &Topic,
         store: &PackStore,
     ) -> Result<(), PackPublishError> {
-        // TODO indexes: maybe containers(topic_id) and streams(container_id)
+        // TODO indexes: maybe containers(topic_id) and branches(container_id)
 
         // select segments we'll publish in this topic
         let now = WallTime::now();
         let grace_ms = self.config.pack_sync.peer_publish_grace.as_millis() as u64;
         let peer_grace_due = now.as_millis().saturating_sub(grace_ms);
         let rows = select_cols::<(
-            streams::Id,
+            branches::Id,
             segments::Body,
-            streams::ContainerId,
+            branches::ContainerId,
             peers::PeerId,
             Nullable<published::PublishedSize>,
         )>(
@@ -65,25 +65,25 @@ impl<R: Reducer> ReplicaInner<R> {
             Query::select()
                 .from(segments::Table)
                 .inner_join(
-                    streams::Table,
-                    Expr::col((segments::Table, segments::StreamId))
-                        .eq(Expr::col((streams::Table, streams::Id))),
+                    branches::Table,
+                    Expr::col((segments::Table, segments::BranchId))
+                        .eq(Expr::col((branches::Table, branches::Id))),
                 )
                 // left join because a container with no row is in the default topic
                 .left_join(
                     containers::Table,
-                    Expr::col((streams::Table, streams::ContainerId))
+                    Expr::col((branches::Table, branches::ContainerId))
                         .eq(Expr::col((containers::Table, containers::ContainerId))),
                 )
                 .inner_join(
                     peers::Table,
-                    Expr::col((streams::Table, streams::PeerId))
+                    Expr::col((branches::Table, branches::PeerId))
                         .eq(Expr::col((peers::Table, peers::Id))),
                 )
                 .left_join(
                     published::Table,
-                    Expr::col((streams::Table, streams::Id))
-                        .eq(Expr::col((published::Table, published::StreamId)))
+                    Expr::col((branches::Table, branches::Id))
+                        .eq(Expr::col((published::Table, published::BranchId)))
                         .and(Expr::col((published::Table, published::RemoteId)).eq(remote_id)),
                 )
                 .and_where(
@@ -100,14 +100,17 @@ impl<R: Reducer> ReplicaInner<R> {
                     ])),
                 )
                 .and_where(
-                    // select our own streams or peer streams that have been pending since before our grace timestamp
-                    Expr::col((streams::Table, streams::PeerId))
+                    // select our own branches or peer branches that have been pending since before our grace timestamp
+                    Expr::col((branches::Table, branches::PeerId))
                         .eq(self.self_db_id)
                         .or(Expr::col((published::Table, published::PendingSince))
                             .lt(peer_grace_due)),
                 )
                 .order_by_columns([
-                    ((streams::Table, streams::Id).into_column_ref(), Order::Asc),
+                    (
+                        (branches::Table, branches::Id).into_column_ref(),
+                        Order::Asc,
+                    ),
                     // order on end_size because its already in the primary key index
                     (
                         (segments::Table, segments::EndSize).into_column_ref(),
@@ -140,11 +143,11 @@ impl<R: Reducer> ReplicaInner<R> {
         let mut pack_builder = PackBuilder::new(pack_desc, write_state.tips.into_iter().collect());
         let mut db_batch = self.db.new_batch();
         let mut seen_peers = HashSet::new();
-        // chunk by streams
+        // chunk by branches
         for chunk in
-            segments.chunk_by(|(a_stream, _, _, _, _), (b_stream, _, _, _, _)| a_stream == b_stream)
+            segments.chunk_by(|(a_branch, _, _, _, _), (b_branch, _, _, _, _)| a_branch == b_branch)
         {
-            let (stream_id, _, container_id, peer_id, published_size) =
+            let (branch_id, _, container_id, peer_id, published_size) =
                 chunk.first().expect("non-empty chunk");
 
             // ensure peer inits are written
@@ -172,7 +175,7 @@ impl<R: Reducer> ReplicaInner<R> {
             self.update_published_batch(
                 db_batch.as_mut(),
                 &IngestSource::Pack { remote_id },
-                *stream_id,
+                *branch_id,
                 new_published_size,
             )?;
         }
@@ -214,7 +217,7 @@ impl<R: Reducer> ReplicaInner<R> {
     pub(crate) async fn update_published(
         &self,
         src: &IngestSource,
-        stream_id: i64,
+        branch_id: i64,
         size: u64,
     ) -> Result<(), DbError> {
         let IngestSource::Pack { remote_id } = src else {
@@ -223,14 +226,14 @@ impl<R: Reducer> ReplicaInner<R> {
         insert_cols::<
             (
                 published::RemoteId,
-                published::StreamId,
+                published::BranchId,
                 published::PublishedSize,
                 published::PendingSince,
             ),
             (),
         >(
             self.db.as_ref(),
-            (*remote_id, stream_id, size, None),
+            (*remote_id, branch_id, size, None),
             &mut update_published_stmt(size),
         )
         .await?;
@@ -241,7 +244,7 @@ impl<R: Reducer> ReplicaInner<R> {
         &self,
         batch: &mut dyn DbBatch,
         src: &IngestSource,
-        stream_id: i64,
+        branch_id: i64,
         size: u64,
     ) -> Result<(), DbError> {
         let IngestSource::Pack { remote_id } = src else {
@@ -249,12 +252,12 @@ impl<R: Reducer> ReplicaInner<R> {
         };
         insert_cols_batch::<(
             published::RemoteId,
-            published::StreamId,
+            published::BranchId,
             published::PublishedSize,
             published::PendingSince,
         )>(
             batch,
-            (*remote_id, stream_id, size, None),
+            (*remote_id, branch_id, size, None),
             &mut update_published_stmt(size),
         )
     }
@@ -329,7 +332,7 @@ fn update_published_stmt(size: u64) -> InsertStatement {
         .on_conflict(
             OnConflict::columns([
                 published::RemoteId.into_iden(),
-                published::StreamId.into_iden(),
+                published::BranchId.into_iden(),
             ])
             .update_column(published::PublishedSize)
             .update_column(published::PendingSince)

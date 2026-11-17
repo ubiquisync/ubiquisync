@@ -29,7 +29,8 @@ use ubiquisync_sql::{
     op::OpCodec,
     reducer::{ApplyError, PrepareError, Reducer as SqlReducer},
     replica::{
-        CommitRetryConfig, PackSyncConfig, Replica, ReplicaConfig, test_support::StreamHeads,
+        CommitRetryConfig, PackSyncConfig, Replica, ReplicaConfig, ReplicaDeps,
+        test_support::BranchHeads,
     },
 };
 use ubiquisync_sqlite::SqliteDb;
@@ -61,7 +62,7 @@ async fn stalled_commits_catch_up(failure: Failure, retry_delay: Duration, resta
     let writer_replica = writer.open_attached().await;
     let mut reader_replica = reader.open_attached().await;
 
-    // the reader stalls on the first entry, so the later ones land on a stream whose commit
+    // the reader stalls on the first entry, so the later ones land on a branch whose commit
     // is already behind and are stored without being committed
     reader.faults.fail(Some(failure));
     for keys in [0..3, 3..5] {
@@ -242,7 +243,7 @@ impl Peer {
             SecretBox::new(Box::new([self.key_seed; 32])),
             SecretBox::new(Box::new([self.key_seed + 100; 32])),
         );
-        let mut config = ReplicaConfig {
+        let config = ReplicaConfig {
             pack_sync: PackSyncConfig {
                 poll_interval: TICK,
                 pack_retry_min: TICK,
@@ -254,14 +255,14 @@ impl Peer {
                 retry_min: self.retry_delay,
                 retry_max: self.retry_delay,
             },
-            ..Default::default()
         };
-        config
-            .pack_remote_providers
-            .insert(FOLDER.into(), Box::new(StdFsRemoteProvider));
-        Replica::new(APP_ID, Box::new(db), reducer, Box::new(credentials), config)
-            .await
-            .unwrap()
+        let deps = ReplicaDeps {
+            db: Box::new(db),
+            reducer,
+            credentials: Box::new(credentials),
+            pack_remote_providers: [(FOLDER.into(), Box::new(StdFsRemoteProvider) as _)].into(),
+        };
+        Replica::new(APP_ID, deps, config).await.unwrap()
     }
 }
 
@@ -346,9 +347,9 @@ async fn write(replica: &Replica<FlakyReducer>, keys: Range<i64>) {
     }
 }
 
-/// Every stream head the replica has stored, comparable across replicas.
-async fn heads(replica: &Replica<FlakyReducer>) -> HashMap<(PeerId, ContainerId), StreamHeads> {
-    replica.sync_snapshot().await.unwrap().streams
+/// Every branch head the replica has stored, comparable across replicas.
+async fn heads(replica: &Replica<FlakyReducer>) -> HashMap<(PeerId, ContainerId), BranchHeads> {
+    replica.sync_snapshot().await.unwrap().branches
 }
 
 /// The table rows the replica has committed.

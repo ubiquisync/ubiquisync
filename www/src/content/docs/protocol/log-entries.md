@@ -16,7 +16,7 @@ A log entry is one operation plus metadata:
 | Field | Contents |
 |---|---|
 | `op` | The state mutation — one operation from the domain's op vocabulary. |
-| `timestamp` | HLC timestamp, monotonically non-decreasing within a peer's stream. |
+| `timestamp` | HLC timestamp, monotonically non-decreasing within a peer's log. |
 | `user_id` | Optional user attribution (see below). |
 
 The envelope is generic over its operation vocabulary: each data domain — such as [tables](/protocol/tables/) — defines its own op type and carries it in this same envelope. Any domains in use draw timestamps from a single shared clock per peer, so timestamps are causally comparable across them.

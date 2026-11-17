@@ -15,7 +15,7 @@ use crate::{
 /// of the next step.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpEntry<B: BytesWrapper, T: TimestampRepr> {
-    /// HLC timestamp — monotonically non-decreasing within a peer's stream.
+    /// HLC timestamp — monotonically non-decreasing within a peer's log.
     /// Entries written in one atomic transaction share a tick, so they are
     /// treated as one logical write by LWW comparisons.
     pub timestamp: T,
@@ -26,7 +26,7 @@ pub struct OpEntry<B: BytesWrapper, T: TimestampRepr> {
     /// is implicit from the peer directory and no server assertion exists.
     ///
     /// Do not read this as "the author"; read it as "who the server said this
-    /// was." It is distinct from a stream's `peer_id` (which stream the entry
+    /// was." It is distinct from a log's `peer_id` (which log the entry
     /// came from).
     ///
     /// This _can_ be empty in server logs if and only if none of the ops are user attributable.

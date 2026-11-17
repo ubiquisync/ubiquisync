@@ -20,11 +20,11 @@ use crate::{
     reducer::Reducer,
     replica::{
         ReplicaInner,
+        branches::{BranchInfo, LogKey},
+        keyed_lock::KeyedLockGuard,
         peers::PeerInfo,
-        schema::{segments, streams},
+        schema::{branches, segments},
         segment::GetSegmentError,
-        stream_lock::KeyedLockGuard,
-        streams::{StreamInfo, StreamLog},
     },
 };
 
@@ -81,28 +81,28 @@ pub(crate) enum IngestSource {
 enum PlaceSegmentDescResult {
     /// An empty segment which can't be placed anywhere.
     Empty,
-    /// The first segment in a stream.
+    /// The first segment in a log we hold nothing of yet.
     FirstSegment,
-    /// Can be placed exactly on top of an existing stream.
-    PlaceExact(StreamInfo),
+    /// Can be placed exactly on top of an existing branch.
+    PlaceExact(BranchInfo),
     /// We already have the full segment.
-    AlreadyExists(StreamInfo),
+    AlreadyExists(BranchInfo),
     /// There is no existing segment which this segment extends.
     NoAnchor,
     /// This segment may overlap with one or more segments we already have.
-    Overlaps(Vec<StreamInfo>),
+    Overlaps(Vec<BranchInfo>),
 }
 
 fn evaluate_segment_desc(
     segment_desc: &SegmentDescriptor,
-    streams: &[StreamInfo],
+    branches: &[BranchInfo],
 ) -> PlaceSegmentDescResult {
     if segment_desc.idx_range.is_empty() {
         // pathological case of an empty segment
         return PlaceSegmentDescResult::Empty;
     }
 
-    if streams.is_empty() {
+    if branches.is_empty() {
         if segment_desc.idx_range.start == 0 {
             return PlaceSegmentDescResult::FirstSegment;
         } else {
@@ -113,19 +113,19 @@ fn evaluate_segment_desc(
     let prev_chain = segment_desc.prev_chain();
     let end_chain = segment_desc.end_chain();
 
-    if let Some(stream) = streams.iter().find(|s| s.head_chain == end_chain) {
-        return PlaceSegmentDescResult::AlreadyExists(stream.clone());
+    if let Some(branch) = branches.iter().find(|s| s.head_chain == end_chain) {
+        return PlaceSegmentDescResult::AlreadyExists(branch.clone());
     }
 
-    if let Some(stream) = streams.iter().find(|s| s.head_chain == prev_chain) {
-        return PlaceSegmentDescResult::PlaceExact(stream.clone());
+    if let Some(branch) = branches.iter().find(|s| s.head_chain == prev_chain) {
+        return PlaceSegmentDescResult::PlaceExact(branch.clone());
     }
 
-    if streams.iter().all(|s| s.head_chain.size < prev_chain.size) {
+    if branches.iter().all(|s| s.head_chain.size < prev_chain.size) {
         return PlaceSegmentDescResult::NoAnchor;
     }
 
-    let overlapping = streams
+    let overlapping = branches
         .iter()
         .filter(|s| prev_chain.size < s.head_chain.size)
         .cloned()
@@ -138,7 +138,7 @@ fn evaluate_segment_desc(
     }
 }
 
-/// How a verified segment body attaches to a stream's head.
+/// How a verified segment body attaches to a branch's head.
 #[derive(Debug, PartialEq, Eq)]
 enum HeadPlacement {
     /// The body ends at or below the head, there is nothing new to store.
@@ -185,18 +185,18 @@ impl<R: Reducer> ReplicaInner<R> {
 where {
         // first aquire the lock for this log
         let guard = self
-            .stream_locks
-            .lock(&StreamLog::new(peer_info.db_id, segment_desc.container_id))
+            .log_locks
+            .lock(&LogKey::new(peer_info.db_id, segment_desc.container_id))
             .await;
 
-        let streams = self.resolve_streams(&guard).await?;
-        match evaluate_segment_desc(segment_desc, &streams) {
+        let branches = self.resolve_branches(&guard).await?;
+        match evaluate_segment_desc(segment_desc, &branches) {
             PlaceSegmentDescResult::Empty => Ok(()),
             PlaceSegmentDescResult::FirstSegment => {
-                let stream = self.create_stream(&guard, hash_ctx).await?;
+                let branch = self.create_branch(&guard, hash_ctx).await?;
                 self.resolve_and_place_segment(
                     &guard,
-                    stream,
+                    branch,
                     peer_info,
                     hash_ctx,
                     segment_desc,
@@ -205,10 +205,10 @@ where {
                 )
                 .await
             }
-            PlaceSegmentDescResult::PlaceExact(stream) => {
+            PlaceSegmentDescResult::PlaceExact(branch) => {
                 self.resolve_and_place_segment(
                     &guard,
-                    stream,
+                    branch,
                     peer_info,
                     hash_ctx,
                     segment_desc,
@@ -217,8 +217,8 @@ where {
                 )
                 .await
             }
-            PlaceSegmentDescResult::AlreadyExists(stream) => {
-                self.update_published(src, stream.id, segment_desc.idx_range.end)
+            PlaceSegmentDescResult::AlreadyExists(branch) => {
+                self.update_published(src, branch.id, segment_desc.idx_range.end)
                     .await?;
                 Ok(())
             }
@@ -228,7 +228,7 @@ where {
                     &guard,
                     segment_desc,
                     overlapping,
-                    &streams,
+                    &branches,
                     peer_info,
                     hash_ctx,
                     segment_resolver,
@@ -242,8 +242,8 @@ where {
     #[allow(clippy::too_many_arguments)]
     async fn resolve_and_place_segment(
         &self,
-        guard: &KeyedLockGuard<StreamLog>,
-        stream: StreamInfo,
+        guard: &KeyedLockGuard<LogKey>,
+        branch: BranchInfo,
         peer_info: &PeerInfo,
         hash_ctx: &LogHashContext,
         segment_desc: &SegmentDescriptor,
@@ -254,56 +254,56 @@ where {
             .fetch_and_verify_remote_segment(peer_info, hash_ctx, segment_desc, segment_resolver)
             .await?;
 
-        self.place_segment(guard, stream, segment, src).await
+        self.place_segment(guard, branch, segment, src).await
     }
 
     #[tracing::instrument(skip_all)]
     async fn place_segment(
         &self,
-        guard: &KeyedLockGuard<StreamLog>,
-        mut stream: StreamInfo,
+        guard: &KeyedLockGuard<LogKey>,
+        mut branch: BranchInfo,
         segment: ResolvedSegment<'_>,
         src: &IngestSource,
     ) -> Result<(), SegmentProcessError> {
-        if let Some(HeadErr::Blocked(_size)) = stream.head_err {
+        if let Some(HeadErr::Blocked(_size)) = branch.head_err {
             todo!(
-                "if the stream is blocked, then we need to only ingest up to the specified size, we'll need to add logic for truncating segments to do this"
+                "if the branch is blocked, then we need to only ingest up to the specified size, we'll need to add logic for truncating segments to do this"
             )
         }
 
         let chain_hash = segment.decoded.head_chain;
 
         // we always commit in 2 phases:
-        // 1. save the segment and advance stream head
+        // 1. save the segment and advance branch head
         // 2. iterate over each entry we CAN decode and commit
 
         // 1. save the segment
 
-        let body = match place_on_head(&segment.decoded, &stream.head_chain)? {
+        let body = match place_on_head(&segment.decoded, &branch.head_chain)? {
             HeadPlacement::NothingNew => return Ok(()),
-            // the segment places directly on top of our existing stream
+            // the segment places directly on top of our existing branch
             HeadPlacement::Exact => segment.bytes.to_vec(),
             HeadPlacement::Suffix => {
                 segment
                     .decoded
-                    .reencode_suffix(self.key_resolver.as_ref(), stream.head_chain.size)
+                    .reencode_suffix(self.key_resolver.as_ref(), branch.head_chain.size)
                     .await?
             }
         };
 
         let mut batch = self.db.new_batch();
         insert_cols_batch::<(
-            segments::StreamId,
+            segments::BranchId,
             segments::StartIdx,
             segments::EndSize,
             segments::Body,
         )>(
             batch.as_mut(),
-            (stream.id, stream.head_chain.size, chain_hash.size, body),
+            (branch.id, branch.head_chain.size, chain_hash.size, body),
             Query::insert().into_table(segments::Table),
         )?;
 
-        update_cols_batch::<(streams::HeadSize, streams::HeadHash, streams::HeadCipher)>(
+        update_cols_batch::<(branches::HeadSize, branches::HeadHash, branches::HeadCipher)>(
             batch.as_mut(),
             (
                 chain_hash.size,
@@ -311,11 +311,11 @@ where {
                 segment.decoded.head_cipher,
             ),
             Query::update()
-                .table(streams::Table)
-                .and_where(Expr::column(streams::Id).eq(stream.id)),
+                .table(branches::Table)
+                .and_where(Expr::column(branches::Id).eq(branch.id)),
         )?;
 
-        self.update_published_batch(batch.as_mut(), src, stream.id, chain_hash.size)?;
+        self.update_published_batch(batch.as_mut(), src, branch.id, chain_hash.size)?;
 
         batch.commit().await?;
 
@@ -323,11 +323,11 @@ where {
         // to auto-resume later via other periodic processes, but for now packs succeed or fail completely
 
         // we should only call try commit when commit size already matched head size, otherwise commit is behind and we'll fail
-        if stream.head_chain.size == stream.commit_size {
-            // make sure to update the stream based on our latest updates
-            stream.head_chain = chain_hash;
-            stream.head_cipher = segment.decoded.head_cipher;
-            self.try_commit(guard, &mut stream, segment.decoded)
+        if branch.head_chain.size == branch.commit_size {
+            // make sure to update the branch based on our latest updates
+            branch.head_chain = chain_hash;
+            branch.head_cipher = segment.decoded.head_cipher;
+            self.try_commit(guard, &mut branch, segment.decoded)
                 .await
                 .map_err(|e| match e {
                     CommitError::Db(e) => SegmentProcessError::Db(e),
@@ -371,10 +371,10 @@ where {
     #[allow(clippy::too_many_arguments)]
     async fn try_place_overlapping_segment_desc(
         &self,
-        guard: &KeyedLockGuard<StreamLog>,
+        guard: &KeyedLockGuard<LogKey>,
         segment_desc: &SegmentDescriptor,
-        candidate_streams: Vec<StreamInfo>,
-        all_streams: &[StreamInfo],
+        candidate_branches: Vec<BranchInfo>,
+        all_branches: &[BranchInfo],
         peer_info: &PeerInfo,
         hash_ctx: &LogHashContext,
         segment_resolver: &mut dyn SegmentBytesResolver,
@@ -384,10 +384,10 @@ where {
         let end_chain = segment_desc.end_chain();
         // first check if we have the segment already
         // this is the common case, so we do it first
-        for stream in candidate_streams.iter() {
-            if stream.head_chain.size > end_chain.size {
+        for branch in candidate_branches.iter() {
+            if branch.head_chain.size > end_chain.size {
                 if let Some(segment) = self
-                    .get_segment_for_size(guard, hash_ctx, stream.id, end_chain.size)
+                    .get_segment_for_size(guard, hash_ctx, branch.id, end_chain.size)
                     .await?
                 {
                     if segment
@@ -396,12 +396,12 @@ where {
                         .any(|e| e.chain_meta.chain_hash == end_chain)
                     {
                         // we already have the segment and we found where it is
-                        self.update_published(src, stream.id, end_chain.size)
+                        self.update_published(src, branch.id, end_chain.size)
                             .await?;
                         return Ok(());
                     }
                 } else {
-                    // this can happen if the stream is a fork and the segment is held by it's parents
+                    // this can happen if the branch is a fork and the segment is held by it's parents
                     continue;
                 }
             }
@@ -409,9 +409,9 @@ where {
 
         // now we have proved that at least we don't have the end of this segment,
         // so we try to see if we can place the start of the segment anywhere
-        for stream in candidate_streams.iter() {
+        for branch in candidate_branches.iter() {
             if let Some(segment) = self
-                .get_segment_for_size(guard, hash_ctx, stream.id, prev_chain.size)
+                .get_segment_for_size(guard, hash_ctx, branch.id, prev_chain.size)
                 .await?
             {
                 if segment
@@ -421,8 +421,8 @@ where {
                     return self
                         .try_place_overlapping_segment(
                             guard,
-                            stream,
-                            all_streams,
+                            branch,
+                            all_branches,
                             segment,
                             peer_info,
                             hash_ctx,
@@ -433,7 +433,7 @@ where {
                         .await;
                 }
             } else {
-                // this can happen if the stream we're checking is a fork, and its parent contains this entry
+                // this can happen if the branch we're checking is a fork, and its parent contains this entry
                 continue;
             }
         }
@@ -445,9 +445,9 @@ where {
     #[allow(clippy::too_many_arguments)]
     async fn try_place_overlapping_segment(
         &self,
-        guard: &KeyedLockGuard<StreamLog>,
-        stream: &StreamInfo,
-        all_streams: &[StreamInfo],
+        guard: &KeyedLockGuard<LogKey>,
+        branch: &BranchInfo,
+        all_branches: &[BranchInfo],
         existing_segment: DecodedSegment<'_>,
         peer_info: &PeerInfo,
         hash_ctx: &LogHashContext,
@@ -462,7 +462,7 @@ where {
         // first we're going to check and see if this segment extends
         // any existing head
         let new_head = new_segment.decoded.head_chain;
-        let stream = if let Some(extends) = all_streams
+        let branch = if let Some(extends) = all_branches
             .iter()
             // make sure the new segment extens the candidate, otherwise we'd have an empty segment
             // technically we should have filtered this out already, but this is safer
@@ -478,14 +478,14 @@ where {
                     .iter()
                     .any(|e| e.chain_meta.chain_hash == s.head_chain)
             }) {
-            // now we know that this segment extends this stream at some, it just has an overlapping prefix
-            // note that we don't need to worry about forks here because a fork cannot happen at the head of any stream
+            // now we know that this segment extends this branch at some, it just has an overlapping prefix
+            // note that we don't need to worry about forks here because a fork cannot happen at the head of any branch
             extends.clone()
         } else if let Some(fork) = self
             .fork_search(
                 guard,
-                stream.clone(),
-                all_streams,
+                branch.clone(),
+                all_branches,
                 existing_segment,
                 &new_segment.decoded,
                 hash_ctx,
@@ -499,7 +499,7 @@ where {
             return Ok(());
         };
 
-        self.place_segment(guard, stream, new_segment, src).await
+        self.place_segment(guard, branch, new_segment, src).await
     }
 }
 
