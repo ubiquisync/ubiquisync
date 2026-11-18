@@ -11,7 +11,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
@@ -193,6 +193,137 @@ async fn forked_own_log_keeps_writing(backed_up: i64) {
     for replica in [restored_replica, writer_replica, reader_replica] {
         replica.shutdown().await;
     }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// `changed_at` is a replica's own record of when each of its branches last changed. Local
+/// writes and ingested segments both move a branch's stamp past every stamp the replica handed
+/// out before. A branch whose head didn't move keeps its stamp, also when its stored entries
+/// are committed later.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn changed_at_follows_branch_heads() {
+    let root = temp_root("changed-at");
+    let (writer, reader) = (Peer::new(&root, 1, TICK), Peer::new(&root, 2, TICK));
+    let started = wall_ms();
+    let writer_replica = writer.open_attached().await;
+    let writer_id = writer_replica.sync_snapshot().await.unwrap().self_peer;
+
+    // every local write moves the stamp of the log it wrote to
+    write(&writer_replica, 0..1).await;
+    let first = changed_at(&writer_replica).await[&writer_id];
+    assert!(first >= started);
+    write(&writer_replica, 1..2).await;
+    let second = changed_at(&writer_replica).await[&writer_id];
+    assert!(second > first);
+
+    // the reader stamps the writer's log when it stores it, not when it was written
+    let reader_opened = wall_ms();
+    let reader_replica = reader.open_attached().await;
+    let reader_id = reader_replica.sync_snapshot().await.unwrap().self_peer;
+    wait_until_synced(&reader_replica, &writer_replica).await;
+    let ingested = changed_at(&reader_replica).await[&writer_id];
+    assert!(ingested >= reader_opened);
+
+    // the reader's own write is stamped after that, and leaves the writer's log alone
+    write(&reader_replica, 10..11).await;
+    let stamps = changed_at(&reader_replica).await;
+    assert_eq!(stamps[&writer_id], ingested);
+    assert!(stamps[&reader_id] > ingested);
+
+    // more from the writer moves its log past everything else on the reader, here stored
+    // without being committed
+    reader.faults.fail(Some(Failure::Prepare));
+    write(&writer_replica, 2..3).await;
+    wait_until_synced(&reader_replica, &writer_replica).await;
+    let stamps = changed_at(&reader_replica).await;
+    assert!(stamps[&writer_id] > stamps[&reader_id]);
+
+    // committing the stored entry later doesn't move the head, so the stamp stays
+    reader.faults.fail(None);
+    wait_until("the reader commits the stored entry", async || {
+        rows(&reader_replica).await.len() == 4
+    })
+    .await;
+    assert_eq!(changed_at(&reader_replica).await, stamps);
+
+    writer_replica.shutdown().await;
+    reader_replica.shutdown().await;
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A fork is a new branch row, stamped when it is first stored, and the branch it forked from
+/// keeps its stamp.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn changed_at_stamps_a_new_fork() {
+    let root = temp_root("changed-at-fork");
+    let (writer, reader) = (Peer::new(&root, 1, TICK), Peer::new(&root, 2, TICK));
+
+    // the writer backs up its db after three entries, carries on to five, and the reader syncs
+    let writer_replica = writer.open().await;
+    write(&writer_replica, 0..3).await;
+    writer_replica.shutdown().await;
+    let restored = writer.backup();
+    let writer_replica = writer.open_attached().await;
+    write(&writer_replica, 3..5).await;
+    let reader_replica = reader.open_attached().await;
+    wait_until_synced(&reader_replica, &writer_replica).await;
+    writer_replica.shutdown().await;
+    let before = reader_replica.branch_changes().await.unwrap();
+    assert_eq!(before.len(), 1);
+    let (_, _, _, root_stamp) = before[0];
+
+    // the backup writes three entries of its own on top of the first three: a fork with head 6
+    let restored_replica = restored.open().await;
+    write(&restored_replica, 5..8).await;
+    restored.attach(&restored_replica).await;
+    wait_until("the reader stores the whole fork", async || {
+        let changes = reader_replica.branch_changes().await.unwrap();
+        changes.iter().any(|(_, _, head_size, _)| *head_size == 6)
+    })
+    .await;
+
+    // ordered by stamp: the branch the reader already had, then the fork
+    let after = reader_replica.branch_changes().await.unwrap();
+    let stamps: Vec<(u64, u64)> = after.iter().map(|(_, _, size, at)| (*size, *at)).collect();
+    assert_eq!(stamps.len(), 2);
+    assert_eq!(stamps[0], (5, root_stamp));
+    assert_eq!(stamps[1].0, 6);
+    assert!(stamps[1].1 > root_stamp);
+
+    restored_replica.shutdown().await;
+    reader_replica.shutdown().await;
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A local write to a log whose commit is stalled is stored without being committed, and
+/// still moves the stamp.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn changed_at_moves_on_a_write_to_a_stalled_log() {
+    let root = temp_root("changed-at-stalled");
+    let writer = Peer::new(&root, 1, Duration::from_hours(1));
+
+    // a restored copy of the writer gets the entries the original wrote after the backup; they
+    // extend its own log, and its commit of them stalls
+    let writer_replica = writer.open().await;
+    write(&writer_replica, 0..3).await;
+    writer_replica.shutdown().await;
+    let restored = writer.backup();
+    let writer_replica = writer.open_attached().await;
+    write(&writer_replica, 3..5).await;
+    restored.faults.fail(Some(Failure::Prepare));
+    let restored_replica = restored.open_attached().await;
+    wait_until_synced(&restored_replica, &writer_replica).await;
+    writer_replica.shutdown().await;
+    assert_eq!(rows(&restored_replica).await.len(), 3);
+    let writer_id = restored_replica.sync_snapshot().await.unwrap().self_peer;
+    let stalled = changed_at(&restored_replica).await[&writer_id];
+
+    // the write goes on top of the stalled entries
+    write(&restored_replica, 5..6).await;
+    assert_eq!(rows(&restored_replica).await.len(), 3);
+    assert!(changed_at(&restored_replica).await[&writer_id] > stalled);
+
+    restored_replica.shutdown().await;
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -392,6 +523,29 @@ async fn write(replica: &Replica<FlakyReducer>, keys: Range<i64>) {
 /// Every branch head the replica has stored, comparable across replicas.
 async fn heads(replica: &Replica<FlakyReducer>) -> HashMap<(PeerId, ContainerId), BranchHeads> {
     replica.sync_snapshot().await.unwrap().branches
+}
+
+/// The replica's `changed_at` stamp for each author's log. Only for scenarios where every
+/// peer has a single branch (one container, no forks).
+async fn changed_at(replica: &Replica<FlakyReducer>) -> HashMap<PeerId, u64> {
+    let changes = replica.branch_changes().await.unwrap();
+    let stamps: HashMap<PeerId, u64> = changes
+        .iter()
+        .map(|(peer, _, _, changed_at)| (*peer, *changed_at))
+        .collect();
+    assert_eq!(
+        stamps.len(),
+        changes.len(),
+        "a peer has more than one branch"
+    );
+    stamps
+}
+
+fn wall_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
 }
 
 /// The table rows the replica has committed.

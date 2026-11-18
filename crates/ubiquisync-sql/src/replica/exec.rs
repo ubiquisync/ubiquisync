@@ -130,14 +130,16 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
                 branches::HeadHash,
                 branches::CommitSize,
                 branches::HeadCipher,
+                branches::ChangedAt,
             )>(
                 batch.as_mut(),
                 (
                     next_chain_head.size,
                     next_chain_head.hash,
-                    next_chain_head.size,
+                    next_chain_head.size, // head and commit sizes match
                     head_cipher,
-                ), // head and commit sizes match
+                    inner.next_changed_at(),
+                ),
                 Query::update()
                     .table(branches::Table)
                     .and_where(Expr::column(branches::Id).eq(branch_id)),
@@ -153,9 +155,19 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
             inner.reducer.post_apply(apply_state, &batch_result);
         } else {
             // we cannot commit because our commit status is non-Ok, so we just update the head size and hash
-            update_cols_batch::<(branches::HeadSize, branches::HeadHash, branches::HeadCipher)>(
+            update_cols_batch::<(
+                branches::HeadSize,
+                branches::HeadHash,
+                branches::HeadCipher,
+                branches::ChangedAt,
+            )>(
                 batch.as_mut(),
-                (next_chain_head.size, next_chain_head.hash, head_cipher),
+                (
+                    next_chain_head.size,
+                    next_chain_head.hash,
+                    head_cipher,
+                    inner.next_changed_at(),
+                ),
                 Query::update()
                     .table(branches::Table)
                     .and_where(Expr::column(branches::Id).eq(branch_id)),

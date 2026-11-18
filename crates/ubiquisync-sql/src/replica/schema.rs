@@ -36,6 +36,12 @@ def_table_with_auto_id!(branches as __replica_branches (id) => {
    commit_err: Option<super::CommitErr>,
    parent_id: Option<i64>, // TODO ref branches
    fork_size: Option<u64>,
+   // Local stamp of the last time this branch's head moved (or the branch was created), see
+   // `ReplicaInner::next_changed_at`. It only orders this replica's own branches by when they
+   // last changed, so a peer can ask for what changed since the last stamp it read from us.
+   // Stamps from different replicas can't be compared.
+   // TODO index this once something queries by it (p2p feed)
+   changed_at: u64,
    // TODO CHECK(commit_size <= head_size)
 });
 

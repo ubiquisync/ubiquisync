@@ -139,6 +139,7 @@ impl<R: Reducer> ReplicaInner<R> {
                 branches::CommitSize,
                 branches::ParentId,
                 branches::ForkSize,
+                branches::ChangedAt,
             ),
             (branches::Id,),
         >(
@@ -154,6 +155,7 @@ impl<R: Reducer> ReplicaInner<R> {
                 commit_size,
                 Some(parent.id),
                 Some(last_common.size),
+                self.next_changed_at(),
             ),
             Query::insert().into_table(branches::Table),
         )

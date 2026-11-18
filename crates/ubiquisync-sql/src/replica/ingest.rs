@@ -303,12 +303,18 @@ where {
             Query::insert().into_table(segments::Table),
         )?;
 
-        update_cols_batch::<(branches::HeadSize, branches::HeadHash, branches::HeadCipher)>(
+        update_cols_batch::<(
+            branches::HeadSize,
+            branches::HeadHash,
+            branches::HeadCipher,
+            branches::ChangedAt,
+        )>(
             batch.as_mut(),
             (
                 chain_hash.size,
                 chain_hash.hash,
                 segment.decoded.head_cipher,
+                self.next_changed_at(),
             ),
             Query::update()
                 .table(branches::Table)
