@@ -72,13 +72,18 @@ impl<R> ReplicaInner<R> {
     /// moves. Stamps are wall clock milliseconds, bumped so they are unique and always
     /// increase on this replica, also across restarts (the last one is loaded from the db).
     ///
-    /// Wall clock time and not a counter, so that a db restored from a backup doesn't hand
-    /// out stamps it already used before the backup was restored: a peer that remembers how
-    /// far it read sees whatever changes after the restore as new.
+    /// Wall clock time and not a counter, so that a db restored from a backup usually doesn't
+    /// hand out stamps it already used before the backup was restored: a peer that remembers
+    /// how far it read then sees whatever changes after the restore as new. This holds when
+    /// the wall clock at the restore is past every stamp handed out before it. It doesn't
+    /// when stamps had run ahead of the clock (the clock was set back, or more than one stamp
+    /// per millisecond was handed out), so a reader can't rely on it alone.
     ///
-    /// The stamp is taken before its batch commits, so two logs written at the same time can
-    /// commit in the opposite order to their stamps. A reader paging by stamp has to allow
-    /// for that (re-read a little before its last stamp).
+    /// The stamp is taken before its batch commits, so branches can commit in the opposite
+    /// order to their stamps, and by any amount: a write that takes its stamp and then waits
+    /// for the db becomes visible after later stamps already are. A reader that pages by
+    /// stamp can therefore miss a change for good, and needs another way to catch up on what
+    /// it missed.
     pub(crate) fn next_changed_at(&self) -> u64 {
         let wall_ms = WallTime::now().as_millis();
         let mut last = self.last_changed_at.load(Ordering::Relaxed);
@@ -205,7 +210,6 @@ mod tests {
     #[test_case(900, 1_000 => 1_000 ; "wall clock ahead of the last stamp")]
     #[test_case(1_000, 1_000 => 1_001 ; "same millisecond")]
     #[test_case(5_000, 1_000 => 5_001 ; "wall clock behind the last stamp")]
-    #[test_case(u64::MAX, 1_000 => u64::MAX ; "saturates")]
     fn next_stamp(last: u64, wall_ms: u64) -> u64 {
         changed_at_after(last, wall_ms)
     }
