@@ -1,5 +1,6 @@
-//! A replica whose commits stall keeps storing what it syncs, and the commit retry loop
-//! applies it once the cause is gone.
+//! Scripted sync scenarios between a few replicas on a shared folder remote: stalled commits
+//! that the commit retry loop has to finish, and forked logs. (`sim.rs` is the randomized
+//! counterpart.)
 
 use std::{
     collections::HashMap,
@@ -133,17 +134,10 @@ async fn fork_of_a_stalled_log_catches_up() {
     writer_replica.shutdown().await;
 
     // the backup writes different entries on top of the first three: a fork at entry 3
-    let restored_replica = restored.open_attached().await;
+    let restored_replica = restored.open().await;
     write(&restored_replica, 5..7).await;
-    wait_until("the reader stores the fork", async || {
-        let forks_at_3 = |(_, _, fork_size): &(u64, _, Option<u64>)| *fork_size == Some(3);
-        heads(&reader_replica)
-            .await
-            .values()
-            .flatten()
-            .any(forks_at_3)
-    })
-    .await;
+    restored.attach(&restored_replica).await;
+    wait_until_forked_at(&reader_replica, 3).await;
     assert!(rows(&reader_replica).await.is_empty());
 
     reader.faults.fail(None);
@@ -154,6 +148,51 @@ async fn fork_of_a_stalled_log_catches_up() {
 
     restored_replica.shutdown().await;
     reader_replica.shutdown().await;
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A device restored from a backup forks its own log as soon as it writes and syncs. Both
+/// copies keep writing to their own lineage, each gets the other's entries as a fork, and every
+/// device ends up with the same rows.
+#[test_case(3 ; "backup taken after three entries")]
+#[test_case(0 ; "backup taken before the log had any entry")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn forked_own_log_keeps_writing(backed_up: i64) {
+    let root = temp_root(&format!("own-fork-{backed_up}"));
+    let (writer, reader) = (Peer::new(&root, 1, TICK), Peer::new(&root, 2, TICK));
+
+    // the writer backs up its db, carries on, and publishes entries 0..5
+    let writer_replica = writer.open().await;
+    write(&writer_replica, 0..backed_up).await;
+    writer_replica.shutdown().await;
+    let restored = writer.backup();
+    let writer_replica = writer.open_attached().await;
+    write(&writer_replica, backed_up..5).await;
+    let reader_replica = reader.open_attached().await;
+
+    // the backup writes before it syncs, so what the original wrote since is a fork of its log
+    let restored_replica = restored.open().await;
+    write(&restored_replica, 5..7).await;
+    restored.attach(&restored_replica).await;
+    for replica in [&restored_replica, &writer_replica, &reader_replica] {
+        wait_until_forked_at(replica, backed_up as u64).await;
+    }
+
+    // both copies of the forked log can still write
+    write(&restored_replica, 7..9).await;
+    write(&writer_replica, 9..11).await;
+    for replica in [&restored_replica, &writer_replica, &reader_replica] {
+        wait_until("every device has every row", async || {
+            rows(replica).await.len() == 11
+        })
+        .await;
+    }
+    assert_eq!(rows(&restored_replica).await, rows(&reader_replica).await);
+    assert_eq!(rows(&writer_replica).await, rows(&reader_replica).await);
+
+    for replica in [restored_replica, writer_replica, reader_replica] {
+        replica.shutdown().await;
+    }
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -218,15 +257,18 @@ impl Peer {
         }
     }
 
-    /// Open this peer's replica and attach the shared remote, which the db remembers across
-    /// reopens.
     async fn open_attached(&self) -> Replica<FlakyReducer> {
         let replica = self.open().await;
+        self.attach(&replica).await;
+        replica
+    }
+
+    /// Attach the shared remote, which the db remembers across reopens.
+    async fn attach(&self, replica: &Replica<FlakyReducer>) {
         replica
             .add_remote(FOLDER, self.remote_dir.to_str().unwrap())
             .await
             .unwrap();
-        replica
     }
 
     /// Open (or reopen) this peer's replica on its db file.
@@ -373,6 +415,18 @@ async fn saved_clock(replica: &Replica<FlakyReducer>) -> Option<i64> {
         DbValue::Integer(clock) => Some(clock),
         ref other => panic!("unexpected clock value: {other:?}"),
     }
+}
+
+/// Waits until the replica holds a branch that forked off its parent at `fork_size`.
+async fn wait_until_forked_at(replica: &Replica<FlakyReducer>, fork_size: u64) {
+    wait_until("the replica stores the fork", async || {
+        let heads = heads(replica).await;
+        heads
+            .values()
+            .flatten()
+            .any(|head| head.2 == Some(fork_size))
+    })
+    .await;
 }
 
 async fn wait_until_synced(reader: &Replica<FlakyReducer>, writer: &Replica<FlakyReducer>) {

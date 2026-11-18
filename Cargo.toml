@@ -11,7 +11,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.0.4"
+version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/ubiquisync/ubiquisync"
@@ -23,11 +23,11 @@ repository = "https://github.com/ubiquisync/ubiquisync"
 #missing_docs = "warn"
 
 [workspace.dependencies]
-ubiquisync-core = { path = "crates/ubiquisync-core", version = "0.0.4" }
-ubiquisync-sql = { path = "crates/ubiquisync-sql", version = "0.0.4" }
-ubiquisync-postgres = { path = "crates/ubiquisync-postgres", version = "0.0.4" }
-ubiquisync-sqlite = { path = "crates/ubiquisync-sqlite", version = "0.0.4" }
-ubiquisync-tables = { path = "crates/ubiquisync-tables", version = "0.0.4" }
+ubiquisync-core = { path = "crates/ubiquisync-core", version = "0.1.0" }
+ubiquisync-sql = { path = "crates/ubiquisync-sql", version = "0.1.0" }
+ubiquisync-postgres = { path = "crates/ubiquisync-postgres", version = "0.1.0" }
+ubiquisync-sqlite = { path = "crates/ubiquisync-sqlite", version = "0.1.0" }
+ubiquisync-tables = { path = "crates/ubiquisync-tables", version = "0.1.0" }
 
 futures = "0.3.34"
 futures-channel = "0.3.34"

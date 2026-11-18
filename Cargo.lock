@@ -1732,7 +1732,7 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "ubiquisync-core"
-version = "0.0.4"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "bitfield-struct",
@@ -1773,14 +1773,14 @@ dependencies = [
 
 [[package]]
 name = "ubiquisync-postgres"
-version = "0.0.4"
+version = "0.1.0"
 dependencies = [
  "ubiquisync-sql",
 ]
 
 [[package]]
 name = "ubiquisync-sim"
-version = "0.0.4"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "secrecy",
@@ -1796,7 +1796,7 @@ dependencies = [
 
 [[package]]
 name = "ubiquisync-sql"
-version = "0.0.4"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "backon",
@@ -1818,7 +1818,7 @@ dependencies = [
 
 [[package]]
 name = "ubiquisync-sqlite"
-version = "0.0.4"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "rusqlite",
@@ -1829,7 +1829,7 @@ dependencies = [
 
 [[package]]
 name = "ubiquisync-tables"
-version = "0.0.4"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "bitfield-struct",

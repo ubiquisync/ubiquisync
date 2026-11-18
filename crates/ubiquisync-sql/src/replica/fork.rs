@@ -120,6 +120,14 @@ impl<R: Reducer> ReplicaInner<R> {
         last_common: ChainHash,
         cipher_info: Option<CipherInfo>,
     ) -> Result<BranchInfo, DbError> {
+        if guard.key().peer_db_id == self.self_db_id {
+            // local writes carry on from the root branch, see `exec`
+            tracing::warn!(
+                container = ?guard.key().container_id,
+                fork_size = last_common.size,
+                "our own log has forked: this device was restored from a backup or its db was copied"
+            );
+        }
         let commit_size = min(parent.commit_size, last_common.size);
         let (id,) = insert_cols::<
             (
