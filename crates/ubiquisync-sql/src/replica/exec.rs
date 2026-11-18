@@ -2,19 +2,18 @@ use sea_query::{Expr, ExprTrait, Query};
 use ubiquisync_core::{
     ids::LogId,
     log::{
-        ChainHash, EntryBody, LogHashContext, OpEntry, PlaintextLogEntry,
-        segment::encode_segment_plaintext,
+        EntryBody, LogHashContext, OpEntry, PlaintextLogEntry, segment::encode_segment_plaintext,
     },
     uuid::Uuid,
 };
 
 use crate::{
     Exec, ExecError,
-    db::sea_query::{insert_cols, insert_cols_batch, update_cols_batch},
+    db::sea_query::{insert_cols_batch, update_cols_batch},
     reducer::Reducer,
     replica::{
         Replica,
-        branches::LogKey,
+        branches::{BranchInfo, LogKey},
         schema::{branches, segments},
     },
 };
@@ -40,48 +39,33 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
         };
         let seed = LogHashContext::new(&log_id);
 
-        let (branch_id, chain_head, mut head_cipher, commit_err) = if branch_rows.is_empty() {
-            let empty_chain = ChainHash::empty(&seed);
-            let res = insert_cols::<
-                (
-                    branches::PeerId,
-                    branches::ContainerId,
-                    branches::HeadSize,
-                    branches::HeadHash,
-                    branches::CommitSize,
-                ),
-                (branches::Id,),
-            >(
-                inner.db.as_ref(),
-                (inner.self_db_id, container_id.0, 0, empty_chain.hash, 0),
-                Query::insert().into_table(branches::Table),
-            )
-            .await?;
-            let (branch_id,) = res.exactly_one()?;
-            (branch_id, empty_chain, None, None)
-        } else if branch_rows.len() > 1 {
-            todo!("found multiple rows, this means we have a fork and need to know what to do")
-        } else {
-            let branch = &branch_rows[0];
-
-            if branch.head_err.is_some() {
-                todo!("handle some unexpected status")
-            }
-
-            if branch.commit_err.is_none() && branch.commit_size != branch.head_chain.size {
-                return Err(ExecError::Internal(format!(
-                    "commit status is okay but head {} and commit {} sizes do not match",
-                    branch.head_chain.size, branch.commit_size,
-                )));
-            }
-
-            (
-                branch.id,
-                branch.head_chain,
-                branch.head_cipher,
-                branch.commit_err.clone(),
-            )
+        // Local writes go to the log's root branch. Our own log forks when this device was
+        // restored from a backup (or its db was copied to another device) and then wrote: what
+        // the other copy wrote arrives from the remote as a fork of our root, and is synced and
+        // committed like any other fork, so we carry on from the root.
+        let branch = match branch_rows.iter().find(|b| b.parent_id.is_none()) {
+            Some(root) => root.clone(),
+            None if branch_rows.is_empty() => inner.create_branch(&log_guard, &seed).await?,
+            None => return Err(ExecError::Internal("own log has no root branch".into())),
         };
+        if let Some(head_err) = branch.head_err {
+            return Err(ExecError::Internal(format!(
+                "can't write to a branch with head error {head_err:?}"
+            )));
+        }
+        if branch.commit_err.is_none() && branch.commit_size != branch.head_chain.size {
+            return Err(ExecError::Internal(format!(
+                "commit status is okay but head {} and commit {} sizes do not match",
+                branch.head_chain.size, branch.commit_size,
+            )));
+        }
+        let BranchInfo {
+            id: branch_id,
+            head_chain: chain_head,
+            mut head_cipher,
+            commit_err,
+            ..
+        } = branch;
 
         let mut batch = inner.db.new_batch();
         let timestamp = inner.local_hlc(batch.as_mut())?;
