@@ -1822,6 +1822,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "rusqlite",
+ "test-case",
  "tokio",
  "ubiquisync-sql",
  "ubiquisync-tables",

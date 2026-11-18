@@ -18,3 +18,4 @@ workspace = true
 ubiquisync-sql = { workspace = true, features = ["test-support"] }
 ubiquisync-tables = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true }
+test-case = { workspace = true }
