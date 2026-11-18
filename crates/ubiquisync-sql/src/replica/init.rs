@@ -19,6 +19,7 @@ use crate::{
     reducer::Reducer,
     replica::{
         HlcError, Replica, ReplicaDeps, ReplicaInner,
+        branches::load_last_changed_at,
         config::ReplicaConfig,
         fs_sync_schema,
         hlc::load_hlc,
@@ -48,6 +49,7 @@ impl<R: Reducer> Replica<R> {
         create_tables(db.as_ref()).await?;
 
         let hlc = load_hlc(db.as_ref()).await?;
+        let last_changed_at = load_last_changed_at(db.as_ref()).await?;
 
         let self_init = if let Some((self_id, commitment_bytes, signature)) =
             select_cols::<(peers::PeerId, peers::CommitmentBytes, peers::Signature)>(
@@ -127,6 +129,7 @@ impl<R: Reducer> Replica<R> {
                 db,
                 reducer,
                 hlc: AtomicU64::new(hlc.into()),
+                last_changed_at: AtomicU64::new(last_changed_at),
                 log_locks: KeyedLock::new(),
                 pack_remote_providers,
                 pack_remotes: Default::default(),

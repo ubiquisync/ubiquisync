@@ -43,7 +43,35 @@ impl SyncSnapshot {
     }
 }
 
+/// One branch as `(author, container, head_size, changed_at)`.
+pub type BranchChange = (PeerId, ContainerId, u64, u64);
+
 impl<R> Replica<R> {
+    /// Every branch with its local `changed_at` stamp, ordered by stamp.
+    pub async fn branch_changes(&self) -> Result<Vec<BranchChange>, DbError> {
+        let rows = select_cols::<(
+            peers::PeerId,
+            branches::ContainerId,
+            branches::HeadSize,
+            branches::ChangedAt,
+        )>(
+            self.inner.db.as_ref(),
+            Query::select().from(branches::Table).inner_join(
+                peers::Table,
+                Expr::col((branches::Table, branches::PeerId))
+                    .eq(Expr::col((peers::Table, peers::Id))),
+            ),
+        )
+        .await?;
+        let mut res = vec![];
+        for row in rows.iter() {
+            let (peer, container, head_size, changed_at) = row?;
+            res.push((PeerId(peer), ContainerId(container), head_size, changed_at));
+        }
+        res.sort_by_key(|(_, _, _, changed_at)| *changed_at);
+        Ok(res)
+    }
+
     pub async fn sync_snapshot(&self) -> Result<SyncSnapshot, DbError> {
         let db = self.inner.db.as_ref();
 

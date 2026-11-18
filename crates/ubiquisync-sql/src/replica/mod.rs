@@ -58,6 +58,8 @@ pub(crate) struct ReplicaInner<R> {
     pub(crate) db: Box<dyn Db>,
     pub(crate) reducer: R,
     pub(crate) hlc: AtomicU64,
+    /// The last `branches.changed_at` stamp handed out, see `next_changed_at`.
+    pub(crate) last_changed_at: AtomicU64,
     pub(crate) log_locks: KeyedLock<LogKey>,
     pub(crate) pack_remote_providers: PackRemoteProviders,
     pub(crate) pack_remotes: Mutex<HashMap<i64, Arc<PackStore>>>,

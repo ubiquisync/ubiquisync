@@ -196,6 +196,48 @@ async fn forked_own_log_keeps_writing(backed_up: i64) {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// `changed_at` is a replica's own record of when each of its branches last changed. Local
+/// writes and ingested segments both move a branch's stamp past every stamp the replica handed
+/// out before, and a branch whose head didn't move keeps its stamp.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn changed_at_follows_branch_heads() {
+    let root = temp_root("changed-at");
+    let (writer, reader) = (Peer::new(&root, 1, TICK), Peer::new(&root, 2, TICK));
+    let writer_replica = writer.open_attached().await;
+    let reader_replica = reader.open_attached().await;
+    let writer_id = writer_replica.sync_snapshot().await.unwrap().self_peer;
+    let reader_id = reader_replica.sync_snapshot().await.unwrap().self_peer;
+
+    // every local write moves the stamp of the log it wrote to
+    write(&writer_replica, 0..1).await;
+    let first = changed_at(&writer_replica).await[&writer_id];
+    assert!(first > 0);
+    write(&writer_replica, 1..2).await;
+    let second = changed_at(&writer_replica).await[&writer_id];
+    assert!(second > first);
+
+    // the reader stamps the writer's log when it ingests it, with its own clock
+    wait_until_synced(&reader_replica, &writer_replica).await;
+    let ingested = changed_at(&reader_replica).await[&writer_id];
+    assert!(ingested > 0);
+
+    // the reader's own write is stamped after that, and leaves the writer's log alone
+    write(&reader_replica, 10..11).await;
+    let stamps = changed_at(&reader_replica).await;
+    assert_eq!(stamps[&writer_id], ingested);
+    assert!(stamps[&reader_id] > ingested);
+
+    // more from the writer moves its log past everything else on the reader
+    write(&writer_replica, 2..3).await;
+    wait_until_synced(&reader_replica, &writer_replica).await;
+    let stamps = changed_at(&reader_replica).await;
+    assert!(stamps[&writer_id] > stamps[&reader_id]);
+
+    writer_replica.shutdown().await;
+    reader_replica.shutdown().await;
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// How a peer's reducer fails while its commits should stall.
 #[derive(Debug, Clone, Copy)]
 enum Failure {
@@ -392,6 +434,22 @@ async fn write(replica: &Replica<FlakyReducer>, keys: Range<i64>) {
 /// Every branch head the replica has stored, comparable across replicas.
 async fn heads(replica: &Replica<FlakyReducer>) -> HashMap<(PeerId, ContainerId), BranchHeads> {
     replica.sync_snapshot().await.unwrap().branches
+}
+
+/// The replica's `changed_at` stamp for each author's log. Only for scenarios without forks,
+/// where a log is a single branch.
+async fn changed_at(replica: &Replica<FlakyReducer>) -> HashMap<PeerId, u64> {
+    let changes = replica.branch_changes().await.unwrap();
+    let stamps: HashMap<PeerId, u64> = changes
+        .iter()
+        .map(|(peer, _, _, changed_at)| (*peer, *changed_at))
+        .collect();
+    assert_eq!(
+        stamps.len(),
+        changes.len(),
+        "a log has more than one branch"
+    );
+    stamps
 }
 
 /// The table rows the replica has committed.
