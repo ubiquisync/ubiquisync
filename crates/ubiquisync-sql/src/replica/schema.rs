@@ -40,7 +40,6 @@ def_table_with_auto_id!(branches as __replica_branches (id) => {
    // `ReplicaInner::next_changed_at`. It only orders this replica's own branches by when they
    // last changed, so a peer can ask for what changed since the last stamp it read from us.
    // Stamps from different replicas can't be compared.
-   // TODO index this once something queries by it (p2p feed)
    changed_at: u64,
    // TODO CHECK(commit_size <= head_size)
 });
@@ -66,7 +65,7 @@ pub(crate) fn table_defs() -> Vec<CreateTableDef> {
     vec![
         peers::create_table_def().with_unique(&["peer_id"]),
         containers::create_table_def().with_unique(&["container_id"]),
-        branches::create_table_def(),
+        branches::create_table_def().with_index(&["changed_at"]),
         segments::create_table_def(),
         hlc::create_table_def(),
     ]
