@@ -18,7 +18,7 @@ use crate::{
     },
     replica::{
         ReplicaInner,
-        peers::PeerResolveError,
+        branches::LogKey,
         schema::{branches, peers, segments},
     },
 };
@@ -51,8 +51,20 @@ pub struct FetchPage {
     pub next_start: Option<u64>,
 }
 
-#[derive(Error, Debug)]
+/// What a calling peer is told when a call fails.
+#[derive(Error, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum P2pError {
+    /// Not a branch of the serving replica: the id is stale or from another session.
+    #[error("unknown branch: {0}")]
+    UnknownBranch(i64),
+    /// The serving replica failed. The cause is logged there and not sent to the caller.
+    #[error("internal error")]
+    Internal,
+}
+
+/// Why a call failed, for the serving replica's own log.
+#[derive(Error, Debug)]
+enum HandlerError {
     #[error("unknown branch: {0}")]
     UnknownBranch(i64),
     /// A branch's parent is missing, or it has a parent but no fork size.
@@ -63,8 +75,18 @@ pub enum P2pError {
     MissingSegment { branch_id: i64, size: u64 },
     #[error("db error: {0}")]
     Db(#[from] DbError),
-    #[error("peer resolve error: {0}")]
-    Peer(#[from] PeerResolveError),
+}
+
+impl From<HandlerError> for P2pError {
+    fn from(e: HandlerError) -> Self {
+        match e {
+            HandlerError::UnknownBranch(id) => P2pError::UnknownBranch(id),
+            e => {
+                tracing::error!(error = %e, "p2p call failed");
+                P2pError::Internal
+            }
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -73,6 +95,11 @@ pub trait P2pHandler: Send + Sync {
     /// by `changed_at`, at most `limit` (capped at `MAX_CHANGES_LIMIT`) of them. Page by
     /// passing the last returned `changed_at` as the next `stamp`, until fewer than `limit`
     /// come back.
+    ///
+    /// This doesn't guarantee the caller has seen every change: a stamp is taken before its
+    /// write is committed, so a change can become visible below a stamp the caller has
+    /// already paged past (see `ReplicaInner::next_changed_at`). A caller needs another way
+    /// to catch up on what it missed.
     async fn changes_since(&self, stamp: u64, limit: u32) -> Result<Vec<BranchChange>, P2pError>;
 
     /// The stored segment bodies from log size `start` up to the branch's head, including the
@@ -106,14 +133,14 @@ fn branch_path(
     branch_id: i64,
     head_size: u64,
     log_branches: &[(i64, Option<i64>, Option<u64>)],
-) -> Result<Vec<PathHop>, P2pError> {
+) -> Result<Vec<PathHop>, HandlerError> {
     let mut path = vec![];
     let mut cur = branch_id;
     let mut upper = head_size;
     loop {
         // a path can't be longer than the log has branches, unless parents loop
         if path.len() >= log_branches.len() {
-            return Err(P2pError::CorruptBranch(branch_id));
+            return Err(HandlerError::CorruptBranch(branch_id));
         }
         path.push(PathHop {
             branch_id: cur,
@@ -121,7 +148,7 @@ fn branch_path(
         });
         let Some((_, parent_id, fork_size)) = log_branches.iter().find(|(id, _, _)| *id == cur)
         else {
-            return Err(P2pError::CorruptBranch(cur));
+            return Err(HandlerError::CorruptBranch(cur));
         };
         match (parent_id, fork_size) {
             (None, _) => break,
@@ -129,7 +156,7 @@ fn branch_path(
                 cur = *parent_id;
                 upper = *fork_size;
             }
-            (Some(_), None) => return Err(P2pError::CorruptBranch(cur)),
+            (Some(_), None) => return Err(HandlerError::CorruptBranch(cur)),
         }
     }
     path.reverse();
@@ -166,12 +193,12 @@ impl Page {
         start_idx: u64,
         end_size: u64,
         len: u64,
-    ) -> Result<bool, P2pError> {
+    ) -> Result<bool, HandlerError> {
         if self.full {
             return Ok(false);
         }
         if start_idx > self.reached {
-            return Err(P2pError::MissingSegment {
+            return Err(HandlerError::MissingSegment {
                 branch_id: hop.branch_id,
                 size: self.reached,
             });
@@ -194,6 +221,29 @@ impl Page {
 #[async_trait::async_trait]
 impl<R: Send + Sync> P2pHandler for ReplicaInner<R> {
     async fn changes_since(&self, stamp: u64, limit: u32) -> Result<Vec<BranchChange>, P2pError> {
+        Ok(self.branch_changes_since(stamp, limit).await?)
+    }
+
+    async fn fetch(
+        &self,
+        branch_id: i64,
+        start: u64,
+        max_bytes: u32,
+    ) -> Result<FetchPage, P2pError> {
+        Ok(self.fetch_branch_path(branch_id, start, max_bytes).await?)
+    }
+
+    async fn peer_init(&self, peer: PeerId) -> Result<Option<InitEntry>, P2pError> {
+        Ok(self.stored_peer_init(peer).await?)
+    }
+}
+
+impl<R> ReplicaInner<R> {
+    async fn branch_changes_since(
+        &self,
+        stamp: u64,
+        limit: u32,
+    ) -> Result<Vec<BranchChange>, HandlerError> {
         let limit = min(limit, MAX_CHANGES_LIMIT);
         if limit == 0 {
             return Ok(vec![]);
@@ -245,24 +295,34 @@ impl<R: Send + Sync> P2pHandler for ReplicaInner<R> {
         Ok(res)
     }
 
-    async fn fetch(
+    async fn fetch_branch_path(
         &self,
         branch_id: i64,
         start: u64,
         max_bytes: u32,
-    ) -> Result<FetchPage, P2pError> {
+    ) -> Result<FetchPage, HandlerError> {
         let db = self.db.as_ref();
-        // No log lock. Writers only add segment rows above a branch's head, in the same batch
-        // as the head move that covers them, so reading the head first and only rows below it
-        // gives a consistent path while the log is being written to. Joining stored rows into
-        // larger ones (not built yet) will rewrite rows below the head: the row count check
-        // after the second read is what catches a join that lands between the two reads.
-        let Some((peer_db_id, container_id, head_size, parent_id)) = select_cols::<(
-            branches::PeerId,
-            branches::ContainerId,
-            branches::HeadSize,
-            branches::ParentId,
-        )>(
+        // which log the branch belongs to never changes, so it can be read before locking
+        let Some((peer_db_id, container_id)) =
+            select_cols::<(branches::PeerId, branches::ContainerId)>(
+                db,
+                Query::select()
+                    .from(branches::Table)
+                    .and_where(Expr::col(branches::Id).eq(branch_id)),
+            )
+            .await?
+            .one()?
+        else {
+            return Err(HandlerError::UnknownBranch(branch_id));
+        };
+        // The log lock keeps the log's segment rows as they are for the reads below: a page is
+        // picked by row sizes first and its bodies are loaded after, and anything that rewrites
+        // stored rows (joining them into larger ones) has to hold this lock too.
+        let _guard = self
+            .log_locks
+            .lock(&LogKey::new(peer_db_id, ContainerId(container_id)))
+            .await;
+        let Some((head_size, parent_id)) = select_cols::<(branches::HeadSize, branches::ParentId)>(
             db,
             Query::select()
                 .from(branches::Table)
@@ -271,7 +331,7 @@ impl<R: Send + Sync> P2pHandler for ReplicaInner<R> {
         .await?
         .one()?
         else {
-            return Err(P2pError::UnknownBranch(branch_id));
+            return Err(HandlerError::UnknownBranch(branch_id));
         };
         if start >= head_size {
             return Ok(FetchPage {
@@ -340,7 +400,7 @@ impl<R: Send + Sync> P2pHandler for ReplicaInner<R> {
             }
         }
         if page.rows == 0 {
-            return Err(P2pError::MissingSegment {
+            return Err(HandlerError::MissingSegment {
                 branch_id,
                 size: start,
             });
@@ -363,8 +423,7 @@ impl<R: Send + Sync> P2pHandler for ReplicaInner<R> {
                 bodies.push(body.to_vec());
             }
         }
-        // the rows changed between the two reads (see the note at the top), the caller can
-        // call again
+        // can't happen while the log lock is held
         if bodies.len() != page.rows {
             return Err(DbError::UnexpectedRowCount { got: bodies.len() }.into());
         }
@@ -375,14 +434,28 @@ impl<R: Send + Sync> P2pHandler for ReplicaInner<R> {
         })
     }
 
-    async fn peer_init(&self, peer: PeerId) -> Result<Option<InitEntry>, P2pError> {
-        Ok(self.resolve_peer(&peer).await?.map(|info| info.init_entry))
+    /// The init entry as stored. It isn't verified again here, the caller has to verify it
+    /// anyway.
+    async fn stored_peer_init(&self, peer: PeerId) -> Result<Option<InitEntry>, HandlerError> {
+        Ok(select_cols::<(peers::CommitmentBytes, peers::Signature)>(
+            self.db.as_ref(),
+            Query::select()
+                .from(peers::Table)
+                .and_where(Expr::col(peers::PeerId).eq(peer.as_ref())),
+        )
+        .await?
+        .one()?
+        .map(|(commitment_bytes, signature)| InitEntry {
+            commitment_bytes: commitment_bytes.into(),
+            peer_id: peer,
+            signature,
+        }))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_FETCH_BYTES, P2pError, Page, PathHop, branch_path};
+    use super::{HandlerError, MAX_FETCH_BYTES, P2pError, Page, PathHop, branch_path};
 
     fn hop(branch_id: i64, upper: u64) -> PathHop {
         PathHop { branch_id, upper }
@@ -411,20 +484,33 @@ mod tests {
 
     #[test]
     fn path_with_a_missing_parent() {
-        let res = branch_path(2, 5, &[(2, Some(1), Some(3))]);
-        assert!(matches!(res, Err(P2pError::CorruptBranch(2))));
+        // 2's parent 1 isn't a branch of the log, 5 is an unrelated root
+        let res = branch_path(2, 5, &[(2, Some(1), Some(3)), (5, None, None)]);
+        assert!(matches!(res, Err(HandlerError::CorruptBranch(1))));
     }
 
     #[test]
     fn path_with_a_parent_loop() {
         let res = branch_path(1, 5, &[(1, Some(2), Some(3)), (2, Some(1), Some(1))]);
-        assert!(matches!(res, Err(P2pError::CorruptBranch(1))));
+        assert!(matches!(res, Err(HandlerError::CorruptBranch(1))));
     }
 
     #[test]
     fn path_without_a_fork_size() {
         let res = branch_path(2, 5, &[(1, None, None), (2, Some(1), None)]);
-        assert!(matches!(res, Err(P2pError::CorruptBranch(2))));
+        assert!(matches!(res, Err(HandlerError::CorruptBranch(2))));
+    }
+
+    #[test]
+    fn caller_only_sees_unknown_branch() {
+        assert_eq!(
+            P2pError::from(HandlerError::UnknownBranch(7)),
+            P2pError::UnknownBranch(7)
+        );
+        assert_eq!(
+            P2pError::from(HandlerError::CorruptBranch(7)),
+            P2pError::Internal
+        );
     }
 
     /// Offers `rows` as `(hop, start_idx, end_size, len)`, returns how many were taken and the
@@ -489,7 +575,7 @@ mod tests {
         let res = page.offer(&hop(1, 6), 3, 6, 10);
         assert!(matches!(
             res,
-            Err(P2pError::MissingSegment {
+            Err(HandlerError::MissingSegment {
                 branch_id: 1,
                 size: 2
             })
@@ -502,7 +588,7 @@ mod tests {
         let res = page.offer(&hop(1, 6), 2, 4, 10);
         assert!(matches!(
             res,
-            Err(P2pError::MissingSegment {
+            Err(HandlerError::MissingSegment {
                 branch_id: 1,
                 size: 1
             })

@@ -1,16 +1,24 @@
 use std::{collections::HashMap, sync::Arc};
 
-use sea_query::{Expr, ExprTrait, Func, Order, Query};
+use sea_query::{Expr, ExprTrait, Func, OnConflict, Order, Query};
 use ubiquisync_core::{
     crypto::Hash256,
-    ids::{ContainerId, PeerId},
+    ids::{ContainerId, LogId, PeerId},
+    init::InitEntry,
+    log::{LogHashContext, segment::SegmentReader},
+    pack::SegmentDescriptor,
 };
 
 use crate::{
-    db::{DbError, sea_query::select_cols},
+    db::{
+        DbError,
+        sea_query::{insert_cols, select_cols},
+    },
+    reducer::Reducer,
     replica::{
         Replica,
         fs_sync_schema::{pack_read_state, published},
+        ingest::{IngestSource, SegmentBytesResolver, SegmentProcessError},
         p2p::P2pHandler,
         schema::{branches, peers},
     },
@@ -52,11 +60,11 @@ impl<R: Send + Sync + 'static> Replica<R> {
 }
 
 /// One branch as `(author, container, head_size, changed_at)`.
-pub type BranchChange = (PeerId, ContainerId, u64, u64);
+pub type BranchStamp = (PeerId, ContainerId, u64, u64);
 
 impl<R> Replica<R> {
     /// Every branch with its local `changed_at` stamp, ordered by stamp.
-    pub async fn branch_changes(&self) -> Result<Vec<BranchChange>, DbError> {
+    pub async fn branch_changes(&self) -> Result<Vec<BranchStamp>, DbError> {
         let rows = select_cols::<(
             peers::PeerId,
             branches::ContainerId,
@@ -175,5 +183,82 @@ impl<R> Replica<R> {
             blocked_detail,
             unpublished,
         })
+    }
+}
+
+/// What ingest did with a segment body handed to `ingest_p2p_body`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum P2pIngest {
+    /// Stored, or nothing new in it.
+    Placed,
+    /// The body doesn't attach to anything this replica holds of the log.
+    NoAnchor,
+}
+
+struct BodyResolver<'a>(&'a [u8]);
+
+#[async_trait::async_trait]
+impl SegmentBytesResolver for BodyResolver<'_> {
+    async fn fetch_segment_bytes<'a>(
+        &'a mut self,
+    ) -> Result<Option<&'a [u8]>, SegmentProcessError> {
+        Ok(Some(self.0))
+    }
+}
+
+impl<R: Reducer> Replica<R> {
+    /// Feeds one segment body of `init`'s log in `container` through ingest, the way a p2p
+    /// reader will with what it fetched from a peer. Panics on anything but the two outcomes.
+    pub async fn ingest_p2p_body(
+        &self,
+        init: &InitEntry,
+        container: ContainerId,
+        body: &[u8],
+    ) -> P2pIngest {
+        let inner = self.inner.as_ref();
+        insert_cols::<(peers::PeerId, peers::CommitmentBytes, peers::Signature), ()>(
+            inner.db.as_ref(),
+            (
+                init.peer_id.0,
+                init.commitment_bytes.clone(),
+                init.signature,
+            ),
+            Query::insert()
+                .into_table(peers::Table)
+                .on_conflict(OnConflict::column(peers::PeerId).do_nothing().to_owned()),
+        )
+        .await
+        .unwrap();
+        let peer_info = inner.resolve_peer(&init.peer_id).await.unwrap().unwrap();
+        let hash_ctx = LogHashContext::new(&LogId {
+            peer_id: init.peer_id,
+            container_id: container,
+        });
+        let segment = SegmentReader::start(body)
+            .unwrap()
+            .read(inner.key_resolver.as_ref(), &hash_ctx)
+            .await
+            .unwrap();
+        let desc = SegmentDescriptor {
+            container_id: container,
+            idx_range: segment.header.prev_chain.size..segment.head_chain.size,
+            prev_chain_hash: segment.header.prev_chain.hash,
+            end_chain_hash: segment.head_chain.hash,
+            body_loc: 0..body.len(),
+        };
+        let res = inner
+            .try_ingest_segment(
+                &hash_ctx,
+                &peer_info,
+                &desc,
+                &mut BodyResolver(body),
+                &IngestSource::P2p,
+            )
+            .await;
+        match res {
+            Ok(()) => P2pIngest::Placed,
+            Err(SegmentProcessError::Pending) => P2pIngest::NoAnchor,
+            Err(e) => panic!("ingest failed: {e}"),
+        }
     }
 }

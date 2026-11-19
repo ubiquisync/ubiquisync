@@ -33,7 +33,7 @@ use ubiquisync_sql::{
     replica::{
         CommitRetryConfig, PackSyncConfig, Replica, ReplicaConfig, ReplicaDeps,
         p2p::{BranchChange, FetchPage, MAX_FETCH_BYTES, P2pError, P2pHandler},
-        test_support::BranchHeads,
+        test_support::{BranchHeads, P2pIngest},
     },
 };
 use ubiquisync_sqlite::SqliteDb;
@@ -583,6 +583,277 @@ async fn p2p_fetch_fork_branch() {
     restored_replica.shutdown().await;
     server_replica.shutdown().await;
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A reader that fetched from the server ends up holding the server's branches of a forked
+/// log, whatever it already held, however the fork is cut into segments and pages, and in
+/// whichever order it takes the branches.
+#[test_case(false, false, false ; "fork in one segment, fork first")]
+#[test_case(false, false, true ; "fork in one segment, parent first")]
+#[test_case(false, true, false ; "fork in one segment, a body per page, fork first")]
+#[test_case(false, true, true ; "fork in one segment, a body per page, parent first")]
+#[test_case(true, false, false ; "fork an entry per segment, fork first")]
+#[test_case(true, false, true ; "fork an entry per segment, parent first")]
+#[test_case(true, true, false ; "fork an entry per segment, a body per page, fork first")]
+#[test_case(true, true, true ; "fork an entry per segment, a body per page, parent first")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn p2p_reader_gets_a_forked_log(per_entry: bool, body_per_page: bool, parent_first: bool) {
+    let name = format!("p2p-reader-{per_entry}-{body_per_page}-{parent_first}");
+    let (root, server_replica, restored_replica) = forked_server(&name, per_entry).await;
+    let handler = server_replica.p2p_handler();
+    let changes = handler.changes_since(0, 1000).await.unwrap();
+    assert_eq!(changes.len(), 2);
+    let parent = changes.iter().find(|c| c.head.size == 5).unwrap();
+    let fork = changes.iter().find(|c| c.head.size == 6).unwrap();
+    let max_bytes = if body_per_page { 1 } else { MAX_FETCH_BYTES };
+
+    let reader_replica = Peer::new(&root, 9, TICK).open().await;
+    let order = if parent_first {
+        [parent, fork]
+    } else {
+        [fork, parent]
+    };
+    for change in order {
+        read_branch(&reader_replica, &*handler, change, max_bytes).await;
+        assert!(holds_head(&reader_replica, change).await);
+    }
+    let log = (fork.author, CONTAINER_ID);
+    assert_eq!(
+        heads(&reader_replica).await[&log],
+        heads(&server_replica).await[&log]
+    );
+
+    for replica in [reader_replica, server_replica, restored_replica] {
+        replica.shutdown().await;
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A reader that holds the parent line and part of the fork carries on from its own fork
+/// head when the server's fork grows. Its largest head is on the parent line, which the
+/// fork's later segments don't attach to, so it has to fall back to its next head.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn p2p_reader_carries_on_from_its_own_fork_head() {
+    let (root, server_replica, restored_replica) = forked_server("p2p-reader-grow", true).await;
+    let handler = server_replica.p2p_handler();
+    let changes = handler.changes_since(0, 1000).await.unwrap();
+    let fork = changes.iter().find(|c| c.head.size == 6).unwrap();
+    let init = handler.peer_init(fork.author).await.unwrap().unwrap();
+
+    // the reader takes the first two pages only: the parent's 0..5 and the fork's entry 3
+    let reader_replica = Peer::new(&root, 9, TICK).open().await;
+    let first = handler.fetch(fork.branch_id, 0, 1).await.unwrap();
+    let second = handler
+        .fetch(fork.branch_id, first.next_start.unwrap(), 1)
+        .await
+        .unwrap();
+    for body in first.bodies.iter().chain(second.bodies.iter()) {
+        let res = reader_replica
+            .ingest_p2p_body(&init, CONTAINER_ID, body)
+            .await;
+        assert_eq!(res, P2pIngest::Placed);
+    }
+    let mut sizes: Vec<u64> = heads(&reader_replica).await[&(fork.author, CONTAINER_ID)]
+        .iter()
+        .map(|head| head.0)
+        .collect();
+    sizes.sort();
+    assert_eq!(sizes, [4, 5]);
+
+    // the server's fork grows to 8
+    write(&restored_replica, 8..10).await;
+    wait_until_fork_head(&server_replica, 8).await;
+    let changes = handler.changes_since(0, 1000).await.unwrap();
+    let fork = changes.iter().find(|c| c.head.size == 8).unwrap();
+    let tried = read_branch(&reader_replica, &*handler, fork, 1).await;
+    assert_eq!(tried, [5, 4]);
+    assert!(holds_head(&reader_replica, fork).await);
+
+    for replica in [reader_replica, server_replica, restored_replica] {
+        replica.shutdown().await;
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A fork of a fork: the writer's log 0..5, a fork at 3, and a fork of that fork at 4. The
+/// path to the inner fork's head goes through all three branches.
+#[test_case(false ; "all at once")]
+#[test_case(true ; "a body per page")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn p2p_reader_gets_a_fork_of_a_fork(body_per_page: bool) {
+    let root = temp_root(&format!("p2p-fork-of-fork-{body_per_page}"));
+    let (writer, server) = (Peer::new(&root, 1, TICK), Peer::new(&root, 2, TICK));
+
+    // the writer backs up after three entries and carries on to five
+    let writer_replica = writer.open().await;
+    write(&writer_replica, 0..3).await;
+    writer_replica.shutdown().await;
+    let outer = writer.backup();
+    let writer_replica = writer.open().await;
+    write(&writer_replica, 3..5).await;
+    writer.attach(&writer_replica).await;
+    let server_replica = server.open_attached().await;
+    wait_until_synced(&server_replica, &writer_replica).await;
+    writer_replica.shutdown().await;
+
+    // the backup writes one entry, is backed up again, and carries on to six: a fork at 3
+    let outer_replica = outer.open().await;
+    write(&outer_replica, 10..11).await;
+    outer_replica.shutdown().await;
+    let inner = Peer {
+        db_path: outer.db_path.with_extension("inner.db"),
+        remote_dir: outer.remote_dir.clone(),
+        faults: Default::default(),
+        ..outer
+    };
+    std::fs::copy(&outer.db_path, &inner.db_path).unwrap();
+    let outer_replica = outer.open().await;
+    write(&outer_replica, 11..13).await;
+    outer.attach(&outer_replica).await;
+    wait_until_fork_head(&server_replica, 6).await;
+
+    // the second backup writes three entries on top of its four: a fork of the fork at 4
+    let inner_replica = inner.open().await;
+    write(&inner_replica, 20..23).await;
+    inner.attach(&inner_replica).await;
+    wait_until_forked_at(&server_replica, 4).await;
+    wait_until_fork_head(&server_replica, 7).await;
+
+    let handler = server_replica.p2p_handler();
+    let changes = handler.changes_since(0, 1000).await.unwrap();
+    assert_eq!(changes.len(), 3);
+    let innermost = changes.iter().find(|c| c.head.size == 7).unwrap();
+    let max_bytes = if body_per_page { 1 } else { MAX_FETCH_BYTES };
+
+    // the innermost branch first, from nothing, then the others
+    let reader_replica = Peer::new(&root, 9, TICK).open().await;
+    read_branch(&reader_replica, &*handler, innermost, max_bytes).await;
+    assert!(holds_head(&reader_replica, innermost).await);
+    for change in changes.iter() {
+        read_branch(&reader_replica, &*handler, change, max_bytes).await;
+        assert!(holds_head(&reader_replica, change).await);
+    }
+    let log = (innermost.author, CONTAINER_ID);
+    assert_eq!(
+        heads(&reader_replica).await[&log],
+        heads(&server_replica).await[&log]
+    );
+
+    for replica in [reader_replica, server_replica, outer_replica, inner_replica] {
+        replica.shutdown().await;
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A server holding a forked log: the writer's 0..5 stored as one segment, and a fork at 3
+/// with head 6 written by a restored backup of the writer (returned still running, attached).
+/// The fork reaches the server as one segment, or with `per_entry` as one segment per entry.
+async fn forked_server(
+    name: &str,
+    per_entry: bool,
+) -> (PathBuf, Replica<FlakyReducer>, Replica<FlakyReducer>) {
+    let root = temp_root(name);
+    let (writer, server) = (Peer::new(&root, 1, TICK), Peer::new(&root, 2, TICK));
+    let writer_replica = writer.open().await;
+    write(&writer_replica, 0..3).await;
+    writer_replica.shutdown().await;
+    let restored = writer.backup();
+    let writer_replica = writer.open().await;
+    write(&writer_replica, 3..5).await;
+    writer.attach(&writer_replica).await;
+    let server_replica = server.open_attached().await;
+    wait_until_synced(&server_replica, &writer_replica).await;
+    writer_replica.shutdown().await;
+
+    let restored_replica = restored.open().await;
+    if per_entry {
+        restored.attach(&restored_replica).await;
+        for key in 5..8 {
+            write(&restored_replica, key..key + 1).await;
+            wait_until_fork_head(&server_replica, key as u64 - 1).await;
+        }
+    } else {
+        write(&restored_replica, 5..8).await;
+        restored.attach(&restored_replica).await;
+        wait_until_fork_head(&server_replica, 6).await;
+    }
+    (root, server_replica, restored_replica)
+}
+
+/// Waits until the replica holds a fork branch with this head size.
+async fn wait_until_fork_head(replica: &Replica<FlakyReducer>, head_size: u64) {
+    wait_until("the replica stores the fork's head", async || {
+        let heads = heads(replica).await;
+        heads
+            .values()
+            .flatten()
+            .any(|head| head.0 == head_size && head.2.is_some())
+    })
+    .await;
+}
+
+/// Whether the replica has a branch with exactly this head.
+async fn holds_head(replica: &Replica<FlakyReducer>, change: &BranchChange) -> bool {
+    let heads = heads(replica).await;
+    heads
+        .get(&(change.author, change.container))
+        .is_some_and(|branches| {
+            branches
+                .iter()
+                .any(|head| (head.0, head.1) == (change.head.size, change.head.hash))
+        })
+}
+
+/// What a p2p reader does with one change from the server: nothing if it holds that head,
+/// otherwise fetch the path to it and ingest the bodies in order. It starts from its own
+/// largest head of that log below the server's head; when a body doesn't attach to what it
+/// holds, it starts again from its next smaller head, and from 0 last. Returns the starts it
+/// tried.
+async fn read_branch(
+    reader: &Replica<FlakyReducer>,
+    handler: &dyn P2pHandler,
+    change: &BranchChange,
+    max_bytes: u32,
+) -> Vec<u64> {
+    if holds_head(reader, change).await {
+        return vec![];
+    }
+    let init = handler.peer_init(change.author).await.unwrap().unwrap();
+    let own = heads(reader).await;
+    let mut starts: Vec<u64> = own
+        .get(&(change.author, change.container))
+        .into_iter()
+        .flatten()
+        .map(|head| head.0)
+        .filter(|size| *size > 0 && *size < change.head.size)
+        .collect();
+    starts.sort_by(|a, b| b.cmp(a));
+    starts.dedup();
+    starts.push(0);
+
+    let mut tried = vec![];
+    'starts: for first_start in starts {
+        tried.push(first_start);
+        let mut start = first_start;
+        loop {
+            let page = handler
+                .fetch(change.branch_id, start, max_bytes)
+                .await
+                .unwrap();
+            for body in page.bodies.iter() {
+                let res = reader.ingest_p2p_body(&init, change.container, body).await;
+                if res == P2pIngest::NoAnchor {
+                    assert!(first_start > 0, "no anchor for a path fetched from 0");
+                    continue 'starts;
+                }
+            }
+            match page.next_start {
+                Some(next) => start = next,
+                None => return tried,
+            }
+        }
+    }
+    unreachable!("the last start is 0")
 }
 
 /// Every `changes_since` page from `stamp` on, `limit` at a time.
