@@ -221,10 +221,22 @@ fn run_statement(
     readonly: bool,
 ) -> Result<DbStatementResult, DbError> {
     let mut stmt = conn.prepare(sql).map_err(map_err)?;
-    if readonly && !stmt.readonly() {
+    let col_count = stmt.column_count();
+    // SQLite's `readonly()` only means "does not write to the database file",
+    // so it also passes transaction control (`BEGIN`, `SAVEPOINT`, ...) and
+    // some setting changes, which would alter the shared connection. A read
+    // always returns at least one column, so a statement with none is not one.
+    //
+    // Known gap: PRAGMAs that change a setting are not stopped. Those that
+    // also return a row (e.g. `PRAGMA locking_mode = NORMAL`,
+    // `PRAGMA max_page_count = N`, `PRAGMA busy_timeout = N`) are not
+    // rejected. Those that return nothing (e.g. `PRAGMA query_only = ON`,
+    // `PRAGMA foreign_keys = OFF`) are rejected here, but SQLite has already
+    // applied them while preparing the statement. SQL given to `query` is
+    // trusted; this is a guard against mistakes, not a security boundary.
+    if readonly && (!stmt.readonly() || col_count == 0) {
         return Err(DbError::ReadonlyViolation);
     }
-    let col_count = stmt.column_count();
 
     let mut rows_out = Vec::new();
     let mut rows = stmt
@@ -323,6 +335,8 @@ fn map_err(err: rusqlite::Error) -> DbError {
 
 #[cfg(test)]
 mod tests {
+    use test_case::test_case;
+
     use super::*;
 
     async fn setup() -> SqliteDb {
@@ -567,5 +581,63 @@ mod tests {
 
         let rows = db.query("SELECT COUNT(*) FROM t", &[]).await.unwrap();
         assert_eq!(rows[0].get_i64(0).unwrap(), 0);
+    }
+
+    /// Insert row `id` through a batch, i.e. inside its own transaction.
+    async fn batch_insert(db: &SqliteDb, id: i64) -> Result<(), DbError> {
+        let mut batch = db.new_batch();
+        batch.add_statement(
+            "INSERT INTO t (id, name) VALUES (?1, 'x')",
+            &[DbValue::Integer(id)],
+        );
+        batch.commit().await.map(|_| ())
+    }
+
+    // Most of these pass `Statement::readonly()` (they do not write to the
+    // database file) and are caught because they return no columns. Not
+    // covered, see `run_statement`: PRAGMAs that change a setting.
+    #[test_case("BEGIN" ; "begin")]
+    #[test_case("/* c */ BEGIN DEFERRED" ; "begin behind a comment")]
+    #[test_case("BEGIN IMMEDIATE" ; "begin immediate")]
+    #[test_case("COMMIT" ; "commit")]
+    #[test_case("END" ; "end")]
+    #[test_case("ROLLBACK" ; "rollback")]
+    #[test_case("SAVEPOINT s" ; "savepoint")]
+    #[test_case("RELEASE s" ; "release")]
+    #[test_case("ATTACH ':memory:' AS a" ; "attach")]
+    #[test_case("DETACH a" ; "detach")]
+    #[test_case("REINDEX" ; "reindex")]
+    #[test_case("VACUUM" ; "vacuum")]
+    #[test_case("INSERT INTO t (id, name) VALUES (1, 'x') RETURNING id" ; "insert returning")]
+    #[test_case("CREATE TEMP TABLE tt (x INTEGER)" ; "temp table")]
+    #[tokio::test]
+    async fn query_rejects_everything_but_reads(sql: &str) {
+        let db = setup().await;
+        let err = db.query(sql, &[]).await.unwrap_err();
+        assert!(matches!(err, DbError::ReadonlyViolation), "got {err:?}");
+
+        // The rejected statement left the connection usable: both write paths
+        // still work, and reads see what they wrote.
+        batch_insert(&db, 2).await.unwrap();
+        db.exec("INSERT INTO t (id, name) VALUES (3, 'x')", &[])
+            .await
+            .unwrap();
+        let rows = db.query("SELECT COUNT(*) FROM t", &[]).await.unwrap();
+        assert_eq!(rows[0].get_i64(0).unwrap(), 2);
+    }
+
+    #[test_case("SELECT id FROM t WHERE id = 1" => 1 ; "select")]
+    #[test_case("SELECT COUNT(*), MAX(length(name)) FROM t" => 1 ; "functions")]
+    #[test_case("SELECT name FROM t UNION ALL VALUES ('y')" => 2 ; "compound select")]
+    #[test_case("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 3) \
+                 SELECT i FROM n" => 3 ; "recursive cte")]
+    #[test_case("SELECT name FROM sqlite_schema" => 1 ; "schema table")]
+    #[test_case("PRAGMA table_info(t)" => 3 ; "read-only pragma")]
+    #[test_case("SELECT name FROM pragma_table_info('t')" => 3 ; "pragma table function")]
+    #[tokio::test]
+    async fn query_allows_reads(sql: &str) -> usize {
+        let db = setup().await;
+        batch_insert(&db, 1).await.unwrap();
+        db.query(sql, &[]).await.unwrap().len()
     }
 }

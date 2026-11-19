@@ -41,6 +41,8 @@ pub enum DbError {
     UnexpectedNull,
     #[error("unexpected row count: {got}")]
     UnexpectedRowCount { got: usize },
+    /// [`Db::query`](crate::db::Db::query) was given a statement the backend
+    /// could tell is not a read, such as a write or transaction control.
     #[error("statement in readonly context was not readonly")]
     ReadonlyViolation,
 }

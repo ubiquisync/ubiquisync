@@ -49,6 +49,13 @@ pub trait Db: Send + Sync {
 
     /// Run a read query and return every row. Materializes the full result
     /// set; not for unbounded scans.
+    ///
+    /// This is for reads only. A backend should reject, with
+    /// [`DbError::ReadonlyViolation`], statements it can cheaply tell are not
+    /// reads (writes, transaction control), but that check is a guard against
+    /// mistakes, not a guarantee: SQL passed here is trusted. Callers must not
+    /// pass statements that change connection or session settings, since
+    /// those would leak into later writes that share the connection.
     async fn query(&self, sql: &str, params: &[DbValue]) -> Result<Vec<DbRow>, DbError>;
 
     /// Open a fresh, empty batch. Allocation only — no transaction is started
