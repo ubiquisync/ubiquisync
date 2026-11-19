@@ -18,10 +18,11 @@ use async_trait::async_trait;
 use secrecy::SecretBox;
 use test_case::test_case;
 use ubiquisync_core::{
-    crypto::credentials::software::SoftwareCredentials,
+    crypto::{NullCipherKeyResolver, credentials::software::SoftwareCredentials},
     event::event_bus,
     hlc::Timestamp,
-    ids::{AppId, ContainerId, PeerId},
+    ids::{AppId, ContainerId, LogId, PeerId},
+    log::{ChainHash, LogHashContext, segment::SegmentReader},
     pack::StdFsRemoteProvider,
 };
 use ubiquisync_sql::{
@@ -31,6 +32,7 @@ use ubiquisync_sql::{
     reducer::{ApplyError, PrepareError, Reducer as SqlReducer},
     replica::{
         CommitRetryConfig, PackSyncConfig, Replica, ReplicaConfig, ReplicaDeps,
+        p2p::{BranchChange, FetchPage, MAX_FETCH_BYTES, P2pError, P2pHandler},
         test_support::BranchHeads,
     },
 };
@@ -325,6 +327,348 @@ async fn changed_at_moves_on_a_write_to_a_stalled_log() {
 
     restored_replica.shutdown().await;
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// `changes_since` reports every branch once, in stamp order, however small the pages, and a
+/// branch whose head moves comes back with a later stamp. `peer_init` hands out the init
+/// entries the replica knows.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn p2p_changes_since_pages_over_every_branch() {
+    let root = temp_root("p2p-changes");
+    let (server, a, b) = (
+        Peer::new(&root, 1, TICK),
+        Peer::new(&root, 2, TICK),
+        Peer::new(&root, 3, TICK),
+    );
+    let server_replica = server.open_attached().await;
+    let a_replica = a.open_attached().await;
+    let b_replica = b.open_attached().await;
+    write(&a_replica, 0..2).await;
+    write(&b_replica, 2..5).await;
+    write(&server_replica, 5..6).await;
+    for replica in [&a_replica, &b_replica] {
+        wait_until_synced(&server_replica, replica).await;
+    }
+    let handler = server_replica.p2p_handler();
+
+    // one branch per author, in stamp order, matching what the replica stores
+    let changes = handler.changes_since(0, 1000).await.unwrap();
+    assert_eq!(changes.len(), 3);
+    let snapshot = server_replica.sync_snapshot().await.unwrap();
+    for change in &changes {
+        assert_eq!(change.container, CONTAINER_ID);
+        assert_eq!(
+            snapshot.branches[&(change.author, change.container)],
+            vec![(change.head.size, change.head.hash, None)]
+        );
+    }
+    // the same branches and stamps the replica stores
+    let stored = server_replica.branch_changes().await.unwrap();
+    let reported: Vec<_> = changes
+        .iter()
+        .map(|c| (c.author, c.container, c.head.size, c.changed_at))
+        .collect();
+    assert_eq!(reported, stored);
+    assert!(
+        changes
+            .windows(2)
+            .all(|w| w[0].changed_at < w[1].changed_at)
+    );
+
+    // paging visits every branch exactly once
+    for limit in [1, 2] {
+        assert_eq!(changes_paged(handler.as_ref(), 0, limit).await, changes);
+    }
+    assert!(handler.changes_since(0, 0).await.unwrap().is_empty());
+    let last = changes.last().unwrap().changed_at;
+    for stamp in [last, last + 1000, u64::MAX] {
+        assert!(handler.changes_since(stamp, 1000).await.unwrap().is_empty());
+    }
+
+    // a branch whose head moves comes back with a later stamp
+    let a_id = a_replica.sync_snapshot().await.unwrap().self_peer;
+    write(&a_replica, 6..7).await;
+    wait_until_synced(&server_replica, &a_replica).await;
+    let moved = handler.changes_since(last, 1000).await.unwrap();
+    assert_eq!(moved.len(), 1);
+    assert_eq!(moved[0].author, a_id);
+    assert_eq!(moved[0].head.size, 3);
+    assert!(moved[0].changed_at > last);
+
+    // init entries of our own peer and of another known peer, and none for an unknown one
+    for peer in [snapshot.self_peer, a_id] {
+        let init = handler.peer_init(peer).await.unwrap().unwrap();
+        assert_eq!(init.peer_id, peer);
+        init.verify(&APP_ID).unwrap();
+    }
+    assert!(
+        handler
+            .peer_init(PeerId([0xee; 32]))
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    for replica in [server_replica, a_replica, b_replica] {
+        replica.shutdown().await;
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// `fetch` on a root branch: the bodies form one chain from at or below `start` up to the head,
+/// paging returns the same bodies, and past the head there is nothing to fetch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn p2p_fetch_root_branch() {
+    let root = temp_root("p2p-fetch-root");
+    let (server, writer) = (Peer::new(&root, 1, TICK), Peer::new(&root, 2, TICK));
+
+    // the writer's first five entries are published together, so the server stores them as
+    // one segment, then two more
+    let writer_replica = writer.open().await;
+    write(&writer_replica, 0..5).await;
+    writer.attach(&writer_replica).await;
+    let server_replica = server.open_attached().await;
+    wait_until_synced(&server_replica, &writer_replica).await;
+    write(&writer_replica, 5..7).await;
+    wait_until_synced(&server_replica, &writer_replica).await;
+    // local writes are stored one entry per segment
+    write(&server_replica, 10..13).await;
+    let writer_id = writer_replica.sync_snapshot().await.unwrap().self_peer;
+    let server_id = server_replica.sync_snapshot().await.unwrap().self_peer;
+    let handler = server_replica.p2p_handler();
+    let changes = handler.changes_since(0, 1000).await.unwrap();
+    let theirs = changes.iter().find(|c| c.author == writer_id).unwrap();
+    let ours = changes.iter().find(|c| c.author == server_id).unwrap();
+    assert_eq!(theirs.head.size, 7);
+    assert_eq!(ours.head.size, 3);
+
+    let all = handler
+        .fetch(theirs.branch_id, 0, MAX_FETCH_BYTES)
+        .await
+        .unwrap();
+    assert_eq!(all.next_start, None);
+    let (starts, head) = follow_path(writer_id, &all.bodies).await;
+    assert_eq!(starts[..2], [0, 5]);
+    assert_eq!(head, theirs.head);
+
+    // from a segment boundary, and from inside the first segment
+    let (starts, head) = follow_path(
+        writer_id,
+        &fetch_bodies(&*handler, theirs.branch_id, 5).await,
+    )
+    .await;
+    assert_eq!(starts[0], 5);
+    assert_eq!(head, theirs.head);
+    let (starts, head) = follow_path(
+        writer_id,
+        &fetch_bodies(&*handler, theirs.branch_id, 2).await,
+    )
+    .await;
+    assert_eq!(starts[0], 0);
+    assert_eq!(head, theirs.head);
+
+    // one body per page gives the same bodies
+    for change in [theirs, ours] {
+        let all = handler
+            .fetch(change.branch_id, 0, MAX_FETCH_BYTES)
+            .await
+            .unwrap();
+        let (paged, next_starts) = fetch_paged(&*handler, change.branch_id, 0, 1).await;
+        assert_eq!(paged, all.bodies);
+        assert_eq!(next_starts.len(), all.bodies.len());
+    }
+    let (_, next_starts) = fetch_paged(&*handler, ours.branch_id, 0, 1).await;
+    assert_eq!(next_starts, [Some(1), Some(2), None]);
+
+    // at or past the head there is nothing to fetch
+    for start in [7, 100] {
+        let page = handler
+            .fetch(theirs.branch_id, start, MAX_FETCH_BYTES)
+            .await
+            .unwrap();
+        assert_eq!(
+            page,
+            FetchPage {
+                bodies: vec![],
+                next_start: None
+            }
+        );
+    }
+    let unknown = changes.iter().map(|c| c.branch_id).max().unwrap() + 1000;
+    assert!(matches!(
+        handler.fetch(unknown, 0, MAX_FETCH_BYTES).await,
+        Err(P2pError::UnknownBranch(id)) if id == unknown
+    ));
+
+    writer_replica.shutdown().await;
+    server_replica.shutdown().await;
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// `fetch` on a fork returns the segments its parent holds below the fork point first, then
+/// its own. The parent's segment runs past the fork point, so paging has to carry on from the
+/// fork point and not from that segment's end.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn p2p_fetch_fork_branch() {
+    let root = temp_root("p2p-fetch-fork");
+    let (writer, server) = (Peer::new(&root, 1, TICK), Peer::new(&root, 2, TICK));
+
+    // the writer backs up its db after three entries, carries on to five and publishes them
+    // together, so the server stores entries 0..5 as one segment
+    let writer_replica = writer.open().await;
+    write(&writer_replica, 0..3).await;
+    writer_replica.shutdown().await;
+    let restored = writer.backup();
+    let writer_replica = writer.open().await;
+    write(&writer_replica, 3..5).await;
+    writer.attach(&writer_replica).await;
+    let server_replica = server.open_attached().await;
+    wait_until_synced(&server_replica, &writer_replica).await;
+    writer_replica.shutdown().await;
+
+    // the backup writes three entries of its own on top of the first three: a fork at 3
+    let restored_replica = restored.open().await;
+    write(&restored_replica, 5..8).await;
+    restored.attach(&restored_replica).await;
+    wait_until_forked_at(&server_replica, 3).await;
+    wait_until("the server stores the whole fork", async || {
+        let heads = heads(&server_replica).await;
+        heads.values().flatten().any(|head| head.0 == 6)
+    })
+    .await;
+
+    let handler = server_replica.p2p_handler();
+    let changes = handler.changes_since(0, 1000).await.unwrap();
+    assert_eq!(changes.len(), 2);
+    let parent = changes.iter().find(|c| c.head.size == 5).unwrap();
+    let fork = changes.iter().find(|c| c.head.size == 6).unwrap();
+    let author = parent.author;
+
+    // the parent holds 0..5 in one segment, past the fork point
+    let parent_bodies = fetch_bodies(&*handler, parent.branch_id, 0).await;
+    assert_eq!(parent_bodies.len(), 1);
+    let (starts, head) = follow_path(author, &parent_bodies).await;
+    assert_eq!((starts, head), (vec![0], parent.head));
+
+    // from below the fork point: the parent's segment unchanged, then the fork's own
+    for start in [0, 2] {
+        let bodies = fetch_bodies(&*handler, fork.branch_id, start).await;
+        assert_eq!(bodies[0], parent_bodies[0]);
+        let (starts, head) = follow_path(author, &bodies).await;
+        assert_eq!(starts, [0, 3]);
+        assert_eq!(head, fork.head);
+    }
+    // from the fork point or above it: only the fork's own
+    for start in [3, 4] {
+        let bodies = fetch_bodies(&*handler, fork.branch_id, start).await;
+        let (starts, head) = follow_path(author, &bodies).await;
+        assert_eq!(starts, [3]);
+        assert_eq!(head, fork.head);
+    }
+
+    // one body per page carries on from the fork point
+    let all = fetch_bodies(&*handler, fork.branch_id, 0).await;
+    let (paged, next_starts) = fetch_paged(&*handler, fork.branch_id, 0, 1).await;
+    assert_eq!(paged, all);
+    assert_eq!(next_starts, [Some(3), None]);
+    let page = handler.fetch(fork.branch_id, 6, 1).await.unwrap();
+    assert_eq!(
+        page,
+        FetchPage {
+            bodies: vec![],
+            next_start: None
+        }
+    );
+
+    restored_replica.shutdown().await;
+    server_replica.shutdown().await;
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Every `changes_since` page from `stamp` on, `limit` at a time.
+async fn changes_paged(handler: &dyn P2pHandler, mut stamp: u64, limit: u32) -> Vec<BranchChange> {
+    let mut all = vec![];
+    loop {
+        let page = handler.changes_since(stamp, limit).await.unwrap();
+        all.extend(page.iter().cloned());
+        if page.len() < limit as usize {
+            return all;
+        }
+        stamp = page.last().unwrap().changed_at;
+    }
+}
+
+/// The bodies of one big `fetch` call, which has to reach the head.
+async fn fetch_bodies(handler: &dyn P2pHandler, branch_id: i64, start: u64) -> Vec<Vec<u8>> {
+    let page = handler
+        .fetch(branch_id, start, MAX_FETCH_BYTES)
+        .await
+        .unwrap();
+    assert_eq!(page.next_start, None);
+    page.bodies
+}
+
+/// Follows `next_start` until the head, returning every body and every page's `next_start`.
+async fn fetch_paged(
+    handler: &dyn P2pHandler,
+    branch_id: i64,
+    mut start: u64,
+    max_bytes: u32,
+) -> (Vec<Vec<u8>>, Vec<Option<u64>>) {
+    let (mut bodies, mut next_starts) = (vec![], vec![]);
+    loop {
+        assert!(next_starts.len() < 100, "paging doesn't reach the head");
+        let page = handler.fetch(branch_id, start, max_bytes).await.unwrap();
+        bodies.extend(page.bodies);
+        next_starts.push(page.next_start);
+        match page.next_start {
+            Some(next) => start = next,
+            None => return (bodies, next_starts),
+        }
+    }
+}
+
+/// Decodes fetched bodies and follows them as one path through `author`'s log: every body has
+/// to start on the path so far. A body held by a fork's parent can run past the fork point, the
+/// fork's first body then starts below its end and replaces the rest. Returns the size each body
+/// starts at and the head the path ends at.
+async fn follow_path(author: PeerId, bodies: &[Vec<u8>]) -> (Vec<u64>, ChainHash) {
+    let ctx = LogHashContext::new(&LogId {
+        peer_id: author,
+        container_id: CONTAINER_ID,
+    });
+    // the chain hash at each size, from the first body's start on
+    let mut path: Vec<Option<ChainHash>> = vec![];
+    let mut starts = vec![];
+    for body in bodies {
+        let segment = SegmentReader::start(body)
+            .unwrap()
+            .read(&NullCipherKeyResolver, &ctx)
+            .await
+            .unwrap();
+        let prev = segment.header.prev_chain;
+        let at = prev.size as usize;
+        if starts.is_empty() {
+            if prev.size == 0 {
+                assert_eq!(prev, ChainHash::empty(&ctx));
+            }
+            path.resize(at + 1, None);
+            path[at] = Some(prev);
+        }
+        assert_eq!(
+            path.get(at).copied().flatten(),
+            Some(prev),
+            "a body doesn't start on the path"
+        );
+        starts.push(prev.size);
+        path.truncate(at + 1);
+        for entry in &segment.entries {
+            assert_eq!(entry.chain_meta.chain_hash.size as usize, path.len());
+            path.push(Some(entry.chain_meta.chain_hash));
+        }
+        assert_eq!(path.last().copied().flatten(), Some(segment.head_chain));
+    }
+    (starts, path.last().copied().flatten().unwrap())
 }
 
 /// How a peer's reducer fails while its commits should stall.

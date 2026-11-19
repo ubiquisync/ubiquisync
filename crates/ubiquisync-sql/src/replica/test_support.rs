@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use sea_query::{Expr, ExprTrait, Func, Order, Query};
 use ubiquisync_core::{
@@ -11,6 +11,7 @@ use crate::{
     replica::{
         Replica,
         fs_sync_schema::{pack_read_state, published},
+        p2p::P2pHandler,
         schema::{branches, peers},
     },
 };
@@ -40,6 +41,13 @@ impl SyncSnapshot {
     /// No blocked packs and nothing left to publish.
     pub fn is_quiescent(&self) -> bool {
         self.blocked.values().all(|n| *n == 0) && self.unpublished.is_empty()
+    }
+}
+
+impl<R: Send + Sync + 'static> Replica<R> {
+    /// The replica's p2p handler. Only here for tests until a transport holds one.
+    pub fn p2p_handler(&self) -> Arc<dyn P2pHandler> {
+        self.inner.clone()
     }
 }
 
