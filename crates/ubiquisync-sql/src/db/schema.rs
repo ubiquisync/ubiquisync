@@ -24,13 +24,15 @@ pub struct DbColumnDescription {
     pub nullable: bool,
 }
 
-/// Data for constructing a CREATE TABLE statement.
+/// Data for constructing a table's CREATE TABLE statement and its CREATE INDEX statements.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreateTableDef {
     pub name: String,
     pub pk: CreatePrimaryKeyDef,
     pub cols: Vec<CreateColDef>,
+    /// Unique constraints, each a list of column names.
     pub unique: Vec<Vec<String>>,
+    /// Plain indexes, each a list of column names in index order (see [`Self::with_index`]).
     pub indexes: Vec<Vec<String>>,
 }
 
@@ -142,10 +144,32 @@ impl CreateTableDef {
     }
 
     /// A plain (non-unique) index over these columns, in this order.
+    ///
+    /// The index is named `{table}_{columns joined by _}_idx`. Index names share a namespace
+    /// with tables, so two indexes whose table and column names join to the same text collide
+    /// and only the first is created.
+    ///
+    /// Panics if a column isn't in the table: SQLite reads an unknown quoted name as a string
+    /// and would build a useless index on that constant without an error.
     pub fn with_index(mut self, cols: &[&str]) -> Self {
+        for col in cols {
+            assert!(
+                self.has_col(col),
+                "index on {}: no column named {col}",
+                self.name
+            );
+        }
         self.indexes
             .push(cols.iter().map(|s| s.to_string()).collect::<Vec<_>>());
         self
+    }
+
+    fn has_col(&self, name: &str) -> bool {
+        let in_pk = match &self.pk {
+            CreatePrimaryKeyDef::AutoId(id) => id == name,
+            CreatePrimaryKeyDef::Columns(cols) => cols.iter().any(|c| c.name == name),
+        };
+        in_pk || self.cols.iter().any(|c| c.name == name)
     }
 
     /// One `CREATE INDEX IF NOT EXISTS` statement per index.
@@ -316,6 +340,23 @@ mod tests {
         let pg = mk_sql(SqlDialect::Postgres);
         assert_snapshot!("sqlite", sqlite);
         assert_snapshot!("pg", pg);
+    }
+
+    #[test]
+    fn index_on_pk_cols() {
+        def_table_with_auto_id!(entry as entry (id) => {ts: i64});
+        def_table!(pair as pair (a: i64, b: i64) => {v: i64});
+
+        // no panic: primary key columns can be indexed too
+        let _ = entry::create_table_def().with_index(&["id", "ts"]);
+        let _ = pair::create_table_def().with_index(&["b", "v"]);
+    }
+
+    #[test]
+    #[should_panic(expected = "no column named tz")]
+    fn index_on_unknown_col() {
+        def_table_with_auto_id!(entry as entry (id) => {ts: i64});
+        let _ = entry::create_table_def().with_index(&["tz"]);
     }
 
     #[test]
