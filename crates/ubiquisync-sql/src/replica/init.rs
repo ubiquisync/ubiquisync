@@ -157,11 +157,13 @@ async fn create_tables(db: &dyn Db) -> Result<(), DbError> {
     Ok(())
 }
 
+// All the table statements, then all the index statements.
 fn create_table_sql(dialect: SqlDialect) -> Vec<String> {
-    schema::table_defs()
-        .iter()
-        .chain(fs_sync_schema::table_defs().iter())
+    let mut defs = schema::table_defs();
+    defs.append(&mut fs_sync_schema::table_defs());
+    defs.iter()
         .map(|d| d.create_table_sql(dialect))
+        .chain(defs.iter().flat_map(|d| d.create_index_sql(dialect)))
         .collect::<Vec<_>>()
 }
 

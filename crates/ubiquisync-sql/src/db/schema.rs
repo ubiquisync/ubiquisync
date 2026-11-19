@@ -31,6 +31,7 @@ pub struct CreateTableDef {
     pub pk: CreatePrimaryKeyDef,
     pub cols: Vec<CreateColDef>,
     pub unique: Vec<Vec<String>>,
+    pub indexes: Vec<Vec<String>>,
 }
 
 /// Data for constructing the column definitions in a CREATE TABLE statement.
@@ -139,6 +140,32 @@ impl CreateTableDef {
         );
         self
     }
+
+    /// A plain (non-unique) index over these columns, in this order.
+    pub fn with_index(mut self, cols: &[&str]) -> Self {
+        self.indexes
+            .push(cols.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        self
+    }
+
+    /// One `CREATE INDEX IF NOT EXISTS` statement per index.
+    pub fn create_index_sql(&self, _dialect: SqlDialect) -> Vec<String> {
+        let quoted_table_name = quote_ident(&self.name);
+        self.indexes
+            .iter()
+            .map(|cols| {
+                let index_name = quote_ident(&format!("{}_{}_idx", self.name, cols.join("_")));
+                let col_sql = cols
+                    .iter()
+                    .map(|s| quote_ident(s))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "CREATE INDEX IF NOT EXISTS {index_name} ON {quoted_table_name} ({col_sql});"
+                )
+            })
+            .collect::<Vec<_>>()
+    }
 }
 
 impl CreatePrimaryKeyDef {
@@ -224,6 +251,7 @@ pub fn table(name: &str, pk: &[CreateColDef], cols: &[CreateColDef]) -> CreateTa
         pk: CreatePrimaryKeyDef::Columns(pk.into()),
         cols: cols.into(),
         unique: vec![],
+        indexes: vec![],
     }
 }
 
@@ -233,6 +261,7 @@ pub fn table_with_auto_id(name: &str, id: &str, cols: &[CreateColDef]) -> Create
         pk: CreatePrimaryKeyDef::AutoId(id.to_string()),
         cols: cols.into(),
         unique: vec![],
+        indexes: vec![],
     }
 }
 
@@ -287,5 +316,47 @@ mod tests {
         let pg = mk_sql(SqlDialect::Postgres);
         assert_snapshot!("sqlite", sqlite);
         assert_snapshot!("pg", pg);
+    }
+
+    #[test]
+    fn test_create_index() {
+        def_table_with_auto_id!(entry as entry (id) => {bytes: Vec<u8>, ts: i64});
+
+        for dialect in [SqlDialect::Sqlite, SqlDialect::Postgres] {
+            let none = entry::create_table_def();
+            assert_eq!(none.create_index_sql(dialect), Vec::<String>::new());
+
+            let single = entry::create_table_def().with_index(&["ts"]);
+            assert_eq!(
+                single.create_index_sql(dialect),
+                vec![r#"CREATE INDEX IF NOT EXISTS "entry_ts_idx" ON "entry" ("ts");"#]
+            );
+
+            // column order is kept as given
+            let multi = entry::create_table_def().with_index(&["ts", "bytes"]);
+            assert_eq!(
+                multi.create_index_sql(dialect),
+                vec![
+                    r#"CREATE INDEX IF NOT EXISTS "entry_ts_bytes_idx" ON "entry" ("ts", "bytes");"#
+                ]
+            );
+
+            let two = entry::create_table_def()
+                .with_index(&["ts"])
+                .with_index(&["bytes", "ts"]);
+            assert_eq!(
+                two.create_index_sql(dialect),
+                vec![
+                    r#"CREATE INDEX IF NOT EXISTS "entry_ts_idx" ON "entry" ("ts");"#,
+                    r#"CREATE INDEX IF NOT EXISTS "entry_bytes_ts_idx" ON "entry" ("bytes", "ts");"#,
+                ]
+            );
+
+            // indexes don't change the table statement
+            assert_eq!(
+                two.create_table_sql(dialect),
+                none.create_table_sql(dialect)
+            );
+        }
     }
 }
