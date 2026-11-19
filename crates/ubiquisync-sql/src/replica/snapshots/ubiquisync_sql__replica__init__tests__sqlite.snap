@@ -11,4 +11,5 @@ CREATE TABLE IF NOT EXISTS "__pack_remotes" ("id" INTEGER PRIMARY KEY AUTOINCREM
 CREATE TABLE IF NOT EXISTS "__pack_topics" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "topic" TEXT NOT NULL, UNIQUE("topic"));;
 CREATE TABLE IF NOT EXISTS "__pack_topic_state" ("remote_id" INTEGER NOT NULL, "topic_id" INTEGER NOT NULL, "dirty" INTEGER NOT NULL, "write_state" BLOB NOT NULL, PRIMARY KEY("remote_id", "topic_id")) WITHOUT ROWID;;
 CREATE TABLE IF NOT EXISTS "__pack_published" ("remote_id" INTEGER NOT NULL, "branch_id" INTEGER NOT NULL, "published_size" INTEGER NOT NULL, "pending_since" INTEGER NULL, PRIMARY KEY("remote_id", "branch_id")) WITHOUT ROWID;;
-CREATE TABLE IF NOT EXISTS "__pack_read_state" ("remote_id" INTEGER NOT NULL, "topic_id" INTEGER NOT NULL, "peer_id" INTEGER NOT NULL, "state" BLOB NOT NULL, PRIMARY KEY("remote_id", "topic_id", "peer_id")) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS "__pack_read_state" ("remote_id" INTEGER NOT NULL, "topic_id" INTEGER NOT NULL, "peer_id" INTEGER NOT NULL, "state" BLOB NOT NULL, PRIMARY KEY("remote_id", "topic_id", "peer_id")) WITHOUT ROWID;;
+CREATE INDEX IF NOT EXISTS "__replica_branches_changed_at_idx" ON "__replica_branches" ("changed_at");
