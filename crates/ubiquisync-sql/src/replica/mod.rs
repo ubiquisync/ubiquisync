@@ -13,6 +13,7 @@ mod hlc;
 mod ingest;
 mod init;
 mod keyed_lock;
+pub mod p2p;
 mod peers;
 mod query;
 mod schema;
