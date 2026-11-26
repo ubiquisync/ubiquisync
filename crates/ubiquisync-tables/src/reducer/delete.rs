@@ -1,12 +1,13 @@
 use crate::error::SchemaSyncError;
+use crate::id::ColumnId;
 use crate::op::Delete;
-use crate::physical_schema::{DELETED_TS_COL, PhysicalTableSchema};
+use crate::physical_schema::{DELETED_TS_COL, PhysicalTableSchema, row_visible_sql};
 use crate::reducer::upsert::{bind_pkey, lww_winner_sql, set_lww_sql};
 use crate::reducer::{ApplyState, Reducer};
-use crate::watch::{ChangeEvent, DeleteEvent};
+use crate::watch::{ChangeEvent, ColumnValue, DeleteEvent, UpsertEvent};
 use tokio::sync::OwnedRwLockReadGuard;
 use ubiquisync_core::hlc::Timestamp;
-use ubiquisync_sql::db::{Db, DbBatch, DbStatementResult, StmtId, ValueBinder};
+use ubiquisync_sql::db::{Db, DbBatch, DbError, DbStatementResult, StmtId, ValueBinder};
 
 impl Reducer {
     pub(crate) async fn sync_delete_schema(
@@ -51,7 +52,16 @@ impl Reducer {
         insert_into_value_binds.push(ts_placeholder.clone());
         set_clauses.push(set_lww_sql(DELETED_TS_COL, quoted_table_name, dialect));
 
-        for col_id in table.cols.iter() {
+        // What the row looks like after the write: whether it is still visible,
+        // then per physical value column whether it is unset (NULL with the
+        // never-written/cleared lww of 0). Like the rest of the statement this
+        // is built from the physical table alone — the same schema snapshot,
+        // held by the read guard, that the SET clauses come from. User-facing
+        // names are attached later, in `post_delete`.
+        let mut returning = vec![row_visible_sql()];
+        let returning_cols: Vec<ColumnId> = table.cols.iter().copied().collect();
+
+        for col_id in returning_cols.iter() {
             // Surrogate column names are auto-generated and don't need to be quoted
             let col_name = col_id.col_name();
             let lww_col_name = col_id.lww_col_name();
@@ -61,17 +71,19 @@ impl Reducer {
             // Clear the lww back to 0, the never-written sentinel
             set_clauses.push(format!(
                 "{lww_col_name} = CASE WHEN {lww_col_name} < {ts_placeholder} THEN 0 ELSE {lww_col_name} END",
-            ))
+            ));
+            returning.push(format!("({col_name} IS NULL AND {lww_col_name} = 0)"));
         }
 
         let sql = format!(
             "INSERT INTO {quoted_table_name} ({}) VALUES ({}) \
-            ON CONFLICT ({}) DO UPDATE SET {} WHERE {}",
+            ON CONFLICT ({}) DO UPDATE SET {} WHERE {} RETURNING {}",
             insert_into_cols.join(", "),
             insert_into_value_binds.join(", "),
             pk_name_list,
             set_clauses.join(", "),
-            lww_winner_sql(quoted_table_name, DELETED_TS_COL)
+            lww_winner_sql(quoted_table_name, DELETED_TS_COL),
+            returning.join(", "),
         );
 
         let stmt_id = batch.add_statement(&sql, &value_binder.values());
@@ -85,22 +97,60 @@ impl Reducer {
         ApplyState {
             stmt_id,
             staged_event,
+            returning_cols,
             table_rguard: table,
         }
     }
 
-    /// Emit the `DeleteEvent` if and only if the statement wrote a row.
-    /// Note this can also fire events if a row that was already deleted gets deleted
-    /// again or if a row that was never seen gets deleted.
+    /// Build the event from the delete statement's `RETURNING` row, which
+    /// describes the physical row *after* the write (`returning_cols` are the
+    /// columns it flags, in order). Names are attached here: a flagged column
+    /// the named table doesn't declare is skipped.
+    /// - no row: the delete lost to a newer stored delete and changed nothing,
+    ///   so no event;
+    /// - the row is hidden: a `DeleteEvent`. This may be redundant — it also
+    ///   fires for a row that was already deleted or never seen — but it is
+    ///   never wrong: it is never emitted for a row that is still visible;
+    /// - the row is still visible (the delete is not newer than its latest
+    ///   upsert): an `UpsertEvent` reporting as NULL the columns the delete may
+    ///   have cleared, or no event if there are none. This too can be
+    ///   redundant: it lists every unset column, including ones never written.
     pub(crate) fn post_delete(
         &self,
         stmt_id: StmtId,
         delete_event: DeleteEvent,
+        returning_cols: &[ColumnId],
         batch_result: &[DbStatementResult],
-    ) -> Option<ChangeEvent> {
-        if batch_result[stmt_id.0].rows_affected == 0 {
-            return None;
+    ) -> Result<Option<ChangeEvent>, DbError> {
+        let Some(row) = batch_result[stmt_id.0].rows.first() else {
+            return Ok(None);
+        };
+        if row.get_i64(0)? == 0 {
+            return Ok(Some(ChangeEvent::Delete(delete_event)));
         }
-        Some(ChangeEvent::Delete(delete_event))
+
+        let named_table = self.logical_tables.get(&delete_event.table_id);
+        let mut cleared_columns = vec![];
+        for (idx, col_id) in returning_cols.iter().enumerate() {
+            let named_col = named_table.and_then(|t| t.value_cols.get(col_id));
+            if let Some(named_col) = named_col
+                && row.get_i64(idx + 1)? != 0
+            {
+                cleared_columns.push(ColumnValue {
+                    column_id: *col_id,
+                    name: named_col.name.clone(),
+                    value: None,
+                });
+            }
+        }
+        if cleared_columns.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(ChangeEvent::Upsert(UpsertEvent {
+            table_id: delete_event.table_id,
+            table_name: delete_event.table_name,
+            primary_key: delete_event.primary_key,
+            changed_columns: cleared_columns,
+        })))
     }
 }

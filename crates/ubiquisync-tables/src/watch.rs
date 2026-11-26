@@ -15,9 +15,15 @@ use crate::op::Value;
 /// A materialized state change, ready to dispatch to observers.
 #[derive(Debug, Clone)]
 pub enum ChangeEvent {
-    /// A row was inserted or had one or more columns updated.
+    /// A row was inserted or had one or more columns updated. A delete op can
+    /// produce this too: a delete older than the row's newest upsert leaves the
+    /// row live but clears columns written before the delete, so the row's
+    /// unset columns are reported as set to NULL (possibly including columns
+    /// that were already NULL).
     Upsert(UpsertEvent),
-    /// A row was soft-deleted (tombstoned).
+    /// A row was soft-deleted (tombstoned) and is not visible. May be redundant
+    /// (the row was already deleted, or was never seen), but is never emitted
+    /// for a row that is still visible.
     Delete(DeleteEvent),
 }
 

@@ -8,7 +8,7 @@ use ubiquisync_sql::{
 use crate::{
     error::InvalidSchemaError,
     id::{ColumnId, TableId},
-    physical_schema::{DELETED_TS_COL, UPSERT_TS_COL},
+    physical_schema::row_visible_sql,
 };
 
 /// TableSchema represents a named table in our schema. It will be exposed for
@@ -142,9 +142,9 @@ impl TableSchema {
 
         let drop_sql = format!("DROP VIEW IF EXISTS {quoted_name}");
         let create_sql = format!(
-            "CREATE VIEW {quoted_name} AS SELECT {} FROM {surrogate_name} \
-            WHERE {UPSERT_TS_COL} >= {DELETED_TS_COL}",
-            select_clauses.join(", ")
+            "CREATE VIEW {quoted_name} AS SELECT {} FROM {surrogate_name} WHERE {}",
+            select_clauses.join(", "),
+            row_visible_sql(),
         );
         (drop_sql, create_sql)
     }
