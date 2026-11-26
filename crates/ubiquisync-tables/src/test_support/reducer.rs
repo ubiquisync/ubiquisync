@@ -39,6 +39,9 @@ pub async fn run_reducer_suite<D: Db>(db: D) {
     delete_then_equal_ts_upsert_resurrects(db).await;
     delete_blocks_older_upsert(db).await;
     newer_delete_wins_older_is_silent(db).await;
+    delete_events_follow_visibility(db).await;
+    stale_delete_skips_undeclared_columns(db).await;
+    events_mirror_the_view_in_every_arrival_order(db).await;
     event_reports_only_winning_columns(db).await;
     pkey_only_insert_still_emits_event(db).await;
     surrogate_table_emits_no_event(db).await;
@@ -338,6 +341,8 @@ async fn delete_blocks_older_upsert(db: &dyn Db) {
 }
 
 /// Deletes are LWW too: the newest wins and an older delete is a silent no-op.
+/// A delete that advances the tombstone emits an event even though the row was
+/// never visible — redundant, but accepted.
 async fn newer_delete_wins_older_is_silent(db: &dyn Db) {
     let id = TableId::new(&[ColType::I64], 9);
     let mut reducer = named(db, id, &[]).await;
@@ -347,6 +352,198 @@ async fn newer_delete_wins_older_is_silent(db: &dyn Db) {
     expect_none(apply(&mut reducer, db, 50, &delete(id, pk1(1))).await);
 
     assert_eq!(read_ts(db, id, &pk1(1)).await, Some((0, 200)));
+}
+
+/// A delete op is reported from the row's state after it: `delete` if the row
+/// is hidden (never for a row that stays visible), a null-set for the unset
+/// columns of a row that stays live, and nothing if a newer delete already
+/// won. Redundant events are accepted; wrong ones are not. Each case runs on
+/// its own row.
+async fn delete_events_follow_visibility(db: &dyn Db) {
+    let id = TableId::new(&[ColType::I64], 21);
+    let (a, b) = (col(0, ColType::Text), col(1, ColType::I64));
+    let mut reducer = named(db, id, &[(a, "a"), (b, "b")]).await;
+    let up_a = |ts| (ts, upsert(id, vec![], &[(a, text("x"))]));
+    let up_b = |ts| (ts, upsert(id, vec![], &[(b, int(7))]));
+    let del = |ts| (ts, delete(id, vec![]));
+    let live = |a: DbValue, b: DbValue| Some(vec![a, b]);
+
+    // (case, ops in arrival order, event per op, visible row at the end)
+    let cases = [
+        (
+            "fresh delete of a live row",
+            vec![up_a(10), del(20)],
+            vec!["set a", "delete"],
+            None,
+        ),
+        (
+            "stale delete after a newer upsert: no delete (b=null is redundant)",
+            vec![up_a(10), del(5)],
+            vec!["set a", "set b=null"],
+            live(tv("x"), DbValue::Null),
+        ),
+        (
+            "equal-timestamp delete loses the tie: no delete (b=null is redundant)",
+            vec![up_a(10), del(10)],
+            vec!["set a", "set b=null"],
+            live(tv("x"), DbValue::Null),
+        ),
+        (
+            "delete of a never-seen row: redundant delete",
+            vec![del(5)],
+            vec!["delete"],
+            None,
+        ),
+        (
+            "repeated delete: a newer one repeats the event, an older one is silent",
+            vec![up_a(10), del(20), del(30), del(20)],
+            vec!["set a", "delete", "delete", "none"],
+            None,
+        ),
+        (
+            "delete, resurrect, delete",
+            vec![up_a(10), del(20), up_a(30), del(40)],
+            vec!["set a", "delete", "set a", "delete"],
+            None,
+        ),
+        (
+            "stale delete clears an older column of a live row",
+            vec![up_a(10), up_b(3), del(5)],
+            vec!["set a", "set b", "set b=null"],
+            live(tv("x"), DbValue::Null),
+        ),
+    ];
+
+    let mut failures = vec![];
+    for (k, (case, ops, want_events, want_row)) in (1..).zip(cases) {
+        let mut events = vec![];
+        for (ts, op) in ops {
+            events.push(summary(apply(&mut reducer, db, ts, &keyed(op, k)).await));
+        }
+        let row = visible_ab(db, k).await;
+        if events != want_events || row != want_row {
+            failures.push(format!("{case}: events {events:?}, visible row {row:?}"));
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// A stale delete that clears a physical column the named table doesn't declare
+/// reports nothing for it. The undeclared column sorts *before* the declared
+/// one, so a mix-up between physical and declared column order would show.
+async fn stale_delete_skips_undeclared_columns(db: &dyn Db) {
+    let id = TableId::new(&[ColType::I64], 23);
+    let (undeclared, a) = (col(0, ColType::I64), col(1, ColType::Text));
+    let mut reducer = named(db, id, &[(a, "a")]).await;
+
+    apply(&mut reducer, db, 10, &upsert(id, pk1(1), &[(a, text("x"))])).await;
+    apply(
+        &mut reducer,
+        db,
+        3,
+        &upsert(id, pk1(1), &[(undeclared, int(7))]),
+    )
+    .await;
+    expect_none(apply(&mut reducer, db, 5, &delete(id, pk1(1))).await);
+
+    let cleared = Some((DbValue::Null, 0));
+    assert_eq!(read_col(db, id, &pk1(1), undeclared).await, cleared);
+    assert_eq!(read_col(db, id, &pk1(1), a).await, Some((tv("x"), 10)));
+}
+
+/// The same five ops applied in all 120 arrival orders (one row per order): the
+/// stored row always converges, and a watcher that only replays the events
+/// (a delete of a row it doesn't hold, or a null-set of a column that is
+/// already null, simply changes nothing) always holds exactly the row the view
+/// shows.
+async fn events_mirror_the_view_in_every_arrival_order(db: &dyn Db) {
+    let id = TableId::new(&[ColType::I64], 22);
+    let (a, b) = (col(0, ColType::Text), col(1, ColType::I64));
+    let mut reducer = named(db, id, &[(a, "a"), (b, "b")]).await;
+    let ops = [
+        (3, upsert(id, vec![], &[(b, int(7))])),
+        (5, delete(id, vec![])),
+        (10, upsert(id, vec![], &[(a, text("x"))])),
+        (20, delete(id, vec![])),
+        (30, upsert(id, vec![], &[(a, text("y"))])),
+    ];
+
+    let mut converged = None;
+    for (k, order) in (1..).zip(permutations(ops.len())) {
+        let mut mirror: Option<Vec<DbValue>> = None;
+        for i in order.iter().copied() {
+            let (ts, op) = &ops[i];
+            match apply(&mut reducer, db, *ts, &keyed(op.clone(), k)).await {
+                Some(ChangeEvent::Delete(_)) => mirror = None,
+                Some(ChangeEvent::Upsert(up)) => {
+                    let row = mirror.get_or_insert(vec![DbValue::Null; 2]);
+                    for c in up.changed_columns {
+                        let slot = if c.column_id == a { 0 } else { 1 };
+                        row[slot] = c.value.as_ref().map_or(DbValue::Null, Value::to_db);
+                    }
+                }
+                None => {}
+            }
+            let row = visible_ab(db, k).await;
+            assert_eq!(mirror, row, "order {order:?} after op {i}");
+        }
+
+        let pk = pk1(k);
+        let state = (
+            read_col(db, id, &pk, a).await,
+            read_col(db, id, &pk, b).await,
+            read_ts(db, id, &pk).await.map(|(_, deleted)| deleted),
+        );
+        assert_eq!(*converged.get_or_insert(state.clone()), state, "{order:?}");
+    }
+}
+
+/// Columns `a` and `b` of row `k` as seen through the view `t`, or `None` if the
+/// row is hidden.
+async fn visible_ab(db: &dyn Db, k: i64) -> Option<Vec<DbValue>> {
+    let row = view_row(db, "t", &["k0", "a", "b"], k).await;
+    row.map(|r| r[1..].to_vec())
+}
+
+/// Every ordering of `0..n`.
+fn permutations(n: usize) -> Vec<Vec<usize>> {
+    if n == 0 {
+        return vec![vec![]];
+    }
+    let mut all = vec![];
+    for rest in permutations(n - 1) {
+        for at in 0..n {
+            let mut p = rest.clone();
+            p.insert(at, n - 1);
+            all.push(p);
+        }
+    }
+    all
+}
+
+/// `op` retargeted at the row with integer PK `k`.
+fn keyed(mut op: Op, k: i64) -> Op {
+    match &mut op {
+        Op::Upsert(u) => u.primary_key = pk1(k),
+        Op::Delete(d) => d.primary_key = pk1(k),
+    }
+    op
+}
+
+/// One word per event: `none`, `delete`, or `set` plus the changed columns
+/// (`=null` marks a column set to NULL).
+fn summary(ev: Option<ChangeEvent>) -> String {
+    match ev {
+        None => "none".into(),
+        Some(ChangeEvent::Delete(_)) => "delete".into(),
+        Some(ChangeEvent::Upsert(up)) => {
+            let cols = changed(&up).into_iter().map(|(name, value)| match value {
+                Some(_) => name,
+                None => format!("{name}=null"),
+            });
+            format!("set {}", cols.collect::<Vec<_>>().join(" "))
+        }
+    }
 }
 
 /// When some columns of an upsert win LWW and others lose, the event lists only

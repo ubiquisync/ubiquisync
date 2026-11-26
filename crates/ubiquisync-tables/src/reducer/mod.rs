@@ -13,7 +13,7 @@ mod validate;
 
 use crate::codec::Codec;
 use crate::error::{InvalidSchemaError, TablesInitError};
-use crate::id::TableId;
+use crate::id::{ColumnId, TableId};
 use crate::op::Op;
 use crate::physical_schema::PhysicalTableSchema;
 use crate::schema::TableSchema;
@@ -153,6 +153,7 @@ impl Reducer {
     ) -> Result<Option<ChangeEvent>, DbError> {
         let ApplyState {
             staged_event,
+            returning_cols,
             table_rguard,
             ..
         } = apply_state;
@@ -162,7 +163,7 @@ impl Reducer {
                 self.post_upsert(apply_state.stmt_id, event, batch_result)?
             }
             Some(ChangeEvent::Delete(event)) => {
-                self.post_delete(apply_state.stmt_id, event, batch_result)
+                self.post_delete(apply_state.stmt_id, event, &returning_cols, batch_result)?
             }
             None => None,
         })
@@ -211,6 +212,10 @@ pub struct ApplyState {
     /// The event to emit, provisional until the batch result confirms the write
     /// changed something. `None` for ops on unnamed (surrogate) tables.
     pub(crate) staged_event: Option<ChangeEvent>,
+    /// For a delete: the physical value columns its `RETURNING` row flags, in
+    /// `RETURNING` order (after the leading visibility flag). Empty for an
+    /// upsert, whose columns travel in its staged event.
+    pub(crate) returning_cols: Vec<ColumnId>,
     /// Passing the guard back in ApplyState ensures that it is not released before
     /// the batch has been committed, then it can be released in post_apply.
     pub(crate) table_rguard: OwnedRwLockReadGuard<PhysicalTableSchema>,

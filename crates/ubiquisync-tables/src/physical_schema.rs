@@ -32,6 +32,14 @@ pub const UPSERT_TS_COL: &str = "__upsert_ts";
 /// A `NOT NULL DEFAULT 0` i64 column
 pub const DELETED_TS_COL: &str = "__deleted_ts";
 
+/// SQL predicate over a physical table's row: true when the row is visible
+/// (not tombstoned), i.e. its latest upsert is at least as new as its latest
+/// delete. The user-facing VIEW and the delete event both use this, so they
+/// cannot disagree about which rows are live.
+pub(crate) fn row_visible_sql() -> String {
+    format!("{UPSERT_TS_COL} >= {DELETED_TS_COL}")
+}
+
 impl PhysicalTableSchema {
     /// Initialize a physical table based on a table ID when we have no user-defined
     /// TableSchema. If the table exists, reconstruct its schema from the database.

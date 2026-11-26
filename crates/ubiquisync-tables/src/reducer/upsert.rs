@@ -191,6 +191,7 @@ impl Reducer {
         ApplyState {
             stmt_id,
             staged_event,
+            returning_cols: vec![],
             table_rguard: table,
         }
     }
