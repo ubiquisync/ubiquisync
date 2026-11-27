@@ -3,6 +3,7 @@ mod commit;
 mod commit_retry;
 mod config;
 mod deps;
+mod events;
 mod exec;
 mod fork;
 mod fs;
@@ -12,19 +13,32 @@ mod fs_write;
 mod hlc;
 mod ingest;
 mod init;
+#[cfg(feature = "inspect")]
+mod inspect;
 mod keyed_lock;
 pub mod p2p;
 mod peers;
 mod query;
 mod schema;
 mod segment;
+mod status;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
 pub use config::{CommitRetryConfig, PackSyncConfig, ReplicaConfig};
 pub use deps::{PackRemoteProviders, ReplicaDeps};
+pub use events::{SyncEvent, SyncEventKind, SyncEvents};
+pub use fs::PackRemoteInitError;
+pub use fs_sync_schema::BlockedReasons;
 pub use hlc::HlcError;
 pub use init::InitError;
+#[cfg(feature = "inspect")]
+pub use inspect::{DeviceInfo, EntryKind, EntryView, InspectError, RemoteFile};
+pub use schema::UnknownSoftwareVersion;
+pub use status::{
+    BlockedPack, ForkStatus, Level, LogStatus, Reach, RemoteId, RemoteStatus, Stall, SyncStatus,
+    Task, TaskState, TaskStatus,
+};
 
 use futures::lock::Mutex;
 use std::sync::atomic::AtomicU64;
@@ -66,6 +80,8 @@ pub(crate) struct ReplicaInner<R> {
     pub(crate) pack_remotes: Mutex<HashMap<i64, Arc<PackStore>>>,
     pub(crate) key_resolver: Arc<dyn CipherKeyResolver>,
     pub(crate) config: ReplicaConfig,
+    /// The in-memory part of the sync status, and the event channel.
+    pub(crate) sync: status::SyncRuntime,
 }
 
 impl<R> Replica<R> {

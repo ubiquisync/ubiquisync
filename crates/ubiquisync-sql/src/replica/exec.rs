@@ -14,6 +14,7 @@ use crate::{
     replica::{
         Replica,
         branches::{BranchInfo, LogKey},
+        events::SyncEventKind,
         schema::{branches, segments},
     },
 };
@@ -153,6 +154,12 @@ impl<R: Reducer> Exec<R::Op> for Replica<R> {
             let batch_result = batch.commit().await?;
 
             inner.reducer.post_apply(apply_state, &batch_result);
+            inner.emit(SyncEventKind::Applied {
+                device: log_id.peer_id,
+                container: log_id.container_id,
+                from: chain_head.size,
+                to: next_chain_head.size,
+            });
         } else {
             // we cannot commit because our commit status is non-Ok, so we just update the head size and hash
             update_cols_batch::<(

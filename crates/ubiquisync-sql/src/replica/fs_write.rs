@@ -183,6 +183,8 @@ impl<R: Reducer> ReplicaInner<R> {
         self.ensure_peer_inits(store, seen_peers).await?;
 
         let pack_data = pack_builder.build(self.credentials.signing_key())?;
+        let entries = super::fs_read::pack_entry_count(&pack_data.header.header);
+        let bytes = pack_data.body.len() as u64;
 
         // write the pack
         store.write_pack(&pack_data).await?;
@@ -200,6 +202,7 @@ impl<R: Reducer> ReplicaInner<R> {
         let mut read_state = self
             .get_pack_read_state(remote_id, topic_id, self.self_db_id)
             .await?;
+        let id_for_event = id.clone();
         read_state.consumed.insert(id);
         self.update_pack_read_state_batch(
             db_batch.as_mut(),
@@ -210,6 +213,16 @@ impl<R: Reducer> ReplicaInner<R> {
         )?;
 
         db_batch.commit().await?;
+
+        self.sync.update_remote(remote_id, |r| {
+            r.last_publish_at = Some(std::time::SystemTime::now())
+        });
+        self.emit(super::events::SyncEventKind::FilePublished {
+            remote: remote_id,
+            file: id_for_event,
+            entries,
+            bytes,
+        });
 
         Ok(())
     }

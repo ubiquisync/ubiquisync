@@ -11,6 +11,8 @@ repository.workspace = true
 # crates (ubiquisync-sqlite, ubiquisync-postgres) run against their real `Db`.
 # Off by default; a driver enables it only in its `[dev-dependencies]`.
 test-support = []
+# Read access for explorers and debugging tools: `devices`, `entries`, `remote_files`.
+inspect = []
 
 [dependencies]
 ubiquisync-core = { workspace = true }

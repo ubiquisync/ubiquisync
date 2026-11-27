@@ -256,8 +256,9 @@ impl<R: Reducer> ReplicaInner<R> {
         store: &PackStore,
         todo: &PackReadTodo,
         tips: &mut Option<PackTipTracker>,
-    ) -> Result<(), PackProcessError> {
+    ) -> Result<u64, PackProcessError> {
         let signed_header = self.read_pack_header(desc, store, peer_info, todo).await?;
+        let entries = pack_entry_count(&signed_header.header);
         if let Some(tips) = tips {
             tips.update_tips(todo.file.get_ref(), &signed_header.header);
         }
@@ -320,7 +321,7 @@ impl<R: Reducer> ReplicaInner<R> {
         if let Some(bi) = blocked_info {
             Err(PackProcessError::Blocked(Box::new(bi)))
         } else {
-            Ok(())
+            Ok(entries)
         }
     }
 
@@ -408,6 +409,16 @@ impl<R: Reducer> ReplicaInner<R> {
         }
         Ok(())
     }
+}
+
+/// Entries in a pack, over every log it carries.
+pub(crate) fn pack_entry_count(header: &PackHeader) -> u64 {
+    header
+        .self_segments
+        .iter()
+        .chain(header.peer_data.iter().flat_map(|p| p.segments.iter()))
+        .map(|s| s.idx_range.end.saturating_sub(s.idx_range.start))
+        .sum()
 }
 
 struct PackResolver<'a> {

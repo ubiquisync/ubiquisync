@@ -10,6 +10,8 @@ repository.workspace = true
 # Exposes `test_support`: a backend-agnostic physical-schema suite the driver
 # crates run against their real `Db` (see `ubiquisync-sqlite`'s dev-dependencies).
 test-support = []
+# Read access for explorers: `decode_any`, and `StoreImpl::{devices, entries, remote_files}`.
+inspect = ["ubiquisync-sql/inspect"]
 
 [dependencies]
 ubiquisync-core = { workspace = true }

@@ -31,6 +31,7 @@ use crate::{
         poll_interval,
         schema::{CommitErr, branches, peers},
         segment::GetSegmentError,
+        status::Task,
         tick_or_cancelled,
     },
 };
@@ -49,9 +50,7 @@ enum CommitRetryError {
 
 impl<R: Reducer> Replica<R> {
     pub(crate) fn start_commit_retry(&mut self) {
-        let inner = self.inner.clone();
-        let cancel_token = self.cancel.clone();
-        self.tasks.spawn(async move {
+        self.spawn_supervised(Task::CommitRetry, |inner, cancel_token| async move {
             let mut interval = poll_interval(inner.config.commit_retry.poll_interval);
             let mut startup = true;
             while tick_or_cancelled(&mut interval, &cancel_token).await {

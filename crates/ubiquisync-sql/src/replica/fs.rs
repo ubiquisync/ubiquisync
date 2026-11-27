@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::SystemTime};
 
 use backon::{BackoffBuilder, ExponentialBackoff, ExponentialBuilder};
 use sea_query::{Expr, ExprTrait, Func, IntoIden, OnConflict, Query};
@@ -19,6 +19,7 @@ use crate::{
     replica::{
         Replica, ReplicaInner,
         config::PackSyncConfig,
+        events::SyncEventKind,
         fs_read::PackTipTracker,
         fs_sync_schema::{
             BlockedPackInfo, DEFAULT_TOPIC_ID, PackReadState, PackWriteState, pack_read_state,
@@ -29,6 +30,7 @@ use crate::{
         poll_interval,
         schema::branches,
         segment::GetSegmentError,
+        status::{Reach, Task},
         tick_or_cancelled,
     },
 };
@@ -55,12 +57,13 @@ impl<R: Reducer> Replica<R> {
     // TODO add remove_remote fn
     //
     pub(crate) fn start_process_packs(&mut self) {
-        let inner = self.inner.clone();
-        let cancel_token = self.cancel.clone();
-        self.tasks.spawn(async move {
+        self.spawn_supervised(Task::PackSync, |inner, cancel_token| async move {
             let mut interval = poll_interval(inner.config.pack_sync.poll_interval);
             let mut backoffs = HashMap::new();
             while tick_or_cancelled(&mut interval, &cancel_token).await {
+                if inner.sync.paused() {
+                    continue;
+                }
                 inner.process_pack_remotes(&mut backoffs).await;
             }
         });
@@ -95,6 +98,14 @@ impl<R: Reducer> ReplicaInner<R> {
                 }
                 Err(error) => {
                     tracing::warn!(remote_id = id, provider = prov, %error, "error initializing remote");
+                    self.sync.update_remote(id, |r| {
+                        r.reach = Reach::Unreachable {
+                            since: SystemTime::now(),
+                            attempts: 1,
+                            next_try: None,
+                            error: error.to_string(),
+                        }
+                    });
                 }
             }
         }
@@ -130,16 +141,40 @@ impl<R: Reducer> ReplicaInner<R> {
             }
             match self.process_pack_remote(*remote_id, store).await {
                 Ok(()) => {
-                    backoffs.remove(remote_id);
+                    if backoffs.remove(remote_id).is_some() {
+                        self.emit(SyncEventKind::RemoteBack { remote: *remote_id });
+                    }
+                    self.sync.update_remote(*remote_id, |r| {
+                        r.reach = Reach::Ok;
+                        r.last_read_at = Some(SystemTime::now());
+                    });
                 }
                 Err(e) => {
                     let cfg = &self.config.pack_sync;
+                    let first_failure = !backoffs.contains_key(remote_id);
                     let b = backoffs
                         .entry(*remote_id)
                         .or_insert_with(|| RemoteBackoff::new(cfg));
                     let delay = b.delays.next().unwrap_or(cfg.remote_retry_max);
                     b.retry_at = time::Instant::now() + delay;
+                    b.attempts += 1;
                     tracing::warn!(remote_id, error = %e, ?delay, "pack round failed for remote, backing off");
+                    let error = e.to_string();
+                    let (since, attempts) = (b.since, b.attempts);
+                    self.sync.update_remote(*remote_id, |r| {
+                        r.reach = Reach::Unreachable {
+                            since,
+                            attempts,
+                            next_try: Some(SystemTime::now() + delay),
+                            error: error.clone(),
+                        }
+                    });
+                    if first_failure {
+                        self.emit(SyncEventKind::RemoteLost {
+                            remote: *remote_id,
+                            error,
+                        });
+                    }
                 }
             }
         }
@@ -222,6 +257,12 @@ impl<R: Reducer> ReplicaInner<R> {
                     Err(e) => match e {
                         PackProcessError::PackGone => { /* keep going */ }
                         PackProcessError::Blocked(bi) => {
+                            self.emit(SyncEventKind::FileBlocked {
+                                remote: remote_id,
+                                publisher: peer,
+                                file: todo.file().clone(),
+                                reasons: bi.reasons,
+                            });
                             // mark as blocked
                             read_plan.next.blocked.insert(todo.file().get_ref(), *bi);
                         }
@@ -240,7 +281,13 @@ impl<R: Reducer> ReplicaInner<R> {
                             break;
                         }
                     },
-                    Ok(()) => {
+                    Ok(entries) => {
+                        self.emit(SyncEventKind::FileRead {
+                            remote: remote_id,
+                            publisher: peer,
+                            file: todo.file().clone(),
+                            entries,
+                        });
                         // mark as consumed
                         read_plan.next.consumed.insert(todo.file().clone());
                     }
@@ -470,11 +517,16 @@ pub enum PackProcessError {
 pub(crate) struct RemoteBackoff {
     retry_at: time::Instant,
     delays: ExponentialBackoff,
+    /// When the first failure in this run of failures happened, and how many there were.
+    since: SystemTime,
+    attempts: u64,
 }
 
 impl RemoteBackoff {
     fn new(cfg: &PackSyncConfig) -> Self {
         Self {
+            since: SystemTime::now(),
+            attempts: 0,
             retry_at: time::Instant::now(),
             delays: ExponentialBuilder::new()
                 .with_min_delay(cfg.remote_retry_min)

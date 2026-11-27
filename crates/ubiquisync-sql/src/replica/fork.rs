@@ -161,6 +161,13 @@ impl<R: Reducer> ReplicaInner<R> {
         )
         .await?
         .exactly_one()?;
+        if let Ok(Some(device)) = self.peer_id_of(guard.key().peer_db_id).await {
+            self.emit(super::events::SyncEventKind::Forked {
+                device,
+                container: guard.key().container_id,
+                at: last_common.size,
+            });
+        }
         Ok(BranchInfo {
             id,
             head_chain: last_common,

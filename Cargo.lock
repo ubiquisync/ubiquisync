@@ -1783,6 +1783,7 @@ name = "ubiquisync-sim"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "futures",
  "secrecy",
  "test-case",
  "tokio",

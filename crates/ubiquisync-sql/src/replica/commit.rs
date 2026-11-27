@@ -5,6 +5,7 @@ use thiserror::Error;
 use ubiquisync_core::{
     crypto::CipherKeyResolveError,
     hlc::WallTime,
+    ids::LogId,
     log::{ChainHashError, LogEntry, SegmentCipherError, segment::DecodedSegment},
 };
 
@@ -17,8 +18,10 @@ use crate::{
     replica::{
         HlcError, ReplicaInner,
         branches::{BranchInfo, LogKey},
+        events::SyncEventKind,
         keyed_lock::KeyedLockGuard,
         schema::{CommitErr, branches},
+        status::stall_from_commit_err,
     },
 };
 
@@ -47,6 +50,51 @@ enum TryCommitError {
 impl<R: Reducer> ReplicaInner<R> {
     #[tracing::instrument(skip_all)]
     pub(crate) async fn try_commit(
+        &self,
+        guard: &KeyedLockGuard<LogKey>,
+        branch: &mut BranchInfo,
+        segment: DecodedSegment<'_>,
+    ) -> Result<(), CommitError> {
+        let log_id = *segment.chain_seed.log_id();
+        let (size_before, err_before) = (branch.commit_size, branch.commit_err.clone());
+        let res = self.do_try_commit_or_stall(guard, branch, segment).await;
+        self.emit_commit_events(&log_id, size_before, err_before.as_ref(), branch);
+        res
+    }
+
+    /// Sends `Applied`, `Stalled` and `Recovered` for what one commit attempt changed.
+    fn emit_commit_events(
+        &self,
+        log_id: &LogId,
+        size_before: u64,
+        err_before: Option<&CommitErr>,
+        branch: &BranchInfo,
+    ) {
+        let (device, container) = (log_id.peer_id, log_id.container_id);
+        if branch.commit_size > size_before {
+            self.emit(SyncEventKind::Applied {
+                device,
+                container,
+                from: size_before,
+                to: branch.commit_size,
+            });
+        }
+        match (err_before, &branch.commit_err) {
+            (Some(_), None) => self.emit(SyncEventKind::Recovered { device, container }),
+            (before, Some(after))
+                if before.map(std::mem::discriminant) != Some(std::mem::discriminant(after)) =>
+            {
+                self.emit(SyncEventKind::Stalled {
+                    device,
+                    container,
+                    stall: stall_from_commit_err(after, &self.config.commit_retry),
+                })
+            }
+            _ => {}
+        }
+    }
+
+    async fn do_try_commit_or_stall(
         &self,
         guard: &KeyedLockGuard<LogKey>,
         branch: &mut BranchInfo,

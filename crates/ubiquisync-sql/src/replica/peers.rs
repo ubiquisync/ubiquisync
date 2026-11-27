@@ -87,6 +87,7 @@ impl<R> ReplicaInner<R> {
             )
             .await?
             .exactly_one()?;
+            self.emit(super::events::SyncEventKind::DeviceSeen { device: *peer });
             Ok(PeerLookup::Found(Box::new(PeerInfo {
                 peer: *peer,
                 db_id: id,
@@ -94,6 +95,19 @@ impl<R> ReplicaInner<R> {
                 init_entry,
             })))
         }
+    }
+
+    /// The device id stored under a local peer row id.
+    pub(crate) async fn peer_id_of(&self, peer_db_id: i64) -> Result<Option<PeerId>, DbError> {
+        Ok(select_cols::<(peers::PeerId,)>(
+            self.db.as_ref(),
+            Query::select()
+                .from(peers::Table)
+                .and_where(Expr::col(peers::Id).eq(peer_db_id)),
+        )
+        .await?
+        .one()?
+        .map(|(p,)| PeerId(p)))
     }
 
     // TODO we could cache this if it ever became a hot path because of signature verification

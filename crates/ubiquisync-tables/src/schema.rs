@@ -98,6 +98,31 @@ impl TableSchema {
         })
     }
 
+    /// The table's type-encoded id.
+    pub fn id(&self) -> TableId {
+        self.id
+    }
+
+    /// The table's user-facing name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The names of the primary key columns, in key order.
+    pub fn pk_names(&self) -> &[String] {
+        &self.pk_names
+    }
+
+    /// The non-key columns, ordered by column id.
+    pub fn columns(&self) -> impl Iterator<Item = &ColumnSchema> {
+        self.value_cols.values()
+    }
+
+    /// The non-key column with this id.
+    pub fn column(&self, id: ColumnId) -> Option<&ColumnSchema> {
+        self.value_cols.get(&id)
+    }
+
     /// (Re)create the user-facing VIEW over this table's surrogate storage.
     /// `DROP VIEW IF EXISTS` + `CREATE VIEW` makes it idempotent — safe to run
     /// every time a [`Reducer`](crate::reducer) opens. See [`Self::view_sql`].

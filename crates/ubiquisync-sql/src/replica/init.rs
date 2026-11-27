@@ -135,6 +135,7 @@ impl<R: Reducer> Replica<R> {
                 pack_remotes: Default::default(),
                 key_resolver: Arc::new(NullCipherKeyResolver),
                 config,
+                sync: super::status::SyncRuntime::new(),
             }),
             tasks: Default::default(),
             cancel: Default::default(),

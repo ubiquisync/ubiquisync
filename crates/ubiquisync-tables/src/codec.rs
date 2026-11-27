@@ -71,6 +71,58 @@ impl Codec {
     }
 }
 
+// ── Schema-free decoding ─────────────────────────────────────────────────────
+
+/// An op decoded without a schema, for explorers and tests. Table and column ids carry
+/// their own types, so every value decodes; names come from the app's schema if it has one.
+#[cfg(feature = "inspect")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpView {
+    pub table: TableId,
+    /// Primary key values, in key order.
+    pub key: Vec<Value>,
+    /// Columns written, in the order the op lists them: `None` means set to NULL.
+    /// Empty for a delete.
+    pub sets: Vec<(ColumnId, Option<Value>)>,
+    /// Whether the op deletes the row.
+    pub deleted: bool,
+}
+
+/// Why [`decode_any`] could not decode an op.
+#[cfg(feature = "inspect")]
+#[derive(Debug, Error)]
+#[error(transparent)]
+pub struct OpViewError(DecodeOpError);
+
+/// Decodes one op's bytes (as stored in a log entry) without a schema.
+#[cfg(feature = "inspect")]
+pub fn decode_any(op: &[u8]) -> Result<OpView, OpViewError> {
+    let mut r = Reader::new(op);
+    let decoded = decode_one_op(&mut r).map_err(OpViewError)?;
+    if !r.is_empty() {
+        return Err(OpViewError(DecodeOpError::TrailingBytes));
+    }
+    Ok(match decoded {
+        Op::Upsert(u) => OpView {
+            table: u.table_id,
+            key: u.primary_key,
+            sets: u
+                .sets
+                .into_iter()
+                .map(|s| (s.column_id, Some(s.value)))
+                .chain(u.nulls.into_iter().map(|c| (c, None)))
+                .collect(),
+            deleted: false,
+        },
+        Op::Delete(d) => OpView {
+            table: d.table_id,
+            key: d.primary_key,
+            sets: vec![],
+            deleted: true,
+        },
+    })
+}
+
 // ── Op tags ──────────────────────────────────────────────────────────────────
 
 /// Insert-or-merge a table row.
@@ -400,6 +452,74 @@ mod tests {
         Codec::new(CONTAINER_ID_0)
             .do_decode(&container, &op)
             .unwrap_err()
+    }
+
+    #[cfg(feature = "inspect")]
+    #[allow(dead_code)] // the macro generates more than these tests use
+    mod decode_any_tests {
+        use super::super::{OpView, decode_any};
+        use crate::{codec::Codec, op::Value};
+        use ubiquisync_core::ids::ContainerId;
+        use ubiquisync_sql::op::OpCodec;
+
+        crate::define_tables! {
+            1 todos (id Uuid) => { (0 title Text), (1 done I64), (2 created_at I64) },
+            2 pairs (k Text, seq I64) => { (0 payload Bytes) },
+        }
+
+        /// The id of the todos column at this position.
+        fn col(i: usize) -> crate::id::ColumnId {
+            todos::table().unwrap().columns().nth(i).unwrap().id
+        }
+
+        fn bytes(op: &crate::op::Op) -> Vec<u8> {
+            let (_, b) = Codec::new(ContainerId([3; 16])).encode(op).unwrap();
+            b.0.into_owned()
+        }
+
+        #[test]
+        fn upsert_with_values_and_nulls() {
+            let id = [7; 16];
+            let op = todos::upsert(&id)
+                .title("Buy strings")
+                .done(0)
+                .created_at_null()
+                .build();
+            assert_eq!(
+                decode_any(&bytes(&op)).unwrap(),
+                OpView {
+                    table: todos::TABLE_ID,
+                    key: vec![Value::Uuid(id)],
+                    sets: vec![
+                        (col(0), Some(Value::Text("Buy strings".into()))),
+                        (col(1), Some(Value::I64(0))),
+                        (col(2), None),
+                    ],
+                    deleted: false,
+                }
+            );
+        }
+
+        #[test]
+        fn delete_with_a_two_column_key() {
+            let op = pairs::delete("a", 5);
+            assert_eq!(
+                decode_any(&bytes(&op)).unwrap(),
+                OpView {
+                    table: pairs::TABLE_ID,
+                    key: vec![Value::Text("a".into()), Value::I64(5)],
+                    sets: vec![],
+                    deleted: true,
+                }
+            );
+        }
+
+        #[test]
+        fn trailing_bytes_are_rejected() {
+            let mut b = bytes(&todos::delete(&[1; 16]));
+            b.push(0);
+            assert!(decode_any(&b).is_err());
+        }
     }
 
     const CONTAINER_ID_0: ContainerId = ContainerId([0; 16]);

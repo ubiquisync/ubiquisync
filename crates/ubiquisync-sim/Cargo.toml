@@ -7,12 +7,17 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[features]
+# Runs the tests of the `inspect` read access too.
+inspect = ["ubiquisync-sql/inspect", "ubiquisync-tables/inspect"]
+
 [dev-dependencies]
 ubiquisync-core = { workspace = true }
 ubiquisync-sql = { workspace = true, features = ["test-support"] }
 ubiquisync-sqlite = { workspace = true }
 ubiquisync-tables = { workspace = true }
 async-trait = { workspace = true }
+futures = { workspace = true }
 secrecy = { workspace = true }
 test-case = { workspace = true }
 tokio = { workspace = true }

@@ -9,7 +9,8 @@ use ubiquisync_sql::{
     db::{Db, DbError, DbRow, DbValue},
     dialect::SqlDialect,
     replica::{
-        InitError as ReplicaInitError, PackRemoteProviders, Replica, ReplicaConfig, ReplicaDeps,
+        InitError as ReplicaInitError, PackRemoteInitError, PackRemoteProviders, RemoteId, Replica,
+        ReplicaConfig, ReplicaDeps, SyncEvents, SyncStatus,
     },
 };
 
@@ -53,6 +54,67 @@ impl StoreImpl {
         };
         let replica = Replica::new(app_magic, deps, replica_config).await?;
         Ok(Self { replica, event_bus })
+    }
+
+    /// Attaches a sync folder through one of the providers passed to [`new`](Self::new).
+    /// The db remembers it, so it is attached again on the next start.
+    pub async fn add_remote(
+        &self,
+        provider: &str,
+        config: &str,
+    ) -> Result<RemoteId, PackRemoteInitError> {
+        self.replica.add_remote(provider, config).await
+    }
+
+    /// Stops the background tasks and waits for them to finish.
+    pub async fn shutdown(self) {
+        self.replica.shutdown().await
+    }
+
+    /// A snapshot of the sync state, see [`Replica::status`].
+    pub async fn status(&self) -> Result<SyncStatus, DbError> {
+        self.replica.status().await
+    }
+
+    /// Sync events from now on, see [`Replica::watch`].
+    pub fn watch(&self) -> SyncEvents {
+        self.replica.watch()
+    }
+
+    /// Pauses or resumes sync with every folder, see [`Replica::set_sync_paused`].
+    pub fn set_sync_paused(&self, paused: bool) {
+        self.replica.set_sync_paused(paused)
+    }
+
+    pub fn sync_paused(&self) -> bool {
+        self.replica.sync_paused()
+    }
+}
+
+#[cfg(feature = "inspect")]
+impl StoreImpl {
+    /// See [`Replica::devices`].
+    pub async fn devices(&self) -> Result<Vec<ubiquisync_sql::replica::DeviceInfo>, DbError> {
+        self.replica.devices().await
+    }
+
+    /// See [`Replica::entries`]. Decode op bytes with [`decode_any`](crate::codec::decode_any).
+    pub async fn entries(
+        &self,
+        log: ubiquisync_core::ids::LogId,
+        range: std::ops::Range<u64>,
+    ) -> Result<Vec<ubiquisync_sql::replica::EntryView>, ubiquisync_sql::replica::InspectError>
+    {
+        self.replica.entries(log, range).await
+    }
+
+    /// See [`Replica::remote_files`].
+    pub async fn remote_files(
+        &self,
+        remote: RemoteId,
+    ) -> Result<Vec<ubiquisync_sql::replica::RemoteFile>, ubiquisync_sql::replica::InspectError>
+    {
+        self.replica.remote_files(remote).await
     }
 }
 

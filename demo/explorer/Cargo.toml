@@ -1,0 +1,24 @@
+[package]
+name = "ubiquisync-explorer"
+description = "A desktop demo of the Ubiquisync sync engine: two devices in one window. Not for real data."
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# Kept out of the main workspace so its build and CI are unaffected.
+[workspace]
+
+[dependencies]
+ubiquisync-core = { path = "../../crates/ubiquisync-core" }
+ubiquisync-sql = { path = "../../crates/ubiquisync-sql", features = ["inspect"] }
+ubiquisync-sqlite = { path = "../../crates/ubiquisync-sqlite" }
+ubiquisync-tables = { path = "../../crates/ubiquisync-tables", features = ["inspect"] }
+
+dioxus = { version = "=0.7.10", default-features = false, features = ["desktop", "launch", "lib"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "time", "sync", "macros"] }
+futures = "0.3.34"
+secrecy = "0.10.3"
+getrandom = "0.4.3"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+hex = "0.4.3"
